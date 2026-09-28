@@ -1,0 +1,424 @@
+mod commit;
+mod rows;
+
+use crate::sqlite::timestamp;
+use async_trait::async_trait;
+use enco_core::*;
+use enco_kernel::*;
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+use tokio::io::AsyncWriteExt;
+
+const SESSION_COLUMNS: &str = "id,name,created_at,binding_node,binding_epoch,config";
+const SCHEDULE_COLUMNS: &str = "id,session_id,due_at,message,created_at,state,fired_event_id";
+
+/// SQLite authority for a node's Sessions, Inbox, Log and reminders.
+pub struct SqliteStore {
+    connection: Arc<Mutex<Connection>>,
+    blobs: PathBuf,
+    node: NodeId,
+}
+
+impl SqliteStore {
+    /// Open the authority, initializing the schema and node identity on first use.
+    pub async fn open(path: impl AsRef<Path>, blobs: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let path = path.as_ref().to_path_buf();
+        let blobs = blobs.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(backend)?;
+        }
+        tokio::fs::create_dir_all(&blobs).await.map_err(backend)?;
+        let (connection, node) = tokio::task::spawn_blocking(move || open(&path))
+            .await
+            .map_err(backend)??;
+        Ok(Self {
+            connection: Arc::new(Mutex::new(connection)),
+            blobs,
+            node,
+        })
+    }
+
+    async fn run<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
+    ) -> Result<T, StoreError> {
+        let connection = self.connection.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut connection = connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            operation(&mut connection)
+        })
+        .await
+        .map_err(backend)?
+    }
+}
+
+fn backend(e: impl std::fmt::Display) -> StoreError {
+    StoreError::Backend(e.to_string())
+}
+
+fn encode(value: &impl serde::Serialize) -> Result<String, StoreError> {
+    serde_json::to_string(value).map_err(backend)
+}
+
+fn open(path: &Path) -> Result<(Connection, NodeId), StoreError> {
+    let mut connection = crate::sqlite::open(path).map_err(backend)?;
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(backend)?;
+    if !exists {
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        tx.execute_batch(include_str!("store/schema.sql"))
+            .map_err(backend)?;
+        tx.execute(
+            "INSERT INTO meta(key,value) VALUES ('schema_version','1'),('node_id',?),('safe_mode','0')",
+            [NodeId::new().to_string()],
+        ).map_err(backend)?;
+        tx.commit().map_err(backend)?;
+    }
+    let version: String = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key='schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(backend)?;
+    let version: u32 = version.parse().map_err(backend)?;
+    if version > 1 {
+        return Err(StoreError::NewerSchema(version));
+    }
+    if version != 1 {
+        return Err(backend(format!("unsupported schema version {version}")));
+    }
+    let node = connection
+        .query_row("SELECT value FROM meta WHERE key='node_id'", [], |r| {
+            rows::text(r, 0)
+        })
+        .map_err(backend)?;
+    Ok((connection, node))
+}
+
+#[async_trait]
+impl Store for SqliteStore {
+    async fn node(&self) -> Result<NodeRecord, StoreError> {
+        let id = self.node;
+        self.run(move |connection| {
+            let value: String = connection
+                .query_row("SELECT value FROM meta WHERE key='safe_mode'", [], |r| {
+                    r.get(0)
+                })
+                .map_err(backend)?;
+            Ok(NodeRecord {
+                id,
+                safe_mode: match value.as_str() {
+                    "0" => false,
+                    "1" => true,
+                    _ => return Err(backend("invalid safe_mode value")),
+                },
+            })
+        })
+        .await
+    }
+
+    async fn set_safe_mode(&self, enabled: bool) -> Result<(), StoreError> {
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "UPDATE meta SET value=? WHERE key='safe_mode'",
+                    [if enabled { "1" } else { "0" }],
+                )
+                .map_err(backend)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError> {
+        self.run(|connection| {
+            let mut query = connection
+                .prepare(&format!(
+                    "SELECT {SESSION_COLUMNS} FROM sessions ORDER BY name"
+                ))
+                .map_err(backend)?;
+            query
+                .query_map([], rows::session)
+                .map_err(backend)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(backend)
+        })
+        .await
+    }
+
+    async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError> {
+        let name = name.to_owned();
+        self.run(move |connection| {
+            connection
+                .query_row(
+                    &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE name=?"),
+                    [name],
+                    rows::session,
+                )
+                .optional()
+                .map_err(backend)
+        })
+        .await
+    }
+
+    async fn ensure_session(
+        &self,
+        name: &str,
+        created_at: DateTime<Utc>,
+    ) -> Result<SessionRecord, StoreError> {
+        let name = name.to_owned();
+        let node = self.node;
+        self.run(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(backend)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO sessions VALUES (?,?,?,?,?,?)",
+                params![
+                    SessionId::new().to_string(),
+                    name,
+                    timestamp(created_at),
+                    node.to_string(),
+                    1,
+                    encode(&SessionConfig::default())?
+                ],
+            )
+            .map_err(backend)?;
+            let result = tx
+                .query_row(
+                    &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE name=?"),
+                    [name],
+                    rows::session,
+                )
+                .map_err(backend)?;
+            tx.commit().map_err(backend)?;
+            Ok(result)
+        })
+        .await
+    }
+
+    async fn log(
+        &self,
+        session: SessionId,
+        after: Option<LogPos>,
+    ) -> Result<Vec<Entry>, StoreError> {
+        self.run(move |connection| {
+            let position = after.unwrap_or(LogPos {
+                epoch: Epoch(0),
+                seq: Seq(0),
+            });
+            let mut query = connection
+                .prepare(
+                    "SELECT epoch,seq,at,body
+                     FROM log
+                     WHERE session_id=? AND (epoch,seq)>(?,?)
+                     ORDER BY epoch,seq",
+                )
+                .map_err(backend)?;
+            query
+                .query_map(
+                    params![
+                        session.to_string(),
+                        signed(position.epoch.0)?,
+                        signed(position.seq.0)?
+                    ],
+                    rows::entry,
+                )
+                .map_err(backend)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(backend)
+        })
+        .await
+    }
+
+    async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreError> {
+        let node = self.node;
+        self.run(move |connection| commit::commit(connection, node, session, commit))
+            .await
+    }
+
+    async fn accept(&self, event: &Event) -> Result<Accepted, StoreError> {
+        let event = event.clone();
+        self.run(move |connection| {
+            let inserted = connection
+                .execute(
+                    "INSERT OR IGNORE INTO inbox(event_id,session_id,event) VALUES (?,?,?)",
+                    params![
+                        event.id.to_string(),
+                        event.session.to_string(),
+                        encode(&event)?
+                    ],
+                )
+                .map_err(backend)?;
+            Ok(if inserted == 0 {
+                Accepted::Duplicate
+            } else {
+                Accepted::New
+            })
+        })
+        .await
+    }
+
+    async fn pending(&self, session: SessionId) -> Result<Vec<Event>, StoreError> {
+        self.run(move |connection| {
+            let mut query = connection
+                .prepare(
+                    "SELECT event
+                     FROM inbox
+                     WHERE session_id=? AND consumed_seq IS NULL
+                     ORDER BY order_no",
+                )
+                .map_err(backend)?;
+            query
+                .query_map([session.to_string()], |r| rows::document(r, 0))
+                .map_err(backend)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(backend)
+        })
+        .await
+    }
+
+    async fn insert_schedule(&self, schedule: &Schedule) -> Result<(), StoreError> {
+        let schedule = schedule.clone();
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "INSERT INTO schedules VALUES (?,?,?,?,?,'pending',NULL)",
+                    params![
+                        schedule.id.to_string(),
+                        schedule.session.to_string(),
+                        timestamp(schedule.due_at),
+                        schedule.message,
+                        timestamp(schedule.created_at)
+                    ],
+                )
+                .map_err(backend)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn cancel_schedule(&self, id: ScheduleId) -> Result<bool, StoreError> {
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "UPDATE schedules SET state='cancelled' WHERE id=? AND state='pending'",
+                    [id.to_string()],
+                )
+                .map(|n| n > 0)
+                .map_err(backend)
+        })
+        .await
+    }
+
+    async fn schedules(
+        &self,
+        state: Option<ScheduleStateKind>,
+    ) -> Result<Vec<Schedule>, StoreError> {
+        self.run(move |connection| {
+            let filter = state.map(|schedule| match schedule {
+                ScheduleStateKind::Pending => "pending",
+                ScheduleStateKind::Fired => "fired",
+                ScheduleStateKind::Cancelled => "cancelled",
+            });
+            let mut query = connection
+                .prepare(&format!(
+                    "SELECT {SCHEDULE_COLUMNS}
+                     FROM schedules
+                     WHERE (? IS NULL OR state=?)
+                     ORDER BY due_at,id"
+                ))
+                .map_err(backend)?;
+            query
+                .query_map(params![filter, filter], rows::schedule)
+                .map_err(backend)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(backend)
+        })
+        .await
+    }
+
+    async fn fire_schedule(&self, id: ScheduleId, event: &Event) -> Result<(), StoreError> {
+        let event = event.clone();
+        self.run(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(backend)?;
+            let inserted = tx
+                .execute(
+                    "UPDATE schedules SET state='fired',fired_event_id=?
+                     WHERE id=? AND session_id=? AND state='pending'",
+                    params![
+                        event.id.to_string(),
+                        id.to_string(),
+                        event.session.to_string()
+                    ],
+                )
+                .map_err(backend)?;
+            if inserted == 0 {
+                return Err(StoreError::ScheduleNotPending(id));
+            }
+            tx.execute(
+                "INSERT INTO inbox(event_id,session_id,event) VALUES (?,?,?)",
+                params![
+                    event.id.to_string(),
+                    event.session.to_string(),
+                    encode(&event)?
+                ],
+            )
+            .map_err(backend)?;
+            tx.commit().map_err(backend)
+        })
+        .await
+    }
+
+    async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError> {
+        let hash = ContentHash::of(bytes);
+        let path = self.blob_path(&hash);
+        if tokio::fs::try_exists(&path).await.map_err(backend)? {
+            return Ok(hash);
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| backend("blob path has no parent"))?;
+        tokio::fs::create_dir_all(parent).await.map_err(backend)?;
+        let temp = path.with_extension(format!("tmp.{}", ulid::Ulid::generate()));
+        let mut file = tokio::fs::File::create(&temp).await.map_err(backend)?;
+        file.write_all(bytes).await.map_err(backend)?;
+        file.sync_all().await.map_err(backend)?;
+        tokio::fs::rename(temp, path).await.map_err(backend)?;
+        Ok(hash)
+    }
+
+    async fn get_blob(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError> {
+        let bytes = tokio::fs::read(self.blob_path(hash))
+            .await
+            .map_err(|_| StoreError::Blob(*hash))?;
+        if ContentHash::of(&bytes) != *hash {
+            return Err(StoreError::Blob(*hash));
+        }
+        Ok(bytes)
+    }
+
+    fn blob_path(&self, hash: &ContentHash) -> PathBuf {
+        let address = hash.to_string();
+        self.blobs.join(&address[..2]).join(address)
+    }
+}
+
+fn signed(value: u64) -> Result<i64, StoreError> {
+    i64::try_from(value).map_err(backend)
+}

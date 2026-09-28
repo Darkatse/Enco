@@ -1,0 +1,260 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+mod support;
+
+use enco_core::*;
+use enco_host::*;
+use enco_kernel::*;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use support::*;
+
+struct TestClock(Mutex<DateTime<Utc>>);
+
+impl Clock for TestClock {
+    fn now(&self) -> DateTime<Utc> {
+        *self.0.lock().unwrap()
+    }
+}
+
+impl TestClock {
+    fn advance(&self, seconds: i64) {
+        *self.0.lock().unwrap() += chrono::Duration::seconds(seconds);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(TestClock(Mutex::new(Utc::now())));
+    let provider = ScriptedProvider::new(vec![reply("first reminder"), reply("overdue reminder")]);
+    let (kernel, _) = kernel_with(dir.path(), provider.clone(), |deps, _| {
+        deps.clock = clock.clone()
+    })
+    .await;
+    let session = kernel.open_session("main").await.unwrap();
+    let mut rx = kernel.subscribe(session.id).unwrap();
+    assert!(matches!(
+        kernel
+            .schedules()
+            .create(
+                session.id,
+                clock.now() - chrono::Duration::seconds(1),
+                "past".into()
+            )
+            .await,
+        Err(ScheduleError::InPast(_))
+    ));
+    let first = kernel
+        .schedules()
+        .create(
+            session.id,
+            clock.now() + chrono::Duration::seconds(10),
+            "first".into(),
+        )
+        .await
+        .unwrap();
+    clock.advance(11);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let entries = finish(&mut rx).await;
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| is_reminder(entry, first.id))
+            .count(),
+        1
+    );
+    let cancelled = kernel
+        .schedules()
+        .create(
+            session.id,
+            clock.now() + chrono::Duration::seconds(10),
+            "cancelled".into(),
+        )
+        .await
+        .unwrap();
+    assert!(kernel.schedules().cancel(cancelled.id).await.unwrap());
+    assert!(!kernel.schedules().cancel(cancelled.id).await.unwrap());
+    let overdue = kernel
+        .schedules()
+        .create(
+            session.id,
+            clock.now() + chrono::Duration::seconds(20),
+            "overdue".into(),
+        )
+        .await
+        .unwrap();
+    kernel.shutdown().await.unwrap();
+    drop(kernel);
+    clock.advance(30);
+    let (kernel, _) = kernel_with(dir.path(), provider, |deps, _| deps.clock = clock.clone()).await;
+    let mut rx = kernel.subscribe(session.id).unwrap();
+    let log = kernel.log(session.id, None).await.unwrap();
+    if !log.iter().any(|entry| is_reminder(entry, overdue.id)) {
+        finish(&mut rx).await;
+    }
+    kernel.shutdown().await.unwrap();
+    let log = kernel.log(session.id, None).await.unwrap();
+    for id in [first.id, overdue.id] {
+        assert_eq!(log.iter().filter(|entry| is_reminder(entry, id)).count(), 1);
+    }
+    assert!(!log.iter().any(|entry| is_reminder(entry, cancelled.id)));
+}
+
+#[tokio::test]
+async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_references() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(
+        (0..30)
+            .map(|_| reply("Concise summary or reply."))
+            .collect(),
+    );
+    let memories = Memories::open(
+        MemoryPaths {
+            db: dir.path().join("memory.db"),
+            index: dir.path().join("memory-index"),
+        },
+        EmbeddingSpec {
+            model: "fixture".into(),
+            dimensions: 64,
+        },
+        provider.clone(),
+        Arc::new(SystemClock),
+    )
+    .await
+    .unwrap();
+    memories.save("Owner is River".into(), true).await.unwrap();
+    let configure = |deps: &mut KernelDeps, budget: &mut Budget| {
+        deps.context
+            .push(Arc::new(MemoryContextSource::new(memories.clone())));
+        deps.tools.extend(memory_tools(memories.clone()));
+        *budget = Budget {
+            context_tokens: 6000,
+            max_output_tokens: 256,
+        };
+    };
+    let (kernel, store) = kernel_with(dir.path(), provider.clone(), configure).await;
+    let session = kernel.open_session("main").await.unwrap();
+    let mut rx = kernel.subscribe(session.id).unwrap();
+    for n in 0..6 {
+        kernel
+            .submit(
+                session.id,
+                EventId::new(),
+                format!("History {n}: {}", "some detailed history ".repeat(150)),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            finish(&mut rx).await.last().unwrap().body,
+            EntryBody::RunEnded {
+                end: RunEnd::Completed,
+                ..
+            }
+        ));
+    }
+    let log = kernel.log(session.id, None).await.unwrap();
+    let upto = log
+        .iter()
+        .rev()
+        .find_map(|e| match e.body {
+            EntryBody::Compacted { upto, .. } => Some(upto),
+            _ => None,
+        })
+        .expect("history did not compact");
+    kernel.shutdown().await.unwrap();
+    drop(kernel);
+    let (kernel, _) = kernel_with(dir.path(), provider.clone(), configure).await;
+    let mut rx = kernel.subscribe(session.id).unwrap();
+    kernel
+        .submit(session.id, EventId::new(), "What do you remember?".into())
+        .await
+        .unwrap();
+    let entries = finish(&mut rx).await;
+    let hash = entries
+        .iter()
+        .rev()
+        .find_map(|e| match e.body {
+            EntryBody::AttemptStarted {
+                plan,
+                purpose: AttemptPurpose::Reply,
+                ..
+            } => Some(plan),
+            _ => None,
+        })
+        .unwrap();
+    let plan: ContextPlan = serde_json::from_slice(&store.get_blob(&hash).await.unwrap()).unwrap();
+    assert!(plan.items.iter().all(|item| match item {
+        PlanItem::Log { pos } => *pos > upto,
+        _ => true,
+    }));
+    let system = provider.requests.lock().unwrap().last().unwrap().messages[0].joined_text();
+    assert!(system.contains("Owner is River"));
+    assert!(system.contains("Summary of earlier conversation"));
+    kernel.shutdown().await.unwrap();
+}
+
+#[test]
+fn budget_omissions_are_explicit_and_do_not_make_oversized_candidates_mandatory() {
+    let input = ComposeInput {
+        now: Utc::now().fixed_offset(),
+        session: SessionRecord {
+            id: SessionId::new(),
+            name: "budget".into(),
+            created_at: Utc::now(),
+            binding: Binding {
+                node: NodeId::new(),
+                epoch: Epoch(1),
+            },
+            config: SessionConfig {
+                requires_lifeline: false,
+            },
+        },
+        transcript: Transcript::default(),
+        previous_run_end: None,
+        context: Contribution {
+            candidates: vec![
+                Candidate {
+                    id: "workspace:AGENTS.md".into(),
+                    kind: CandidateKind::Instruction,
+                    text: "large instruction ".repeat(150),
+                },
+                Candidate {
+                    id: "memory:large".into(),
+                    kind: CandidateKind::Memory,
+                    text: "oversized memory ".repeat(150),
+                },
+                Candidate {
+                    id: "memory:small".into(),
+                    kind: CandidateKind::Memory,
+                    text: "Owner is River".into(),
+                },
+            ],
+            omitted: vec![],
+        },
+        tools: vec![],
+        safe_mode: false,
+        budget: Budget {
+            context_tokens: 1500,
+            max_output_tokens: 100,
+        },
+    };
+    let Composition::Plan(plan) = FactoryComposer::new("/workspace".into())
+        .compose(&input)
+        .unwrap()
+    else {
+        panic!("no history requires compaction");
+    };
+    assert!(
+        plan.omitted
+            .iter()
+            .any(|o| o.source == "workspace:AGENTS.md")
+    );
+    assert!(plan.omitted.iter().any(|o| o.source == "memory:large"));
+    let PlanItem::Message { message } = &plan.items[0] else {
+        panic!("missing system message");
+    };
+    assert!(message.joined_text().contains("Owner is River"));
+    assert!(!message.joined_text().contains("oversized memory"));
+}

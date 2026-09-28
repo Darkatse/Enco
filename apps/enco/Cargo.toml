@@ -1,0 +1,30 @@
+[package]
+name = "enco"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+enco-core = { workspace = true }
+enco-kernel = { workspace = true }
+enco-host = { workspace = true }
+enco-wasm = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-util.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
+ulid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true

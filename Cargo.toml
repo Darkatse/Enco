@@ -1,0 +1,50 @@
+[workspace]
+members = ["crates/*", "apps/enco", "xtask"]
+exclude = ["plugins"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+tokio = { version = "1.53", default-features = false }
+tokio-util = "0.7.19"
+async-trait = "0.1.92"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.21"
+anyhow = "1.0.104"
+ulid = { version = "3.0.0", features = ["serde"] }
+blake3 = "1.8.7"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+triviumdb = "=0.8.8"                     # 0.x，精确锁定；只作记忆的派生索引（06 §3）
+reqwest = "0.13.5"                       # 默认使用 rustls
+wasmtime = "49.0.1"                      # 默认 feature 已含 component-model-async
+wasmtime-wasi = "49.0.1"
+clap = { version = "4.6.7", features = ["derive"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+toml = "1.1.6"
+dirs = "7.0.0"
+cargo_metadata = "0.23.1"
+wit-parser = "0.259.0"
+wiremock = "0.6.5"
+tempfile = "3.27.0"
+
+enco-core = { path = "crates/enco-core" }
+enco-kernel = { path = "crates/enco-kernel" }
+enco-host = { path = "crates/enco-host" }
+enco-wasm = { path = "crates/enco-wasm" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"

@@ -1,0 +1,10 @@
+[provider]
+base_url = "https://api.openai.com/v1"
+model = "<chat model>"
+api_key_env = "OPENAI_API_KEY"
+
+[embedding]
+base_url = "https://api.openai.com/v1"
+model = "text-embedding-3-small"
+dimensions = 1536
+api_key_env = "OPENAI_API_KEY"

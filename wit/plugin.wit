@@ -1,0 +1,118 @@
+/// Enco plugin contract. Plugins interact with the host only through these imports.
+package enco:plugin@0.1.0;
+
+/// Canonical data exchanged between the host and plugins.
+interface types {
+    /// A JSON document encoded as UTF-8 text.
+    type json = string;
+
+    /// An operation failure. `retryable` means the same request may succeed later.
+    record failure { code: string, message: string, retryable: bool }
+
+    /// Identifies the speaker of a canonical model message.
+    enum role { system, user, assistant, tool }
+
+    /// A proposed tool invocation. `id` is the original service-assigned call ID.
+    record tool-call { id: string, name: string, arguments: string }
+
+    /// A tool settlement. `call-id` refers to the original `tool-call.id`.
+    record tool-result { call-id: string, content: string, is-error: bool }
+
+    /// Opaque adapter fields. `provider` is the plugin name; only that plugin replays them.
+    record extension { provider: string, data: json }
+
+    /// Ordered text, tool interactions and opaque extensions within a message.
+    variant part { text(string), tool-call(tool-call), tool-result(tool-result), extension(extension) }
+
+    /// A canonical message sent to or returned by the model.
+    record message { role: role, parts: list<part> }
+
+    /// A tool disclosed to the model. `input-schema` describes its arguments as JSON Schema.
+    record tool-spec { name: string, description: string, input-schema: json }
+}
+
+/// Host-owned logging and transport available to plugins.
+interface host {
+    /// Severity attached to a plugin diagnostic.
+    enum log-level { trace, debug, info, warn, error }
+
+    /// Write a diagnostic to the host log.
+    log: func(level: log-level, message: string);
+
+    /// An HTTP request. Omitting `timeout-ms` selects the host default timeout.
+    record http-request {
+        method: string,
+        url: string,
+        headers: list<tuple<string, string>>,
+        body: option<list<u8>>,
+        timeout-ms: option<u32>,
+    }
+
+    /// An HTTP status, headers and fully collected response body.
+    record http-response { status: u16, headers: list<tuple<string, string>>, body: list<u8> }
+
+    /// Classifies failures while constructing, sending or reading an HTTP request.
+    enum http-error-kind { invalid-request, connect, timeout, body, too-large, other }
+
+    /// Transport failure. `request-sent` means the request may have reached the peer.
+    record http-failure { kind: http-error-kind, message: string, request-sent: bool }
+
+    /// Send a request and collect its response. Non-2xx statuses are returned as responses.
+    http: async func(request: http-request) -> result<http-response, http-failure>;
+}
+
+/// Adapts canonical requests to a model service protocol.
+interface provider {
+    use types.{json, failure, message, tool-spec};
+
+    /// Endpoint, model, credentials and adapter options supplied by the host for this call.
+    record settings { base-url: string, model: string, api-key: option<string>, options: json }
+
+    /// The frozen messages, disclosed tools and output budget for one completion.
+    record request { messages: list<message>, tools: list<tool-spec>, max-output-tokens: option<u32> }
+
+    /// Token counts reported by the service, including cache hits when available.
+    record usage { input-tokens: u64, output-tokens: u64, cached-input-tokens: option<u64> }
+
+    /// The service-reported reason that generation stopped.
+    enum stop-reason { end-turn, tool-calls, max-tokens, other }
+
+    /// A completed model attempt. `message.role` must be assistant.
+    record completion { message: message, usage: usage, stop-reason: stop-reason }
+
+    /// Perform one non-streaming completion.
+    ///
+    /// # Errors
+    /// Failure codes are `provider.network`, `provider.auth`, `provider.rate_limited`,
+    /// `provider.server`, `provider.bad_request`, `provider.bad_response`, and `timeout`.
+    complete: async func(settings: settings, request: request) -> result<completion, failure>;
+
+    /// Embed texts for retrieval. Return exactly one vector per input, in input order.
+    ///
+    /// # Errors
+    /// Uses the same failure codes as `complete`.
+    embed: async func(settings: settings, inputs: list<string>) -> result<list<list<f32>>, failure>;
+}
+
+/// Reports the identity of the linked plugin implementation.
+interface lifecycle {
+    use types.{json};
+
+    /// Plugin name and implementation version; name also identifies its extension namespace.
+    record plugin-info { name: string, version: string }
+
+    /// Describe this plugin. The host supplies an empty JSON object as `config` in P0.
+    describe: func(config: json) -> plugin-info;
+}
+
+/// Imports and lifecycle operations shared by all plugins.
+world base {
+    import host;
+    export lifecycle;
+}
+
+/// A plugin exposing completion and embedding operations.
+world provider-plugin {
+    include base;
+    export provider;
+}

@@ -1,0 +1,9 @@
+[package]
+name = "provider-openai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+provider-protocol.workspace = true

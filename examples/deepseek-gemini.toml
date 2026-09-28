@@ -1,0 +1,21 @@
+[provider]
+plugin = "deepseek"
+base_url = "https://api.deepseek.com"
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_KEY"
+options = { reasoning_effort = "low" }
+
+[embedding]
+plugin = "openai-compatible"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+model = "gemini-embedding-001"
+dimensions = 768
+api_key_env = "GEMINI_KEY"
+options = { dimensions = 768 }
+
+[context]
+window_tokens = 128000
+max_output_tokens = 8192
+
+[run]
+max_rounds = 24

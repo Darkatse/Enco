@@ -1,0 +1,21 @@
+[package]
+name = "enco-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+enco-core = { workspace = true }
+enco-kernel = { workspace = true }
+wasmtime = { workspace = true }
+wasmtime-wasi = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "macros"] }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+ulid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
