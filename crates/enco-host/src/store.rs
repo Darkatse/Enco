@@ -406,7 +406,10 @@ impl Store for SqliteStore {
     async fn get_blob(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError> {
         let bytes = tokio::fs::read(self.blob_path(hash))
             .await
-            .map_err(|_| StoreError::Blob(*hash))?;
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => StoreError::Blob(*hash),
+                _ => backend(format!("reading blob {hash}: {e}")),
+            })?;
         if ContentHash::of(&bytes) != *hash {
             return Err(StoreError::Blob(*hash));
         }
