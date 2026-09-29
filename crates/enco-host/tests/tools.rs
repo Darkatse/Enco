@@ -1,3 +1,7 @@
+#![expect(
+    clippy::panic,
+    reason = "helpers outside #[test] functions fail the test by panicking"
+)]
 use enco_core::*;
 use enco_host::native_tools;
 use enco_kernel::{CallContext, Tool};

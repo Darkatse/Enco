@@ -7,3 +7,6 @@ license.workspace = true
 crate-type = ["cdylib"]
 [dependencies]
 provider-protocol.workspace = true
+
+[lints]
+workspace = true

@@ -63,6 +63,10 @@ enum Switch {
 }
 
 #[tokio::main]
+#[expect(
+    clippy::print_stdout,
+    reason = "printing the result is this command's interface"
+)]
 async fn main() -> Result<()> {
     let paths = Paths::from_env()?;
     let cli = Cli::parse();
@@ -111,6 +115,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "printing the result is this command's interface"
+)]
 async fn init(paths: &Paths) -> Result<()> {
     tokio::fs::create_dir_all(paths.workspace()).await?;
     match tokio::fs::OpenOptions::new()

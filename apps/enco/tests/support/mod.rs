@@ -1,4 +1,11 @@
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    dead_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr,
+    reason = "shared test support: each test binary uses a subset of these helpers, which fail the test by panicking"
+)]
 use crate::{client, protocol::ServerMessage};
 use enco_core::*;
 use serde_json::json;

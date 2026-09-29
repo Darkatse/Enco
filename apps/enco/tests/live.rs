@@ -1,5 +1,8 @@
 //! Opt-in checks against real services; credentials stay in inherited environment variables.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions fail the test by panicking"
+)]
 #[path = "../src/client.rs"]
 mod client;
 

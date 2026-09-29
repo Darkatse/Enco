@@ -3970,6 +3970,7 @@ dependencies = [
  "anyhow",
  "cargo_metadata",
  "serde_json",
+ "toml",
  "wit-parser 0.259.0",
 ]
 

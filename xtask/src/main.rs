@@ -26,6 +26,7 @@ fn main() -> Result<()> {
                 ],
             )?;
             boundaries()?;
+            lints()?;
             docs::generate(true)?;
             build_factory()?;
             run(
@@ -47,6 +48,7 @@ fn main() -> Result<()> {
                     "plugins/Cargo.toml",
                     "--target",
                     "wasm32-wasip2",
+                    "--all-targets",
                     "--",
                     "-D",
                     "warnings",
@@ -102,6 +104,44 @@ fn boundaries() -> Result<()> {
                     "plugin {} depends on host crate {}; plugins use WIT only",
                     package.name,
                     dep.name
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Both workspaces enforce one lint table. The plugin workspace cannot inherit across
+/// workspaces, so it keeps a copy that must equal the root table, and every member of
+/// either workspace must opt in with `[lints] workspace = true`.
+fn lints() -> Result<()> {
+    fn manifest(path: &str) -> Result<toml::Table> {
+        let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+        toml::from_str(&text).with_context(|| format!("parsing {path}"))
+    }
+    let workspace_lints = |table: &toml::Table| table.get("workspace")?.get("lints").cloned();
+    if workspace_lints(&manifest("Cargo.toml")?)
+        != workspace_lints(&manifest("plugins/Cargo.toml")?)
+    {
+        bail!(
+            "[workspace.lints] in plugins/Cargo.toml differs from Cargo.toml; copy the root table"
+        );
+    }
+    for root in ["Cargo.toml", "plugins/Cargo.toml"] {
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .manifest_path(root)
+            .no_deps()
+            .exec()?;
+        for package in &metadata.packages {
+            let member = manifest(package.manifest_path.as_str())?;
+            let inherits = member
+                .get("lints")
+                .and_then(|lints| lints.get("workspace"))
+                .and_then(toml::Value::as_bool);
+            if inherits != Some(true) {
+                bail!(
+                    "{} does not inherit the workspace lints; add `[lints] workspace = true`",
+                    package.name
                 );
             }
         }

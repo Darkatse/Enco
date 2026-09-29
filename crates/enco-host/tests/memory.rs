@@ -1,4 +1,7 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions fail the test by panicking"
+)]
 mod support;
 
 use async_trait::async_trait;

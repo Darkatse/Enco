@@ -39,12 +39,21 @@ enco-kernel = { path = "crates/enco-kernel" }
 enco-host = { path = "crates/enco-host" }
 enco-wasm = { path = "crates/enco-wasm" }
 
+# plugins/Cargo.toml keeps an identical copy; `cargo xtask check` rejects any difference.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
+# Production code propagates errors with context instead of panicking.
 unwrap_used = "deny"
 expect_used = "deny"
-dbg_macro = "deny"
+panic = "deny"
+unreachable = "deny"
 todo = "deny"
 unimplemented = "deny"
+# Diagnostics go through tracing in the host and the `log` import in plugins.
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Every suppression states why.
+allow_attributes_without_reason = "deny"

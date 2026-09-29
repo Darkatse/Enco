@@ -1,4 +1,9 @@
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    dead_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "shared test support: each test binary uses a subset of these helpers, which fail the test by panicking"
+)]
 use async_trait::async_trait;
 use enco_core::*;
 use enco_host::*;

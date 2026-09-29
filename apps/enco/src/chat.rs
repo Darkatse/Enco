@@ -1,3 +1,8 @@
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "this module is the terminal chat interface"
+)]
 use crate::{
     client::Client,
     paths::Paths,

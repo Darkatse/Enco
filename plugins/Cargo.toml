@@ -13,3 +13,23 @@ provider-protocol = { path = "provider-protocol" }
 opt-level = "s"
 lto = true
 strip = true
+
+# Identical copy of the root `[workspace.lints]`; `cargo xtask check` rejects any difference.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Production code propagates errors with context instead of panicking. In a plugin a
+# panic is a trap, which health gating attributes to the generation (§4.6).
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+# Diagnostics go through the `log` import, which attributes them to the plugin.
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Every suppression states why.
+allow_attributes_without_reason = "deny"
