@@ -1,6 +1,7 @@
 mod docs;
 
 use anyhow::{Context, Result, bail};
+use cargo_metadata::DependencyKind;
 use std::{path::Path, process::Command};
 
 fn main() -> Result<()> {
@@ -54,7 +55,8 @@ fn main() -> Result<()> {
                     "warnings",
                 ],
             )?;
-            run("cargo", &["test", "--workspace"])
+            run("cargo", &["test", "--workspace"])?;
+            run("cargo", &["test", "--manifest-path", "plugins/Cargo.toml"])
         }
         _ => bail!("usage: cargo xtask <check|boundaries|docs [--check]|build-factory>"),
     }
@@ -74,11 +76,17 @@ fn run(program: &str, args: &[&str]) -> Result<()> {
 fn boundaries() -> Result<()> {
     let metadata = cargo_metadata::MetadataCommand::new().no_deps().exec()?;
     for package in &metadata.packages {
-        let allowed: &[&str] = match package.name.as_str() {
-            "enco-core" | "xtask" => &[],
-            "enco-kernel" => &["enco-core"],
-            "enco-host" | "enco-wasm" => &["enco-core", "enco-kernel"],
-            "enco" => &["enco-core", "enco-kernel", "enco-host", "enco-wasm"],
+        // Allowed workspace dependencies, and whether the crate is an application boundary,
+        // the only place `anyhow` may appear; library crates define errors with thiserror.
+        let (allowed, application): (&[&str], bool) = match package.name.as_str() {
+            "enco-core" => (&[], false),
+            "xtask" => (&[], true),
+            "enco-kernel" => (&["enco-core"], false),
+            "enco-host" | "enco-wasm" => (&["enco-core", "enco-kernel"], false),
+            "enco" => (
+                &["enco-core", "enco-kernel", "enco-host", "enco-wasm"],
+                true,
+            ),
             name => bail!("unassigned workspace member: {name}"),
         };
         for dep in &package.dependencies {
@@ -89,6 +97,12 @@ fn boundaries() -> Result<()> {
                     "{} depends on {}; allowed workspace dependencies: {allowed:?}",
                     package.name,
                     dep.name
+                );
+            }
+            if dep.name == "anyhow" && dep.kind == DependencyKind::Normal && !application {
+                bail!(
+                    "{} depends on anyhow; library crates define errors with thiserror",
+                    package.name
                 );
             }
         }
