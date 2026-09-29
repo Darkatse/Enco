@@ -1,5 +1,7 @@
 # 6. 内核要点
 
+本章是[架构文档](../Architecture.md)的一部分，概念、术语和统一规则以总纲 §3 为准。
+
 - **Session actor**：每个 Session 一个 tokio task，顺序处理 Inbox。
 - **Session 监督树**（Erlang 的 supervisor）：Session 可以把任务委派给子 Session，父子关系在双方的 Log 中都有记录。它只复用已有的机制：
   - 创建：内核命令 `delegate(父, profile, context)` 创建带 `parent` 的子 Session，首个 Event 是 Brief；`context` 取 `brief` 或 `full`，即 §5.4 的上下文轴。委派按 `(父 Session, call-id)` 幂等，崩溃恢复后不会重复创建。

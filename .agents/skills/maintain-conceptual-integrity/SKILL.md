@@ -7,7 +7,7 @@ description: "在 Enco 的架构规划、实现与审阅中，从共同语义出
 
 首要目标是长期可维护性：让维护者（人或 Agent）用少量连贯的概念理解系统，修改一项规则时自然知道应该改哪里，新增功能时能够沿已有结构继续生长。
 
-结合当前仓库的 `AGENTS.md`、`CONTRIBUTING.md` 和 `docs/Architecture.md`（下称"架构文档"）应用以下判断。
+结合当前仓库的 `AGENTS.md`、`CONTRIBUTING.md` 和 `docs/Architecture.md` 及其章节（下称"架构文档"）应用以下判断。
 
 ## 从整体需求推导结构
 

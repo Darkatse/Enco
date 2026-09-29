@@ -77,6 +77,8 @@ P0 在 macOS 和 Linux 上以后台服务加命令行客户端的形式运行，
 | P4 | 多设备：控制平面、会话交接、复制 | 计划中 |
 | P5 | 手机作为节点 | 计划中 |
 
+每个阶段的验收标准见 [docs/Roadmap.md](docs/Roadmap.md)。
+
 ## 从源码构建
 
 需要 Rust 1.98.1 与 `wasm32-wasip2` 目标。版本固定在 `rust-toolchain.toml` 中，第一次构建时 `rustup` 会自动安装。
@@ -99,7 +101,8 @@ cargo run -p enco -- chat      # 在另一个终端中
 
 ## 文档
 
-- [docs/Architecture.md](docs/Architecture.md)：架构文档
+- [docs/Architecture.md](docs/Architecture.md)：架构总纲，各章节在 `docs/architecture/`
+- [docs/Roadmap.md](docs/Roadmap.md)：各阶段的计划与验收标准
 - [docs/P0/](docs/P0/)：P0 内核规格，描述已实现的系统
 - [wit/CONTRACT.md](wit/CONTRACT.md)：插件契约，由 WIT 生成
 - [CONTRIBUTING.md](CONTRIBUTING.md)：项目理念与贡献方式

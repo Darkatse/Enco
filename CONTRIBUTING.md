@@ -2,7 +2,7 @@
 
 感谢你愿意为 Enco 做出贡献。
 
-本项目处于设计与早期实现阶段，贡献规则会随着维护流程逐步补充。当前请先遵守以下基本要求。架构的权威说明见 [`docs/Architecture.md`](docs/Architecture.md)。
+本项目处于设计与早期实现阶段，贡献规则会随着维护流程逐步补充。当前请先遵守以下基本要求。架构的权威说明见总纲 [`docs/Architecture.md`](docs/Architecture.md) 与 `docs/architecture/` 下的章节。
 
 ### 目标分支
 
@@ -120,7 +120,7 @@ KISS 要求我们选择能够完整解决当前问题的最简单方案。判断
 
 Thank you for contributing to Enco.
 
-This project is in its design and early implementation stage, and the contribution rules will be expanded as the maintenance workflow matures. For now, please follow the basic requirements below. The authoritative architecture document is [`docs/Architecture.md`](docs/Architecture.md).
+This project is in its design and early implementation stage, and the contribution rules will be expanded as the maintenance workflow matures. For now, please follow the basic requirements below. The authoritative architecture document is the outline [`docs/Architecture.md`](docs/Architecture.md) together with the chapters in `docs/architecture/`.
 
 ### Target Branch
 

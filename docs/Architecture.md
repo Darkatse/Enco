@@ -1,6 +1,24 @@
 # Enco 架构
 
-Enco 是一个私人 Agent 助理：以 Rust 为内核，以 Wasm Component（WIT）为插件边界，可以在主人的多台设备之间漫游，并且能够修改、验证和回退自己的能力。本文描述它的架构：要解决的问题、核心概念、插件系统、多节点、上下文组装，以及按验收标准划分的路线图。
+Enco 是一个私人 Agent 助理：以 Rust 为内核，以 Wasm Component（WIT）为插件边界，可以在主人的多台设备之间漫游，并且能够修改、验证和回退自己的能力。
+
+架构文档由本文（总纲）和 `docs/architecture/` 下的章节组成。总纲写要解决的问题、设计透镜和架构主干（§0–§3），任何改动都要先理解这一部分；各章节展开具体机制。各阶段的计划与验收标准见[路线图](Roadmap.md)。
+
+| 章节 | 内容 |
+|---|---|
+| [§4 插件系统](architecture/04-plugins.md) | 边界、契约、代际与热替换、健康门控、命名与接线 |
+| [§5 多节点](architecture/05-space.md) | Space、Binding、invoke 与 handoff、CP 一致性 |
+| [§6 内核要点](architecture/06-kernel.md) | Session 监督树、请求的构造路径、记忆、主人确认 |
+| [§7 认知负担](architecture/07-context-and-manuals.md) | 上下文组装的分工、渐进式披露、生成的手册与门禁 |
+| [§8 移动端](architecture/08-mobile.md) | 手机节点、进入后台前的 handoff |
+| [§9 性能](architecture/09-performance.md) | 优化重点与需要持续测量的指标 |
+| [§10 仓库结构](architecture/10-repository.md) | crate 划分、依赖方向与拆分的触发条件 |
+
+维护架构文档时遵守三条规则：
+
+- 每个事实只写在一处。§0 的每一条只写结论，并指向展开它的章节。
+- 新的顶层概念、规则或不变式先写进总纲 §3。章节只展开机制，不另立概念。
+- `§N.M` 指第 N 章第 M 节，第 N 章在 `architecture/NN-*.md` 中（§0–§3 在本文）。章节号不复用、不重排，新增章节接在后面编号。
 
 文中的"主人"指 Enco 的使用者与所有者；标注"实测"的数据来自原型测量，其余为设计判断。
 

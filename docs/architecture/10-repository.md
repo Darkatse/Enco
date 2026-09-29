@@ -1,5 +1,7 @@
 # 10. 仓库结构
 
+本章是[架构文档](../Architecture.md)的一部分，概念、术语和统一规则以总纲 §3 为准。
+
 ```text
 crates/
   enco-core/     # 类型：Event、Message、Outcome、NodeId、Epoch；无 IO

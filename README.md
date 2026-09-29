@@ -77,6 +77,8 @@ The whole system is described with ten concepts and two rules for mutable state.
 | P4 | Multiple devices: control plane, handoff, replication | Planned |
 | P5 | Phones as nodes | Planned |
 
+Each phase has acceptance criteria, listed in [docs/Roadmap.md](docs/Roadmap.md).
+
 ## Building from source
 
 Requirements: Rust 1.98.1 with the `wasm32-wasip2` target. The versions are pinned in `rust-toolchain.toml`, so `rustup` installs them on first build.
@@ -99,7 +101,8 @@ Set `ENCO_HOME` to use a directory other than `~/.enco`. Run `cargo xtask check`
 
 ## Documentation
 
-- [docs/Architecture.md](docs/Architecture.md): architecture (Chinese)
+- [docs/Architecture.md](docs/Architecture.md): architecture outline, with chapters in `docs/architecture/` (Chinese)
+- [docs/Roadmap.md](docs/Roadmap.md): phases and their acceptance criteria (Chinese)
 - [docs/P0/](docs/P0/): the P0 kernel spec, describing the implemented system (Chinese)
 - [wit/CONTRACT.md](wit/CONTRACT.md): the plugin contract, generated from WIT
 - [CONTRIBUTING.md](CONTRIBUTING.md): project principles and how to contribute
