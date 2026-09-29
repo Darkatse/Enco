@@ -185,7 +185,7 @@ Telegram 消息 → VPS 渠道插件 → Event → Binding(session)=桌面 → �
 | 方向 | 规则 | 保证手段 |
 |---|---|---|
 | 插件 → 宿主 | 插件只能调用 linker 提供的 WIT 导入；没有共享内存、没有宿主对象、不能 monkey-patch | **Wasm 的物理隔离**：组件只能访问 linker 中存在的导入 |
-| 宿主 → 插件 | 内核与宿主不按插件或服务的身份写业务分支。服务之间的差异（例如渠道是否支持编辑、线程、打字状态）只能通过插件声明的能力表达。宿主按操作系统平台做适配是它的正常职责 | **结构保证**：kernel/host 不依赖任何插件 crate；插件身份在内核中只是不透明的 ID，没有插件枚举；唯一的契约是 WIT（lint、CONTRACT.md、破坏性变化检查），kernel/SDK 的公开 API 以 API.md 快照受 `--check` 约束（§7.4）。**行为验证**：P2 验收要求 Agent 只读手册与插件源码完成修复 |
+| 宿主 → 插件 | 内核与宿主不按插件或服务的身份写业务分支。服务之间的差异（例如渠道是否支持编辑、线程、打字状态）只能通过插件声明的能力表达。宿主按操作系统平台做适配是它的正常职责 | **结构保证**：kernel/host 不依赖任何插件 crate；插件身份在内核中只是不透明的 ID，没有插件枚举；唯一的契约是 WIT（lint、CONTRACT.md、破坏性变化检查），kernel/SDK 的公开 API 自 P2 起以 API.md 快照受 `--check` 约束（§7.4）。**行为验证**：P2 验收要求 Agent 只读手册与插件源码完成修复 |
 | 插件 ↔ 插件 | 只能导入对方导出的 WIT 接口，由宿主经内核 `invoke` 转发；插件不引用其他插件的名字；KV 按插件隔离；不存在全局共享状态 | 插件只看得到自己导入的接口，接到哪个实现由主人配置决定（§4.10）；WIT 中没有能访问其他插件状态的导入 |
 
 原生实现的例外必须登记在 `docs/decisions/native-exceptions.md`，写明缺失的宿主能力和迁移条件。
@@ -295,7 +295,7 @@ world base { import host; export lifecycle; }
 | 名称 | 是什么 | 寿命 |
 |---|---|---|
 | **制品**（Artifact） | 不可变的组件文件，按内容哈希寻址，复用 `InstancePre` | 永久（可垃圾回收） |
-| **代际**（Generation） | 一次激活 = `(单调编号 n, 制品哈希, 配置引用)`。健康状态属于代际；同一份制品配上不同配置是不同的代际 | 从激活到被取代 |
+| **代际**（Generation） | 一次激活 = `(单调编号 n, 制品哈希, 配置引用)`。同一份制品配上不同配置是不同的代际，所以凡是随配置变化的东西都属于代际：健康状态、运行时手册（§7.5），以及 Log 中 Attempt 与调用记录的代码引用。配置引用指向配置的某个版本，不内联其内容 | 从激活到被取代 |
 | **调用**（Invocation） | 一次逻辑调用，独占一个 Store；作用域覆盖导出函数、它返回的全部 stream/future，以及最终结算 | 到结算为止（不是到导出函数返回为止） |
 
 - **发布**：构建与校验可以并发进行，提交则只经过唯一的部署提交者，顺序是：制品完整写入 → 兼容性检查 → 在 SQLite 事务中提交代际记录 → 发布内存快照（`ArcSwap`）。如果在最后两步之间崩溃，重启后按数据库重建快照。Round 开始时执行 `load_full()`。
@@ -322,7 +322,7 @@ world base { import host; export lifecycle; }
 
 ### 4.7 期望状态与系统代际
 
-- **期望状态**放在控制平面，线性一致：`插件名 → generation hash`、外来插件已批准的导入集合（§4.10），以及配置和 skills 的 git 引用。在任何节点上修好一个插件，其他节点都会收到。
+- **期望状态**放在控制平面，线性一致：`插件名 → 代际`（制品哈希 + 配置引用）、外来插件已批准的导入集合（§4.10），以及配置和 skills 的 git 引用。在任何节点上修好一个插件，其他节点都会收到。
 - **实际状态**按节点记录：只激活通过准入（§4.10）的代际，健康状态也按节点记录。
 - **制品**按哈希向同伴拉取（类似 Nix binary cache）。
 - **系统代际** = `(宿主版本, 活跃插件代际, 配置提交, skills 提交)`，可以命名、比较和整体回滚。新设备加入时采用期望状态，就得到同一套能力。
@@ -341,7 +341,7 @@ world base { import host; export lifecycle; }
 - 命令（CLI 与 Agent Tool 同源，Tool 名为 `plugin_<动作>`）：`scaffold / build / test / deploy / status / rollback / logs`；外来插件另有 `install / update`（§4.10）。
 - `plugin_build` 是只由装有工具链的节点导出的能力，手机上的 Agent 通过 `invoke(vps, plugin_build, …)` 构建，再按哈希取回制品。
 - 构建诊断是结构化的，只返回前 N 条，完整日志存为 blob。构建以插件目录的内容快照为输入（构建前自动提交该目录，避免未提交的修改与产物对不上），每个代际记录 `{plugin, 源码快照, Cargo.lock 摘要, artifact_hash, wit_version, toolchain, config_ref}`。
-- 构建流程同时生成该代际的运行时手册，并更新插件 README 中的生成区（§7.5、§7.6）。
+- 构建时以空配置更新插件 README 中的生成区；部署时以新代际的配置生成它的运行时手册（§7.5、§7.6）。
 - git 仓库在节点之间同步对象，`main` 的推进是控制平面上的 CAS（§5.5）。
 
 ### 4.9 状态与迁移
@@ -399,7 +399,7 @@ world base { import host; export lifecycle; }
 - 循环依赖不需要特殊处理，因为插件是被动的，没有启动顺序。
 - 部署是有意的命令，不能拆掉正在使用的接线；被拒绝时，错误信息指出使用者和下一步。
 - 回退是机械恢复，可以拆掉接线；受影响的插件退出快照并记录原因，因为恢复不能依赖被替换的东西本身。
-- `plugin_status` 显示每个插件的导入、导出、使用者，以及未准入的原因。
+- `plugin_status` 显示每个插件的导入、导出、使用者，以及它在各节点上是否准入、未准入的原因。
 
 **4. 演进：只有代码消费者需要兼容规则。**
 - 工具的读者是模型。模型每一轮都读取当前的定义（记录在 ContextPlan 中），所以工具可以随代际自由变化；改名会让引用它的要求失效，由校验报出。
@@ -684,7 +684,7 @@ deliver: async func(target: string, message: json) -> outcome;
 | L0 | 常驻指令 + 地图（去哪里找什么） | 手写，限字数 | `AGENTS.md` |
 | L1 | 宿主与插件的契约 | WIT 生成 | `wit/CONTRACT.md`、`wit/CONTRACT-CHANGES.md` |
 | L1 | 目录：工具、事件、配置项、能力需求、原生例外 | 代码生成 | `docs/generated/*.md` |
-| L1 | 插件手册：提供的能力、工具表（effect、摘要、token 估算）、所需导入、能运行的节点、配置 | 构建元数据 + 手写小节 | `plugins/<name>/README.md` 的生成区 |
+| L1 | 插件手册：导出的接口与工具表（effect、摘要、token 估算）、所需导入、配置项 | 构建元数据 + 手写小节 | `plugins/<name>/README.md` 的生成区 |
 | L2 | 内核与 SDK 的公开 API 索引（条目、签名、摘要、`file:line`） | rustdoc JSON | `crates/<crate>/API.md` |
 | L3 | 源码 | — | — |
 
@@ -694,9 +694,11 @@ deliver: async func(target: string, message: json) -> outcome;
 
 ### 7.5 两种手册：源码手册与运行时手册
 
-- **源码手册**描述 git 中的版本，由 `cargo xtask docs` 生成。
-- **运行时手册**描述正在运行的代际：从制品中解码嵌入的 WIT，加上 `describe()` / `list-tools()` 的结果，以制品哈希为键存进制品库。
+- **源码手册**描述 git 中的版本。WIT 契约和内核、SDK 的 API.md 由 `cargo xtask docs` 生成；插件手册（README 生成区）是以空配置调用 `describe()` / `list-tools()` 得到的手册。
+- **运行时手册**描述正在运行的代际：从制品中解码嵌入的 WIT，加上以该代际的配置调用 `describe()` / `list-tools()` 的结果，以代际为键存储。配置不同，手册就可能不同（§4.5）；其中只取决于制品的部分（解码出的 WIT）可以按制品哈希缓存。
+- 插件手册只有一个生成器，位于 `enco-wasm` 的构建与校验中，输入是制品和一份配置：`plugin_build` 用空配置生成 README 生成区，`plugin_deploy` 用新代际的配置生成运行时手册；本仓库的出厂插件由 xtask 调用同一个生成器。
 - CLI `enco manual <contract|plugin|capability> [--node X]` 和给运行中的 Agent 使用的工具 `manual_read`，读取的都是运行时手册。所以手册永远与实际执行的代码一致，并且按节点区分，因为不同节点可能运行不同的代际。
+- 手册描述代际是什么，随代际固定不变；代际现在是否健康、接到了谁、在哪些节点上准入，属于 `plugin_status`（§4.10）。
 
 ### 7.6 自动化流程与门禁
 
@@ -704,8 +706,8 @@ deliver: async func(target: string, message: json) -> outcome;
 cargo xtask docs            生成全部生成物
 cargo xtask docs --check    CI / pre-commit：WIT lint、生成物是否过期、API 差异、字数与 token 预算
 plugin_build                构建 → clippy（仓库的 lint 表）→ 解码 WIT 与元数据 → lint（文档完整性、描述长度）
-                            → 写入运行时手册（按哈希）→ 更新插件 README 生成区（git diff 对 Agent 可见）
-plugin_deploy               新代际的运行时手册随代际一起生效
+                            → 以空配置更新插件 README 生成区（git diff 对 Agent 可见）
+plugin_deploy               以新代际的配置生成运行时手册，随代际一起生效
 ```
 
 `plugin_build` 使用的 lint 表与本仓库根 `Cargo.toml` 的 `[workspace.lints]` 相同，由构建流程传给 clippy，所以修改插件自己的 `Cargo.toml` 放宽不了它。仓库里的出厂插件与 Agent 在 `~/.enco/plugins/` 中维护的插件因此遵守同一套规则。
@@ -747,7 +749,7 @@ crates/
 apps/
   enco/          # 单一二进制：serve / witness / chat / plugin * / space * / status；组合根；原生管理通道
   mobile/        # 之后再做
-xtask/           # cargo xtask docs [--check]：WIT → CONTRACT、目录、API 索引、插件 README 生成区、lint（§7）
+xtask/           # cargo xtask docs [--check]：WIT → CONTRACT、目录、API 索引、出厂插件的 README 生成区（与 plugin_build 共用生成器）、lint（§7）
 plugins/
 wit/             # *.wit + 生成的 CONTRACT.md / CONTRACT-CHANGES.md
 docs/{AGENTS.md, decisions/, cookbook/, generated/}
@@ -781,17 +783,18 @@ Agent 可读性约定：`AGENTS.md` 只写常驻指令和地图；README 中的 
 **P0 内核主干（单节点，遵守 §6 不变式）**：Session actor、Inbox、Round、SQLite Log、原生 CLI 管理通道、原生 fs/shell 工具、OpenAI-Compatible 与 DeepSeek Wasm Provider 插件作为出厂代际；Binding 等可变记录存放在本地 SQLite 中；`round.compose` 使用原生出厂策略（救生集 + 一行目录），输出 ContextPlan；记忆（SQLite 权威 + TriviumDB 派生索引 + 经 Provider 插件的 embedding；置顶记忆优先参与预算，其余混合召回）；一个能跨越重启的提醒；安全模式与原生管理入口；门禁脚本和 `cargo xtask docs --check`（WIT lint + CONTRACT.md）从第一天起生效。
 验收：可以在 CLI 对话；`kill -9` 后 Round 的中断状态明确，副作用不会重复；一条简单记忆经过更正、压缩和重启后仍能查回，被更正的旧内容不再被当作当前事实；删除记忆索引后可以从权威重建；提醒在重启后按时触发；门禁能拦下"违反依赖方向"、"WIT 条目缺少文档"和"生成物过期"的提交。
 
-**P1 可恢复替换**：制品库、每调用一实例、`ArcSwap` 快照、deploy/rollback/status、probe、试用代际晋升与自动回退；构建流程生成运行时手册与 README 生成区；接线与准入进入注册表提交，能力 ID 带插件名，插件不再自报身份，扩展字段由内核标注来源（§4.10）。
+**P1 可恢复替换**：制品库、每调用一实例、`ArcSwap` 快照、deploy/rollback/status、probe、试用代际晋升与自动回退；构建时生成 README 生成区，部署时生成该代际的运行时手册（§7.5）；Attempt 与调用记录中的代码引用改为代际（§4.5）；接线与准入进入注册表提交，能力 ID 带插件名，插件不再自报身份，扩展字段由内核标注来源（§4.10）。
 验收：通过故障注入矩阵，包括：
 - 构建失败、WIT 不匹配、probe 失败、10% 的调用 trap；
 - 部署会拆掉正在使用的接线（例如 Session 配置所用的 Provider）时被拒绝，并指出使用者；
+- 同一份制品以两份配置部署为两个代际时，健康状态、运行时手册和 Attempt 记录互不混淆；
 - Round 内部署自身；部署过程中宿主崩溃；数据库已提交、快照尚未发布时崩溃；
 - 两个插件同时部署，最终目录包含两次更新；v2 的迟到健康结果不影响 v3；
 - 有状态工具的并发调用不丢失更新；写入后 trap 的调用不留下写入；
 - Provider 返回 stream 后导出函数结束，流仍能完成，也能被取消；Provider 回退时，旧流迟到的数据不进入新的 Attempt；
 - Provider 被改坏后能自愈；披露策略被改坏后，安全模式仍能调用文件、Shell 和部署管理。
 
-**P2 Agent 自主改进**：`plugin_*` 工具、结构化诊断、SDK 宏、git 集成、`manual_read` / `capability_search`、跨插件接口导入与宿主转发（§4.10）、`plugin_build` 按仓库的 lint 表检查（§7.6）；默认 composer 改为 Wasm 插件（包括缓存友好的披露策略），由 Agent 自己迭代，以 Attempt 中记录的缓存命中率作为观测指标。
+**P2 Agent 自主改进**：`plugin_*` 工具、结构化诊断、`enco-sdk`（含宏）、内核与 SDK 的 API.md（§7.4，二者同时启用 `missing_docs`）、git 集成、`manual_read` / `capability_search`、跨插件接口导入与宿主转发（§4.10）、`plugin_build` 按仓库的 lint 表检查（§7.6）；默认 composer 改为 Wasm 插件（包括缓存友好的披露策略），由 Agent 自己迭代，以 Attempt 中记录的缓存命中率作为观测指标。
 验收：Agent 独立修复一个真实缺陷，并且**全程只读手册和插件源码，不需要读宿主源码**。这同时检验手册是否够用，以及双向不泄露是否成立。回退一个被导入的插件后，依赖它的插件退出快照，原因写入 Log 且对模型可见。**验证第一个原始动机。**
 
 **P3 渠道**：Telegram（长轮询）、QQ OneBot（宿主持有 WebSocket）。
