@@ -703,10 +703,12 @@ deliver: async func(target: string, message: json) -> outcome;
 ```text
 cargo xtask docs            生成全部生成物
 cargo xtask docs --check    CI / pre-commit：WIT lint、生成物是否过期、API 差异、字数与 token 预算
-plugin_build                构建 → 解码 WIT 与元数据 → lint（文档完整性、描述长度）
+plugin_build                构建 → clippy（仓库的 lint 表）→ 解码 WIT 与元数据 → lint（文档完整性、描述长度）
                             → 写入运行时手册（按哈希）→ 更新插件 README 生成区（git diff 对 Agent 可见）
 plugin_deploy               新代际的运行时手册随代际一起生效
 ```
+
+`plugin_build` 使用的 lint 表与本仓库根 `Cargo.toml` 的 `[workspace.lints]` 相同，由构建流程传给 clippy，所以修改插件自己的 `Cargo.toml` 放宽不了它。仓库里的出厂插件与 Agent 在 `~/.enco/plugins/` 中维护的插件因此遵守同一套规则。
 
 生成区用 `<!-- generated:begin -->` / `<!-- generated:end -->` 标记，手工修改生成区会被 `--check` 拦下。**文档过期在这里是构建失败，而不是一个靠自觉维持的习惯。**
 
@@ -789,7 +791,7 @@ Agent 可读性约定：`AGENTS.md` 只写常驻指令和地图；README 中的 
 - Provider 返回 stream 后导出函数结束，流仍能完成，也能被取消；Provider 回退时，旧流迟到的数据不进入新的 Attempt；
 - Provider 被改坏后能自愈；披露策略被改坏后，安全模式仍能调用文件、Shell 和部署管理。
 
-**P2 Agent 自主改进**：`plugin_*` 工具、结构化诊断、SDK 宏、git 集成、`manual_read` / `capability_search`、跨插件接口导入与宿主转发（§4.10）；默认 composer 改为 Wasm 插件（包括缓存友好的披露策略），由 Agent 自己迭代，以 Attempt 中记录的缓存命中率作为观测指标。
+**P2 Agent 自主改进**：`plugin_*` 工具、结构化诊断、SDK 宏、git 集成、`manual_read` / `capability_search`、跨插件接口导入与宿主转发（§4.10）、`plugin_build` 按仓库的 lint 表检查（§7.6）；默认 composer 改为 Wasm 插件（包括缓存友好的披露策略），由 Agent 自己迭代，以 Attempt 中记录的缓存命中率作为观测指标。
 验收：Agent 独立修复一个真实缺陷，并且**全程只读手册和插件源码，不需要读宿主源码**。这同时检验手册是否够用，以及双向不泄露是否成立。回退一个被导入的插件后，依赖它的插件退出快照，原因写入 Log 且对模型可见。**验证第一个原始动机。**
 
 **P3 渠道**：Telegram（长轮询）、QQ OneBot（宿主持有 WebSocket）。
@@ -803,7 +805,7 @@ Agent 可读性约定：`AGENTS.md` 只写常驻指令和地图；README 中的 
 
 **P6 CP 加固**：Jepsen 式故障注入（分区、时钟漂移、休眠与唤醒、租约期间 leader 变更、旧节点复活），强制接管与 `divergent_branch`。
 
-**插件生态（P4 之后，与 P5、P6 的先后按需要决定）**：外来插件的 `plugin_install` / `plugin_update`、采纳时的主人确认、宿主同时链接 `enco:plugin` 的历史版本、`enco:plugin` 1.0、`enco-sdk` 按 semver 发布（§4.10）。
+**插件生态（P4 之后，与 P5、P6 的先后按需要决定）**：外来插件的 `plugin_install` / `plugin_update`、采纳时的主人确认、宿主同时链接 `enco:plugin` 的历史版本、`enco:plugin` 1.0、`enco-sdk` 按 semver 发布（§4.10）；采纳外来修订时检查其依赖的许可证与安全公告（cargo-deny）。这项检查要联网获取公告数据库，所以放在采纳流程和 CI 中，本地的 `cargo xtask check` 保持不依赖网络。
 验收：安装一个第三方插件，并由另一个插件导入它导出的接口；上游更新扩大导入时停在待确认状态，确认前仓库和运行中的代际都不变；宿主升级 `enco:plugin` 主版本后，未重建的第三方插件照常运行；Agent 修好一个外来插件的缺陷，经主人确认后向上游提交 PR。
 
 **之后**：Android 本机构建（Root/Shizuku + Ubuntu 中本机编译插件）、宿主自更新（主人确认；自主权限以后显式开通）、覆盖网络路由、Edge 节点（ESP32）、系统代际的整体回滚。
