@@ -231,10 +231,25 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
     assert!(!updates[1].input.as_ref().unwrap().direct);
     assert!(updates[2].input.as_ref().unwrap().action.is_none());
     assert_eq!(updates[2].protocol["offset"], 11);
-    let text = format!("{}\n{}", "🌱".repeat(2047), "汉字".repeat(2500));
+    let text = format!("{}\n{}", "🌱".repeat(32767), "汉字".repeat(18000));
     let parts = telegram.split(&text);
-    assert!(parts.iter().all(|s| s.encode_utf16().count() <= 4096));
+    assert!(parts.iter().all(|s| s.chars().count() <= 32768));
     assert_eq!(parts.concat(), text);
+    assert!(parts[0].ends_with('\n'));
+    let markdown = "# Title\n\n**bold** and ||spoiler||\n\n```rust\nlet x = 1;\n```\n";
+    let success = Mock::given(path("/bot42:test-secret/sendRichMessage"))
+        .and(wiremock::matchers::body_json(
+            json!({"chat_id": "1", "rich_message": {"markdown": markdown}}),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "result": {"message_id": 1}})),
+        )
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+    telegram.send("1", markdown).await.unwrap();
+    drop(success);
     for (status, body, unknown, retry, fatal) in [
         (
             429,
@@ -273,7 +288,7 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
         ),
         (200, json!({"ok": true, "result": {}}), true, false, false),
     ] {
-        let guard = Mock::given(path("/bot42:test-secret/sendMessage"))
+        let guard = Mock::given(path("/bot42:test-secret/sendRichMessage"))
             .respond_with(ResponseTemplate::new(status).set_body_json(body))
             .mount_as_scoped(&server)
             .await;

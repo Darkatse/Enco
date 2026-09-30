@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
 
-use crate::limits::{TELEGRAM_MESSAGE_UNITS, TELEGRAM_POLL_SECONDS, TELEGRAM_SEND_SECONDS};
+use crate::limits::{TELEGRAM_MESSAGE_CHARS, TELEGRAM_POLL_SECONDS, TELEGRAM_SEND_SECONDS};
 
 pub struct Telegram {
     client: reqwest::Client,
@@ -188,13 +188,13 @@ impl Adapter for Telegram {
     async fn send(&self, target: &str, text: &str) -> Result<(), Fault> {
         let value = self
             .request(
-                "sendMessage",
-                json!({"chat_id": target, "text": text}),
+                "sendRichMessage",
+                json!({"chat_id": target, "rich_message": {"markdown": text}}),
                 TELEGRAM_SEND_SECONDS,
             )
             .await?;
         if value.get("message_id").and_then(Value::as_i64).is_none() {
-            return Err(invalid_response("sendMessage"));
+            return Err(invalid_response("sendRichMessage"));
         }
         Ok(())
     }
@@ -217,21 +217,12 @@ fn parse_action(text: String) -> Action {
 fn split(mut text: &str) -> Vec<String> {
     let mut parts = Vec::new();
     while !text.is_empty() {
-        let mut units = 0;
-        let mut end = 0;
-        let mut newline = None;
-        for (start, c) in text.char_indices() {
-            units += c.len_utf16();
-            if units > TELEGRAM_MESSAGE_UNITS {
-                break;
-            }
-            end = start + c.len_utf8();
-            if c == '\n' {
-                newline = Some(end);
-            }
-        }
+        let mut end = text
+            .char_indices()
+            .nth(TELEGRAM_MESSAGE_CHARS)
+            .map_or(text.len(), |(index, _)| index);
         if end < text.len() {
-            end = newline.unwrap_or(end);
+            end = text[..end].rfind('\n').map_or(end, |index| index + 1);
         }
         parts.push(text[..end].into());
         text = &text[end..];

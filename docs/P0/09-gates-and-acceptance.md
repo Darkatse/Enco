@@ -125,7 +125,7 @@ P0 的完成以下列场景为准。里程碑按实施顺序排列：M1 地基�
 | A27 | M9 | 目录布局 | 端到端（与已有场景共用） | `enco init` 之后运行时文件只出现在 `.data/`，`.gitignore` 忽略 `.data/` 与 `workspace/`；根目录的 `AGENTS.md` 出现在计划的 Standing instructions 一节 |
 | A28 | M9 | Telegram 入站与命令 | 集成 | wiremock 模拟 Bot API：主人的私聊文本成为 `main` 中来源为 `Channel` 的 Event；其他用户、群聊与非文本更新只推进 offset；`/session work` 创建并切换，之后的消息进入 `work`；命令不产生 Provider 请求；`/cancel` 取消正在进行的 Run |
 | A29 | M9 | 入站不丢不重 | 集成 | 一条更新提交之后停止并重启：下一次 `getUpdates` 的 offset 为 `update_id + 1`，Inbox 中这条消息恰好一条；在提交之前停止：重启后同一条更新被再次取回，并恰好接纳一次 |
-| A30 | M9 | 出站投递 | 集成 | 最近交互输入的来源决定投递目标；超过 4096 的回复拆成多条，拼接后与原文相同；由 CLI 触发的回复不发往 Telegram；提醒触发的回复在重启后仍发往主人最近使用的聊天；聊天挂着别的 Session 时回复带 `[<Session 名>]` 前缀；`sending` 已写入时重启不重发；每次逻辑投递都有最终结算，后续成功不覆盖此前 unknown / failed，`enco status.channels` 可读取其 Session 与 Log 位置；Run 失败或取消有终止通知 |
+| A30 | M9 | 出站投递 | 集成 | 最近交互输入的来源决定投递目标；Markdown 经原生富文本接口发送；超过 32768 字符的回复拆成多条，拼接后与原文相同；由 CLI 触发的回复不发往 Telegram；提醒触发的回复在重启后仍发往主人最近使用的聊天；聊天挂着别的 Session 时回复带独立成段的 `[<Session 名>]` 前缀；`sending` 已写入时重启不重发；每次逻辑投递都有最终结算，后续成功不覆盖此前 unknown / failed，`enco status.channels` 可读取其 Session 与 Log 位置；Run 失败或取消有终止通知 |
 | A31 | M9 | 真实 Telegram | 手动一次 | 配置真实的 bot，在手机上完成对话、`/session` 切换、`/cancel`，并收到一分钟后的提醒 |
 
 ## 5. 每个里程碑的完成条件

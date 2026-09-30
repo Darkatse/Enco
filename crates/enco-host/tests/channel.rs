@@ -76,7 +76,8 @@ fn update(offset: u32, action: Action) -> Update {
 #[tokio::test]
 async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let provider = ScriptedProvider::new(vec![reply("first"), reply("second"), reply("cli only")]);
+    let markdown = "```rust\nlet x = 1;\n```\n\n# Second";
+    let provider = ScriptedProvider::new(vec![reply("first"), reply(markdown), reply("cli only")]);
     let (kernel, store) = kernel(dir.path(), provider.clone()).await;
     let kernel = Arc::new(kernel);
     let (updates, rx) = mpsc::channel(4);
@@ -115,7 +116,10 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
 
     // The previous send remains in flight while input is accepted and its cursor committed.
     updates
-        .send(vec![update(2, Action::Message("again".into()))])
+        .send(vec![
+            update(2, Action::Message("again".into())),
+            update(2, Action::SelectSession("work".into())),
+        ])
         .await
         .unwrap();
     assert_eq!(receive(&mut polling).await, json!(2));
@@ -132,8 +136,11 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
             retry_after: None,
         }))
         .unwrap();
+    let switched = receive(&mut sending).await;
+    assert_eq!(switched.text, "Switched to work.");
+    switched.result.send(Ok(())).unwrap();
     let second = receive(&mut sending).await;
-    assert_eq!(second.text, "second");
+    assert_eq!(second.text, format!("[main]\n\n{markdown}"));
     second.result.send(Ok(())).unwrap();
     // A command receipt follows the completed logical delivery, without asking the model.
     updates
@@ -179,7 +186,7 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
         .unwrap();
     assert_eq!(receive(&mut polling).await, json!(4));
     let receipt = receive(&mut sending).await;
-    assert_eq!(receipt.text, "* main");
+    assert_eq!(receipt.text, "- main\n- **work** (current)");
     receipt.result.send(Ok(())).unwrap();
     channel.shutdown().await.unwrap();
     assert_eq!(channel.status().await.unwrap().recent_failures, failures);

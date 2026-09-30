@@ -44,7 +44,7 @@ api_base = "https://api.telegram.org"   # 可选；测试与自建 Bot API 服�
 
 1. 不是主人发来的私聊文本（聊天类型不是私聊、发送者不是 `owner_user_id`，或者没有文本）：只推进协议状态，不进入模型。同时写一条 info 日志，包含发送者 ID、聊天 ID 和聊天类型，不包含消息内容。`owner_user_id` 配错时，主人可以从这条日志里查到自己的 ID。
 2. 命令：适配器负责识别写法，共同机制负责执行，都不经过模型。
-   - `/session`：列出当前挂着的 Session 和全部 Session。
+   - `/session`：按 Markdown 列表列出全部 Session，当前项写为 `- **main** (current)`，其余项写为 `- work`。
    - `/session <名字>`：打开这个 Session（不存在就创建），把当前聊天挂上去。
    - `/cancel`：取消当前挂着的 Session 正在进行的 Run。
    - 其他以 `/` 开头的文本，包括 Telegram 自动发送的 `/start`，都按普通消息处理。
@@ -68,7 +68,7 @@ api_base = "https://api.telegram.org"   # 可选；测试与自建 Bot API 服�
 - `RoundEnded { end: Replied }`：投递这个 Round 的回复。
 - 结局不是 `Completed` 的 `RunEnded`：投递一句简短的说明，比如"Run failed: …"、"Run cancelled."。这和 `enco chat` 显示 Run 结局的方式一致。
 
-目标聊天当前挂着的不是这个 Session 时，在消息前加 `[<Session 名>] `。
+渠道出站文本约定为 Markdown，由各生成处遵守；适配器负责映射到渠道协议。目标聊天当前挂着的不是这个 Session 时，在消息前加独立段落 `[<Session 名>]\n\n`，保留正文首个块的结构。
 
 每处理完一个 Round 或 Run 的结尾，游标就推进到那个位置，不管这次有没有投递。游标同时保存当时的目标，所以重启之后，提醒触发的回复仍然发往原来的聊天。
 
@@ -77,7 +77,7 @@ api_base = "https://api.telegram.org"   # 可选；测试与自建 Bot API 服�
 同一时刻最多只有一个发送在途，归属者知道它是命令回执还是 Log 投递。每次逻辑投递按三步进行：
 
 1. 写入"正在投递"：Session、Log 位置和目标聊天。
-2. 适配器把文本拆成若干段，按顺序发送。Telegram 用纯文本，每段不超过 4096 个 UTF-16 单元，尽量在换行处断开。
+2. 适配器把文本拆成若干段，按顺序发送。Telegram 使用 `sendRichMessage` 的 `rich_message.markdown`，由平台解析 Rich Markdown；每段源码最多 32768 个 Unicode 字符，优先在换行处分段，无换行时按字符边界拆分，保留全部源码，不解析 Markdown 块结构。块数、嵌套深度等其余协议限制由 Telegram 校验，拒绝仍走已有失败结算。
 3. 把最终结局（`ok`、`failed` 或 `unknown`）、清除"正在投递"、推进游标，放在同一次提交里写入。
 
 每次逻辑投递留下一条结算记录，只引用 Session 和 Log 位置，不复制回复的正文。

@@ -66,6 +66,7 @@ pub struct Fault {
 }
 
 /// Native adapter boundary, replaced by the channel plugin boundary in P3.
+/// Outbound text is Markdown, authored by its producer and mapped to the channel protocol here.
 #[async_trait]
 pub trait Adapter: Send + Sync {
     /// Declare the connection identity; it must remain stable for this adapter instance.

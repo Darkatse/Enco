@@ -286,11 +286,11 @@ impl Connection {
                 let names = sessions
                     .iter()
                     .map(|s| {
-                        format!(
-                            "{}{}",
-                            if Some(&s.id) == current { "* " } else { "  " },
-                            s.name
-                        )
+                        if Some(&s.id) == current {
+                            format!("- **{}** (current)", s.name)
+                        } else {
+                            format!("- {}", s.name)
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -345,7 +345,7 @@ impl Connection {
                         .into_iter()
                         .find(|s| s.id == session)
                         .ok_or(KernelError::UnknownSession(session))?;
-                    text = format!("[{}] {text}", record.name);
+                    text = format!("[{}]\n\n{text}", record.name);
                 }
                 let mut state = self.state.clone();
                 state.sending = Some(delivery.clone());

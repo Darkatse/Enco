@@ -22,5 +22,5 @@ pub(crate) const CHANNEL_MAX_BACKOFF: std::time::Duration = std::time::Duration:
 pub(crate) const CHANNEL_WAKE_CAPACITY: usize = 32;
 pub(crate) const TELEGRAM_POLL_SECONDS: u64 = 30;
 pub(crate) const TELEGRAM_SEND_SECONDS: u64 = 15;
-pub(crate) const TELEGRAM_MESSAGE_UNITS: usize = 4096;
+pub(crate) const TELEGRAM_MESSAGE_CHARS: usize = 32768;
 pub(crate) const RECENT_DELIVERY_FAILURES: u32 = 10;
