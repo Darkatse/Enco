@@ -71,10 +71,11 @@ The whole system is described with ten concepts and two rules for mutable state.
 | Phase | Goal | Status |
 |---|---|---|
 | P0 | Kernel: sessions, durable log, crash recovery, OpenAI-Compatible and DeepSeek provider plugins, memory, reminders, safe mode | Done |
+| Telegram | Daily chat through a native Telegram channel | Implemented; owner review and live use pending |
 | P1 | Replacing plugins at runtime with health checks and rollback | Planned |
 | P2 | The agent maintains its own plugins, reading only the manual and plugin source | Planned |
 | Supervision tree | Delegating work to child sessions that can use other models, report back and take further messages | Planned |
-| P3 | Chat channels: Telegram, QQ (OneBot) | Planned |
+| P3 | Channels as plugins: Telegram moves to WebAssembly, QQ (OneBot) | Planned |
 | P4 | Multiple devices: control plane, handoff, replication | Planned |
 | P5 | Phones as nodes | Planned |
 
@@ -97,6 +98,8 @@ Edit `~/.enco/config.toml` (examples are in [`examples/`](examples/)), export th
 cargo run -p enco -- serve     # start the service
 cargo run -p enco -- chat      # in another terminal
 ```
+
+Standing instructions live in `~/.enco/AGENTS.md`; runtime data lives in `~/.enco/.data/`. To enable Telegram, uncomment the `[telegram]` block in the config example, set your user ID, and export the token variable. `/session` selects a Session, `/cancel` cancels its Run, and `enco status` lists channel health and recent failed or uncertain deliveries.
 
 Set `ENCO_HOME` to use a directory other than `~/.enco`. Run `cargo xtask check` before sending changes.
 

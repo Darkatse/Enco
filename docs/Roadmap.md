@@ -4,6 +4,7 @@
 
 | 阶段 | 依赖 |
 |---|---|
+| 原生 Telegram 渠道 | P0 |
 | P1 可恢复替换 | P0 |
 | P2 Agent 自主改进 | P1 |
 | Session 监督树 | P1 |
@@ -18,6 +19,10 @@ P1 之后的四个方向（P2、Session 监督树、P3、P4）互不依赖，先
 **P0 内核主干（单节点，遵守 §3.7 的不变式）**：Session actor、Inbox、Round、SQLite Log、原生 CLI 管理通道、原生 fs/shell 工具、OpenAI-Compatible 与 DeepSeek Wasm Provider 插件作为出厂代际；Binding 等可变记录存放在本地 SQLite 中；`round.compose` 使用原生出厂策略（救生集 + 一行目录），输出 ContextPlan；记忆（SQLite 权威 + TriviumDB 派生索引 + 经 Provider 插件的 embedding；置顶记忆优先参与预算，其余混合召回）；一个能跨越重启的提醒；安全模式与原生管理入口；门禁脚本和 `cargo xtask docs --check`（WIT lint + CONTRACT.md）从第一天起生效。
 验收：可以在 CLI 对话；`kill -9` 后 Round 的中断状态明确，副作用不会重复；一条简单记忆经过更正、压缩和重启后仍能查回，被更正的旧内容不再被当作当前事实；删除记忆索引后可以从权威重建；提醒在重启后按时触发；门禁能拦下"违反依赖方向"、"WIT 条目缺少文档"和"生成物过期"的提交。
 状态：已完成。已实现系统的规格见 [P0/](P0/)。
+
+**原生 Telegram 渠道（P1 之前）**：把 `ENCO_HOME` 调整为 §4.8 的布局；原生 Telegram 适配器（长轮询、只接受主人的私聊）；聊天与 Session 的映射与切换命令、入站游标与 Inbox 同一次提交、出站游标与投递结算（§4.3）；登记为原生实现，P3 改为插件。它让主人可以日常使用，也让会话映射与投递的设计在 P1 定稿 WIT 之前经过真实使用。
+验收：主人在 Telegram 私聊中对话，其他人的消息被丢弃；`/session` 切换与新建 Session，不经过模型；重启前后入站消息不丢也不重复处理；投递途中崩溃的回复记为 `unknown`，不重发；提醒沿用该 Session 最近的交互输入来源（CLI 输入之后不再自动投递到渠道）；最近失败与未知投递可以从 `enco status.channels` 追溯到 Log。实施规格见 [P0/10-telegram.md](P0/10-telegram.md)。
+状态：已实现，待主人从第一性原理审核与真实 Telegram 日常使用验证。
 
 **P1 可恢复替换**：制品库、每调用一实例、`ArcSwap` 快照、deploy/rollback/status、probe、试用代际晋升与自动回退；构建时生成 README 生成区，部署时生成该代际的运行时手册（§7.5）；Attempt 与调用记录中的代码引用改为代际（§4.5）；Provider 与模型的选择从节点配置移入 Session 配置，并按 Attempt 用途选择，Attempt 记录调用参数（§3.2、§4.6）；WIT 定稿（§4.4）：补全与嵌入拆成 `completion` 与 `embedding` 两个接口，加入流式补全，以及工具接口与 `state-get`，状态写入作为返回值由归属者提交（§3.6）；WIT 由此第一次需要 `log`、`http` 之外的宿主导入，按 §10 拆分 `enco-host`；接线与准入进入注册表提交，能力 ID 带插件名，插件身份由 `plugins.lock` 记录、不再自报，出厂插件以宿主固定的身份登记，扩展字段按 Attempt 记录的代际回放（§4.10）。
 验收：通过故障注入矩阵，包括：
@@ -37,7 +42,7 @@ P1 之后的四个方向（P2、Session 监督树、P3、P4）互不依赖，先
 **Session 监督树（需要多模型协作时实施）**：`session_delegate` / `session_send` / `session_read`、profile、Brief 作为 Attempt 用途、`ChildReturned` 回报、取消传播与限额（§6）。
 验收：父 Session 被取消后，所有子 Session 静止，未确认的副作用记为 `unknown`；子 Session 崩溃时父 Session 收到 `ChildReturned`，父 Session 被取消后不会被子 Session 的回报重新唤醒；父 Session 在子 Session 回报后可以继续给它发消息；发往树外的 `session_send` 返回 `failed`；崩溃恢复后委派不会重复创建子 Session；超过深度限制的委派返回 `failed`。
 
-**P3 渠道**：Telegram（长轮询）、QQ OneBot（宿主持有 WebSocket）。
+**P3 渠道插件化**：渠道接口就绪，Telegram 适配器改为 Wasm 插件，原生适配器删除；接入 QQ OneBot（宿主持有 WebSocket）。
 验收：同一连接上相邻的两个事件跨代际处理时，游标与协议状态不倒退；在"入站接纳"与"游标提交"之间注入故障，不会确认一条尚未持久化的消息；兼容的替换不断线，不兼容的替换按协议重连补收。承诺的范围：对可重放的来源做到至少一次交付 + 本地去重；出站结果要么已知，要么为 `unknown`。
 
 **P4 Space v1**：VPS + 桌面 + 见证者；控制平面（openraft）、粘滞所有权、handoff、invoke、带 epoch 栅栏的日志复制、制品按哈希分发、期望状态、git 引用 CAS、渠道租约、记忆的归属与复制（§6）。

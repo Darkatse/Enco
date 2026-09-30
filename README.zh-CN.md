@@ -71,10 +71,11 @@ P0 在 macOS 和 Linux 上以后台服务加命令行客户端的形式运行，
 | 阶段 | 目标 | 状态 |
 |---|---|---|
 | P0 | 内核：会话、持久日志、崩溃恢复、OpenAI-Compatible 与 DeepSeek Provider 插件、记忆、提醒、安全模式 | 已完成 |
+| Telegram | 通过原生 Telegram 渠道日常对话 | 已实现，待主人审核与真实使用验证 |
 | P1 | 运行时替换插件，带健康检查与回滚 | 计划中 |
 | P2 | Agent 只读手册和插件源码，自己维护插件 | 计划中 |
 | 监督树 | 把任务委派给子 Session，它们可以使用其他模型、回报结果并继续往来 | 计划中 |
-| P3 | 聊天渠道：Telegram、QQ（OneBot） | 计划中 |
+| P3 | 渠道插件化：Telegram 改为 WebAssembly 插件，接入 QQ（OneBot） | 计划中 |
 | P4 | 多设备：控制平面、会话交接、复制 | 计划中 |
 | P5 | 手机作为节点 | 计划中 |
 
@@ -97,6 +98,8 @@ cargo run -p enco -- init      # 创建 ~/.enco 与配置模板
 cargo run -p enco -- serve     # 启动服务
 cargo run -p enco -- chat      # 在另一个终端中
 ```
+
+常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`。启用 Telegram 时，取消配置示例中 `[telegram]` 段的注释，填写主人的 user ID 并导出 token 环境变量。`/session` 切换 Session，`/cancel` 取消当前 Run；`enco status` 列出渠道状态以及最近失败或未知的投递。
 
 设置 `ENCO_HOME` 可以使用 `~/.enco` 以外的目录。提交改动前请运行 `cargo xtask check`。
 
