@@ -171,11 +171,7 @@ impl SessionActor {
         safe_mode: bool,
         token: &CancellationToken,
     ) -> Result<ComposeInput, RoundError> {
-        let now = self
-            .deps
-            .clock
-            .now()
-            .with_timezone(&self.deps.config.utc_offset);
+        let now = self.deps.clock.now();
         let latest_event = self.entries.iter().rev().find_map(|e| match &e.body {
             EntryBody::EventConsumed { event } => Some(event.clone()),
             _ => None,

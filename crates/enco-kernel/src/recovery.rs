@@ -120,7 +120,7 @@ fn settle_round(entries: &[Entry], result: &mut Vec<EntryBody>) {
         let content = render_text(&outcome);
         result.push(EntryBody::ToolCallSettled {
             call: call.id,
-            outcome,
+            outcome: Settlement::from(&outcome),
             content,
             full: None,
         });

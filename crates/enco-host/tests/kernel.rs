@@ -1,11 +1,11 @@
 mod support;
 
 use enco_core::*;
-use enco_kernel::Store;
+use enco_kernel::{ProviderRequest, Store};
 use support::*;
 
 #[tokio::test]
-async fn replies_and_tool_calls_follow_one_durable_path() {
+async fn recorded_requests_match_provider_input_and_tool_history_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
     let write = call("fs_write", r#"{"path":"note.txt","content":"hello"}"#);
     let provider = ScriptedProvider::new(vec![calls(vec![write.clone()]), reply("done")]);
@@ -17,21 +17,7 @@ async fn replies_and_tool_calls_follow_one_durable_path() {
         .await
         .unwrap();
     let entries = finish(&mut rx).await;
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("workspace/note.txt")).unwrap(),
-        "hello"
-    );
     let requests = provider.requests.lock().unwrap().clone();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].messages.iter().any(|message| {
-        message.parts.iter().any(|part| {
-            matches!(
-                part,
-                Part::ToolResult(result)
-                    if result.call == write.id && result.provider_id == write.provider_id
-            )
-        })
-    }));
     let starts: Vec<_> = entries
         .iter()
         .filter_map(|e| match e.body {
@@ -39,22 +25,142 @@ async fn replies_and_tool_calls_follow_one_durable_path() {
             _ => None,
         })
         .collect();
-    let plan: ContextPlan =
-        serde_json::from_slice(&store.get_blob(&starts[0]).await.unwrap()).unwrap();
-    assert_eq!(
-        plan.tools
+    assert_eq!(starts.len(), requests.len());
+    for (hash, request) in starts.iter().zip(&requests) {
+        let plan: ContextPlan =
+            serde_json::from_slice(&store.get_blob(hash).await.unwrap()).unwrap();
+        let messages = plan
+            .items
             .iter()
-            .map(|(_, s)| s.clone())
-            .collect::<Vec<_>>(),
-        requests[0].tools
+            .map(|item| match item {
+                PlanItem::Message { message } => message.clone(),
+                PlanItem::Log { pos } => entries
+                    .iter()
+                    .find(|entry| entry.pos == *pos)
+                    .unwrap()
+                    .body
+                    .canonical_message(Some(AttemptPurpose::Reply), Some(&write))
+                    .unwrap(),
+            })
+            .collect();
+        assert_eq!(
+            request,
+            &ProviderRequest {
+                messages,
+                tools: plan.tools.into_iter().map(|(_, spec)| spec).collect(),
+                max_output_tokens: plan.max_output_tokens,
+            }
+        );
+    }
+    kernel.shutdown().await.unwrap();
+    drop(kernel);
+
+    let provider = ScriptedProvider::new(vec![reply("continued")]);
+    let (kernel, _) = support::kernel(dir.path(), provider.clone()).await;
+    assert_eq!(kernel.log(session.id, None).await.unwrap(), entries);
+    let mut rx = kernel.subscribe(session.id).unwrap();
+    kernel
+        .submit(session.id, EventId::new(), "continue".into())
+        .await
+        .unwrap();
+    finish(&mut rx).await;
+    let restored = provider.requests.lock().unwrap()[0].messages.clone();
+    let tool_result = requests[1]
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .unwrap();
+    assert!(restored.contains(tool_result));
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn file_pages_preserve_complete_lines_and_oversized_lines_use_the_shared_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![]);
+    let (kernel, store) = kernel(dir.path(), provider.clone()).await;
+    let expected: Vec<_> = (0..80)
+        .map(|i| format!("{i}: {}", "中文".repeat(100)))
+        .collect();
+    std::fs::write(dir.path().join("workspace/pages.txt"), expected.join("\n")).unwrap();
+    let session = kernel.open_session("main").await.unwrap();
+    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut offset = 1;
+    let mut read_lines = vec![];
+    loop {
+        provider.steps.lock().unwrap().extend([
+            calls(vec![call(
+                "fs_read",
+                &serde_json::json!({"path": "pages.txt", "offset": offset}).to_string(),
+            )]),
+            reply("page read"),
+        ]);
+        kernel
+            .submit(session.id, EventId::new(), "next page".into())
+            .await
+            .unwrap();
+        let entries = finish(&mut rx).await;
+        let (content, full) = entries
+            .iter()
+            .find_map(|entry| match &entry.body {
+                EntryBody::ToolCallSettled {
+                    outcome: Settlement::Ok,
+                    content,
+                    full,
+                    ..
+                } => Some((content, full)),
+                _ => None,
+            })
+            .unwrap();
+        assert!(full.is_none());
+        assert!(content.len() <= 16 * 1024);
+        let (header, body) = content.split_once('\n').unwrap();
+        read_lines.extend(body.lines().map(str::to_owned));
+        let Some((_, next)) = header.split_once("continue at offset ") else {
+            break;
+        };
+        let next: usize = next.trim_end_matches(']').parse().unwrap();
+        assert!(next > offset);
+        assert_eq!(next, read_lines.len() + 1);
+        offset = next;
+    }
+    assert!(offset > 1, "the file must require multiple pages");
+    assert_eq!(read_lines, expected);
+
+    let long_line = "界".repeat(10_000);
+    std::fs::write(
+        dir.path().join("workspace/long.txt"),
+        format!("{long_line}\ntail"),
+    )
+    .unwrap();
+    provider.steps.lock().unwrap().extend([
+        calls(vec![call("fs_read", r#"{"path":"long.txt"}"#)]),
+        reply("long line read"),
+    ]);
+    kernel
+        .submit(session.id, EventId::new(), "read the long line".into())
+        .await
+        .unwrap();
+    let entries = finish(&mut rx).await;
+    let (content, hash) = entries
+        .iter()
+        .find_map(|entry| match &entry.body {
+            EntryBody::ToolCallSettled {
+                outcome: Settlement::Ok,
+                content,
+                full: Some(hash),
+                ..
+            } => Some((content, hash)),
+            _ => None,
+        })
+        .unwrap();
+    let header = "[lines 1-1 of 2; continue at offset 2]\n";
+    assert!(content.starts_with(header));
+    assert!(content.len() <= 16 * 1024);
+    assert_eq!(
+        store.get_blob(hash).await.unwrap(),
+        format!("{header}{long_line}").as_bytes()
     );
-    assert!(matches!(
-        entries.last().unwrap().body,
-        EntryBody::RunEnded {
-            end: RunEnd::Completed,
-            ..
-        }
-    ));
     kernel.shutdown().await.unwrap();
 }
 
@@ -90,7 +196,7 @@ async fn unavailable_calls_and_invalid_arguments_are_settled_without_dispatch() 
         .iter()
         .filter_map(|e| match &e.body {
             EntryBody::ToolCallSettled {
-                outcome: Outcome::Failed { failure },
+                outcome: Settlement::Failed { failure },
                 ..
             } => Some(failure.code.as_str()),
             _ => None,

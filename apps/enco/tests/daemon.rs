@@ -43,27 +43,10 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         .unwrap();
     assert!(output.status.success());
     let entries = finish(&mut client).await;
-    let kinds: Vec<_> = entries
-        .iter()
-        .map(|e| {
-            serde_json::to_value(&e.body).unwrap()["kind"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        })
-        .collect();
-    assert_eq!(
-        kinds,
-        [
-            "run_started",
-            "event_consumed",
-            "round_started",
-            "attempt_started",
-            "attempt_settled",
-            "round_ended",
-            "run_ended"
-        ]
-    );
+    assert!(entries.iter().any(|entry| matches!(&entry.body,
+        EntryBody::AttemptSettled { result: AttemptResult::Completed { message, .. }, .. }
+            if message.joined_text() == "hello"
+    )));
     let hash = entries
         .iter()
         .find_map(|e| match e.body {
@@ -93,7 +76,7 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         .unwrap();
     assert!(output.status.success());
     let log: Vec<Entry> = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(log.len(), 7);
+    assert_eq!(log, entries);
     daemon.stop().await;
 }
 

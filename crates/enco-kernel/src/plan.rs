@@ -23,10 +23,9 @@ pub(crate) fn resolve(
             PlanItem::Log { pos } => input
                 .transcript
                 .items
-                .iter()
-                .find(|i| i.pos == *pos)
-                .map(|i| i.message.clone())
-                .ok_or_else(|| {
+                .binary_search_by_key(pos, |item| item.pos)
+                .map(|index| input.transcript.items[index].message.clone())
+                .map_err(|_| {
                     PlanError(format!(
                         "Log position {pos:?} is not in the current transcript"
                     ))

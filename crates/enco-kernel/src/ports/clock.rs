@@ -1,7 +1,7 @@
-use enco_core::{DateTime, Utc};
+use enco_core::{DateTime, FixedOffset};
 
 /// Time boundary used for reminders and observation, never Log ordering.
 pub trait Clock: Send + Sync {
-    /// Current UTC time.
-    fn now(&self) -> DateTime<Utc>;
+    /// Current time with the host's current UTC offset; durable timestamps use to_utc().
+    fn now(&self) -> DateTime<FixedOffset>;
 }

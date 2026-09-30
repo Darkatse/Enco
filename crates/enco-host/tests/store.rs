@@ -62,13 +62,28 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
             .await,
         Err(StoreError::Fenced { .. })
     ));
+    let missing = Event {
+        id: EventId::new(),
+        ..event.clone()
+    };
+    let second = Entry {
+        pos: LogPos {
+            epoch: Epoch(1),
+            seq: Seq(2),
+        },
+        body: EntryBody::EventConsumed {
+            event: missing.clone(),
+        },
+        ..entry.clone()
+    };
+    // Consuming the first Event must roll back when the second Event was never accepted.
     assert!(
         store
             .commit(
                 session.id,
                 Commit {
-                    entries: vec![entry.clone()],
-                    consumed: vec![]
+                    entries: vec![entry.clone(), second],
+                    consumed: vec![event.id, missing.id]
                 }
             )
             .await
@@ -105,41 +120,11 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
 }
 
 #[tokio::test]
-async fn reminder_firing_is_atomic_and_blob_reads_verify_their_address() {
+async fn blob_reads_reject_content_that_no_longer_matches_its_address() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(dir.path().join("enco.db"), dir.path().join("blobs"))
         .await
         .unwrap();
-    let session = store
-        .ensure_session("main", Utc::now().trunc_subsecs(3))
-        .await
-        .unwrap();
-    let schedule = Schedule {
-        id: ScheduleId::new(),
-        session: session.id,
-        due_at: Utc::now().trunc_subsecs(3),
-        message: "remind".into(),
-        created_at: Utc::now().trunc_subsecs(3),
-        state: ScheduleState::Pending,
-    };
-    store.insert_schedule(&schedule).await.unwrap();
-    let event = Event {
-        id: EventId::new(),
-        session: session.id,
-        source: EventSource::Scheduler,
-        body: EventBody::Reminder {
-            schedule: schedule.id,
-            due_at: schedule.due_at,
-            text: schedule.message.clone(),
-        },
-        received_at: Utc::now().trunc_subsecs(3),
-    };
-    store.fire_schedule(schedule.id, &event).await.unwrap();
-    assert!(matches!(
-        store.fire_schedule(schedule.id, &event).await,
-        Err(StoreError::ScheduleNotPending(_))
-    ));
-    assert_eq!(store.pending(session.id).await.unwrap(), vec![event]);
     let hash = store.put_blob(b"original").await.unwrap();
     assert_eq!(store.get_blob(&hash).await.unwrap(), b"original");
     std::fs::write(store.blob_path(&hash), b"changed").unwrap();

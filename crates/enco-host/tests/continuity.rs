@@ -13,10 +13,10 @@ use std::{
 };
 use support::*;
 
-struct TestClock(Mutex<DateTime<Utc>>);
+struct TestClock(Mutex<DateTime<FixedOffset>>);
 
 impl Clock for TestClock {
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> DateTime<FixedOffset> {
         *self.0.lock().unwrap()
     }
 }
@@ -27,10 +27,37 @@ impl TestClock {
     }
 }
 
+#[tokio::test]
+async fn model_requests_follow_the_current_clock_offset_across_rounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = DateTime::parse_from_rfc3339("2026-09-29T09:00:00-04:00").unwrap();
+    let second = DateTime::parse_from_rfc3339("2026-09-29T15:01:00+02:00").unwrap();
+    let clock = Arc::new(TestClock(Mutex::new(first)));
+    let provider = ScriptedProvider::new(vec![reply("first"), reply("second")]);
+    let (kernel, _) = kernel_with(dir.path(), provider.clone(), |deps, _| {
+        deps.clock = clock.clone();
+    })
+    .await;
+    let session = kernel.open_session("main").await.unwrap();
+    let mut rx = kernel.subscribe(session.id).unwrap();
+    for now in [first, second] {
+        *clock.0.lock().unwrap() = now;
+        kernel
+            .submit(session.id, EventId::new(), "time".into())
+            .await
+            .unwrap();
+        finish(&mut rx).await;
+        let requests = provider.requests.lock().unwrap();
+        let system = requests.last().unwrap().messages[0].joined_text();
+        assert!(system.contains(&now.to_rfc3339()));
+    }
+    kernel.shutdown().await.unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let clock = Arc::new(TestClock(Mutex::new(Utc::now())));
+    let clock = Arc::new(TestClock(Mutex::new(Utc::now().fixed_offset())));
     let provider = ScriptedProvider::new(vec![reply("first reminder"), reply("overdue reminder")]);
     let (kernel, _) = kernel_with(dir.path(), provider.clone(), |deps, _| {
         deps.clock = clock.clone()
@@ -43,7 +70,7 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
             .schedules()
             .create(
                 session.id,
-                clock.now() - chrono::Duration::seconds(1),
+                clock.now().to_utc() - chrono::Duration::seconds(1),
                 "past".into()
             )
             .await,
@@ -53,7 +80,7 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
         .schedules()
         .create(
             session.id,
-            clock.now() + chrono::Duration::seconds(10),
+            clock.now().to_utc() + chrono::Duration::seconds(10),
             "first".into(),
         )
         .await
@@ -72,7 +99,7 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
         .schedules()
         .create(
             session.id,
-            clock.now() + chrono::Duration::seconds(10),
+            clock.now().to_utc() + chrono::Duration::seconds(10),
             "cancelled".into(),
         )
         .await
@@ -83,7 +110,7 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
         .schedules()
         .create(
             session.id,
-            clock.now() + chrono::Duration::seconds(20),
+            clock.now().to_utc() + chrono::Duration::seconds(20),
             "overdue".into(),
         )
         .await
@@ -158,11 +185,11 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
         ));
     }
     let log = kernel.log(session.id, None).await.unwrap();
-    let upto = log
+    let (upto, summary) = log
         .iter()
         .rev()
-        .find_map(|e| match e.body {
-            EntryBody::Compacted { upto, .. } => Some(upto),
+        .find_map(|e| match &e.body {
+            EntryBody::Compacted { upto, summary, .. } => Some((*upto, summary.clone())),
             _ => None,
         })
         .expect("history did not compact");
@@ -194,7 +221,7 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
     }));
     let system = provider.requests.lock().unwrap().last().unwrap().messages[0].joined_text();
     assert!(system.contains("Owner is River"));
-    assert!(system.contains("Summary of earlier conversation"));
+    assert!(system.contains(&summary));
     kernel.shutdown().await.unwrap();
 }
 

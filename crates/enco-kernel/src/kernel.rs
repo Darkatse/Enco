@@ -29,24 +29,18 @@ pub struct KernelDeps {
     pub clock: Arc<dyn Clock>,
 }
 
-/// Execution limits and the owner's local clock offset.
+/// Execution limits validated before starting any owner.
 #[derive(Clone)]
 pub struct KernelConfig {
     /// Model context and output limits.
     pub(crate) budget: Budget,
     /// Maximum Rounds in one activation.
     pub(crate) max_rounds_per_run: u32,
-    /// Offset sampled by the application, without OS access in the kernel.
-    pub(crate) utc_offset: chrono::FixedOffset,
 }
 
 impl KernelConfig {
     /// Validate execution budgets before any owner or persistent resource is started.
-    pub fn new(
-        budget: Budget,
-        max_rounds_per_run: u32,
-        utc_offset: chrono::FixedOffset,
-    ) -> Result<Self, KernelError> {
+    pub fn new(budget: Budget, max_rounds_per_run: u32) -> Result<Self, KernelError> {
         if max_rounds_per_run == 0
             || budget.context_tokens == 0
             || budget.max_output_tokens == 0
@@ -60,7 +54,6 @@ impl KernelConfig {
         Ok(Self {
             budget,
             max_rounds_per_run,
-            utc_offset,
         })
     }
 }
@@ -183,7 +176,7 @@ impl Kernel {
         let session = self
             .deps
             .store
-            .ensure_session(name, self.deps.clock.now())
+            .ensure_session(name, self.deps.clock.now().to_utc())
             .await?;
         self.ensure_actor(session.clone())?;
         Ok(session)
@@ -205,7 +198,7 @@ impl Kernel {
                 session,
                 source: EventSource::Cli,
                 body: EventBody::UserMessage { text },
-                received_at: self.deps.clock.now(),
+                received_at: self.deps.clock.now().to_utc(),
             })
             .await?;
         handle.wake.notify_one();

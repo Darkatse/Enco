@@ -1,4 +1,3 @@
-use chrono::FixedOffset;
 use enco_core::*;
 
 /// Pure policy boundary: identical inputs must produce identical plans.
@@ -44,9 +43,9 @@ pub struct Budget {
 pub struct Transcript {
     /// Latest replacement for summarized history.
     pub summary: Option<String>,
-    /// Canonical messages still visible after that summary.
+    /// Canonical messages still visible after that summary, in ascending Log position order.
     pub items: Vec<TranscriptItem>,
-    /// Complete Round boundaries eligible for compaction.
+    /// Complete Round boundaries eligible for compaction, in ascending Log position order.
     pub round_ends: Vec<LogPos>,
 }
 

@@ -47,6 +47,38 @@ pub enum Outcome {
     },
 }
 
+/// Durable execution outcome; result text is stored once in the Log entry's content or blob.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Settlement {
+    /// The operation completed successfully.
+    Ok,
+    /// The operation failed with known effects.
+    Failed {
+        /// Classification and details of the failure.
+        failure: Failure,
+    },
+    /// Effects may already have occurred; never retry automatically.
+    Unknown {
+        /// Classification and details of the failure.
+        failure: Failure,
+    },
+}
+
+impl From<&Outcome> for Settlement {
+    fn from(outcome: &Outcome) -> Self {
+        match outcome {
+            Outcome::Ok { .. } => Self::Ok,
+            Outcome::Failed { failure } => Self::Failed {
+                failure: failure.clone(),
+            },
+            Outcome::Unknown { failure } => Self::Unknown {
+                failure: failure.clone(),
+            },
+        }
+    }
+}
+
 /// Stable machine-readable classification with contextual diagnostic text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Failure {

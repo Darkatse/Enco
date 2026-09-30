@@ -17,6 +17,7 @@ async fn call(tool: &dyn Tool, args: serde_json::Value) -> Outcome {
             session: SessionId::new(),
             call: CallId::new(),
             cancel: CancellationToken::new(),
+            result_budget: 16 * 1024,
         },
         args,
     )
@@ -68,7 +69,10 @@ async fn edits_require_unique_matches_and_reads_observe_line_ranges() {
     else {
         panic!("read failed");
     };
-    assert_eq!(value.as_str(), Some("[lines 3-3 of 4]\nchanged"));
+    assert_eq!(
+        value.as_str(),
+        Some("[lines 3-3 of 4; continue at offset 4]\nchanged")
+    );
 }
 
 #[tokio::test]

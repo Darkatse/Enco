@@ -31,20 +31,22 @@ impl Composer for FactoryComposer {
             .map(|item| encoded_tokens(&item.message).map(|size| (item.pos, size)))
             .collect::<Result<Vec<_>, _>>()?;
         let definitions: Vec<_> = input.tools.iter().map(|(_, spec)| spec).collect();
+        let history_tokens: u32 = sizes.iter().map(|(_, size)| size).sum();
         let total = estimate_tokens(&system)
-            .saturating_add(sizes.iter().map(|(_, size)| size).sum())
+            .saturating_add(history_tokens)
             .saturating_add(encoded_tokens(&definitions)?)
             .saturating_add(input.budget.max_output_tokens);
         let window = input.budget.context_tokens;
         let compact_at = window.saturating_mul(COMPACTION_TRIGGER_PERCENT) / 100;
         if total > compact_at {
             let keep = window.saturating_mul(COMPACTION_TAIL_PERCENT) / 100;
+            let mut tail = history_tokens;
+            let mut remaining = sizes.iter().peekable();
+            // Both sequences follow Log order, so each message leaves the tail only once.
             for boundary in &input.transcript.round_ends {
-                let tail: u32 = sizes
-                    .iter()
-                    .filter(|(pos, _)| pos > boundary)
-                    .map(|(_, size)| size)
-                    .sum();
+                while let Some((_, size)) = remaining.next_if(|(pos, _)| pos <= boundary) {
+                    tail -= size;
+                }
                 if tail <= keep {
                     return Ok(Composition::Compact {
                         upto: *boundary,

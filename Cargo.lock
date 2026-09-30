@@ -807,7 +807,6 @@ name = "enco"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "clap",
  "dirs",
  "enco-core",
@@ -864,7 +863,6 @@ name = "enco-kernel"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "chrono",
  "enco-core",
  "serde",
  "serde_json",

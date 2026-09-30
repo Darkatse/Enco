@@ -11,7 +11,7 @@ mod plan;
 mod session;
 mod tool;
 pub use capability::*;
-pub use chrono::{DateTime, Utc};
+pub use chrono::{DateTime, FixedOffset, Utc};
 pub use entry::*;
 pub use event::*;
 pub use hash::*;

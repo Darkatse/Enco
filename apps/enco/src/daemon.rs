@@ -17,11 +17,25 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 pub(crate) async fn serve(paths: Paths) -> Result<()> {
-    if tokio::fs::try_exists(paths.socket()).await? {
-        if UnixStream::connect(paths.socket()).await.is_ok() {
-            bail!("enco serve is already running");
-        }
-        tokio::fs::remove_file(paths.socket()).await?;
+    // Hold the same file through startup, shutdown and socket removal. Never unlink it.
+    let lock = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(paths.lock())
+        .await
+        .context("open node lock; run `enco init` first")?
+        .into_std()
+        .await;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => bail!("enco serve is already running"),
+        Err(error) => return Err(error).context("lock node"),
+    }
+    if let Err(error) = tokio::fs::remove_file(paths.socket()).await
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(error).context("remove stale local socket");
     }
     let listener =
         UnixListener::bind(paths.socket()).context("bind local socket; run `enco init` first")?;

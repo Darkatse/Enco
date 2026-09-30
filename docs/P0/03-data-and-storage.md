@@ -134,7 +134,8 @@ pub enum EntryBody {
     /// 预写：在工具真正执行之前提交。没有真正分派的调用不写这一条。
     ToolCallStarted { round: RoundId, call: CallId, capability: CapabilityId, code: CodeRef, effect: Effect },
     /// 已结算的 Reply Attempt 中的每个工具调用恰好对应一条，无论是否真正分派。
-    ToolCallSettled { call: CallId, outcome: Outcome, content: String, full: Option<ContentHash> },
+    /// `content` 是模型看到的全部文本；超出结果预算时 `full` 指向完整文本的 blob（04 §6.6）。
+    ToolCallSettled { call: CallId, outcome: Settlement, content: String, full: Option<ContentHash> },
     RoundEnded { round: RoundId, end: RoundEnd },
     RunEnded { run: RunId, end: RunEnd },
     /// 位置不大于 `upto` 的条目在 Transcript 中由 `summary` 代替。条目本身永不删除。
@@ -189,6 +190,12 @@ pub enum Outcome {
 }
 
 pub struct Failure { pub code: String, pub message: String, pub retryable: bool }
+
+/// 记入 Log 的结局：与 Outcome 一一对应，但 `Ok` 不带值。结果正文由 `ToolCallSettled`
+/// 的 `content` 与 `full` 记录，不再另存一份。
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Settlement { Ok, Failed { failure: Failure }, Unknown { failure: Failure } }
+impl From<&Outcome> for Settlement;
 
 /// 工具参数的唯一归一化位置。
 pub enum Arguments { Object(serde_json::Map<String, serde_json::Value>), Invalid { raw: String } }
@@ -414,11 +421,13 @@ Inbox 是一个邮箱：任何人都可以投递（`accept`），只有归属者
 ### 3.1 连接
 
 - 数据库文件：`$ENCO_HOME/enco.db`。
+- 新库在一个事务中建表，写入 `schema_version = '1'`、新生成的 `node_id` 和 `safe_mode = '0'`。
+- 已有库的 `schema_version` 大于 1 时返回 `NewerSchema`，拒绝启动。
 - 一个 `rusqlite::Connection`，放在 `std::sync::Mutex` 中；每个方法在 `tokio::task::spawn_blocking` 中执行。不要引入连接池。
 - 打开时执行：`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;`
 - 写事务使用 `BEGIN IMMEDIATE`。
 
-### 3.2 模式（版本 1）
+### 3.2 模式
 
 ```sql
 CREATE TABLE meta (
@@ -470,14 +479,10 @@ CREATE INDEX schedules_pending ON schedules(due_at) WHERE state = 'pending';
 
 `kind` 是生成列，只用于查询与调试，事实来源仍然是 `body`。
 
-### 3.3 版本
-
-- 新库：在一个事务中建表，写入 `schema_version = '1'`，生成并写入 `node_id`，`safe_mode = '0'`。
-- 已有库：`schema_version` 为 1 时直接使用；大于 1 时返回 `NewerSchema` 并拒绝启动。P0 不写迁移代码。
-
-### 3.4 Blob 存储（`blobs.rs`）
+### 3.3 Blob 存储（`blobs.rs`）
 
 - 路径：`$ENCO_HOME/blobs/<哈希前两位>/<完整哈希>`。
 - 写入：已存在则直接返回；否则写到同目录的 `<哈希>.tmp.<ULID>`，`sync_all` 之后 `rename`。
 - 读取：读出后重新计算哈希，不一致则返回 `Blob` 错误。
-- 孤立的 blob（写入了但对应的 Commit 没有成功）是无害的，P0 不做回收。
+- 孤立的 blob（写入了但对应的 Commit 没有成功）是无害的。
+- 保留：Log 条目永不删除；任何 blob 都可以被删除，例如主人的清理策略（架构文档 §6）。读取缺失的 blob 返回 `Blob` 错误；超长结果的全文由模型用 `fs_read` 按路径读取，文件不在时由 `fs_read` 报告。P0 自身不做回收。

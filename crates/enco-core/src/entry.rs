@@ -1,6 +1,6 @@
 use crate::{
     AttemptId, CallId, CapabilityId, CodeRef, ContentHash, DateTime, Effect, Event, Failure,
-    LogPos, Message, Outcome, Part, Role, RoundId, RunId, ToolCall, ToolResult, Utc,
+    LogPos, Message, Part, Role, RoundId, RunId, Settlement, ToolCall, ToolResult, Utc,
 };
 use serde::{Deserialize, Serialize};
 
@@ -78,7 +78,7 @@ pub enum EntryBody {
         /// Host identity of the proposed tool call.
         call: CallId,
         /// Known or uncertain result of execution.
-        outcome: Outcome,
+        outcome: Settlement,
         /// Exact model-visible result text.
         content: String,
         /// Address of the complete result when its inline text was truncated.
@@ -227,7 +227,7 @@ impl EntryBody {
                     call: *id,
                     provider_id: call.provider_id.clone(),
                     content: content.clone(),
-                    is_error: !matches!(outcome, Outcome::Ok { .. }),
+                    is_error: !matches!(outcome, Settlement::Ok),
                 })],
             }),
             _ => None,

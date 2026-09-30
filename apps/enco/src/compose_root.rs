@@ -1,6 +1,5 @@
 use crate::{config::Config, paths::Paths};
 use anyhow::{Result, bail};
-use chrono::Offset;
 use enco_host::{
     FactoryComposer, LIFELINE, Memories, MemoryContextSource, MemoryPaths, SqliteStore,
     SystemClock, WorkspaceContextSource, memory_tools, native_tools,
@@ -33,7 +32,6 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
             max_output_tokens: config.context.max_output_tokens,
         },
         config.run.max_rounds,
-        chrono::Local::now().offset().fix(),
     )?;
     tokio::fs::create_dir_all(paths.workspace()).await?;
     let store =

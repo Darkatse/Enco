@@ -53,10 +53,10 @@ enco-core  ←  enco-kernel  ←  enco-host
 | crate | 允许依赖的工作区 crate | 允许的外部依赖 |
 |---|---|---|
 | enco-core | 无 | serde、serde_json、ulid、blake3、chrono、thiserror |
-| enco-kernel | enco-core | tokio（rt、sync、time、macros）、tokio-util、async-trait、serde、serde_json、chrono、ulid、thiserror、tracing |
+| enco-kernel | enco-core | tokio（rt、sync、time、macros）、tokio-util、async-trait、serde、serde_json、ulid、thiserror、tracing |
 | enco-host | enco-core、enco-kernel | rusqlite（bundled）、triviumdb、tokio（rt、fs、process、io-util、time、sync）、tokio-util、async-trait、serde、serde_json、chrono、ulid、blake3、thiserror、tracing |
 | enco-wasm | enco-core、enco-kernel | wasmtime、wasmtime-wasi、reqwest、tokio、async-trait、serde_json、ulid、thiserror、tracing |
-| apps/enco | 以上全部 | clap、anyhow、tokio（full）、tokio-util、serde、serde_json、toml、tracing、tracing-subscriber、dirs、ulid、chrono；dev：wiremock、tempfile |
+| apps/enco | 以上全部 | clap、anyhow、tokio（full）、tokio-util、serde、serde_json、toml、tracing、tracing-subscriber、dirs、ulid；dev：wiremock、tempfile |
 | xtask | 无 | anyhow、cargo_metadata、wit-parser、serde_json |
 
 enco-host 与 enco-wasm 互不依赖。`xtask boundaries` 按这张表检查（09 §1）。
@@ -137,7 +137,7 @@ hash.rs        ContentHash
 message.rs     Role、Message、Part、ToolCall、ToolResult、Extension
 event.rs       Event、EventSource、EventBody
 entry.rs       Entry、EntryBody 及其附属枚举
-tool.rs        ToolSpec、Effect、Outcome、Failure、Arguments
+tool.rs        ToolSpec、Effect、Outcome、Settlement、Failure、Arguments
 capability.rs  CapabilityId、CodeRef
 plan.rs        ContextPlan、PlanItem、Omission、Contribution、Candidate、CandidateKind
 session.rs     SessionRecord、SessionConfig、Binding、Schedule、ScheduleState

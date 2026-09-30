@@ -91,9 +91,9 @@ fn render(entry: Entry, purposes: &mut HashMap<AttemptId, AttemptPurpose>, safe_
         }
         EntryBody::ToolCallStarted { capability, .. } => println!("  → {}", capability.name),
         EntryBody::ToolCallSettled { outcome, .. } => match outcome {
-            Outcome::Ok { .. } => println!("  ← ok"),
-            Outcome::Failed { failure } => println!("  ← failed: {}", failure.code),
-            Outcome::Unknown { failure } => println!("  ← unknown: {}", failure.code),
+            Settlement::Ok => println!("  ← ok"),
+            Settlement::Failed { failure } => println!("  ← failed: {}", failure.code),
+            Settlement::Unknown { failure } => println!("  ← unknown: {}", failure.code),
         },
         EntryBody::Compacted { .. } => println!("  (context compacted)"),
         EntryBody::RunEnded { end, .. } if end != RunEnd::Completed => {

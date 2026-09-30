@@ -35,7 +35,9 @@ impl Tool for FileTool {
                 "fs_read",
                 format!(
                     "Read a UTF-8 file by line range. Relative paths use the workspace; absolute paths \
-                     are allowed. offset starts at 1 and limit defaults to {FILE_READ_DEFAULT_LINES}."
+                     are allowed. offset starts at 1 and limit defaults to {FILE_READ_DEFAULT_LINES}. \
+                     Results may end before limit to fit the result budget; the header gives the \
+                     offset to continue reading."
                 ),
                 Effect::ReadOnly,
                 json!({
@@ -90,7 +92,7 @@ impl Tool for FileTool {
     }
 
     async fn call(&self, ctx: CallContext, args: Map<String, Value>) -> Outcome {
-        let result = self.execute(&args, ctx.call).await;
+        let result = self.execute(&args, &ctx).await;
         match result {
             Ok(value) => Outcome::Ok { value },
             Err(failure) => Outcome::Failed { failure },
@@ -99,16 +101,20 @@ impl Tool for FileTool {
 }
 
 impl FileTool {
-    async fn execute(&self, args: &Map<String, Value>, call: CallId) -> Result<Value, Failure> {
+    async fn execute(
+        &self,
+        args: &Map<String, Value>,
+        ctx: &CallContext,
+    ) -> Result<Value, Failure> {
         let path = resolve_path(&self.workspace, string(args, "path")?);
         match self.kind {
-            Kind::Read => read(&path, args).await,
+            Kind::Read => read(&path, args, ctx.result_budget).await,
             Kind::Write => {
                 let content = string(args, "content")?;
-                let path = atomic_write(&path, content, call).await?;
+                let path = atomic_write(&path, content, ctx.call).await?;
                 Ok(json!({ "path": path, "bytes": content.len() }))
             }
-            Kind::Edit => edit(&path, args, call).await,
+            Kind::Edit => edit(&path, args, ctx.call).await,
             Kind::List => list(&path).await,
         }
     }
@@ -118,7 +124,7 @@ fn io(path: &Path, error: std::io::Error) -> Failure {
     failure(code::TOOL_FAILED, format!("{}: {error}", path.display()))
 }
 
-async fn read(path: &Path, args: &Map<String, Value>) -> Result<Value, Failure> {
+async fn read(path: &Path, args: &Map<String, Value>, budget: usize) -> Result<Value, Failure> {
     let offset = integer(args, "offset", 1, 1, u64::MAX)?;
     let limit = integer(
         args,
@@ -130,14 +136,40 @@ async fn read(path: &Path, args: &Map<String, Value>) -> Result<Value, Failure> 
     let text = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| io(path, e))?;
-    let total = text.lines().count();
+    let total = text.lines().count() as u64;
     let start = usize::try_from(offset - 1).unwrap_or(usize::MAX);
-    let lines: Vec<_> = text.lines().skip(start).take(limit).collect();
-    let last = offset.saturating_add(lines.len() as u64).saturating_sub(1);
-    Ok(Value::String(format!(
-        "[lines {offset}-{last} of {total}]\n{}",
-        lines.join("\n")
-    )))
+    let mut lines = text.lines().skip(start).take(limit);
+    let Some(first) = lines.next() else {
+        return Ok(Value::String(format!(
+            "{}\n",
+            line_header(offset, offset - 1, total)
+        )));
+    };
+    // Always return one whole line; the kernel handles a single oversized line.
+    let mut content = first.to_owned();
+    let mut header = line_header(offset, offset, total);
+    for (last, line) in (offset + 1..).zip(lines) {
+        let next_header = line_header(offset, last, total);
+        let next_len = next_header.len() + 1 + content.len() + 1 + line.len();
+        if next_len > budget {
+            break;
+        }
+        content.push('\n');
+        content.push_str(line);
+        header = next_header;
+    }
+    Ok(Value::String(format!("{header}\n{content}")))
+}
+
+fn line_header(first: u64, last: u64, total: u64) -> String {
+    if last < total {
+        format!(
+            "[lines {first}-{last} of {total}; continue at offset {}]",
+            last + 1
+        )
+    } else {
+        format!("[lines {first}-{last} of {total}]")
+    }
 }
 
 async fn edit(path: &Path, args: &Map<String, Value>, call: CallId) -> Result<Value, Failure> {

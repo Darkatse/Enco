@@ -177,7 +177,7 @@ async fn create(
     due_at: DateTime<Utc>,
     message: String,
 ) -> Result<Schedule, ScheduleError> {
-    let now = clock.now();
+    let now = clock.now().to_utc();
     if due_at <= now {
         return Err(ScheduleError::InPast(due_at));
     }
@@ -204,7 +204,7 @@ async fn fire_due(
     clock: &dyn Clock,
     sessions: &Mutex<HashMap<SessionId, Arc<SessionHandle>>>,
 ) -> Result<(), ScheduleError> {
-    let now = clock.now();
+    let now = clock.now().to_utc();
     for schedule in store
         .schedules(Some(ScheduleStateKind::Pending))
         .await?

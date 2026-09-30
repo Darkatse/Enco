@@ -111,15 +111,20 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
     );
     let shell_output = first.iter().find_map(|entry| {
         let EntryBody::ToolCallSettled {
-            outcome: Outcome::Ok { value },
+            outcome: Settlement::Ok,
+            content,
             ..
         } = &entry.body
         else {
             return None;
         };
-        value.get("stdout").and_then(serde_json::Value::as_str)
+        serde_json::from_str::<serde_json::Value>(content)
+            .ok()?
+            .get("stdout")?
+            .as_str()
+            .map(str::to_owned)
     });
-    assert_eq!(shell_output.map(str::trim), Some("p0-smoke"));
+    assert_eq!(shell_output.as_deref().map(str::trim), Some("p0-smoke"));
     let mut admin = daemon.connect().await;
     let state: enco_host::MemoryList =
         serde_json::from_value(admin.request(Command::Memories {}).await.unwrap()).unwrap();

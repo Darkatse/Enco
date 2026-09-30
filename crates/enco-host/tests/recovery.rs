@@ -220,13 +220,13 @@ async fn recovery_distinguishes_started_effects_from_calls_never_dispatched() {
             .unwrap();
         assert!(matches!(
             (effect, first_outcome),
-            (Effect::SideEffect, Outcome::Unknown { .. })
-                | (Effect::ReadOnly, Outcome::Failed { .. })
+            (Effect::SideEffect, Settlement::Unknown { .. })
+                | (Effect::ReadOnly, Settlement::Failed { .. })
         ));
         assert!(log.iter().any(|entry| match &entry.body {
             EntryBody::ToolCallSettled {
                 call,
-                outcome: Outcome::Failed { failure },
+                outcome: Settlement::Failed { failure },
                 ..
             } => *call == second.id && failure.code == code::NOT_DISPATCHED,
             _ => false,
@@ -301,7 +301,7 @@ async fn cancellation_reaches_context_and_shutdown_waits_for_tool_settlement() {
         matches!(
             e.body,
             EntryBody::ToolCallSettled {
-                outcome: Outcome::Ok { .. },
+                outcome: Settlement::Ok,
                 ..
             }
         )
@@ -357,7 +357,7 @@ async fn safe_mode_bypasses_broken_context_and_normal_mode_can_resume() {
     );
     assert!(log.iter().any(|entry| match &entry.body {
         EntryBody::ToolCallSettled {
-            outcome: Outcome::Failed { failure },
+            outcome: Settlement::Failed { failure },
             ..
         } => failure.code == code::TOOL_UNAVAILABLE,
         _ => false,

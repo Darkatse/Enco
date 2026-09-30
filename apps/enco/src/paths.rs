@@ -28,4 +28,8 @@ impl Paths {
     pub fn socket(&self) -> PathBuf {
         self.home.join("enco.sock")
     }
+
+    pub fn lock(&self) -> PathBuf {
+        self.home.join("enco.lock")
+    }
 }

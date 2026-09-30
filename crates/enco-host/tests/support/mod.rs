@@ -137,7 +137,7 @@ pub async fn kernel_with(
         max_output_tokens: 8192,
     };
     configure(&mut deps, &mut budget);
-    let config = KernelConfig::new(budget, 24, chrono::FixedOffset::east_opt(0).unwrap()).unwrap();
+    let config = KernelConfig::new(budget, 24).unwrap();
     (Kernel::start(deps, config).await.unwrap(), store)
 }
 

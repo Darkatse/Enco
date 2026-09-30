@@ -54,7 +54,7 @@ pub trait Composer: Send + Sync {
 }
 
 pub struct ComposeInput {
-    pub now: DateTime<FixedOffset>,        // 主人所在时区的当前时间，由内核提供
+    pub now: DateTime<FixedOffset>,        // 本 Round 读取的时刻与宿主当时的 UTC 偏移（Clock）
     pub session: SessionRecord,
     pub transcript: Transcript,
     pub previous_run_end: Option<RunEnd>,  // 上一个 Run 的结束方式，用于提示中断等情况
@@ -69,8 +69,8 @@ pub struct Budget { pub context_tokens: u32, pub max_output_tokens: u32 }
 /// Log 的模型视图，由内核投影（§5）。
 pub struct Transcript {
     pub summary: Option<String>,        // 最近一次 Compacted 的摘要
-    pub items: Vec<TranscriptItem>,     // 该次压缩之后、具有规范消息形态的条目
-    pub round_ends: Vec<LogPos>,        // 该次压缩之后的 RoundEnded 位置，也就是合法的压缩边界
+    pub items: Vec<TranscriptItem>,     // 该次压缩之后、具有规范消息形态的条目，按 Log 位置递增
+    pub round_ends: Vec<LogPos>,        // 该次压缩之后的 RoundEnded 位置，按 Log 位置递增，也就是合法的压缩边界
 }
 
 pub struct TranscriptItem { pub pos: LogPos, pub message: Message }
@@ -120,16 +120,19 @@ pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
     fn code(&self) -> CodeRef;
     /// `ctx.cancel` 触发后，必须停止已经开始的工作，并在停止之后才返回。
+    /// `ctx.result_budget` 是结果可以内联的字节数；能分页的工具应在预算内按自己的单位停下（§6.6）。
     async fn call(&self, ctx: CallContext, args: serde_json::Map<String, serde_json::Value>) -> Outcome;
 }
 
-pub struct CallContext { pub session: SessionId, pub call: CallId, pub cancel: CancellationToken }
+pub struct CallContext { pub session: SessionId, pub call: CallId, pub cancel: CancellationToken, pub result_budget: usize }
 ```
 
 ```rust
 // ports/clock.rs
 pub trait Clock: Send + Sync {
-    fn now(&self) -> DateTime<Utc>;
+    /// 当前时刻，带宿主此刻的 UTC 偏移。时刻与偏移在同一次调用中取得，内核不读取系统时区。
+    /// 调用方存储的时间（Log、Inbox、Schedule、记忆）一律转为 UTC（`to_utc()`）。
+    fn now(&self) -> DateTime<FixedOffset>;
 }
 ```
 
@@ -151,13 +154,12 @@ pub struct KernelDeps {
 pub struct KernelConfig {
     budget: Budget,
     max_rounds_per_run: u32,
-    utc_offset: FixedOffset,         // 由组合根按本机时区计算，内核不读取系统时区
 }
 
 impl KernelConfig {
     /// Round 数与预算必须为正，且输出上限小于窗口，否则返回 `KernelError::Config`。
     /// 组合根读完配置立即构造它，所以不合法的配置在打开存储与记忆之前就失败。
-    pub fn new(budget: Budget, max_rounds_per_run: u32, utc_offset: FixedOffset) -> Result<Self, KernelError>;
+    pub fn new(budget: Budget, max_rounds_per_run: u32) -> Result<Self, KernelError>;
 }
 
 impl Kernel {
@@ -165,7 +167,7 @@ impl Kernel {
     pub async fn start(deps: KernelDeps, config: KernelConfig) -> Result<Kernel, KernelError>;
     /// 不存在则创建，并确保它的 actor 已经启动。
     pub async fn open_session(&self, name: &str) -> Result<SessionRecord, KernelError>;
-    /// 构造 `Event { source: Cli, body: UserMessage, received_at: clock.now() }`，持久接纳并唤醒 Session。
+    /// 构造 `Event { source: Cli, body: UserMessage, received_at: clock.now().to_utc() }`，持久接纳并唤醒 Session。
     /// 重复的 `event_id` 返回 Duplicate。
     pub async fn submit(&self, session: SessionId, event_id: EventId, text: String) -> Result<Accepted, KernelError>;
     /// 订阅该 Session 之后提交的条目（进程内实时流，不是事实来源）。
@@ -244,7 +246,7 @@ loop:
     run()                                         // §6
 ```
 
-**提交辅助函数** `commit(bodies, consumed)`：从 `next` 开始依次分配位置，`at = clock.now()`，调用 `store.commit`；成功后追加到内存副本，并把每个条目发送到 broadcast（没有订阅者时忽略发送错误）。
+**提交辅助函数** `commit(bodies, consumed)`：从 `next` 开始依次分配位置，`at = clock.now().to_utc()`，调用 `store.commit`；成功后追加到内存副本，并把每个条目发送到 broadcast（没有订阅者时忽略发送错误）。
 
 **错误处理**：`store.commit` 返回的任何错误都说明前提已被破坏（被 fence、位置错乱或存储故障）。actor 记录错误、写入 `stopped`，然后退出。不要尝试继续或修补；重启后恢复流程会处理。
 
@@ -307,7 +309,7 @@ round(run, token, prefix) -> RoundEnd:
 
 ```text
 compose(snapshot, round, safe_mode, token):
-    now = clock.now() 转换到 config.utc_offset
+    now = clock.now()                                          // 每个 Round 读取一次，偏移随宿主当前时区
     context = if safe_mode { Contribution::default() }
               else { 以 ContextQuery { session, latest_event, cancel: token.child_token() } 依次调用每个 ContextSource，
                      按顺序合并 candidates 与 omitted }
@@ -393,9 +395,10 @@ dispatch(snapshot, round, plan, call, token):
                               "arguments must be a JSON object; received: {raw 的前 200 个字符}" }); return
     if tool.spec.check_argument_names(&args) 失败: settle_without_start(call, 该失败); return   // tool.invalid_arguments
     commit([ToolCallStarted { round, call: call.id, capability: tool.id, code: tool.code, effect: tool.spec.effect }])   // 预写
-    outcome = tool.tool.call(CallContext { session, call: call.id, cancel: token.child_token() }, args).await
+    outcome = tool.tool.call(CallContext { session, call: call.id, cancel: token.child_token(),
+                                           result_budget: TOOL_RESULT_INLINE_BYTES }, args).await
     (content, full) = render(&outcome)
-    commit([ToolCallSettled { call: call.id, outcome, content, full }])
+    commit([ToolCallSettled { call: call.id, outcome: Settlement::from(&outcome), content, full }])
 ```
 
 - 工具按模型给出的顺序依次执行，P0 不并行。
@@ -411,7 +414,9 @@ dispatch(snapshot, round, plan, call, token):
 | `Failed { failure }` | `error [{code}]: {message}` |
 | `Unknown { failure }` | `outcome unknown [{code}]: {message}. The action may already have taken effect; check the current state before retrying.` |
 
-文本超过 `TOOL_RESULT_INLINE_BYTES` 时：完整文本写入 blob，`full = Some(hash)`；`content` 为前 `TOOL_RESULT_PREVIEW_BYTES`（在字符边界截断）加上一行说明：`[truncated: {总字节数} bytes. Full result: {store.blob_path(hash)}. Read it with fs_read using offset and limit.]`。
+**结果预算**：内核在 `CallContext.result_budget` 中给出结果可以内联的字节数（P0 为 `TOOL_RESULT_INLINE_BYTES`）。能分页的工具在预算内按自己的单位停下，并说明如何继续（`fs_read` 见 05 §2.1）；内核不按工具身份区分，下面的截断对所有工具一样，是兜底。
+
+文本超过 `TOOL_RESULT_INLINE_BYTES` 时：完整文本写入 blob，`full = Some(hash)`；`content` 为前 `TOOL_RESULT_PREVIEW_BYTES`（在字符边界截断）加上一行说明：`[truncated: {总字节数} bytes. Full result: {store.blob_path(hash)}; it may be cleaned up later. Read it with fs_read using offset and limit; if a single line is too long, read byte ranges with shell, for example head -c.]`。Log 只记录 `Settlement`、`content` 与 `full`，工具返回的原始值不另存（03 §1.6）。
 
 生成文本的部分（不含 blob 写入）是一个纯函数 `render_text(&Outcome) -> String`，恢复流程复用它。
 
@@ -470,7 +475,7 @@ impl Schedules {
 tick = interval(SCHEDULER_TICK)，MissedTickBehavior::Delay     // 第一次 tick 立即触发，因此启动时会补发过期的提醒
 loop select:
     cmd = rx.recv()        => 处理 create / list / cancel
-    _ = tick.tick()        => fire_due(clock.now())
+    _ = tick.tick()        => fire_due(clock.now().to_utc())
     _ = shutdown.cancelled() => break
 
 fire_due(now):

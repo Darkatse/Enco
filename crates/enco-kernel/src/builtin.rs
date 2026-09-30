@@ -88,9 +88,9 @@ impl ScheduleTool {
     ) -> Result<Value, Failure> {
         match self.kind {
             Kind::Create => {
-                let due = chrono::DateTime::parse_from_rfc3339(text(&args, "at")?)
+                let due = DateTime::parse_from_rfc3339(text(&args, "at")?)
                     .map_err(|e| invalid(format!("at must include a UTC offset: {e}")))?
-                    .with_timezone(&Utc);
+                    .to_utc();
                 let schedule = self
                     .schedules
                     .create(session, due, text(&args, "message")?.into())

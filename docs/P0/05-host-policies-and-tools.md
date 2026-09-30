@@ -26,6 +26,8 @@ pub const LIFELINE: [&str; 5] = ["fs_read", "fs_write", "fs_edit", "fs_list", "s
 
 参数缺失、类型错误或值不合法时，返回 `Failed { code: "tool.invalid_arguments", retryable: false }`，message 指出是哪个参数。执行中的错误返回 `Failed { code: "tool.failed" }`，message 包含路径与底层错误。
 
+文件工具（`fs_*`）不响应取消：本地文件 IO 很快，完成后照常结算。FIFO、设备文件这类会阻塞的特殊文件例外，取消与关闭都要等读写返回。
+
 ### 2.1 fs_read（ReadOnly）
 
 | 参数 | 类型 | 说明 |
@@ -34,7 +36,7 @@ pub const LIFELINE: [&str; 5] = ["fs_read", "fs_write", "fs_edit", "fs_list", "s
 | `offset` | integer ≥ 1 | 起始行号，默认 1 |
 | `limit` | integer ≥ 1 | 最多读取的行数，默认 2000，上限 10000 |
 
-结果：`Ok { value: "<内容>" }`，内容前加一行 `[lines {a}-{b} of {total}]`。文件不是合法 UTF-8 时返回 `tool.failed`。起始行超出文件末尾时返回空内容和同样的说明行。
+结果：`Ok { value: "<内容>" }`，内容前加一行说明。按行读取，最多 `limit` 行；再加一行就会让结果（含说明行）超过 `ctx.result_budget` 时，停在这一行之前，但至少返回一行，单行超过预算时由内核截断兜底（04 §6.6）。读到文件末尾时说明行为 `[lines {a}-{b} of {total}]`，否则为 `[lines {a}-{b} of {total}; continue at offset {b+1}]`。工具描述写明结果可能在 `limit` 之前结束，说明行给出继续读取的 offset。文件不是合法 UTF-8 时返回 `tool.failed`。起始行超出文件末尾时返回空内容和同样的说明行。
 
 ### 2.2 fs_write（Idempotent）
 
@@ -205,7 +207,7 @@ You are summarizing a conversation between Enco, a personal assistant, and its o
 
 ## 5. SystemClock（`clock.rs`）
 
-`SystemClock` 实现 `Clock`，返回 `Utc::now()`。
+`SystemClock` 实现 `Clock`，返回 `Local::now().fixed_offset()`：当前时刻与本机此刻的 UTC 偏移。
 
 ## 6. 常量（`limits.rs`）
 

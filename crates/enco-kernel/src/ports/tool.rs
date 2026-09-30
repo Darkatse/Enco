@@ -11,6 +11,7 @@ pub trait Tool: Send + Sync {
     fn code(&self) -> CodeRef;
     /// Execute after dispatch checks disclosure, argument names and whether the call may start.
     /// Respond to cancellation and wait until started work is quiescent before returning.
+    /// Pageable results should fit ctx.result_budget and explain how to continue.
     async fn call(
         &self,
         ctx: CallContext,
@@ -18,7 +19,7 @@ pub trait Tool: Send + Sync {
     ) -> Outcome;
 }
 
-/// Invocation identity and cooperative cancellation.
+/// Invocation identity, cooperative cancellation and the inline result budget.
 pub struct CallContext {
     /// Session which proposed the call.
     pub session: SessionId,
@@ -26,4 +27,6 @@ pub struct CallContext {
     pub call: CallId,
     /// Child of the Run cancellation token.
     pub cancel: CancellationToken,
+    /// Maximum inline result size in bytes, including any continuation instructions.
+    pub result_budget: usize,
 }

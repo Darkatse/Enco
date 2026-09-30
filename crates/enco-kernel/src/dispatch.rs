@@ -34,8 +34,9 @@ impl SessionActor {
             content.truncate(content.floor_char_boundary(limits::TOOL_RESULT_PREVIEW_BYTES));
             let path = self.deps.store.blob_path(&hash);
             content.push_str(&format!(
-                "\n[truncated: {size} bytes. Full result: {}. \
-                 Read it with fs_read using offset and limit.]",
+                "\n[truncated: {size} bytes. Full result: {}; it may be cleaned up later. \
+                 Read it with fs_read using offset and limit; if a single line is too long, \
+                 read byte ranges with shell, for example head -c.]",
                 path.display(),
             ));
             full = Some(hash);
@@ -43,7 +44,7 @@ impl SessionActor {
         self.commit(
             vec![EntryBody::ToolCallSettled {
                 call,
-                outcome,
+                outcome: Settlement::from(&outcome),
                 content,
                 full,
             }],
@@ -128,6 +129,7 @@ impl SessionActor {
                     session: self.session.id,
                     call: call.id,
                     cancel: token.child_token(),
+                    result_budget: limits::TOOL_RESULT_INLINE_BYTES,
                 },
                 args,
             )

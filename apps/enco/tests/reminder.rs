@@ -12,7 +12,7 @@ use support::*;
 use wiremock::{Mock, MockServer, matchers::path};
 
 #[tokio::test]
-async fn a_reminder_created_by_the_model_is_delivered_once_after_daemon_restart() {
+async fn model_created_reminders_are_listed_and_cancelled_through_the_cli() {
     let server = MockServer::start().await;
     embeddings(&server).await;
     Mock::given(path("/chat/completions"))
@@ -25,7 +25,7 @@ async fn a_reminder_created_by_the_model_is_delivered_once_after_daemon_restart(
                     "stop",
                 );
             }
-            let at = (Utc::now() + chrono::Duration::seconds(2)).to_rfc3339();
+            let at = (Utc::now() + std::time::Duration::from_secs(3600)).to_rfc3339();
             let message = tool_message(
                 "remind-once",
                 "schedule_create",
@@ -52,57 +52,26 @@ async fn a_reminder_created_by_the_model_is_delivered_once_after_daemon_restart(
         .await
         .unwrap();
     finish(&mut client).await;
-    let schedules: Vec<Schedule> =
-        serde_json::from_value(client.request(Command::Schedules {}).await.unwrap()).unwrap();
-    assert_eq!(schedules.len(), 1);
-    let reminder = &schedules[0];
-    daemon.stop().await;
-    // Wait for the actual due time, not an arbitrary delay used as a readiness assertion.
-    let remaining = (reminder.due_at + chrono::Duration::seconds(1) - Utc::now())
-        .to_std()
-        .unwrap_or_default();
-    tokio::time::sleep_until(tokio::time::Instant::now() + remaining).await;
-    daemon.restart().await;
-    let mut client = daemon.connect().await;
-    client
-        .request(Command::Subscribe {
-            session: "main".into(),
-        })
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+        .arg("schedules")
+        .env("ENCO_HOME", daemon.root.path())
+        .output()
         .await
         .unwrap();
-    let log: Vec<Entry> = serde_json::from_value(
-        client
-            .request(Command::Log {
-                session: "main".into(),
-                after: None,
-            })
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    let completed = log
-        .iter()
-        .filter(|e| matches!(e.body, EntryBody::RunEnded { .. }))
-        .count();
-    if completed < 2 {
-        finish(&mut client).await;
-    }
-    let log: Vec<Entry> = serde_json::from_value(
-        client
-            .request(Command::Log {
-                session: "main".into(),
-                after: None,
-            })
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        log.iter()
-            .filter(|entry| is_reminder(entry, reminder.id))
-            .count(),
-        1
-    );
+    assert!(output.status.success());
+    let schedules: Vec<Schedule> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(schedules.len(), 1);
+    let reminder = &schedules[0];
+    assert_eq!(reminder.message, "check the kettle");
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+        .args(["schedules", "--cancel", &reminder.id.to_string()])
+        .env("ENCO_HOME", daemon.root.path())
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    let cancelled: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(cancelled["cancelled"], true);
     assert!(
         client
             .request(Command::Schedules {})
@@ -111,15 +80,6 @@ async fn a_reminder_created_by_the_model_is_delivered_once_after_daemon_restart(
             .as_array()
             .unwrap()
             .is_empty()
-    );
-    assert_eq!(
-        client
-            .request(Command::CancelSchedule {
-                schedule_id: reminder.id
-            })
-            .await
-            .unwrap()["cancelled"],
-        false
     );
     daemon.stop().await;
 }

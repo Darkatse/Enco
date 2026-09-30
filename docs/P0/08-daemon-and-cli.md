@@ -33,6 +33,7 @@ $ENCO_HOME/
   memory.db          记忆的权威（06 §2）
   memory-index/      记忆索引，派生物，随时可以删除（06 §3）
   enco.sock
+  enco.lock          单实例锁，永不删除（§5）
   blobs/
   workspace/
 ```
@@ -75,7 +76,7 @@ max_rounds = 24                   # 默认 24
 ```text
 paths  = Paths::from_env()
 (config, embedding) = Config::load(paths.config())                          // 一次得到校验过的 EmbeddingSpec
-kernel_config = KernelConfig::new(budget, config.run.max_rounds, 本机时区偏移)?  // 预算规则只在内核定义（04 §3），在打开任何资源之前失败
+kernel_config = KernelConfig::new(budget, config.run.max_rounds)?  // 预算规则只在内核定义（04 §3），在打开任何资源之前失败
 确保 workspace/ 存在
 clock  = Arc::new(SystemClock)
 store  = SqliteStore::open(paths.db(), paths.blobs())
@@ -103,11 +104,11 @@ kernel = Kernel::start(deps, kernel_config)
 
 启动：
 
-1. 解析路径。如果 `enco.sock` 已存在：尝试连接；连得上说明已有守护进程在运行，报错退出；连不上说明是残留文件，删除它。
-2. 绑定 Unix domain socket，并把文件权限设为 `0600`（这个 socket 等同于对 Agent 的完全控制权）。绑定失败就退出，尚不打开存储或启动任务。
-3. 执行组合根。必须先持有 socket，再打开数据库与记忆索引、启动 Kernel；避免第二次 `enco serve` 先触发索引重建或 Session 恢复，再发现已有进程。组合根失败时关闭并删除本进程的 socket，返回错误。
+1. 解析路径，打开 `enco.lock`（不存在则创建），用 `File::try_lock` 取得独占锁；锁已被占用说明已有守护进程在运行（包括正在关闭的），报错退出；其他打开或锁定错误携带上下文返回。锁由操作系统在进程退出时释放，`kill -9` 也不例外。锁文件永不删除：删掉它，新旧进程就会各锁一个文件。
+2. 持有锁时，已有的 `enco.sock` 一定是残留文件，直接删除，不必尝试连接。绑定 Unix domain socket，并把文件权限设为 `0600`（这个 socket 等同于对 Agent 的完全控制权）。socket 只是通信入口，所有权由锁表示。
+3. 执行组合根。锁在打开数据库与记忆索引、启动 Kernel 之前取得，所以第二次 `enco serve` 不会触发索引重建或 Session 恢复。组合根失败时删除本进程的 socket，返回错误。
 4. 接受循环：每个连接一个任务。
-5. 收到 SIGINT 或 SIGTERM：停止接受新连接，调用 `kernel.shutdown()` 并等待它完成，删除 socket 文件，退出。
+5. 收到 SIGINT 或 SIGTERM：停止接受新连接，调用 `kernel.shutdown()` 并等待它完成，删除 socket 文件，退出。锁一直持有到进程退出，所以关闭期间启动的 `enco serve` 会在第 1 步被拒绝。
 
 每个连接的任务：按行读取请求，依次处理，写回响应。一个连接最多订阅一个 Session；订阅之后，同一个任务用 `select!` 同时处理新的请求行和 broadcast 中的条目。所有写出都经过这一个任务，因此一个连接上的输出不会交错。
 

@@ -14,13 +14,11 @@
 `cargo xtask check` 的顺序：
 
 1. `cargo fmt --all --check`；`cargo fmt --all --check --manifest-path plugins/Cargo.toml`
-2. `cargo xtask boundaries`
+2. `cargo xtask boundaries`；校验两个工作区共用的 lint 表与各 crate 的继承
 3. `cargo xtask docs --check`
 4. `cargo xtask build-factory`
-5. `cargo clippy --workspace --all-targets -- -D warnings`；`cargo clippy --manifest-path plugins/Cargo.toml --target wasm32-wasip2 -- -D warnings`
-6. `cargo test --workspace`
-
-M1 完成时，在 `AGENTS.md` "测试实践"一条的末尾把"仓库级检查命令建立后在此登记"替换为"每次实现完成后运行 `cargo xtask check`"。
+5. `cargo clippy --workspace --all-targets -- -D warnings`；`cargo clippy --manifest-path plugins/Cargo.toml --target wasm32-wasip2 --all-targets -- -D warnings`
+6. `cargo test --workspace`；`cargo test --manifest-path plugins/Cargo.toml`
 
 ### 1.1 boundaries
 
@@ -71,9 +69,11 @@ complete: async func(settings: settings, request: request) -> result<completion,
 
 ## 3. 测试策略
 
-遵循 `AGENTS.md` 的测试准入：只为可观察的行为、非平凡的不变式与边界、已经修复的具体缺陷写测试。**不要**写：每个类型的 serde 往返测试、对提示词文本的断言、对 getter 或直接委托的测试、对 `CONTRACT.md` 内容的快照测试（门禁已经覆盖）。并发测试用 barrier、oneshot、`Notify` 协调，不用 sleep；需要时间推进时使用 `tokio::time::pause` 与可设置的 `TestClock`。
+遵循 `AGENTS.md` 的测试准入：只为可观察的行为、非平凡的不变式与边界、已经修复的具体缺陷写测试。**不要**写：每个类型的 serde 往返测试、对提示词模板文案或排版的断言、对 getter 或直接委托的测试、对 `CONTRACT.md` 内容的快照测试（门禁已经覆盖）。输入事实、当前时间、记忆与工具结果是否正确进入模型请求，属于行为核对。并发测试用 barrier、oneshot、`Notify` 协调，不用 sleep；需要时间推进时使用 `tokio::time::pause` 与可设置的 `TestClock`。
 
 三层，优先使用能够覆盖该行为的最高一层，不在多层重复同一断言：
+
+端到端负责真实协议、Wasm 和进程边界；需要控制时刻或故障位置的行为留在集成层。一个场景可以由已有测试共同覆盖，不要求每个验收编号对应一个独立测试。类型已经表达的约束不再用字段快照重测。
 
 | 层 | 位置 | 内容 |
 |---|---|---|
@@ -84,7 +84,7 @@ complete: async func(settings: settings, request: request) -> result<completion,
 测试辅助：
 
 - `ScriptedProvider`：按队列返回预设的 `Completion` 或 `Failure`，并记录收到的每个 `ProviderRequest`；可以在某次调用处阻塞在 barrier 上，用于模拟崩溃。`embed` 是确定性的：把文本的字符二元组做特征哈希（feature hashing）得到固定维度的向量并归一化，因此字面相近的文本向量相近；可以切换为返回 `provider.network` 失败。
-- `TestClock`：`Clock` 的实现，时间可以设置。
+- `TestClock`：`Clock` 的实现，时刻与 UTC 偏移都可以设置。
 - **端到端测试中的等待**：测试辅助中写一个最小的本地协议客户端，订阅 Session 并等待期望的条目（例如 `RunEnded`），外加总超时；不要用固定时长的 sleep 或轮询代替。
 - **进程内模拟 `kill -9`**：Kernel 和 Session actor 都在独立的 tokio runtime 内创建；在注入点阻塞后调用 `runtime.shutdown_background()`，用 Drop 通知确认执行中的 future 已被丢弃，之后才释放 Kernel 句柄，避免误走正常取消结算；然后在同一个数据库上启动新的 Kernel，检查恢复写入的条目。
 
@@ -92,16 +92,16 @@ complete: async func(settings: settings, request: request) -> result<completion,
 
 ## 4. 验收场景
 
-P0 的完成以下列场景为准。里程碑按实施顺序排列：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾。"层"指主要在哪一层验证。
+P0 的完成以下列场景为准。里程碑按实施顺序排列：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正。"层"指主要在哪一层验证。
 
 | # | 里程碑 | 场景 | 层 | 必须观察到 |
 |---|---|---|---|---|
 | A1 | M1 | Store 的前置条件 | 集成 | 位置不连续的 Commit 被拒绝（`OutOfOrder`）；binding epoch 不符的 Commit 被拒绝（`Fenced`）；同一 EventId 投递两次返回 `Duplicate`，只产生一行 |
-| A2 | M2 | 纯回复 | 集成 | 条目序列：`RunStarted`、`EventConsumed`、`RoundStarted`、`AttemptStarted`、`AttemptSettled(Completed)`、`RoundEnded(Replied)`、`RunEnded(Completed)`；把 `AttemptStarted` 引用的计划与 Log 一起解析，得到的消息与工具定义和 `ScriptedProvider` 实际收到的请求完全相同 |
-| A3 | M2 | 一次工具调用后回复 | 集成 | `fs_write` 真的写出文件；`ToolCallStarted` 在 `ToolCallSettled(Ok)` 之前；第二次 Provider 请求中包含对应的 Tool 消息 |
+| A2 | M2 | 请求记录 | 集成 | 把 `AttemptStarted` 引用的计划与 Log 一起解析，得到的消息、工具定义与输出预算和 `ScriptedProvider` 实际收到的请求完全相同 |
+| A3 | M2 | 一次工具调用后回复 | 端到端（与 A7 共用） | `fs_write` 真的写出文件；第二次 Provider 请求中包含对应的 Tool 消息；执行前预写由 A8 的崩溃恢复场景核对 |
 | A4 | M2 | 未披露的工具与非法参数 | 集成 | 调用不存在的工具 → `ToolCallSettled(Failed tool.unavailable)`，没有 `ToolCallStarted`；参数不是对象 → `tool.invalid_arguments`；随后的 Round 正常进行 |
 | A5 | M2 | Provider 重试 | 集成 | 一次可重试失败后成功：两对 Attempt，同一个 `plan` 哈希；不可重试失败：`RunEnded(Failed)` |
-| A6 | M3 | 端到端对话 | 端到端 | `enco send` 之后，`enco log` 的输出显示 A2 的序列；`AttemptStarted.provider` 是 `CodeRef::Wasm`，其哈希在 blob 存储中存在 |
+| A6 | M3 | 端到端对话 | 端到端 | `enco send` 得到预设回复；订阅收到的条目与 `enco log` 一致；`AttemptStarted.provider` 是 `CodeRef::Wasm`，其哈希在 blob 存储中存在 |
 | A7 | M3 | 端到端工具调用 | 端到端 | wiremock 先返回 `fs_write` 调用、再返回文本：文件被写出；第二次 HTTP 请求体中的 `tool_call_id` 与第一次响应中的 id 一致 |
 | A8 | M4 | 工具执行中 `kill -9` | 端到端 | wiremock 返回 `shell_exec`，命令为 `echo run >> marker.txt; sleep 60`；等 `marker.txt` 出现一行后 SIGKILL 守护进程并重启：`ToolCallSettled(Unknown interrupted)`、`RoundEnded(Interrupted)`、`RunEnded(Interrupted)`；`marker.txt` 仍然只有一行；再发一条消息，新的 Run 正常完成 |
 | A9 | M4 | 模型请求中 `kill -9` | 集成 | Provider 阻塞时模拟崩溃；重启后出现 `AttemptSettled(Failed interrupted)`，没有任何 `ToolCallStarted` |
@@ -115,9 +115,13 @@ P0 的完成以下列场景为准。里程碑按实施顺序排列：M1 地基�
 | A17 | M5 | 端到端记忆 | 端到端 | wiremock 先返回 `memory_save` 调用、再返回文本，并模拟 `/embeddings`：`enco memory` 的输出列出该记忆；下一条消息的 `/chat/completions` 请求体中，System 消息包含它；`/embeddings` 请求体的 `input` 包含记忆文本 |
 | A18 | M6 | 压缩与重启 | 集成 | 用较小但记忆预算仍可容纳置顶条目的 `context_tokens` 迫使压缩（出现 `Compacted`）；重启 Kernel；之后的计划仍包含该置顶记忆，并且不引用被压缩隐藏的位置 |
 | A19 | M6 | 提醒 | 集成 | `TestClock` 下，到期后恰好一次 `EventConsumed(Reminder)` 并触发一个 Run；在到期前"崩溃"并在到期后重启，提醒补发一次；创建一个已经过去的时间返回错误 |
-| A20 | M6 | 端到端提醒 | 端到端 | 创建 2 秒后的提醒，停止守护进程，3 秒后再启动：`enco log` 的输出中恰好一条对应的 `EventConsumed(Reminder)` |
+| A20 | M6 | 端到端提醒管理 | 端到端 | 模型通过 `schedule_create` 创建提醒，CLI 可以列出并取消同一条提醒，取消后不再列出；到期与重启补发由 A19 的可控时钟场景核对 |
 | A21 | M7 | 门禁有效 | 手动一次 | 临时让 enco-kernel 依赖 enco-host → `boundaries` 失败；删掉一个 WIT 函数的文档 → `docs --check` 失败；手改 `CONTRACT.md` → `docs --check` 失败。验证后还原 |
 | A22 | M7 | 真实模型 | 手动一次 | 配置真实的 Provider 与 embedding 服务，`enco chat` 中：让它记住一件事、更正、在另一个话题中问起它、设一个一分钟后的提醒、执行一条 shell 命令；在 `enco log` 与 `enco memory` 中核对 |
+| A23 | M8 | 单实例 | 端到端 | 守护进程运行时，第二次 `enco serve` 报错退出，不打开任何存储，第一个进程照常服务；第一个进程收到 SIGTERM 之后、退出之前，第二次启动同样被拒绝，既不打开存储，也不删除 socket 文件（用确定性协调拖住关闭，不依赖 sleep）；`kill -9` 之后重新启动成功（与 A8 共用） |
+| A24 | M8 | 分页读取 | 集成 | 每行与说明行合计都能放入预算、总量超过预算的文件：结果不超过预算，只含完整的行，说明行给出 `continue at offset`，按它再读得到其余内容，`ToolCallSettled.full` 为空；单行加说明行也放不下时：返回这一行，由内核截断，`full` 指向 blob，说明行位于预览开头，继续位置仍然可见 |
+| A25 | M8 | 工具结果持久化 | 集成（与 A2、A24 共用） | 执行工具并重启：结局与 `content/full` 保持不变，模型请求中的工具结果与重启前相同；大结果的全文从 blob 读取。原始返回值不进入 Log 由 `Settlement` 类型表达 |
+| A26 | M8 | 本地时间 | 集成 | `TestClock` 在两个 Round 之间改变 UTC 偏移：后一个计划中的当前时间使用新偏移 |
 
 ## 5. 每个里程碑的完成条件
 

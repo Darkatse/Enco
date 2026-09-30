@@ -12,9 +12,106 @@ mod support;
 use enco_core::*;
 use protocol::Command;
 use serde_json::json;
-use std::{process::Stdio, time::Duration};
+use std::{os::unix::fs::MetadataExt, path::Path, process::Stdio, time::Duration};
 use support::*;
 use wiremock::{Mock, MockServer, matchers::path};
+
+async fn reject_second_serve(root: &Path) {
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+            .arg("serve")
+            .env("ENCO_HOME", root)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("enco serve is already running"));
+}
+
+#[tokio::test]
+async fn node_lock_is_held_while_serving_and_until_shutdown_is_quiescent() {
+    let server = MockServer::start().await;
+    embeddings(&server).await;
+    Mock::given(path("/chat/completions"))
+        .respond_with(response(
+            tool_message("read", "fs_read", json!({"path": "held"})),
+            "tool_calls",
+        ))
+        .mount(&server)
+        .await;
+    let mut daemon = Daemon::start(&server, "openai-compatible").await;
+    reject_second_serve(daemon.root.path()).await;
+    let mut client = daemon.connect().await;
+    client.request(Command::Status {}).await.unwrap();
+
+    // fs_read does not observe cancellation (05 §2), so a FIFO read holds shutdown open
+    // until this test closes its writer, without sleeps.
+    let fifo = daemon.root.path().join("workspace/held");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    client
+        .request(Command::Subscribe {
+            session: "main".into(),
+        })
+        .await
+        .unwrap();
+    client
+        .send(Command::Send {
+            session: "main".into(),
+            text: "read held".into(),
+            event_id: EventId::new(),
+        })
+        .await
+        .unwrap();
+    let writer = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::fs::OpenOptions::new().write(true).open(&fifo),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let socket = daemon.root.path().join("enco.sock");
+    let inode = std::fs::metadata(&socket).unwrap().ino();
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-TERM", &daemon.child.id().unwrap().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while client.reader.next_line().await.unwrap().is_some() {}
+    })
+    .await
+    .unwrap();
+    reject_second_serve(daemon.root.path()).await;
+    assert!(daemon.child.try_wait().unwrap().is_none());
+    assert_eq!(std::fs::metadata(&socket).unwrap().ino(), inode);
+
+    drop(writer);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(10), daemon.child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    assert!(!socket.exists());
+    let lock = std::fs::File::options()
+        .write(true)
+        .open(daemon.root.path().join("enco.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+}
 
 async fn process_model(server: &MockServer) {
     embeddings(server).await;
@@ -116,7 +213,7 @@ async fn killed_daemon_settles_unknown_without_reexecuting_a_side_effect() {
     .unwrap();
     assert!(log.iter().any(|entry| match &entry.body {
         EntryBody::ToolCallSettled {
-            outcome: Outcome::Unknown { failure },
+            outcome: Settlement::Unknown { failure },
             ..
         } => failure.code == code::INTERRUPTED,
         _ => false,
@@ -167,7 +264,7 @@ async fn cancelling_shell_reaps_the_owned_process_before_settlement() {
     let entries = finish(&mut client).await;
     assert!(entries.iter().any(|entry| match &entry.body {
         EntryBody::ToolCallSettled {
-            outcome: Outcome::Unknown { failure },
+            outcome: Settlement::Unknown { failure },
             ..
         } => failure.code == code::CANCELLED,
         _ => false,
