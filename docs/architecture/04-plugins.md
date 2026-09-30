@@ -39,6 +39,14 @@
 - **替换渠道插件时，默认在事件边界切换回调。** 如果新代码接续不了当前的协议状态（在 `describe` 中声明 `reconnect-on-upgrade`，或者连接选项发生了变化），就按协议重连并补收：Telegram 用 offset，Discord 用 RESUME。连接级的传输状态（例如流式解压）属于宿主传输层的连接选项，不是插件状态。**承诺的是可恢复，不是每次替换都零断线。**
 - **渠道故障转移**：由新的租约持有者重建连接，从已复制的连接状态继续。
 
+**会话映射与投递。** Session 属于 Enco，渠道中的聊天只是壳（§5.2 的界面位置）。
+
+- **映射**：一个聊天（渠道、账号、聊天 ID）同一时刻挂在一个 Session 上，多个聊天可以挂在同一个 Session 上。新聊天默认挂到 `main`；主人用命令切换或新建 Session。命令不经过模型：写法由插件解析，含义由宿主执行。
+- **主人**：只有主人的账号可以驱动 Session。发送者由宿主按配置核对，其他人的消息丢弃。群聊以后单独设计。
+- **入站**：映射表与协议状态、入站游标一起归连接 actor 所有（§3.6）。入站消息经内核的入站入口投递进 Inbox，与连接状态的写入在同一次提交中完成，然后唤醒 Session。
+- **出站**：模型显式发送是一次普通的工具调用。默认投递是壳在渲染 Log，与 `enco chat` 相同：连接 actor 以出站游标跟随它送过 Event 的 Session，与入站游标对称；每次投递先记下再发送，按 `outcome` 为每次逻辑投递保存一条最终结算，与出站游标在同一事务提交，发送途中崩溃记为 `unknown`，不自动重发。协议解析、分段和错误分类由插件承担；连接归属者执行共同的路由与结算规则。结算引用 Session 与 Log 位置，不复制正文；`enco status.channels` 提供最近 failed / unknown 的读取入口。
+- **由谁投递**：回复发往该 Session 中最近一条交互式 Event（CLI 或渠道）的来源；来源是 CLI 时不投递到渠道。提醒这类非交互 Event 触发的 Round 遵循同一规则。各个壳读同一份 Log 得出同一结论，彼此不需要协调。
+
 ## 4.4 契约（WIT 草图，P1 定稿）
 
 ```wit
@@ -161,13 +169,20 @@ world base { import host; export lifecycle; }
 ## 4.8 自我修改闭环
 
 ```text
-~/.enco/                      ← git 仓库
+~/.enco/                      ← git 仓库：主人的意图
   AGENTS.md  config.toml  plugins.lock  skills/  plugins/<name>/
-  .enco/store/<hash>.wasm     ← 制品库（内容寻址）
-  .enco/data.sqlite           ← Log、KV、本地的控制平面副本
-  .enco/memory.sqlite         ← 记忆（权威）
-  .enco/memory-index/         ← 记忆索引（派生，可删除）
+  .gitignore                  ← /.data/ 与 /workspace/
+  workspace/                  ← Agent 的工作目录，暂不纳入版本管理
+  .data/                      ← 运行时状态，不纳入版本管理
+    enco.db                   ← Log、Inbox、连接状态、KV、本地的控制平面副本
+    memory.db                 ← 记忆（权威）
+    memory-index/             ← 记忆索引（派生，可删除）
+    blobs/                    ← 正文（§6）
+    store/<hash>.wasm         ← 制品库（内容寻址）
+    enco.sock  enco.lock      ← 本地入口与单实例锁（§6）
 ```
+
+意图与运行时状态由目录分开：仓库里看得见的是主人的意图，`.data/` 与 `.git/` 同属工具自己管理的目录。
 
 - 命令（CLI 与 Agent Tool 同源，Tool 名为 `plugin_<动作>`）：`scaffold / build / test / deploy / status / rollback / logs / rename / remove`；外来插件另有 `install / update`。`scaffold`、`install`、`update`、`rename`、`remove` 维护 `plugins.lock`，`build` 登记尚未登记的目录（§4.10）。
 - `plugin_build` 是只由装有工具链的节点导出的能力，手机上的 Agent 通过 `invoke(vps, plugin_build, …)` 构建，再按哈希取回制品。
