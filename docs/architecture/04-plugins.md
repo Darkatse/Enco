@@ -49,7 +49,7 @@ interface types {
   record failure { code: string, message: string, retryable: bool }
   variant outcome { ok(json), failed(failure), unknown(failure) }   // unknown = 可能已执行
   record blob-ref { hash: string, mime: string, size: u64 }
-  record call-context { session: string, round: string, call-id: string, node: string }
+  record call-context { session: string, round: string, call-id: string, node: string, result-budget: u32 }   // 结果可内联的字节数（§6）
   record state-write { key: string, value: option<list<u8>> }        // none = 删除
   /// 转移：回调交给归属者的全部写入，一次提交（§3.6）
   record transition { writes: list<state-write>, inbound: list<inbound-event>, send: list<frame> }
@@ -169,7 +169,7 @@ world base { import host; export lifecycle; }
   .enco/memory-index/         ← 记忆索引（派生，可删除）
 ```
 
-- 命令（CLI 与 Agent Tool 同源，Tool 名为 `plugin_<动作>`）：`scaffold / build / test / deploy / status / rollback / logs / rename / remove`；外来插件另有 `install / update`。`scaffold`、`install`、`update`、`rename`、`remove` 维护 `plugins.lock`（§4.10）。
+- 命令（CLI 与 Agent Tool 同源，Tool 名为 `plugin_<动作>`）：`scaffold / build / test / deploy / status / rollback / logs / rename / remove`；外来插件另有 `install / update`。`scaffold`、`install`、`update`、`rename`、`remove` 维护 `plugins.lock`，`build` 登记尚未登记的目录（§4.10）。
 - `plugin_build` 是只由装有工具链的节点导出的能力，手机上的 Agent 通过 `invoke(vps, plugin_build, …)` 构建，再按哈希取回制品。
 - 构建诊断是结构化的，只返回前 N 条，完整日志存为 blob。构建以插件目录的内容快照为输入（构建前自动提交该目录，避免未提交的修改与产物对不上），每个代际记录 `{plugin_id, 源码快照, Cargo.lock 摘要, artifact_hash, wit_version, toolchain, config_ref}`。
 - 构建时以空配置更新插件 README 中的生成区；部署时以新代际的配置生成它的运行时手册（§7.5、§7.6）。
@@ -196,11 +196,12 @@ world base { import host; export lifecycle; }
 - 插件名就是主人仓库 `plugins/` 下的目录名，使用 kebab-case（与 WIT 标识符同一规则）。目录不会重名，仓库又在 Space 内共享，所以插件名在 Space 内的唯一性由结构保证。
   - 安装时默认采用作者建议的名字，撞名即失败，由主人另选。
   - 原生能力与出厂插件的名字由宿主保留，例如 `fs`、`shell`、`memory`、`schedule`；它们的身份也由宿主固定。
+  - 出厂插件的源码放在主人仓库中保留名字的目录下，`plugins.lock` 中的记录使用宿主固定的身份，所以嵌入二进制的出厂代际与 Agent 修改后构建的代际属于同一个插件，恢复层级（§4.6）不会因为修改而断开。
 - 能力 ID 为 `(节点, 插件名, 名称)`，显示为 `web_search@vps`。
   - 模型可见的工具名是 `插件名_名称`：名称使用 snake_case，第一个下划线就是分隔符，总长受服务商上限约束（OpenAI 与 Anthropic 均为 64 个字符，由常量生成）。
   - 名字只由插件自身决定，不随其他插件的安装而变化。composer 决定披露哪些工具、披露到哪一级，但不决定名字。
 - 契约名是 WIT 包名 `owner:package`。WIT 标识符不能包含 `.` 与 `/`，所以契约名使用 owner 而不是 URL。
-- 插件身份是一个 ULID，在插件进入 Space 时由这个 Space 分配：主人自己的插件在 `plugin_scaffold` 时进入，外来插件在 `plugin_install` 时进入。
+- 插件身份是一个 ULID，在插件进入 Space 时由这个 Space 分配：主人自己的插件在 `plugin_scaffold` 或首次构建一个尚未登记的目录时进入，外来插件在 `plugin_install` 时进入。
   - 身份标识的是"这个 Space 里的这一次安装"，不是作品本身。作品由来源 URL 与 git 历史标识，fork 关系由共同的提交给出。
   - 身份不由作者写入，也从不随插件发布。作者写入的 ID 无法证明任何东西（任何人都能复制，fork 会原样继承），还会让上游内容决定主人的记账。将来需要不可伪造的作者身份时，应使用绑定在来源上的签名。
 - 名字与身份记录在仓库根部的 `plugins.lock` 中，每个插件一项；外来插件另记来源（git URL + 已采纳的 commit），不绑定 GitHub、GitLab 或 Gitee 中的任何一个。
@@ -225,7 +226,7 @@ ULID 不进入 Log 条目。代际记录里有身份，需要跨改名追溯时�
 - 复制目录：副本在 `plugins.lock` 中没有记录，首次构建时由 Space 分配新身份，相当于一次 scaffold。
 - `plugin_remove`：删除目录与记录。状态保留到显式清理为止，`git revert` 会同时恢复目录与原来的身份。
 - 重新安装总是得到新身份，所以复用一个名字不会继承旧插件的状态或信任。
-- 只执行 `git mv`：构建时发现一条没有目录的记录和一个没有记录的目录，于是拒绝，并提示改用 `plugin_rename`。
+- 只执行 `git mv`：构建时发现一条没有目录的记录和一个没有记录的目录，于是拒绝，并提示改名用 `plugin_rename`、删除用 `plugin_remove`；这个状态也可能是删掉一个插件再新建了另一个，构建不猜测是哪一种。
 - 仓库迁移：只改来源，名字与身份不变，信任需要重新确认（见 5）。
 
 编进制品的名字（工具名、契约名）全局有意义；主人分配的名字与身份只在本 Space 内有效；插件从不引用另一个插件的名字。因此不会出现 crates.io、PyPI 那种"撞名只能改名"的局面：本地撞名只需换一个目录名，作者的代码不需要改动。
@@ -233,14 +234,15 @@ ULID 不进入 Log 条目。代际记录里有身份，需要跨改名追溯时�
 **2. 接线：依赖、槽位和贡献是同一件事。** 插件导出接口、导入接口，主人经配置把导入接到导出上。依赖、槽位和贡献的区别只在导入方要一个还是要全部，这由导入方决定。
 
 - 插件的每个导入接到 Host，或恰好一个导出。候选唯一时自动接上；不唯一时由主人配置选择，否则准入失败，并列出候选。
-- 内核也是导入方：
+- 内核与宿主也是导入方：
 
-| 内核导入 | 数量 | 选择写在哪里 |
+| 内核与宿主的导入 | 数量 | 选择写在哪里 |
 |---|---|---|
 | composer | 一个 | Session 配置 |
 | `completion` | 每种 Attempt 用途一个 | Session 配置 |
 | 策略点（`inbound.preprocess`、`tool.gate`） | 一个 | 节点配置 |
 | 工具、Context 贡献、Observer、渠道 | 全部 | — |
+| 宿主：`embedding`（记忆的检索索引） | 一个 | 节点配置 |
 
 - 补全只由内核导入。只有内核能在请求发出之前把它记为 Attempt，并与 ContextPlan、钉住的代际绑定，所以插件导入 `completion` 会在准入时被拒绝，错误信息提示改用 `session_delegate`（§6）；`embedding` 等其他接口照常可由宿主与插件导入。这保证的是 Session 配置接上的模型只能经内核、以有记录的方式调用；插件经 `http` 自行调用外部模型，与调用其他外部服务相同，不在这条保证之内。
 - 接口按导入方、约束以及能否单独提供来划分，不按实现方或线上协议划分。`completion` 与 `embedding` 的导入方和约束不同，也可以单独提供（DeepSeek 只导出前者），所以是两个接口。Chat Completions、Responses、Claude Messages 等协议对内核而言是同一件事，都导出 `completion`，差异留在各自的 Provider 插件里（§7.1）。按协议划分接口会迫使内核按服务身份选择调用方式，违反双向不泄露。

@@ -18,9 +18,8 @@ Agent 友好的核心是认知负担轻。这里有两个读者：运行中的�
 
 **协议差异留在 Provider。** Chat Completions、Responses、Claude Messages 等线上协议都导出同一个 `completion` 接口（§4.10）。多家协议共有的含义（例如图片输入、结构化输出）才进入规范类型，按 WIT semver 只增不改；只属于某一种协议的东西由 Provider 自行处理：
 - thinking 签名与 reasoning 内容放进 `extension`，只回放给同一身份的插件（§4.10）；
-- 缓存断点由 composer 标注稳定性，由 Provider 放置；
 - Responses 的 `previous_response_id` 作为 `extension` 返回，只当作缓存使用：Log 中始终有完整的请求，服务端状态失效时就发送完整请求；
-- 服务端内置工具由 `options` 开启，它们的结果属于那次补全，随 AttemptSettled 记录。
+- 服务端内置工具由 `options` 开启，它们的结果属于那次补全，随 AttemptSettled 记录。只允许效果限于那次补全的服务端工具（例如搜索、在服务商沙盒中运行代码）；会产生外部效果的（例如远程 MCP）必须作为 Enco 的 Tool 接入，经过 `tool.gate` 并按 `outcome` 结算。
 
 内核只提供四个机制：
 

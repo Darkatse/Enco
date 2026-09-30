@@ -61,7 +61,6 @@ Brief {
   goal, state, decisions[{what, why}], constraints, open_questions, next_steps
   artifacts: [blob-ref + 说明]
   required_capabilities: [capability-id]
-  return_to: { session }
 }
 ```
 
