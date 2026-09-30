@@ -51,7 +51,7 @@ pub struct Contribution {
 /// Content offered to the composer; source-prefixed IDs make omissions traceable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
-    /// Source-qualified ID, such as `workspace:AGENTS.md` or `memory:<MemoryId>`.
+    /// Source-qualified ID, such as `instructions:AGENTS.md` or `memory:<MemoryId>`.
     pub id: String,
     /// Semantic category of this content.
     pub kind: CandidateKind,

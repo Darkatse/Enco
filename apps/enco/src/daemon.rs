@@ -80,10 +80,17 @@ async fn run(listener: UnixListener, paths: &Paths) -> Result<()> {
     // All exits after startup stop accepting work and await the existing owners.
     drop(listener);
     stop.cancel();
+    let mut channel_result = Ok(());
+    for channel in &application.channels {
+        if let Err(error) = channel.shutdown().await {
+            channel_result = Err(error);
+        }
+    }
     let (kernel_result, ()) = tokio::join!(kernel.shutdown(), async {
         while connections.join_next().await.is_some() {}
     });
     accept_result?;
+    channel_result?;
     kernel_result?;
     Ok(())
 }
@@ -121,7 +128,7 @@ async fn connection(
                     Ok(entry) => ServerMessage::Entry {
                         session: subscription.as_ref()
                             .context("entry without subscription")?.session.clone(),
-                        entry,
+                        entry: Box::new(entry),
                     },
                     Err(broadcast::error::RecvError::Lagged(n)) => ServerMessage::Error {
                         id: 0,
@@ -196,11 +203,12 @@ impl From<KernelError> for CommandError {
 }
 
 async fn existing_session(kernel: &Kernel, name: &str) -> Result<SessionRecord, CommandError> {
-    kernel
-        .sessions()
-        .await?
-        .into_iter()
+    let sessions = kernel.sessions().await?;
+    sessions
+        .iter()
         .find(|s| s.name == name)
+        .or_else(|| sessions.iter().find(|s| s.id.to_string() == name))
+        .cloned()
         .ok_or_else(|| CommandError {
             code: "unknown_session",
             message: format!("unknown session {name}"),
@@ -273,7 +281,15 @@ async fn process(
                 .map_err(memory_error)?;
             json!({ "forgotten": forgotten })
         }
-        Command::Status {} => json!(kernel.status().await?),
+        Command::Status {} => {
+            let mut status = json!(kernel.status().await?);
+            let mut channels = Vec::new();
+            for channel in &application.channels {
+                channels.push(channel.status().await?);
+            }
+            status["channels"] = json!(channels);
+            status
+        }
         Command::Sessions {} => json!(kernel.sessions().await?),
         Command::Log {
             session: name,

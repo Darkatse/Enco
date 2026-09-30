@@ -321,7 +321,7 @@ async fn safe_mode_bypasses_broken_context_and_normal_mode_can_resume() {
         reply("normal"),
     ]);
     let (kernel, store) = kernel(dir.path(), provider.clone()).await;
-    std::fs::write(dir.path().join("workspace/AGENTS.md"), [0xff]).unwrap();
+    std::fs::write(dir.path().join("AGENTS.md"), [0xff]).unwrap();
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
@@ -377,11 +377,7 @@ async fn safe_mode_bypasses_broken_context_and_normal_mode_can_resume() {
             .collect::<Vec<_>>(),
         enco_host::LIFELINE
     );
-    std::fs::write(
-        dir.path().join("workspace/AGENTS.md"),
-        "Call the owner River.",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("AGENTS.md"), "Call the owner River.").unwrap();
     kernel.set_safe_mode(false).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "hello again".into())

@@ -8,7 +8,7 @@ Memory
 - To correct a memory, call memory_update with its id so that the old statement is replaced. To forget one, call memory_forget.
 - The Memory section shows only part of what you remember. Use memory_search when something may have been saved before.
 
-Standing instructions from the owner live in `AGENTS.md` in the workspace. Edit it when the owner asks you to change how you work.
+Standing instructions from the owner live in the AGENTS.md file listed under Environment. Edit it when the owner asks you to change how you work.
 
 Tools
 - A tool result marked "outcome unknown" means the action may already have happened. Check the current state before trying again.

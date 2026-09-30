@@ -6,11 +6,15 @@ use std::{collections::HashMap, path::PathBuf};
 /// Factory policy shared by ordinary operation and safe mode. No IO occurs here.
 pub struct FactoryComposer {
     workspace: PathBuf,
+    instructions: PathBuf,
 }
 
 impl FactoryComposer {
-    pub fn new(workspace: PathBuf) -> Self {
-        Self { workspace }
+    pub fn new(workspace: PathBuf, instructions: PathBuf) -> Self {
+        Self {
+            workspace,
+            instructions,
+        }
     }
 }
 
@@ -90,10 +94,11 @@ impl FactoryComposer {
         .trim()
         .to_string();
         text.push_str(&format!(
-            "\n\n## Environment\n- Current time: {} ({})\n- Workspace: {}\n- Session: {}",
+            "\n\n## Environment\n- Current time: {} ({})\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}",
             input.now.to_rfc3339(),
             input.now.format("%A"),
             self.workspace.display(),
+            self.instructions.display(),
             input.session.name
         ));
         let mut omitted = input.context.omitted.clone();

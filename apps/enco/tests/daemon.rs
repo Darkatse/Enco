@@ -62,7 +62,7 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         daemon
             .root
             .path()
-            .join("blobs")
+            .join(".data/blobs")
             .join(&text[..2])
             .join(&text),
     )
@@ -77,6 +77,16 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
     assert!(output.status.success());
     let log: Vec<Entry> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(log, entries);
+    let status = client.request(Command::Status {}).await.unwrap();
+    let id = status["sessions"][0]["session"]["id"].as_str().unwrap();
+    let by_id = client
+        .request(Command::Log {
+            session: id.into(),
+            after: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(by_id, json!(log));
     daemon.stop().await;
 }
 
@@ -196,4 +206,86 @@ async fn wasm_embedding_preserves_batch_order_and_rejects_reserved_options() {
         bad.embed(vec!["one".into()]).await.unwrap_err().code,
         code::PROVIDER_BAD_REQUEST
     );
+}
+
+#[tokio::test]
+async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
+    use enco_host::{
+        Telegram,
+        channel::{Action, Adapter},
+    };
+    let server = MockServer::start().await;
+    let telegram = Telegram::new("42:test-secret".into(), &server.uri()).unwrap();
+    Mock::given(path("/bot42:test-secret/getUpdates"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "result": [
+                {"update_id": 8, "message": {"chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "text": "/session work"}},
+                {"update_id": 9, "message": {"chat": {"id": 1, "type": "group"}, "from": {"id": 3}, "text": "ignored by owner"}},
+                {"update_id": 10, "message": {"chat": {"id": 1, "type": "private"}, "from": {"id": 2}}}
+            ]
+        }))).mount(&server).await;
+    let updates = telegram.poll(telegram.initial_state()).await.unwrap();
+    assert!(
+        matches!(&updates[0].input.as_ref().unwrap().action, Some(Action::SelectSession(name)) if name == "work")
+    );
+    assert!(!updates[1].input.as_ref().unwrap().direct);
+    assert!(updates[2].input.as_ref().unwrap().action.is_none());
+    assert_eq!(updates[2].protocol["offset"], 11);
+    let text = format!("{}\n{}", "🌱".repeat(2047), "汉字".repeat(2500));
+    let parts = telegram.split(&text);
+    assert!(parts.iter().all(|s| s.encode_utf16().count() <= 4096));
+    assert_eq!(parts.concat(), text);
+    for (status, body, unknown, retry, fatal) in [
+        (
+            429,
+            json!({"ok": false, "error_code": 429, "parameters": {"retry_after": 2}}),
+            false,
+            true,
+            false,
+        ),
+        (
+            403,
+            json!({"ok": false, "error_code": 403}),
+            false,
+            false,
+            false,
+        ),
+        (
+            401,
+            json!({"ok": false, "error_code": 401}),
+            false,
+            false,
+            true,
+        ),
+        (
+            500,
+            json!({"ok": false, "error_code": 500}),
+            true,
+            true,
+            false,
+        ),
+        (
+            502,
+            json!("proxy failed after forwarding"),
+            true,
+            true,
+            false,
+        ),
+        (200, json!({"ok": true, "result": {}}), true, false, false),
+    ] {
+        let guard = Mock::given(path("/bot42:test-secret/sendMessage"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(body))
+            .mount_as_scoped(&server)
+            .await;
+        let error = telegram.send("1", "hello").await.unwrap_err();
+        assert_eq!(
+            (error.unknown, error.failure.retryable, error.fatal),
+            (unknown, retry, fatal)
+        );
+        assert!(!error.to_string().contains("test-secret"));
+        if status == 429 {
+            assert_eq!(error.retry_after, Some(std::time::Duration::from_secs(2)));
+        }
+        drop(guard);
+    }
 }

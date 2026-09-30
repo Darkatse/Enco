@@ -1,7 +1,7 @@
 use chrono::SubsecRound;
 use enco_core::*;
 use enco_host::SqliteStore;
-use enco_kernel::{Accepted, Commit, Store, StoreError};
+use enco_kernel::{Accepted, Commit, ConnectionWrite, Store, StoreError};
 
 #[tokio::test]
 async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
@@ -22,8 +22,53 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
         },
         received_at: Utc::now().trunc_subsecs(3),
     };
-    assert_eq!(store.accept(&event).await.unwrap(), Accepted::New);
-    assert_eq!(store.accept(&event).await.unwrap(), Accepted::Duplicate);
+    assert_eq!(
+        store
+            .accept(std::slice::from_ref(&event), None)
+            .await
+            .unwrap(),
+        vec![Accepted::New]
+    );
+    assert_eq!(
+        store
+            .accept(std::slice::from_ref(&event), None)
+            .await
+            .unwrap(),
+        vec![Accepted::Duplicate]
+    );
+    let write = ConnectionWrite {
+        key: "channel:account".into(),
+        state: serde_json::json!({"offset": 1}),
+        settlement: None,
+    };
+    store.accept(&[], Some(&write)).await.unwrap();
+    let uncommitted = Event {
+        id: EventId::new(),
+        ..event.clone()
+    };
+    let invalid = Event {
+        id: EventId::new(),
+        session: SessionId::new(),
+        ..event.clone()
+    };
+    let advance = ConnectionWrite {
+        state: serde_json::json!({"offset": 2}),
+        ..write.clone()
+    };
+    assert!(
+        store
+            .accept(&[uncommitted, invalid], Some(&advance))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store.connection(&write.key).await.unwrap(),
+        Some(write.state)
+    );
+    assert_eq!(
+        store.pending(session.id).await.unwrap(),
+        vec![event.clone()]
+    );
     let entry = Entry {
         pos: LogPos {
             epoch: Epoch(1),
@@ -116,7 +161,13 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
         .unwrap();
     assert_eq!(reopened.node().await.unwrap().id, node);
     assert_eq!(reopened.log(session.id, None).await.unwrap(), vec![entry]);
-    assert_eq!(reopened.accept(&event).await.unwrap(), Accepted::Duplicate);
+    assert_eq!(
+        reopened
+            .accept(std::slice::from_ref(&event), None)
+            .await
+            .unwrap(),
+        vec![Accepted::Duplicate]
+    );
 }
 
 #[tokio::test]

@@ -167,9 +167,15 @@ impl Kernel {
     pub async fn start(deps: KernelDeps, config: KernelConfig) -> Result<Kernel, KernelError>;
     /// 不存在则创建，并确保它的 actor 已经启动。
     pub async fn open_session(&self, name: &str) -> Result<SessionRecord, KernelError>;
-    /// 构造 `Event { source: Cli, body: UserMessage, received_at: clock.now().to_utc() }`，持久接纳并唤醒 Session。
+    /// 外部输入的唯一入口：经 `store.accept` 在一个事务中投递 `events` 并写入连接状态，然后唤醒这些 Event 的 Session。
+    /// Event 的 Session 必须已经存在（`open_session`）。`events` 可以为空，此时只写连接状态。
+    pub async fn accept(&self, events: &[Event], connection: Option<&ConnectionWrite>) -> Result<Vec<Accepted>, KernelError>;
+    /// CLI 的便捷形式：构造 `Event { source: Cli, body: UserMessage, received_at: clock.now().to_utc() }` 后调用 `accept`。
     /// 重复的 `event_id` 返回 Duplicate。
     pub async fn submit(&self, session: SessionId, event_id: EventId, text: String) -> Result<Accepted, KernelError>;
+    /// 读取一个连接的状态（10 §2）。
+    pub async fn connection(&self, key: &str) -> Result<Option<serde_json::Value>, KernelError>;
+    pub async fn delivery_failures(&self, key: &str) -> Result<Vec<DeliverySettlement>, KernelError>;
     /// 订阅该 Session 之后提交的条目（进程内实时流，不是事实来源）。
     pub fn subscribe(&self, session: SessionId) -> Result<broadcast::Receiver<Entry>, KernelError>;
     /// 取消正在进行的 Run。返回是否确实有 Run 被取消。
@@ -193,6 +199,8 @@ pub struct Status {
 
 pub struct SessionStatus { pub session: SessionRecord, pub running: bool, pub stopped: Option<String> }
 ```
+
+Scheduler 触发提醒时走 `store.fire_schedule`，它把 Schedule 的状态变化与 Inbox 投递放在同一个事务里，是同一种提交的内部形式。
 
 守护进程与内置工具调用的是同一组方法：主人执行 `enco schedules --cancel` 与 Agent 调用 `schedule_cancel`，走的是同一个 `Schedules::cancel`。
 

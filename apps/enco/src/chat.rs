@@ -41,7 +41,7 @@ pub(crate) async fn chat(paths: &Paths, session: String) -> Result<()> {
             line = client.reader.next_line() => {
                 let Some(line) = line? else { return Ok(()); };
                 match serde_json::from_str::<ServerMessage>(&line)? {
-                    ServerMessage::Entry { entry, .. } => render(entry, &mut purposes, &mut safe_noted),
+                    ServerMessage::Entry { entry, .. } => render(*entry, &mut purposes, &mut safe_noted),
                     ServerMessage::Error { code, message, .. } => eprintln!("! {code}: {message}"),
                     ServerMessage::Ok { .. } => {},
                 }

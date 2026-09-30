@@ -13,6 +13,7 @@ pub(crate) struct Config {
     pub context: ContextConfig,
     #[serde(default)]
     pub run: RunConfig,
+    pub telegram: Option<TelegramConfig>,
 }
 
 #[derive(Deserialize)]
@@ -108,5 +109,33 @@ impl Endpoint {
             api_key,
             options: self.options.clone(),
         })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TelegramConfig {
+    pub token_env: String,
+    pub owner_user_id: u64,
+    pub api_base: Option<String>,
+}
+
+impl TelegramConfig {
+    pub fn adapter(&self) -> Result<enco_host::Telegram> {
+        if self.owner_user_id == 0 {
+            bail!("[telegram].owner_user_id must be positive");
+        }
+        let token = std::env::var(&self.token_env).with_context(|| {
+            format!(
+                "bot token environment variable {} is not set",
+                self.token_env
+            )
+        })?;
+        Ok(enco_host::Telegram::new(
+            token,
+            self.api_base
+                .as_deref()
+                .unwrap_or("https://api.telegram.org"),
+        )?)
     }
 }

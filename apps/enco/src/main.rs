@@ -44,7 +44,7 @@ enum Action {
     Status,
     Sessions,
     Log {
-        #[arg(long, default_value = "main")]
+        #[arg(long, default_value = "main", help = "Session name or ID")]
         session: String,
     },
     SafeMode {
@@ -121,18 +121,24 @@ async fn main() -> Result<()> {
 )]
 async fn init(paths: &Paths) -> Result<()> {
     tokio::fs::create_dir_all(paths.workspace()).await?;
-    match tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(paths.config())
-        .await
-    {
-        Ok(mut file) => {
-            file.write_all(include_bytes!("../../../examples/deepseek-gemini.toml"))
-                .await?
+    tokio::fs::create_dir_all(paths.data()).await?;
+    for (path, bytes) in [
+        (
+            paths.config(),
+            include_bytes!("../../../examples/deepseek-gemini.toml").as_slice(),
+        ),
+        (paths.gitignore(), b"/.data/\n/workspace/\n".as_slice()),
+    ] {
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+        {
+            Ok(mut file) => file.write_all(bytes).await?,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e).with_context(|| format!("create {}", path.display())),
         }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e).context("create config.toml"),
     }
     println!(
         "Enco home: {}\nEdit {}, set its API key environment variables, then run `enco serve` and `enco chat`.",

@@ -42,6 +42,7 @@ dimensions = 4
 
     pub async fn start_config(config: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(".data")).unwrap();
         std::fs::write(root.path().join("config.toml"), config).unwrap();
         let (child, stderr) = spawn(root.path()).await;
         Self {
@@ -58,7 +59,7 @@ dimensions = 4
     }
 
     pub async fn connect(&self) -> client::Client {
-        client::Client::connect(&self.root.path().join("enco.sock"))
+        client::Client::connect(&self.root.path().join(".data/enco.sock"))
             .await
             .unwrap()
     }
@@ -80,7 +81,7 @@ pub async fn finish_with_timeout(client: &mut client::Client, timeout: Duration)
             match serde_json::from_str::<ServerMessage>(&line).unwrap() {
                 ServerMessage::Entry { entry, .. } => {
                     let done = matches!(entry.body, EntryBody::RunEnded { .. });
-                    entries.push(entry);
+                    entries.push(*entry);
                     if done {
                         return entries;
                     }

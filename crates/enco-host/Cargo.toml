@@ -8,6 +8,7 @@ license.workspace = true
 enco-core = { workspace = true }
 enco-kernel = { workspace = true }
 rusqlite = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 triviumdb = { workspace = true }
 tokio = { workspace = true, features = ["rt", "fs", "process", "io-util", "time", "sync", "macros"] }
 tokio-util = { workspace = true }

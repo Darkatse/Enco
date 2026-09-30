@@ -189,20 +189,52 @@ impl Kernel {
         event_id: EventId,
         text: String,
     ) -> Result<Accepted, KernelError> {
-        let handle = self.handle(session)?;
         let accepted = self
-            .deps
-            .store
-            .accept(&Event {
-                id: event_id,
-                session,
-                source: EventSource::Cli,
-                body: EventBody::UserMessage { text },
-                received_at: self.deps.clock.now().to_utc(),
-            })
+            .accept(
+                &[Event {
+                    id: event_id,
+                    session,
+                    source: EventSource::Cli,
+                    body: EventBody::UserMessage { text },
+                    received_at: self.deps.clock.now().to_utc(),
+                }],
+                None,
+            )
             .await?;
-        handle.wake.notify_one();
+        Ok(accepted[0])
+    }
+
+    /// Accept inputs and connection progress before waking the affected Session owners.
+    pub async fn accept(
+        &self,
+        events: &[Event],
+        connection: Option<&ConnectionWrite>,
+    ) -> Result<Vec<Accepted>, KernelError> {
+        if self.deps.shutdown.is_cancelled() {
+            return Err(KernelError::ShuttingDown);
+        }
+        let handles = events
+            .iter()
+            .map(|event| self.handle(event.session))
+            .collect::<Result<Vec<_>, _>>()?;
+        let accepted = self.deps.store.accept(events, connection).await?;
+        for handle in handles {
+            handle.wake.notify_one();
+        }
         Ok(accepted)
+    }
+
+    /// Read a connection's last accepted state.
+    pub async fn connection(&self, key: &str) -> Result<Option<serde_json::Value>, KernelError> {
+        Ok(self.deps.store.connection(key).await?)
+    }
+
+    /// Read recent final failures, retaining their original Session and Log references.
+    pub async fn delivery_failures(
+        &self,
+        key: &str,
+    ) -> Result<Vec<DeliverySettlement>, KernelError> {
+        Ok(self.deps.store.delivery_failures(key).await?)
     }
 
     /// Subscribe to newly committed facts; Log remains the durable source.

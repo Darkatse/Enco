@@ -21,15 +21,38 @@ impl Paths {
         self.home.join("config.toml")
     }
 
+    pub fn gitignore(&self) -> PathBuf {
+        self.home.join(".gitignore")
+    }
+
     pub fn workspace(&self) -> PathBuf {
         self.home.join("workspace")
     }
 
+    pub fn data(&self) -> PathBuf {
+        self.home.join(".data")
+    }
+    pub fn instructions(&self) -> PathBuf {
+        self.home.join("AGENTS.md")
+    }
+    pub fn db(&self) -> PathBuf {
+        self.data().join("enco.db")
+    }
+    pub fn blobs(&self) -> PathBuf {
+        self.data().join("blobs")
+    }
+    pub fn memory_db(&self) -> PathBuf {
+        self.data().join("memory.db")
+    }
+    pub fn memory_index(&self) -> PathBuf {
+        self.data().join("memory-index")
+    }
+
     pub fn socket(&self) -> PathBuf {
-        self.home.join("enco.sock")
+        self.data().join("enco.sock")
     }
 
     pub fn lock(&self) -> PathBuf {
-        self.home.join("enco.lock")
+        self.data().join("enco.lock")
     }
 }

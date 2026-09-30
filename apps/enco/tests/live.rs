@@ -83,7 +83,7 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
     let mut daemon =
         Daemon::start_config(include_str!("../../../examples/deepseek-gemini.toml")).await;
     std::fs::write(
-        daemon.root.path().join("workspace/AGENTS.md"),
+        daemon.root.path().join("AGENTS.md"),
         "This is an isolated validation workspace. Perform only the requested synthetic operations. \
          Never read credentials, environment variables, or files outside the workspace. \
          Use shell only for the requested printf command.",
@@ -182,7 +182,7 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
     drop(main);
     drop(admin);
     graceful_stop(&mut daemon).await;
-    assert!(!daemon.root.path().join("enco.sock").exists());
+    assert!(!daemon.root.path().join(".data/enco.sock").exists());
     daemon.restart().await;
     let mut main = daemon.connect().await;
     main.request(Command::Subscribe {
@@ -277,7 +277,12 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
                     let hash = plan.to_string();
                     let plan: ContextPlan = serde_json::from_slice(
                         &std::fs::read(
-                            daemon.root.path().join("blobs").join(&hash[..2]).join(hash),
+                            daemon
+                                .root
+                                .path()
+                                .join(".data/blobs")
+                                .join(&hash[..2])
+                                .join(hash),
                         )
                         .unwrap(),
                     )

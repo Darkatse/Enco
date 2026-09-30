@@ -1,7 +1,8 @@
+mod accept;
 mod commit;
 mod rows;
 
-use crate::sqlite::timestamp;
+use crate::{limits::RECENT_DELIVERY_FAILURES, sqlite::timestamp};
 use async_trait::async_trait;
 use enco_core::*;
 use enco_kernel::*;
@@ -250,26 +251,39 @@ impl Store for SqliteStore {
             .await
     }
 
-    async fn accept(&self, event: &Event) -> Result<Accepted, StoreError> {
-        let event = event.clone();
+    async fn accept(
+        &self,
+        events: &[Event],
+        connection: Option<&ConnectionWrite>,
+    ) -> Result<Vec<Accepted>, StoreError> {
+        let events = events.to_vec();
+        let write = connection.cloned();
+        self.run(move |connection| accept::accept(connection, &events, write.as_ref()))
+            .await
+    }
+
+    async fn connection(&self, key: &str) -> Result<Option<serde_json::Value>, StoreError> {
+        let key = key.to_owned();
         self.run(move |connection| {
-            let inserted = connection
-                .execute(
-                    "INSERT OR IGNORE INTO inbox(event_id,session_id,event) VALUES (?,?,?)",
-                    params![
-                        event.id.to_string(),
-                        event.session.to_string(),
-                        encode(&event)?
-                    ],
-                )
-                .map_err(backend)?;
-            Ok(if inserted == 0 {
-                Accepted::Duplicate
-            } else {
-                Accepted::New
-            })
+            connection
+                .query_row("SELECT state FROM connections WHERE key=?", [key], |r| {
+                    rows::document(r, 0)
+                })
+                .optional()
+                .map_err(backend)
         })
         .await
+    }
+
+    async fn delivery_failures(&self, key: &str) -> Result<Vec<DeliverySettlement>, StoreError> {
+        let key = key.to_owned();
+        self.run(move |connection| {
+            let mut query = connection.prepare(
+                "SELECT body FROM deliveries WHERE connection=? AND outcome IN ('failed', 'unknown') ORDER BY order_no DESC LIMIT ?"
+            ).map_err(backend)?;
+            query.query_map(params![key, RECENT_DELIVERY_FAILURES], |r| rows::document(r, 0))
+                .map_err(backend)?.collect::<Result<Vec<_>, _>>().map_err(backend)
+        }).await
     }
 
     async fn pending(&self, session: SessionId) -> Result<Vec<Event>, StoreError> {

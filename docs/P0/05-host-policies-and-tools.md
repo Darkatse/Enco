@@ -1,15 +1,14 @@
 # 05 宿主：原生工具、上下文源与出厂 composer（enco-host）
 
-enco-host 为内核端口提供原生适配器：`SqliteStore`（03 §3）、原生工具、`WorkspaceContextSource`、`FactoryComposer`、`SystemClock`，以及记忆（06）。这里是 P0 中所有"策略"与"排版"所在的地方。
+enco-host 为内核端口提供原生适配器：`SqliteStore`（03 §3）、原生工具、`InstructionsContextSource`、`FactoryComposer`、`SystemClock`，以及记忆（06）。这里是 P0 中所有"策略"与"排版"所在的地方。
 
 ## 1. 工作区
 
 ```text
 $ENCO_HOME/workspace/        工具的默认工作目录；Agent 的"家"
-  AGENTS.md                  主人的常驻指令（可选，Agent 可以编辑）
 ```
 
-工作区在 P0 中是普通目录，**不初始化 git**（git 集成属于 P2）。守护进程启动时确保 `workspace/` 存在。记忆不在工作区中（06）。
+工作区在 P0 中是普通目录，**不初始化 git**（git 集成属于 P2），也不纳入 `$ENCO_HOME` 的版本管理（08 §2）。守护进程启动时确保 `workspace/` 存在。主人的常驻指令是仓库根目录的 `$ENCO_HOME/AGENTS.md`（可选，Agent 可以编辑），它属于主人的意图，不在工作区中。记忆也不在工作区中（06）。
 
 路径规则（所有文件工具一致）：相对路径相对于工作区解析；允许绝对路径（当前不设沙盒）；不做 `~` 展开。
 
@@ -78,18 +77,18 @@ pub const LIFELINE: [&str; 5] = ["fs_read", "fs_write", "fs_edit", "fs_list", "s
 
 工具描述与省略原因中出现的上限（默认行数、超时、宽限时间、预算比例、记忆文本长度等）都由 `limits.rs` 的常量生成，不另写数字。
 
-## 3. WorkspaceContextSource（`context.rs`）
+## 3. InstructionsContextSource（`context.rs`）
 
 实现 `ContextSource`，不使用 `ContextQuery` 中的 Event。每次调用都重新读取文件，所以对常驻指令的修改在下一个 Round 立即生效。
 
-- `workspace/AGENTS.md` 存在时 → `Candidate { id: "workspace:AGENTS.md", kind: Instruction, text }`；不存在不是错误，只是没有候选。
+- `InstructionsContextSource::new(path)`，`path` 为 `$ENCO_HOME/AGENTS.md`。文件存在时 → `Candidate { id: "instructions:AGENTS.md", kind: Instruction, text }`；不存在不是错误，只是没有候选。
 - 文件不是合法 UTF-8 时返回 `ContextError`，message 指明文件。宁可让这一轮明确失败，也不要悄悄跳过主人的指令。
 
 ## 4. FactoryComposer（`composer.rs`）
 
-出厂 composer，也就是安全模式使用的 composer。`FactoryComposer::new(workspace: PathBuf)`，`code()` 为 `CodeRef::Native { name: "factory-composer", version: crate 版本 }`。
+出厂 composer，也就是安全模式使用的 composer。`FactoryComposer::new(workspace: PathBuf, instructions: PathBuf)`，`code()` 为 `CodeRef::Native { name: "factory-composer", version: crate 版本 }`。
 
-它是纯函数：只读取 `ComposeInput` 和构造时传入的工作区路径。
+它是纯函数：只读取 `ComposeInput` 和构造时传入的工作区、指令文件路径。
 
 ### 4.1 System 消息
 
@@ -101,6 +100,7 @@ pub const LIFELINE: [&str; 5] = ["fs_read", "fs_write", "fs_edit", "fs_list", "s
 ## Environment
 - Current time: {now，RFC 3339，带偏移} ({英文星期})
 - Workspace: {工作区绝对路径}
+- Standing instructions: {AGENTS.md 的绝对路径}
 - Session: {session.name}
 
 ## Standing instructions (AGENTS.md)
@@ -186,7 +186,7 @@ Memory
 - To correct a memory, call memory_update with its id so that the old statement is replaced. To forget one, call memory_forget.
 - The Memory section shows only part of what you remember. Use memory_search when something may have been saved before.
 
-Standing instructions from the owner live in `AGENTS.md` in the workspace. Edit it when the owner asks you to change how you work.
+Standing instructions from the owner live in the AGENTS.md file listed under Environment. Edit it when the owner asks you to change how you work.
 
 Tools
 - A tool result marked "outcome unknown" means the action may already have happened. Check the current state before trying again.

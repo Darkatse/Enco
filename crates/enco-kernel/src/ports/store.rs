@@ -34,8 +34,16 @@ pub trait Store: Send + Sync {
     async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreError>;
 
     // ---- Inbox (any producer may submit; only the Session actor consumes through Commit)
-    /// Durably accept an Event; repeated IDs are harmless.
-    async fn accept(&self, event: &Event) -> Result<Accepted, StoreError>;
+    /// Atomically accept Events, connection state and an optional final delivery outcome.
+    async fn accept(
+        &self,
+        events: &[Event],
+        connection: Option<&ConnectionWrite>,
+    ) -> Result<Vec<Accepted>, StoreError>;
+    /// Read the state owned by one channel connection.
+    async fn connection(&self, key: &str) -> Result<Option<serde_json::Value>, StoreError>;
+    /// Read recent failed or uncertain deliveries in reverse commit order.
+    async fn delivery_failures(&self, key: &str) -> Result<Vec<DeliverySettlement>, StoreError>;
     /// Read unconsumed inputs in acceptance order.
     async fn pending(&self, session: SessionId) -> Result<Vec<Event>, StoreError>;
 
@@ -76,6 +84,17 @@ pub struct Commit {
     pub entries: Vec<Entry>,
     /// Inbox IDs consumed by the corresponding EventConsumed facts.
     pub consumed: Vec<EventId>,
+}
+
+/// State returned to the connection owner for atomic acceptance.
+#[derive(Clone)]
+pub struct ConnectionWrite {
+    /// Adapter-declared protocol and account identity.
+    pub key: String,
+    /// Complete state snapshot owned by this connection.
+    pub state: serde_json::Value,
+    /// Final settlement of a Log-derived delivery, if any.
+    pub settlement: Option<DeliverySettlement>,
 }
 
 /// Whether an Event was newly accepted.

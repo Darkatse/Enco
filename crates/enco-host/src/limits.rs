@@ -15,3 +15,12 @@ pub(crate) const MEMORY_TEXT_BYTES: usize = 2_000;
 pub(crate) const MEMORY_RECALL_DEFAULT: u64 = 8;
 pub(crate) const MEMORY_RECALL_MAX: u64 = 20;
 pub(crate) const EMBED_BATCH: usize = 64;
+
+// A destination that stays unavailable must not starve later logical deliveries.
+pub(crate) const CHANNEL_SEND_ATTEMPTS: u32 = 4;
+pub(crate) const CHANNEL_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const CHANNEL_WAKE_CAPACITY: usize = 32;
+pub(crate) const TELEGRAM_POLL_SECONDS: u64 = 30;
+pub(crate) const TELEGRAM_SEND_SECONDS: u64 = 15;
+pub(crate) const TELEGRAM_MESSAGE_UNITS: usize = 4096;
+pub(crate) const RECENT_DELIVERY_FAILURES: u32 = 10;

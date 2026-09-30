@@ -78,7 +78,7 @@ complete: async func(settings: settings, request: request) -> result<completion,
 | 层 | 位置 | 内容 |
 |---|---|---|
 | 单元 | 模块内 `#[cfg(test)]` | 只用于集成测试不易触达的纯函数边界。目前只有记忆索引的 `reconcile`：同一记忆的重复节点、无法解析的 payload、rev 不一致 |
-| 集成 | `crates/enco-host/tests/` | Kernel + `SqliteStore`（临时目录）+ 原生工具 + `WorkspaceContextSource` + `Memories`（临时目录）+ `FactoryComposer` + `ScriptedProvider` + `TestClock`。恢复、Transcript 投影、计划校验、composer 的预算与压缩、工具行为都在这一层经过真实路径验证 |
+| 集成 | `crates/enco-host/tests/` | Kernel + `SqliteStore`（临时目录）+ 原生工具 + `InstructionsContextSource` + `Memories`（临时目录）+ `FactoryComposer` + `ScriptedProvider` + `TestClock`。恢复、Transcript 投影、计划校验、composer 的预算与压缩、工具行为都在这一层经过真实路径验证 |
 | 端到端 | `apps/enco/tests/` | 以子进程运行 `enco serve`（`env!("CARGO_BIN_EXE_enco")`），临时 `ENCO_HOME`，`[provider]` 与 `[embedding]` 都指向 `wiremock` 服务；经过真实的 Wasm 插件 |
 
 测试辅助：
@@ -92,7 +92,7 @@ complete: async func(settings: settings, request: request) -> result<completion,
 
 ## 4. 验收场景
 
-P0 的完成以下列场景为准。里程碑按实施顺序排列：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正。"层"指主要在哪一层验证。
+P0 的完成以下列场景为准。里程碑按实施顺序排列：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。"层"指主要在哪一层验证。
 
 | # | 里程碑 | 场景 | 层 | 必须观察到 |
 |---|---|---|---|---|
@@ -122,9 +122,16 @@ P0 的完成以下列场景为准。里程碑按实施顺序排列：M1 地基�
 | A24 | M8 | 分页读取 | 集成 | 每行与说明行合计都能放入预算、总量超过预算的文件：结果不超过预算，只含完整的行，说明行给出 `continue at offset`，按它再读得到其余内容，`ToolCallSettled.full` 为空；单行加说明行也放不下时：返回这一行，由内核截断，`full` 指向 blob，说明行位于预览开头，继续位置仍然可见 |
 | A25 | M8 | 工具结果持久化 | 集成（与 A2、A24 共用） | 执行工具并重启：结局与 `content/full` 保持不变，模型请求中的工具结果与重启前相同；大结果的全文从 blob 读取。原始返回值不进入 Log 由 `Settlement` 类型表达 |
 | A26 | M8 | 本地时间 | 集成 | `TestClock` 在两个 Round 之间改变 UTC 偏移：后一个计划中的当前时间使用新偏移 |
+| A27 | M9 | 目录布局 | 端到端（与已有场景共用） | `enco init` 之后运行时文件只出现在 `.data/`，`.gitignore` 忽略 `.data/` 与 `workspace/`；根目录的 `AGENTS.md` 出现在计划的 Standing instructions 一节 |
+| A28 | M9 | Telegram 入站与命令 | 集成 | wiremock 模拟 Bot API：主人的私聊文本成为 `main` 中来源为 `Channel` 的 Event；其他用户、群聊与非文本更新只推进 offset；`/session work` 创建并切换，之后的消息进入 `work`；命令不产生 Provider 请求；`/cancel` 取消正在进行的 Run |
+| A29 | M9 | 入站不丢不重 | 集成 | 一条更新提交之后停止并重启：下一次 `getUpdates` 的 offset 为 `update_id + 1`，Inbox 中这条消息恰好一条；在提交之前停止：重启后同一条更新被再次取回，并恰好接纳一次 |
+| A30 | M9 | 出站投递 | 集成 | 最近交互输入的来源决定投递目标；超过 4096 的回复拆成多条，拼接后与原文相同；由 CLI 触发的回复不发往 Telegram；提醒触发的回复在重启后仍发往主人最近使用的聊天；聊天挂着别的 Session 时回复带 `[<Session 名>]` 前缀；`sending` 已写入时重启不重发；每次逻辑投递都有最终结算，后续成功不覆盖此前 unknown / failed，`enco status.channels` 可读取其 Session 与 Log 位置；Run 失败或取消有终止通知 |
+| A31 | M9 | 真实 Telegram | 手动一次 | 配置真实的 bot，在手机上完成对话、`/session` 切换、`/cancel`，并收到一分钟后的提醒 |
 
 ## 5. 每个里程碑的完成条件
 
+- 逐路径审阅概念、职责、状态归属和数据链路；可读性、可维护性与认知一致性是硬性收尾门控。
+- 主人从第一性原理人工审核通过后才算验收；测试只核对行为，不代替审核。
 - 该里程碑的验收场景通过。
 - `cargo xtask check` 通过（M1 起）。
 - 自检清单（01 §6）逐项确认。

@@ -1,6 +1,7 @@
 //! Durable vocabulary shared by the kernel, host and local protocol.
 #![warn(missing_docs)]
 mod capability;
+mod delivery;
 mod entry;
 mod event;
 mod hash;
@@ -12,6 +13,7 @@ mod session;
 mod tool;
 pub use capability::*;
 pub use chrono::{DateTime, FixedOffset, Utc};
+pub use delivery::*;
 pub use entry::*;
 pub use event::*;
 pub use hash::*;

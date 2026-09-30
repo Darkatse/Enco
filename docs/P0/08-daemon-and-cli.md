@@ -6,7 +6,7 @@
 
 | 命令 | 作用 |
 |---|---|
-| `enco init` | 创建 `ENCO_HOME`、工作区目录与配置模板（已存在的文件不覆盖），打印下一步 |
+| `enco init` | 创建 `ENCO_HOME`、`.data/`、工作区目录、`.gitignore` 与配置模板（已存在的文件不覆盖），打印下一步 |
 | `enco serve` | 在前台运行守护进程 |
 | `enco chat [--session <name>]` | 交互式对话，默认 Session 为 `main` |
 | `enco send [--session <name>] <text>` | 发送一条消息后退出，不等待回复 |
@@ -27,16 +27,21 @@
 `ENCO_HOME` 环境变量，默认为 `dirs::home_dir()/.enco`。
 
 ```text
-$ENCO_HOME/
+$ENCO_HOME/            主人的意图；P2 起是一个 git 仓库（架构文档 §4.8）
   config.toml
-  enco.db
-  memory.db          记忆的权威（06 §2）
-  memory-index/      记忆索引，派生物，随时可以删除（06 §3）
-  enco.sock
-  enco.lock          单实例锁，永不删除（§5）
-  blobs/
-  workspace/
+  AGENTS.md            主人的常驻指令，可选（05 §1）
+  .gitignore           /.data/ 与 /workspace/
+  workspace/           工具的默认工作目录，不纳入版本管理
+  .data/               运行时状态，不纳入版本管理
+    enco.db
+    memory.db          记忆的权威（06 §2）
+    memory-index/      记忆索引，派生物，随时可以删除（06 §3）
+    blobs/
+    enco.sock
+    enco.lock          单实例锁，永不删除（§5）
 ```
+
+`Paths` 为每一项提供一个方法，其余代码不拼接路径。旧布局的开发数据不迁移，删除后重新 `enco init`。
 
 ## 3. 配置（`config.rs`）
 
@@ -64,11 +69,16 @@ max_output_tokens = 8192          # 默认 8192
 
 [run]                             # 可选
 max_rounds = 24                   # 默认 24
+
+[telegram]                        # 可选；存在时启用 Telegram 渠道（10）
+token_env = "TELEGRAM_BOT_TOKEN"  # bot token 所在的环境变量
+owner_user_id = 123456789         # 主人的 Telegram user ID
+api_base = "https://api.telegram.org"   # 可选
 ```
 
 - 配置文件不存在：报错并提示运行 `enco init`。
 - 缺少 `[provider]` 或 `[embedding]`：报错并拒绝启动。`[embedding]` 可以指向与 `[provider]` 不同的服务，也可以指向本地的 OpenAI 兼容服务（例如 Ollama）。
-- 给出了 `api_key_env` 但该环境变量未设置：报错并拒绝启动。API key 只从环境变量读取，不写进配置文件。
+- 给出了 `api_key_env` 但该环境变量未设置：报错并拒绝启动。API key 只从环境变量读取，不写进配置文件。`[telegram]` 的 `token_env` 同理。
 - 这是 P0 的全部配置项。新增配置项需要先提问（01 §5）。
 
 ## 4. 组合根（`compose_root.rs`）
@@ -89,13 +99,14 @@ memories = Memories::open(MemoryPaths { db: paths.memory_db(), index: paths.memo
                           embedding, embedder, clock.clone())               // 06 §7
 deps = KernelDeps {
     store, provider,
-    composer: FactoryComposer::new(paths.workspace()),
-    context:  vec![WorkspaceContextSource::new(paths.workspace()), MemoryContextSource::new(memories.clone())],
+    composer: FactoryComposer::new(paths.workspace(), paths.instructions()),
+    context:  vec![InstructionsContextSource::new(paths.instructions()), MemoryContextSource::new(memories.clone())],
     tools:    enco_host::native_tools(paths.workspace()) ++ enco_host::memory_tools(memories.clone()),
     lifeline: enco_host::LIFELINE 转为 Vec<String>,
     clock,
 }
 kernel = Kernel::start(deps, kernel_config)
+channels = config.telegram.map(|c| Channel::start(kernel.clone(), Telegram::new(token, api_base), owner_id, clock)) // 10；配置先校验，Kernel 启动后注册
 ```
 
 依赖在这里一次性构造成具体的结构体。不要引入注册表、工厂或容器。
@@ -108,7 +119,7 @@ kernel = Kernel::start(deps, kernel_config)
 2. 持有锁时，已有的 `enco.sock` 一定是残留文件，直接删除，不必尝试连接。绑定 Unix domain socket，并把文件权限设为 `0600`（这个 socket 等同于对 Agent 的完全控制权）。socket 只是通信入口，所有权由锁表示。
 3. 执行组合根。锁在打开数据库与记忆索引、启动 Kernel 之前取得，所以第二次 `enco serve` 不会触发索引重建或 Session 恢复。组合根失败时删除本进程的 socket，返回错误。
 4. 接受循环：每个连接一个任务。
-5. 收到 SIGINT 或 SIGTERM：停止接受新连接，调用 `kernel.shutdown()` 并等待它完成，删除 socket 文件，退出。锁一直持有到进程退出，所以关闭期间启动的 `enco serve` 会在第 1 步被拒绝。
+5. 收到 SIGINT 或 SIGTERM：停止接受新连接，停止渠道并等待它静止（10 §6），调用 `kernel.shutdown()` 并等待它完成，删除 socket 文件，退出。锁一直持有到进程退出，所以关闭期间启动的 `enco serve` 会在第 1 步被拒绝。
 
 每个连接的任务：按行读取请求，依次处理，写回响应。一个连接最多订阅一个 Session；订阅之后，同一个任务用 `select!` 同时处理新的请求行和 broadcast 中的条目。所有写出都经过这一个任务，因此一个连接上的输出不会交错。
 
@@ -162,7 +173,7 @@ pub enum Command {
 pub enum ServerMessage {
     Ok { id: u64, data: serde_json::Value },
     Error { id: u64, code: String, message: String },
-    Entry { session: String, entry: Entry },   // 订阅之后推送
+    Entry { session: String, entry: Box<Entry> },   // 订阅之后推送
 }
 ```
 
@@ -171,7 +182,7 @@ pub enum ServerMessage {
 | `send` | `{ "session_id", "event_id", "accepted": "new" \| "duplicate" }` |
 | `subscribe` | `{ "session_id" }` |
 | `cancel` | `{ "cancelled": bool }` |
-| `status` | `Status` |
+| `status` | `Status`，外加 `channels`：`[{ "key", "running": bool, "stopped": string \| null, "recent_failures": [DeliverySettlement] }]`，由守护进程合并；各字段的含义见 10 §5 |
 | `sessions` | `[SessionRecord]` |
 | `log` | `[Entry]` |
 | `safe_mode` | `{ "enabled": bool }` |

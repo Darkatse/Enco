@@ -24,7 +24,7 @@
 
 ## 2. 权威：memory.db（`memory/authority.rs`）
 
-- 文件：`$ENCO_HOME/memory.db`，与 `enco.db` 分开：一个归属者，一个文件。
+- 文件：`$ENCO_HOME/.data/memory.db`，与 `enco.db` 分开：一个归属者，一个文件。
 - 连接方式与 Store 相同（03 §3.1）：一个 `rusqlite::Connection` 放在 `std::sync::Mutex` 中，在 `spawn_blocking` 中执行；`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;`；写事务使用 `BEGIN IMMEDIATE`。
 - 版本使用 `PRAGMA user_version`：为 0 时建表并设为 1；为 1 时直接使用；大于 1 时返回 `MemoryError::NewerSchema`，拒绝启动。
 
@@ -47,7 +47,7 @@ CREATE TABLE memories (
 
 ### 3.1 形态
 
-- 目录 `$ENCO_HOME/memory-index/`，其中是 `memory.tdb`（以及 TriviumDB 自己的附属文件）和 `index.json`：`{"model": "...", "dimensions": n}`，记录建索引时使用的 embedding 模型。
+- 目录 `$ENCO_HOME/.data/memory-index/`，其中是 `memory.tdb`（以及 TriviumDB 自己的附属文件）和 `index.json`：`{"model": "...", "dimensions": n}`，记录建索引时使用的 embedding 模型。
 - 打开：`Database::<f32>::open_with_config(path, Config { dim: dimensions, load_text_index: false, ..Default::default() })`，其余保持默认。**不要**调用 `enable_auto_compaction`（它会启动后台线程）。
 - 每条记忆对应一个节点：向量是记忆文本的 embedding，payload 是 `{"memory": "<MemoryId>", "rev": n}`。节点 ID 由 TriviumDB 分配，只在索引内部有意义，不出现在索引之外。
 - 内存中维护 `nodes: HashMap<MemoryId, IndexedMemory>`，`IndexedMemory { node, rev }` 明确区分索引节点与权威修订号，打开时从 payload 重建。

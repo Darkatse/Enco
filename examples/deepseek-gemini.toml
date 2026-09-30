@@ -19,3 +19,8 @@ max_output_tokens = 8192
 
 [run]
 max_rounds = 24
+
+# Optional private Telegram channel. Set the token environment variable before serving.
+# [telegram]
+# token_env = "TELEGRAM_BOT_TOKEN"
+# owner_user_id = 123456789

@@ -43,3 +43,23 @@ CREATE TABLE schedules (
   fired_event_id TEXT
 ) STRICT;
 CREATE INDEX schedules_pending ON schedules(due_at) WHERE state = 'pending';
+
+CREATE TABLE connections (
+  key   TEXT PRIMARY KEY,
+  state TEXT NOT NULL
+) STRICT;
+
+-- One final outcome per logical delivery; the body contains no reply text.
+CREATE TABLE deliveries (
+  order_no   INTEGER PRIMARY KEY AUTOINCREMENT,
+  connection TEXT NOT NULL REFERENCES connections(key),
+  session_id TEXT NOT NULL,
+  epoch      INTEGER NOT NULL,
+  seq        INTEGER NOT NULL,
+  body       TEXT NOT NULL,
+  outcome    TEXT GENERATED ALWAYS AS (json_extract(body, '$.outcome.kind')) VIRTUAL,
+  UNIQUE (connection, session_id, epoch, seq),
+  FOREIGN KEY (session_id, epoch, seq) REFERENCES log(session_id, epoch, seq)
+) STRICT;
+CREATE INDEX delivery_failures ON deliveries(connection, order_no)
+  WHERE outcome IN ('failed', 'unknown');

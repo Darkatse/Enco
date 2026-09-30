@@ -92,7 +92,12 @@ pub struct Event {
 }
 
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum EventSource { Cli, Scheduler }
+pub enum EventSource {
+    Cli,
+    Scheduler,
+    /// 渠道中的一个聊天（10）。四个字段都是渠道自己的标识，内核不解释它们。
+    Channel { channel: String, account: String, conversation: String, sender: String },
+}
 
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventBody {
@@ -260,7 +265,7 @@ pub struct Contribution {                 // Default：两者皆空
     pub omitted: Vec<Omission>,           // 来源自己未能提供的内容及原因
 }
 
-/// 一段候选内容。`id` 带来源前缀，例如 "workspace:AGENTS.md"、"memory:<MemoryId>"。
+/// 一段候选内容。`id` 带来源前缀，例如 "instructions:AGENTS.md"、"memory:<MemoryId>"。
 pub struct Candidate { pub id: String, pub kind: CandidateKind, pub text: String }
 pub enum CandidateKind { Instruction, Memory }
 ```
@@ -348,7 +353,11 @@ pub trait Store: Send + Sync {
     async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreError>;
 
     // ---- Inbox（任何人都可以投递；只有该 Session 的 actor 通过 commit 消费）
-    async fn accept(&self, event: &Event) -> Result<Accepted, StoreError>;
+    /// 在一个事务中投递 `events`，并写入调用方连接的状态（如果有）。`events` 可以为空，此时只写连接状态。
+    async fn accept(&self, events: &[Event], connection: Option<&ConnectionWrite>) -> Result<Vec<Accepted>, StoreError>;
+    // ---- 连接状态（写者：该连接的 actor，只经 accept 写入）
+    async fn connection(&self, key: &str) -> Result<Option<serde_json::Value>, StoreError>;
+    async fn delivery_failures(&self, key: &str) -> Result<Vec<DeliverySettlement>, StoreError>;
     async fn pending(&self, session: SessionId) -> Result<Vec<Event>, StoreError>;
 
     // ---- Schedule（写者：Scheduler actor）
@@ -369,6 +378,17 @@ pub struct NodeRecord { pub id: NodeId, pub safe_mode: bool }
 
 /// 一次原子提交：若干 Log 条目，以及它们消费的 Inbox 行。
 pub struct Commit { pub entries: Vec<Entry>, pub consumed: Vec<EventId> }
+
+/// 渠道连接的状态（游标、映射、出站进度），与它产生的 Event 一起提交（架构文档 §3.6 规则二）。内容对内核不透明。
+pub struct ConnectionWrite {
+    pub key: String,
+    pub state: serde_json::Value,
+    pub settlement: Option<DeliverySettlement>,
+}
+
+/// A logical delivery refers to its original Log fact; it never copies reply text.
+pub struct Delivery { pub session: SessionId, pub pos: LogPos, pub target: String }
+pub struct DeliverySettlement { pub delivery: Delivery, pub outcome: Settlement, pub at: DateTime<Utc> }
 
 pub enum Accepted { New, Duplicate }
 
@@ -412,7 +432,7 @@ pub enum StoreError {
 
 Inbox 是一个邮箱：任何人都可以投递（`accept`），只有归属者读取并消费。
 
-- `accept` 是 `INSERT OR IGNORE`，以 EventId 去重，返回 `New` 或 `Duplicate`。重复投递不是错误，这让客户端可以安全地重发。
+- `accept` 对每个 Event 执行 `ON CONFLICT(event_id) DO NOTHING`，只以 EventId 去重，逐个返回 `New` 或 `Duplicate`。重复投递不是错误，这让客户端可以安全地重发。连接状态与这些 Event 在同一个事务中写入：游标不会先于它带来的消息被接纳。可选的 DeliverySettlement 与连接状态同事务追加到 deliveries；唯一键是连接与 `(session, epoch, seq)`。按提交序号读取最近 10 次 failed / unknown，时间只用于展示。
 - 投递的顺序由自增的 `order_no` 决定，而不是 `received_at`。
 - 消费只能经由 `commit`，与 `EventConsumed` 条目在同一事务中完成。
 
@@ -420,8 +440,8 @@ Inbox 是一个邮箱：任何人都可以投递（`accept`），只有归属者
 
 ### 3.1 连接
 
-- 数据库文件：`$ENCO_HOME/enco.db`。
-- 新库在一个事务中建表，写入 `schema_version = '1'`、新生成的 `node_id` 和 `safe_mode = '0'`。
+- 数据库文件：`$ENCO_HOME/.data/enco.db`。
+- 新库在一个事务中建立完整 schema，写入 `schema_version = '1'`、新生成的 `node_id` 和 `safe_mode = '0'`。M9 之前直接修订 schema，不升级版本号，旧的开发库删除重建。M9 开始日常使用之后，schema 的任何变化都要升级版本号并写迁移，保留已有数据。
 - 已有库的 `schema_version` 大于 1 时返回 `NewerSchema`，拒绝启动。
 - 一个 `rusqlite::Connection`，放在 `std::sync::Mutex` 中；每个方法在 `tokio::task::spawn_blocking` 中执行。不要引入连接池。
 - 打开时执行：`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;`
@@ -434,7 +454,7 @@ CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT;
--- 键：schema_version = '1'，node_id = <ULID>，safe_mode = '0' | '1'
+-- Keys: schema_version = '1', node_id = <ULID>, safe_mode = '0' | '1'
 
 CREATE TABLE sessions (
   id            TEXT PRIMARY KEY,
@@ -475,13 +495,33 @@ CREATE TABLE schedules (
   fired_event_id TEXT
 ) STRICT;
 CREATE INDEX schedules_pending ON schedules(due_at) WHERE state = 'pending';
+
+CREATE TABLE connections (
+  key   TEXT PRIMARY KEY,               -- 例如 telegram:<bot id>
+  state TEXT NOT NULL                   -- 连接状态的 JSON
+) STRICT;
+
+CREATE TABLE deliveries (
+  order_no   INTEGER PRIMARY KEY AUTOINCREMENT,
+  connection TEXT NOT NULL REFERENCES connections(key),
+  session_id TEXT NOT NULL,
+  epoch      INTEGER NOT NULL,
+  seq        INTEGER NOT NULL,
+  body       TEXT NOT NULL,
+  outcome    TEXT GENERATED ALWAYS AS (json_extract(body, '$.outcome.kind')) VIRTUAL,
+  UNIQUE (connection, session_id, epoch, seq),
+  FOREIGN KEY (session_id, epoch, seq) REFERENCES log(session_id, epoch, seq)
+) STRICT;
+CREATE INDEX delivery_failures ON deliveries(connection, order_no)
+  WHERE outcome IN ('failed', 'unknown');
+
 ```
 
 `kind` 是生成列，只用于查询与调试，事实来源仍然是 `body`。
 
 ### 3.3 Blob 存储（`blobs.rs`）
 
-- 路径：`$ENCO_HOME/blobs/<哈希前两位>/<完整哈希>`。
+- 路径：`$ENCO_HOME/.data/blobs/<哈希前两位>/<完整哈希>`。
 - 写入：已存在则直接返回；否则写到同目录的 `<哈希>.tmp.<ULID>`，`sync_all` 之后 `rename`。
 - 读取：读出后重新计算哈希，不一致则返回 `Blob` 错误。
 - 孤立的 blob（写入了但对应的 Commit 没有成功）是无害的。

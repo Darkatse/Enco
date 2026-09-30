@@ -56,6 +56,6 @@ pub(crate) enum ServerMessage {
     },
     Entry {
         session: String,
-        entry: Entry,
+        entry: Box<Entry>,
     },
 }

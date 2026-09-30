@@ -246,7 +246,7 @@ fn budget_omissions_are_explicit_and_do_not_make_oversized_candidates_mandatory(
         context: Contribution {
             candidates: vec![
                 Candidate {
-                    id: "workspace:AGENTS.md".into(),
+                    id: "instructions:AGENTS.md".into(),
                     kind: CandidateKind::Instruction,
                     text: "large instruction ".repeat(150),
                 },
@@ -270,7 +270,7 @@ fn budget_omissions_are_explicit_and_do_not_make_oversized_candidates_mandatory(
             max_output_tokens: 100,
         },
     };
-    let Composition::Plan(plan) = FactoryComposer::new("/workspace".into())
+    let Composition::Plan(plan) = FactoryComposer::new("/workspace".into(), "/AGENTS.md".into())
         .compose(&input)
         .unwrap()
     else {
@@ -279,7 +279,7 @@ fn budget_omissions_are_explicit_and_do_not_make_oversized_candidates_mandatory(
     assert!(
         plan.omitted
             .iter()
-            .any(|o| o.source == "workspace:AGENTS.md")
+            .any(|o| o.source == "instructions:AGENTS.md")
     );
     assert!(plan.omitted.iter().any(|o| o.source == "memory:large"));
     let PlanItem::Message { message } = &plan.items[0] else {

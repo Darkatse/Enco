@@ -54,7 +54,7 @@ enco-core  ←  enco-kernel  ←  enco-host
 |---|---|---|
 | enco-core | 无 | serde、serde_json、ulid、blake3、chrono、thiserror |
 | enco-kernel | enco-core | tokio（rt、sync、time、macros）、tokio-util、async-trait、serde、serde_json、ulid、thiserror、tracing |
-| enco-host | enco-core、enco-kernel | rusqlite（bundled）、triviumdb、tokio（rt、fs、process、io-util、time、sync）、tokio-util、async-trait、serde、serde_json、chrono、ulid、blake3、thiserror、tracing |
+| enco-host | enco-core、enco-kernel | rusqlite（bundled）、triviumdb、reqwest（Telegram，10）、tokio（rt、fs、process、io-util、time、sync）、tokio-util、async-trait、serde、serde_json、chrono、ulid、blake3、thiserror、tracing |
 | enco-wasm | enco-core、enco-kernel | wasmtime、wasmtime-wasi、reqwest、tokio、async-trait、serde_json、ulid、thiserror、tracing |
 | apps/enco | 以上全部 | clap、anyhow、tokio（full）、tokio-util、serde、serde_json、toml、tracing、tracing-subscriber、dirs、ulid；dev：wiremock、tempfile |
 | xtask | 无 | anyhow、cargo_metadata、wit-parser、serde_json |
@@ -178,6 +178,7 @@ store.rs         SqliteStore（实现 Store 端口），含 blob 文件
 store/schema.sql 建表 SQL
 store/commit.rs  Commit 的前置条件与 Inbox 消费
 store/rows.rs    行到领域类型的映射
+store/accept.rs  Inbox、连接状态与投递结算的原子接纳
 tools.rs         原生工具集合与救生集
 tools/args.rs    工具参数的读取与校验
 tools/files.rs   fs_read、fs_write、fs_edit、fs_list
@@ -189,7 +190,12 @@ memory/context.rs    MemoryContextSource
 memory/tools.rs      memory_save / memory_update / memory_forget / memory_search
 composer.rs      出厂 composer
 prompts/         system.md、compaction.md、safe_mode.md（include_str!）
-context.rs       WorkspaceContextSource
+context.rs       InstructionsContextSource
+channel.rs       渠道协议边界、连接句柄与可查询状态（10）
+channel/connection.rs  连接 actor：权限、映射、接纳与投递结算
+channel/projection.rs  从 Log 投影默认回复与终止通知
+channel/transport.rs   轮询、分段发送、退避与取消
+telegram.rs      原生 Telegram 协议适配器：更新解析、分段与错误分类（10）
 clock.rs         SystemClock
 limits.rs
 ```

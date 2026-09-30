@@ -126,8 +126,13 @@ pub async fn kernel_with(
     let mut deps = KernelDeps {
         store: store.clone(),
         provider,
-        composer: Arc::new(FactoryComposer::new(workspace.clone())),
-        context: vec![Arc::new(WorkspaceContextSource::new(workspace.clone()))],
+        composer: Arc::new(FactoryComposer::new(
+            workspace.clone(),
+            root.join("AGENTS.md"),
+        )),
+        context: vec![Arc::new(InstructionsContextSource::new(
+            root.join("AGENTS.md"),
+        ))],
         tools: native_tools(workspace),
         lifeline: LIFELINE.iter().map(|s| s.to_string()).collect(),
         clock: Arc::new(SystemClock),

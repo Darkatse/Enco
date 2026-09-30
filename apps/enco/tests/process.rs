@@ -79,7 +79,7 @@ async fn node_lock_is_held_while_serving_and_until_shutdown_is_quiescent() {
     .await
     .unwrap()
     .unwrap();
-    let socket = daemon.root.path().join("enco.sock");
+    let socket = daemon.root.path().join(".data/enco.sock");
     let inode = std::fs::metadata(&socket).unwrap().ino();
     assert!(
         std::process::Command::new("kill")
@@ -108,7 +108,7 @@ async fn node_lock_is_held_while_serving_and_until_shutdown_is_quiescent() {
     assert!(!socket.exists());
     let lock = std::fs::File::options()
         .write(true)
-        .open(daemon.root.path().join("enco.lock"))
+        .open(daemon.root.path().join(".data/enco.lock"))
         .unwrap();
     lock.try_lock().unwrap();
 }

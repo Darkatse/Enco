@@ -301,6 +301,7 @@ async fn changed_tool_definitions_are_rejected_before_any_provider_request() {
     let (kernel, _) = kernel_with(dir.path(), provider.clone(), |deps, _| {
         deps.composer = std::sync::Arc::new(AlteredDefinition(enco_host::FactoryComposer::new(
             dir.path().join("workspace"),
+            dir.path().join("AGENTS.md"),
         )))
     })
     .await;
