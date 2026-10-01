@@ -60,7 +60,7 @@ The kernel runs on tokio and the plugins on Wasmtime. On the desktop prototype, 
 
 ### Platforms
 
-P0 runs on macOS and Linux as a background service with a command-line client; so far it has been tested on macOS. Phones join later as full nodes (P5): Android runs plugins with Cranelift and iOS with the Pulley interpreter. Before the system suspends the app, a phone hands its conversations to an always-on node. Windows is not supported yet because the local protocol uses Unix domain sockets.
+P0 runs on macOS and Linux as a background service with a command-line client; so far it has been tested on macOS. Phones join later as full nodes (P5): Android runs plugins with Cranelift and iOS with the Pulley interpreter. Before the system suspends the app, a phone hands its conversations to an always-on node. Windows support is on the roadmap, with Unix first: there the local protocol will use named pipes instead of Unix domain sockets.
 
 ### A small set of concepts
 

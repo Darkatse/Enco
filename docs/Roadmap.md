@@ -13,6 +13,7 @@
 | P5 手机节点 | P4；跨节点委派还需要 Session 监督树 |
 | P6 CP 加固 | P4 |
 | 插件生态 | P4，以及 P2 的跨插件导入 |
+| Windows 节点 | P0；参与 Space 还需要 P4 |
 
 P1 之后的四个方向（P2、Session 监督树、P3、P4）互不依赖，先做哪个取决于当时更需要什么。
 
@@ -55,5 +56,8 @@ P1 之后的四个方向（P2、Session 监督树、P3、P4）互不依赖，先
 
 **插件生态**：外来插件的 `plugin_install` / `plugin_update`、采纳时的主人确认、宿主同时链接 `enco:plugin` 的历史版本、`enco:plugin` 1.0、`enco-sdk` 按 semver 发布（§4.10）；采纳外来修订时检查其依赖的许可证与安全公告（cargo-deny）。这项检查要联网获取公告数据库，所以放在采纳流程和 CI 中，本地的 `cargo xtask check` 保持不依赖网络。
 验收：安装一个第三方插件，并由另一个插件导入它导出的接口；上游更新扩大导入时停在待确认状态，确认前仓库和运行中的代际都不变；宿主升级 `enco:plugin` 主版本后，未重建的第三方插件照常运行；Agent 修好一个外来插件的缺陷，经主人确认后向上游提交 PR。
+
+**Windows 节点（需要时实施，Unix 环境优先）**：本地端点在 Windows 上改用命名管道（tokio 不在 Windows 上提供 Unix domain socket），访问限定为当前用户；Shell 工具使用 PowerShell 7，工具描述按平台写明所用的 shell，输出按 UTF-8 解码；守护进程响应控制台关闭与系统关机；Unix 专用的测试按平台编译；CI 增加 Windows runner。参与 Space 之前补上计入休眠时间的时钟（§5.5）。这些都是宿主的平台适配（§4.1），不改变架构。
+验收：`cargo xtask check` 在 Windows 上通过；CLI 经命名管道与守护进程完成对话，其他用户无法连接；`shell_exec` 正确返回中文输出。
 
 **之后**：Android 本机构建（Root/Shizuku + Ubuntu 中本机编译插件）、宿主自更新（主人确认；自主权限以后显式开通）、覆盖网络路由、Edge 节点（ESP32）、系统代际的整体回滚。

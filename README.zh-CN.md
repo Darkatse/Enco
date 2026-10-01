@@ -60,7 +60,7 @@ Agent 可以在 Enco 运行时修改插件、重新构建并替换上线。新�
 
 ### 平台
 
-P0 在 macOS 和 Linux 上以后台服务加命令行客户端的形式运行，目前已在 macOS 上测试。手机之后作为完整节点加入（P5）：Android 用 Cranelift 运行插件，iOS 用 Pulley 解释器。系统挂起应用之前，手机会把手上的会话交给常驻节点。Windows 暂不支持，因为本地协议使用 Unix domain socket。
+P0 在 macOS 和 Linux 上以后台服务加命令行客户端的形式运行，目前已在 macOS 上测试。手机之后作为完整节点加入（P5）：Android 用 Cranelift 运行插件，iOS 用 Pulley 解释器。系统挂起应用之前，手机会把手上的会话交给常驻节点。Windows 支持已列入路线图，Unix 环境优先：届时本地协议在 Windows 上改用命名管道，不再使用 Unix domain socket。
 
 ### 少量一致的概念
 
