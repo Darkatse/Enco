@@ -18,4 +18,4 @@ cargo xtask check
 
 构建产物嵌入 `enco`，P0 更新插件需要重建并重启宿主。热替换、代际与回退属于 P1。
 
-真实服务示例见 [deepseek-gemini.toml](../examples/deepseek-gemini.toml)，插件边界的规格见 [07-plugin-boundary.md](../docs/P0/07-plugin-boundary.md)。密钥来自配置指定的环境变量，插件源码和配置文件不含密钥。
+真实服务示例见 [deepseek-gemini.toml](../examples/deepseek-gemini.toml)，插件边界的规格见 [07-plugin-boundary.md](../docs/spec/07-plugin-boundary.md)。密钥来自配置指定的环境变量，插件源码和配置文件不含密钥。

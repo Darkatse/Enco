@@ -47,10 +47,10 @@
 - **出站**：模型显式发送是一次普通的工具调用。默认投递是壳在渲染 Log，与 `enco chat` 相同：连接 actor 以出站游标跟随它送过 Event 的 Session，与入站游标对称；每次投递先记下再发送，按 `outcome` 为每次逻辑投递保存一条最终结算，与出站游标在同一事务提交，发送途中崩溃记为 `unknown`，不自动重发。出站文本是 Markdown，由各生成方按 Markdown 书写；映射到渠道协议、协议解析、分段和错误分类由插件承担；连接归属者执行共同的路由与结算规则。结算引用 Session 与 Log 位置，不复制正文；`enco status.channels` 提供最近 failed / unknown 的读取入口。
 - **由谁投递**：回复发往该 Session 中最近一条交互式 Event（CLI 或渠道）的来源；来源是 CLI 时不投递到渠道。提醒这类非交互 Event 触发的 Round 遵循同一规则。各个壳读同一份 Log 得出同一结论，彼此不需要协调。
 
-## 4.4 契约（WIT 草图，P1 定稿）
+## 4.4 契约（WIT 草图；`completion`、`embedding`、`lifecycle` 已在 P1 定稿为 0.2，`tools` 随 P2 的第一个工具插件定稿，`channel` 在 P3，`state-get` 在第一个有状态的插件出现时加入）
 
 ```wit
-package enco:plugin@0.1.0;
+package enco:plugin@0.2.0;
 
 interface types {
   type json = string;
@@ -112,8 +112,8 @@ interface embedding {
 }
 
 interface lifecycle {
-  describe: func(config: json) -> plugin-info;   // 贡献、所需资源、状态作用域、reconnect-on-upgrade；不含插件名（§4.10）
-  probe: async func() -> result<_, string>;      // 只依赖宿主持有的 fixture，不依赖外部服务
+  describe: func(config: json) -> result<description, failure>;   // 一句话摘要；以后加贡献、所需资源、状态作用域、reconnect-on-upgrade；不含插件名（§4.10）
+  probe: async func() -> result<_, failure>;     // 自检；只依赖宿主持有的 fixture，不依赖外部服务
 }
 
 world base { import host; export lifecycle; }
@@ -178,7 +178,7 @@ world base { import host; export lifecycle; }
     memory.db                 ← 记忆（权威）
     memory-index/             ← 记忆索引（派生，可删除）
     blobs/                    ← 正文（§6）
-    store/<hash>.wasm         ← 制品库（内容寻址）
+    artifacts/<hash>.wasm     ← 制品库（内容寻址）
     enco.sock  enco.lock      ← 本地入口与单实例锁（§6）
 ```
 

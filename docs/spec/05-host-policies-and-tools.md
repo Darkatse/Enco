@@ -1,6 +1,6 @@
 # 05 宿主：原生工具、上下文源与出厂 composer（enco-host）
 
-enco-host 为内核端口提供原生适配器：`SqliteStore`（03 §3）、原生工具、`InstructionsContextSource`、`FactoryComposer`、`SystemClock`，以及记忆（06）。这里是 P0 中所有"策略"与"排版"所在的地方。
+enco-host 为内核端口提供原生适配器：`SqliteStore`（03 §3）、原生工具、`InstructionsContextSource`、`FactoryComposer`、`SystemClock`，以及记忆（06）。这里是目前所有"策略"与"排版"所在的地方。
 
 ## 1. 工作区
 
@@ -8,7 +8,7 @@ enco-host 为内核端口提供原生适配器：`SqliteStore`（03 §3）、原
 $ENCO_HOME/workspace/        工具的默认工作目录；Agent 的"家"
 ```
 
-工作区在 P0 中是普通目录，**不初始化 git**（git 集成属于 P2），也不纳入 `$ENCO_HOME` 的版本管理（08 §2）。守护进程启动时确保 `workspace/` 存在。主人的常驻指令是仓库根目录的 `$ENCO_HOME/AGENTS.md`（可选，Agent 可以编辑），它属于主人的意图，不在工作区中。记忆也不在工作区中（06）。
+工作区目前是普通目录，**不初始化 git**（git 集成属于 P2），也不纳入 `$ENCO_HOME` 的版本管理（08 §2）。守护进程启动时确保 `workspace/` 存在。主人的常驻指令是仓库根目录的 `$ENCO_HOME/AGENTS.md`（可选，Agent 可以编辑），它属于主人的意图，不在工作区中。记忆也不在工作区中（06）。
 
 路径规则（所有文件工具一致）：相对路径相对于工作区解析；允许绝对路径（当前不设沙盒）；不做 `~` 展开。
 
@@ -17,8 +17,11 @@ $ENCO_HOME/workspace/        工具的默认工作目录；Agent 的"家"
 ```rust
 /// 返回全部原生工具。`workspace` 用于解析相对路径和作为 shell 的默认工作目录。
 pub fn native_tools(workspace: PathBuf) -> Vec<Arc<dyn Tool>>;
-/// 救生集：安全模式下唯一可用的工具，也是默认 Session 要求常驻的工具。
-pub const LIFELINE: [&str; 5] = ["fs_read", "fs_write", "fs_edit", "fs_list", "shell_exec"];
+/// 插件管理工具；与 CLI 调用同一组 Registry 方法（11 §8）。
+pub fn plugin_tools(registry: Arc<Registry>, workspace: PathBuf) -> Vec<Arc<dyn Tool>>;
+/// 救生集：安全模式下唯一可用的工具，也是 requires_lifeline 的 profile 要求常驻的工具。
+pub const LIFELINE: [&str; 8] = ["fs_read", "fs_write", "fs_edit", "fs_list", "shell_exec",
+                                 "plugin_status", "plugin_deploy", "plugin_rollback"];
 ```
 
 所有原生工具的 `code()` 为 `CodeRef::Native { name: "host-tools", version: crate 版本 }`。
@@ -73,7 +76,19 @@ pub const LIFELINE: [&str; 5] = ["fs_read", "fs_write", "fs_edit", "fs_list", "s
 - 取消：kill 进程并等待它退出，然后返回 `Unknown { code: "cancelled", message: "command was cancelled and killed; it may have partially run" }`。
 - 无法启动：`Failed { code: "tool.failed" }`。
 
-已知限制：P0 只终止 `sh` 本身，命令派生的后台孙进程可能存活；没有重定向输出的后台进程在工具返回后写管道时会收到 `SIGPIPE`。进程组的处理留到后续阶段（需要新增依赖），不要在 P0 中自行引入。
+已知限制：目前只终止 `sh` 本身，命令派生的后台孙进程可能存活；没有重定向输出的后台进程在工具返回后写管道时会收到 `SIGPIPE`。进程组的处理留到后续阶段（需要新增依赖），不要自行引入。
+
+### 2.6 插件工具（`tools/plugins.rs`）
+
+它们把 Agent 的调用交给注册表（11），与记忆工具包住 `Memories` 是同一个模式；读文件在这里做，`Registry::deploy` 只收字节。
+
+| 名称 | 参数 | 结果 | Effect |
+|---|---|---|---|
+| `plugin_status` | 无 | `Ok { [PluginStatus] }`（11 §4） | ReadOnly |
+| `plugin_deploy` | `name`；`path`：组件文件，相对路径相对于工作区 | `Ok { generation, users }`；文件读不到 → `tool.failed`；`Rejected` → `plugin.rejected` | SideEffect |
+| `plugin_rollback` | `name` | `Ok(GenerationRecord)`，与 CLI 相同；`NoRollbackTarget`、`Conflict` → `plugin.rejected`，message 原样带出 | SideEffect |
+
+`UnknownPlugin` 是参数问题，返回 `tool.invalid_arguments`。描述的要点见 11 §8。
 
 工具描述与省略原因中出现的上限（默认行数、超时、宽限时间、预算比例、记忆文本长度等）都由 `limits.rs` 的常量生成，不另写数字。
 
@@ -121,7 +136,7 @@ The previous run ended with: {interrupted | cancelled | failed: <message> | budg
 
 ### 4.2 预算
 
-所有估算都使用 `estimate_tokens`（03 §1.11）。
+所有估算都使用 `estimate_tokens`（03 §1.11）。回复的预算是 `profile.reply.budget`，压缩的预算是 `profile.compaction.budget`（12 §5）；本节与 §4.3、§4.4 中的 `context_tokens`、`max_output_tokens` 都指回复预算。
 
 - **常驻指令**：总估算不超过 `context_tokens` 的 10% 时全部纳入，否则整份省略，记录 `Omission { source: id, reason: "instructions exceed 10% of the context window" }`。
 - **记忆**：按候选的顺序（即来源给出的优先级，06 §5）逐条纳入，累计不超过 `context_tokens` 的 15%；超出的每一条都记录 `Omission { source: id, reason: "memory budget (15% of the context window) exceeded" }`。
@@ -131,14 +146,14 @@ The previous run ended with: {interrupted | cancelled | failed: <message> | budg
 
 ```text
 items = [System 消息] ++ [PlanItem::Log { pos } for item in transcript.items]
-tools = input.tools 全部，原样复制（P0 不做渐进式披露，那是 P2 默认 composer 的职责）
-max_output_tokens = budget.max_output_tokens
+tools = input.tools 全部，原样复制（不做渐进式披露，那是 P2 默认 composer 的职责）
+max_output_tokens = profile.reply.budget.max_output_tokens
 ```
 
 ### 4.4 何时压缩
 
 ```text
-total = est(System 消息) + Σ est(serde_json::to_string(item.message)) + est(serde_json::to_string(tools 的 spec)) + budget.max_output_tokens
+total = est(System 消息) + Σ est(serde_json::to_string(item.message)) + est(serde_json::to_string(tools 的 spec)) + max_output_tokens
 
 if total <= context_tokens * 80%:
     返回 Plan
@@ -168,8 +183,10 @@ items = [
           + "\n\nWrite the summary now."
 ]
 tools = []
-max_output_tokens = min(2048, budget.max_output_tokens)
+max_output_tokens = min(2048, profile.compaction.budget.max_output_tokens)
 ```
+
+压缩计划的估算总量（两条消息加输出上限）必须不超过 `profile.compaction.budget.context_tokens`，否则返回 `ContextOverflow`，`window` 写压缩模型的窗口。压缩模型可以比回复模型小，这条检查让它不至于收到放不下的请求。
 
 ### 4.6 提示词（`prompts/`，用 `include_str!` 嵌入）
 

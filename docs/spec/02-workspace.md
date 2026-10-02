@@ -24,21 +24,21 @@ clippy.toml
 .cargo/config.toml         # 只有一行：xtask 别名（09 §1）
 crates/
   enco-core/               # 领域类型：纯数据 + serde，无 IO
-  enco-kernel/             # 端口、Kernel、Session actor、Run/Round、恢复、调度；无 IO 实现
-  enco-host/               # SQLite Store、blob 存储、原生工具、记忆、出厂 composer、工作区上下文源、系统时钟
-  enco-wasm/               # wasmtime 嵌入、WIT 绑定、Provider 端口的 Wasm 实现、宿主导入（log、http）
+  enco-kernel/             # 端口、Kernel、Session actor、Run/Round、恢复、调度、注册表与代际；无 IO 实现
+  enco-host/               # SQLite Store、blob 与制品存储、原生工具、记忆、出厂 composer、工作区上下文源、系统时钟
+  enco-wasm/               # wasmtime 嵌入、WIT 绑定、Runtime 端口的实现、宿主导入（log、http）
 apps/
   enco/                    # 组合根：CLI、守护进程、本地协议、配置、出厂代际嵌入
 xtask/                     # cargo xtask：build-factory、boundaries、docs、check
-plugins/                   # 独立的 Cargo 工作区，目标 wasm32-wasip2
-  provider-openai/
-  provider-deepseek/
-  provider-protocol/      # 插件内部共享 WIT 绑定与线上协议；不依赖宿主 crate
+plugins/                   # 独立的 Cargo 工作区，目标 wasm32-wasip2；插件目录名就是插件名（架构文档 §4.10）
+  openai-compatible/
+  deepseek/
+  provider-protocol/      # 插件内部共享 WIT 绑定与线上协议；不是插件，不依赖宿主 crate
 wit/                       # enco:plugin 包；CONTRACT.md 为生成物
 docs/
 ```
 
-`enco-sdk`、`enco-space` 在 P0 中**不创建**（架构文档 §10 中它们分别属于 P2、P4）。
+`enco-sdk`、`enco-space` 目前**不创建**（架构文档 §10 中它们分别属于 P2、P4）。`enco-host` 的拆分（§10）等 WIT 第一次需要 `log`、`http` 之外的宿主导入时再做，预计在 P2。
 
 插件放在独立工作区，因为它们的目标平台不同。`xtask build-factory` 负责构建插件并把产物放到 `target/factory/`（07 §5）。
 
@@ -53,8 +53,8 @@ enco-core  ←  enco-kernel  ←  enco-host
 | crate | 允许依赖的工作区 crate | 允许的外部依赖 |
 |---|---|---|
 | enco-core | 无 | serde、serde_json、ulid、blake3、chrono、thiserror |
-| enco-kernel | enco-core | tokio（rt、sync、time、macros）、tokio-util、async-trait、serde、serde_json、ulid、thiserror、tracing |
-| enco-host | enco-core、enco-kernel | rusqlite（bundled）、triviumdb、reqwest（Telegram，10）、tokio（rt、fs、process、io-util、time、sync）、tokio-util、async-trait、serde、serde_json、chrono、ulid、blake3、thiserror、tracing |
+| enco-kernel | enco-core | tokio（rt、sync、time、macros）、tokio-util、async-trait、serde、serde_json、ulid、thiserror、tracing、arc-swap |
+| enco-host | enco-core、enco-kernel | rusqlite（bundled）、triviumdb、reqwest（Telegram，10）、tokio（rt、fs、process、io-util、time、sync）、tokio-util、async-trait、serde、serde_json、toml（plugins.lock，03 §3.5）、chrono、ulid、blake3、thiserror、tracing |
 | enco-wasm | enco-core、enco-kernel | wasmtime、wasmtime-wasi、reqwest、tokio、async-trait、serde_json、ulid、thiserror、tracing |
 | apps/enco | 以上全部 | clap、anyhow、tokio（full）、tokio-util、serde、serde_json、toml、tracing、tracing-subscriber、dirs、ulid；dev：wiremock、tempfile |
 | xtask | 无 | anyhow、cargo_metadata、wit-parser、serde_json |
@@ -86,6 +86,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 toml = "1.1.6"
+arc-swap = "1.7"                         # 注册表发布导出表（11 §4.2）
 dirs = "7.0.0"
 cargo_metadata = "0.23.1"
 wit-parser = "0.259.0"
@@ -132,15 +133,17 @@ allow-expect-in-tests = true
 
 ```text
 lib.rs         重新导出；estimate_tokens
-ids.rs         SessionId、EventId、RunId、RoundId、AttemptId、CallId、ScheduleId、MemoryId、NodeId、Epoch、Seq、LogPos
+ids.rs         SessionId、EventId、RunId、RoundId、AttemptId、CallId、ScheduleId、MemoryId、NodeId、PluginId、GenerationId、Epoch、Seq、LogPos
 hash.rs        ContentHash
 message.rs     Role、Message、Part、ToolCall、ToolResult、Extension
 event.rs       Event、EventSource、EventBody
 entry.rs       Entry、EntryBody 及其附属枚举
 tool.rs        ToolSpec、Effect、Outcome、Settlement、Failure、Arguments
 capability.rs  CapabilityId、CodeRef
+generation.rs  GenerationRecord、Origin、GenerationStatus
+provider.rs    ProviderSettings
 plan.rs        ContextPlan、PlanItem、Omission、Contribution、Candidate、CandidateKind
-session.rs     SessionRecord、SessionConfig、Binding、Schedule、ScheduleState
+session.rs     SessionRecord、Binding、Schedule、ScheduleState
 memory.rs      Memory
 ```
 
@@ -148,21 +151,28 @@ memory.rs      Memory
 
 ```text
 lib.rs
-ports.rs       重新导出以下六个端口
-ports/store.rs      Store、StoreError、Commit、NodeRecord
+ports.rs       重新导出以下端口
+ports/store.rs      Store、StoreError、Commit、NodeRecord、RegistryState、NewGeneration
+ports/runtime.rs    Runtime、Loaded、Lifecycle、LoadError
 ports/provider.rs   Provider、ProviderRequest、Completion
+ports/embedding.rs  Embedding
 ports/composer.rs   Composer、ComposeInput、Composition、Transcript、Budget、ComposeError
 ports/context.rs    ContextSource、ContextQuery、ContextError
 ports/tool.rs       Tool、CallContext
 ports/clock.rs      Clock
-kernel.rs      Kernel、KernelDeps、KernelConfig、KernelError
-snapshot.rs    Snapshot（本轮可用的能力）
+kernel.rs      Kernel、KernelDeps、KernelConfig、KernelError、Inspection
+profile.rs     Profile、Endpoint（12）
+registry.rs    Registry、RegistryDeps、RegistryError、Exports、Export、Use、Interface、PluginStatus（11）
+registry/activate.rs 部署与激活：锁外加载、锁内提交、发布导出表
+registry/health.rs   回报的处理：试用计数、晋升、回退目标
+snapshot.rs    Snapshot（本轮可用的原生能力）
 session.rs     Session actor：唤醒、启动恢复、驱动 Run
 run.rs         Run 与 Round 的算法
-attempt.rs     Attempt（含重试）与压缩 Attempt
+attempt.rs     Attempt（含重试与回退后重试）与压缩 Attempt
 dispatch.rs    工具调用的校验、分派、结算与结果文本
 transcript.rs  Log → Transcript 的投影
-plan.rs        ContextPlan 的校验与解析
+plan.rs        ContextPlan 的校验（validate）与解析（resolve）
+inspect.rs     Kernel::inspect（04 §14）
 recovery.rs    启动恢复（纯函数）
 scheduler.rs   Scheduler actor、Schedules 句柄与 ScheduleError
 builtin.rs     内核内置工具：schedule_create / schedule_list / schedule_cancel
@@ -174,15 +184,19 @@ limits.rs      常量
 ```text
 lib.rs
 sqlite.rs        两个 SQLite 权威共用的连接设置与列编码
-store.rs         SqliteStore（实现 Store 端口），含 blob 文件
+store.rs         SqliteStore（实现 Store 端口）
 store/schema.sql 建表 SQL
+store/content.rs 内容寻址的文件目录：blob 与制品共用
 store/commit.rs  Commit 的前置条件与 Inbox 消费
 store/rows.rs    行到领域类型的映射
 store/accept.rs  Inbox、连接状态与投递结算的原子接纳
+store/registry.rs plugins 与 generations 表的读写
+store/lock.rs    plugins.lock 的读写（03 §3.5）
 tools.rs         原生工具集合与救生集
 tools/args.rs    工具参数的读取与校验
 tools/files.rs   fs_read、fs_write、fs_edit、fs_list
 tools/shell.rs   shell_exec
+tools/plugins.rs plugin_status、plugin_deploy、plugin_rollback（05 §2.6）
 memory.rs        Memories（记忆的归属者）、MemoryError（06 §7）
 memory/authority.rs  memory.db
 memory/index.rs      TriviumDB 索引、reconcile、sync
@@ -203,9 +217,10 @@ limits.rs
 **enco-wasm**
 
 ```text
-lib.rs
+lib.rs           bindgen 的两个 world
 engine.rs        Engine 配置与 epoch 计时器
-provider.rs      WasmProvider（实现 Provider 端口）、ProviderSettings、WasmError
+runtime.rs       WasmRuntime（实现 Runtime 端口）：编译、读取导出、describe、WasmError
+plugin.rs        WasmPlugin：每次调用一个 Store；实现 Lifecycle、Provider、Embedding；失败码的归类
 convert.rs       enco-core 类型 ↔ WIT 绑定类型
 host_imports.rs  宿主导入：log、http
 limits.rs
@@ -227,7 +242,7 @@ chat.rs          enco chat：交互与渲染
 
 ## 7. 编码规范
 
-- **错误**：错误类型用 `thiserror` 定义，放在产生它的模块中：端口错误在端口文件，`KernelError` 在 `kernel.rs`，`ScheduleError` 在 `scheduler.rs`，`MemoryError` 在 `memory.rs`，`WasmError` 在 `provider.rs`。一个变体只表达一种含义，不借用其他变体。错误消息使用小写、不以句号结尾，并带上定位信息（session id、log 位置、路径）。
+- **错误**：错误类型用 `thiserror` 定义，放在产生它的模块中：端口错误在端口文件，`KernelError` 在 `kernel.rs`，`RegistryError` 在 `registry.rs`，`ScheduleError` 在 `scheduler.rs`，`MemoryError` 在 `memory.rs`，`WasmError` 在 `runtime.rs`。一个变体只表达一种含义，不借用其他变体。错误消息使用小写、不以句号结尾，并带上定位信息（session id、log 位置、路径）。
 - **文档语言**：源码级文档使用英文，包括 rustdoc、WIT 文档、代码与 SQL 注释、工具描述和提示词；设计文档（`docs/`、`AGENTS.md`、`CONTRIBUTING.md`）使用中文。面向模型的文本中出现的上限由 `limits.rs` 中的常量生成，不另写数字。
 - **异步**：不在异步上下文中阻塞。rusqlite 的调用放进 `spawn_blocking`，文件 IO 使用 `tokio::fs`。
 - **日志**：使用 `tracing`。span 为 `session{id}` → `run{id}` → `round{id}`。生命周期事件用 info，细节用 debug。不在任何级别记录 API key；完整的提示词只在 trace 级别记录。

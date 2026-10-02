@@ -1,6 +1,6 @@
 # 03 领域类型与存储
 
-本文件定义 enco-core 中的全部领域类型，以及 Store 端口与它的 SQLite 实现。这些类型是 P0 的词汇表：新增或改动任何一个都需要先提问。
+本文件定义 enco-core 中的全部领域类型，以及 Store 端口与它的 SQLite 实现。这些类型是整个系统的词汇表：新增或改动任何一个都需要先提问。
 
 下面的 Rust 代码给出字段与语义；`derive` 省略不写，默认都有 `Debug, Clone, PartialEq, Serialize, Deserialize`，ID 类型另有 `Copy, Eq, Hash, Ord`。
 
@@ -19,6 +19,11 @@ pub struct CallId(Ulid);
 pub struct ScheduleId(Ulid);
 pub struct MemoryId(Ulid);
 pub struct NodeId(Ulid);
+/// 插件的身份，由本 Space 在插件登记时分配，记录在 plugins.lock（11 §2）。不进入 Log。
+pub struct PluginId(Ulid);
+
+/// 代际的编号：注册表全局自增的整数（11 §1）。Display 为十进制数字。
+pub struct GenerationId(pub u64);
 
 /// Binding 的代数。单节点时恒为 1。
 pub struct Epoch(pub u64);
@@ -29,7 +34,7 @@ pub struct Seq(pub u64);
 pub struct LogPos { pub epoch: Epoch, pub seq: Seq }
 ```
 
-`ids.rs` 中允许用一个 `macro_rules!` 生成九个 ULID newtype，这是本规格中唯一允许的宏。
+`ids.rs` 中允许用一个 `macro_rules!` 生成十个 ULID newtype，这是本规格中唯一允许的宏。
 
 ### 1.2 内容哈希（`hash.rs`）
 
@@ -53,7 +58,7 @@ pub enum Part {
     Text { text: String },
     ToolCall(ToolCall),
     ToolResult(ToolResult),
-    /// 服务商特有的字段（例如推理内容），由产生它的 Provider 原样取回；内核从不解释。
+    /// 服务商特有的字段（例如推理内容）。内核从不解释，只回放给产生它的那个插件（04 §6.5）。
     Extension(Extension),
 }
 
@@ -71,7 +76,8 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
-pub struct Extension { pub provider: String, pub data: serde_json::Value }
+/// 不带来源：产生这条消息的 Attempt 已经记录了 Provider 的代际，回放时由代际查到插件身份。
+pub struct Extension { pub data: serde_json::Value }
 ```
 
 不变式：`System` 与 `User` 消息只含 `Text`；`Tool` 消息恰好含一个 `ToolResult`；`Assistant` 消息可以含 `Text`、`ToolCall`、`Extension`。
@@ -95,6 +101,8 @@ pub struct Event {
 pub enum EventSource {
     Cli,
     Scheduler,
+    /// 注册表（11 §7）。
+    Registry,
     /// 渠道中的一个聊天（10）。四个字段都是渠道自己的标识，内核不解释它们。
     Channel { channel: String, account: String, conversation: String, sender: String },
 }
@@ -103,6 +111,8 @@ pub enum EventSource {
 pub enum EventBody {
     UserMessage { text: String },
     Reminder { schedule: ScheduleId, due_at: DateTime<Utc>, text: String },
+    /// 一个试用代际失败并被回退（11 §7）。`to` 为空表示该插件已没有活跃代际。
+    GenerationRolledBack { plugin: String, from: GenerationId, to: Option<GenerationId>, failure: Failure },
 }
 
 impl Event {
@@ -111,7 +121,7 @@ impl Event {
 }
 ```
 
-规范形态：`UserMessage` → `User` 消息，内容即 `text`；`Reminder` → `User` 消息，内容为 `"[reminder scheduled for {due_at}] {text}"`，其中 `due_at` 为 RFC 3339 UTC。
+规范形态：`UserMessage` → `User` 消息，内容即 `text`；`Reminder` → `User` 消息，内容为 `"[reminder scheduled for {due_at}] {text}"`，其中 `due_at` 为 RFC 3339 UTC；`GenerationRolledBack` → `User` 消息，内容为 `"[plugin rolled back] {plugin}: generation {from} failed ({code}: {message}); now using generation {to}"`，没有目标时最后一句为 `no generation is active`。
 
 ### 1.5 Log 条目（`entry.rs`）
 
@@ -127,6 +137,7 @@ pub enum EntryBody {
     RunStarted { run: RunId },
     RoundStarted { run: RunId, round: RoundId, safe_mode: bool },
     /// 预写：在调用 Provider 之前提交。`plan` 是序列化后的 ContextPlan 在 blob 存储中的哈希。
+    /// `provider` 是本次使用的代际，`settings` 是传给它的调用参数（12 §1）；两者加上计划就是完整的请求。
     AttemptStarted {
         round: RoundId,
         attempt: AttemptId,
@@ -134,6 +145,7 @@ pub enum EntryBody {
         plan: ContentHash,
         composer: CodeRef,
         provider: CodeRef,
+        settings: ProviderSettings,
     },
     AttemptSettled { attempt: AttemptId, result: AttemptResult },
     /// 预写：在工具真正执行之前提交。没有真正分派的调用不写这一条。
@@ -224,7 +236,12 @@ impl Arguments { pub fn parse(raw: &str) -> Self; }
 | `compose.failed` | composer 返回错误 | 内核 |
 | `context.failed` | ContextSource 返回错误 | 内核 |
 | `context.overflow` | 压缩之后仍然放不下 | composer |
-| `provider.network` `provider.auth` `provider.rate_limited` `provider.server` `provider.bad_request` `provider.bad_response` | Provider 的失败分类（07 §4.4） | Provider |
+| `profile.unknown` | Session 的 profile 不在配置中（12 §3） | 内核 |
+| `provider.network` `provider.auth` `provider.rate_limited` `provider.server` `provider.bad_request` `provider.bad_response` | Provider 的失败分类（07 §4.4）；外部失败，不计入健康 | Provider |
+| `plugin.trap` | wasmtime 在实例化或调用中报错（07 §3.3）；计入健康 | enco-wasm |
+| `plugin.contract` | 插件的返回违反契约（07 §3.3）；计入健康 | enco-wasm |
+| `plugin.unavailable` | 插件没有活跃代际，或活跃代际不导出所需接口（11 §4.2） | 注册表 |
+| `plugin.rejected` | 部署或回退被拒绝（11 §8） | 插件工具 |
 
 ### 1.7 能力（`capability.rs`）
 
@@ -235,8 +252,40 @@ pub struct CapabilityId { pub node: NodeId, pub name: String }
 /// 记录"这一次到底是哪份代码在运行"。
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CodeRef {
-    Native { name: String, version: String },  // version 为 crate 版本
-    Wasm { artifact: ContentHash },            // 组件字节的哈希
+    Native { name: String, version: String },  // 编进宿主的代码；version 为 crate 版本
+    Generation { id: GenerationId },           // 一个插件代际（11 §1）；制品哈希与插件身份从注册表查
+}
+```
+
+Log 里只写代际编号，不写插件身份，所以 Log 可读，改名也不影响它（架构文档 §4.10）。
+
+### 1.7a 代际（`generation.rs`）
+
+```rust
+/// 注册表中的一条代际记录（11 §3）。
+pub struct GenerationRecord {
+    pub id: GenerationId,
+    pub plugin: PluginId,
+    pub artifact: ContentHash,
+    pub config: serde_json::Value,   // 插件配置；P1 恒为 {}
+    pub origin: Origin,
+    pub status: GenerationStatus,
+    pub created_at: DateTime<Utc>,
+}
+
+pub enum Origin { Factory, Deployed }
+pub enum GenerationStatus { Trial, Healthy, Failed }
+```
+
+### 1.7b Provider 的调用参数（`provider.rs`）
+
+```rust
+/// 传给 Provider 代际的调用参数，记入 AttemptStarted。不含密钥，只含密钥所在的环境变量名（12 §1）。
+pub struct ProviderSettings {
+    pub base_url: String,
+    pub model: String,
+    pub api_key_env: Option<String>,
+    pub options: serde_json::Value,
 }
 ```
 
@@ -270,9 +319,9 @@ pub struct Candidate { pub id: String, pub kind: CandidateKind, pub text: String
 pub enum CandidateKind { Instruction, Memory }
 ```
 
-**计划就是冻结的请求。** 模型看到的每一样东西，要么在计划中，要么在它引用的不可变 Log 条目中。Provider 请求只由计划与 Log 解析得到，不再读取 Snapshot 或任何上下文源；重试与事后查看都解析同一份记录（04 §6.3）。
+**计划就是冻结的请求。** 模型看到的每一样东西，要么在计划中，要么在它引用的不可变 Log 条目中。Provider 请求只由计划、Log 与注册表解析得到，不再读取 Snapshot 或任何上下文源；重试与事后查看（`enco inspect`，04 §14）都解析同一份记录（04 §6.3）。
 
-架构文档 §7.1 中的稳定性标注与"上一份计划作为输入"在 P0 中不实现：P0 的 Provider 不使用它们，以后可以增量加入。
+架构文档 §7.1 中的稳定性标注与"上一份计划作为输入"目前不实现：现有的 Provider 不使用它们，以后可以增量加入。
 
 ### 1.9 Session 与 Schedule（`session.rs`）
 
@@ -282,13 +331,11 @@ pub struct SessionRecord {
     pub name: String,              // 人类可读，唯一
     pub created_at: DateTime<Utc>,
     pub binding: Binding,
-    pub config: SessionConfig,
+    pub profile: String,           // profile 的名字（12）；创建时为 "default"
 }
 
 /// 单节点时恒为 (本节点, Epoch(1))。
 pub struct Binding { pub node: NodeId, pub epoch: Epoch }
-
-pub struct SessionConfig { pub requires_lifeline: bool }   // Default: true
 
 pub struct Schedule {
     pub id: ScheduleId,
@@ -344,9 +391,11 @@ pub trait Store: Send + Sync {
 
     // ---- Session（写者：Kernel）
     async fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError>;
+    async fn session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError>;
     async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError>;
-    /// 不存在则创建，binding 为 (本节点, Epoch(1))，config 为默认值。`created_at` 由内核从 Clock 取得。
+    /// 不存在则创建，binding 为 (本节点, Epoch(1))，profile 为 "default"。`created_at` 由内核从 Clock 取得。
     async fn ensure_session(&self, name: &str, created_at: DateTime<Utc>) -> Result<SessionRecord, StoreError>;
+    async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError>;
 
     // ---- Log（写者：该 Session 的 actor）
     async fn log(&self, session: SessionId, after: Option<LogPos>) -> Result<Vec<Entry>, StoreError>;
@@ -367,14 +416,37 @@ pub trait Store: Send + Sync {
     /// 在一个事务中把 Schedule 从 Pending 改为 Fired，并把 `event` 投递进 Inbox。
     async fn fire_schedule(&self, id: ScheduleId, event: &Event) -> Result<(), StoreError>;
 
-    // ---- Blob（内容寻址，写入幂等）
+    // ---- 插件的名字与身份（写者：Registry 的提交者；存于 plugins.lock，§3.5）
+    async fn plugin_names(&self) -> Result<BTreeMap<String, PluginId>, StoreError>;
+    /// 追加一条登记并写回文件。名字已存在时返回 `Lock`。
+    async fn register_plugin(&self, name: &str, id: PluginId) -> Result<(), StoreError>;
+
+    // ---- 注册表（写者：Registry 的提交者，11 §4）
+    async fn registry(&self) -> Result<RegistryState, StoreError>;
+    /// 插入一条代际，分配编号；`activate` 为真时在同一事务中把它设为该插件的活跃代际。
+    async fn insert_generation(&self, generation: &NewGeneration, activate: bool) -> Result<GenerationId, StoreError>;
+    /// trial → healthy。
+    async fn promote(&self, generation: GenerationId) -> Result<(), StoreError>;
+    /// 在一个事务中把 `plugin` 的活跃代际改为 `to`（可以为空），并把 `failed` 中的代际标为 failed。回退与启动时切换出厂代际都用它。
+    async fn activate(&self, plugin: PluginId, to: Option<GenerationId>, failed: &[GenerationId]) -> Result<(), StoreError>;
+
+    // ---- Blob 与制品（内容寻址，写入幂等）
     async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
     async fn get_blob(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError>;
     /// blob 在磁盘上的路径。长结果的完整内容由此交给模型用 fs_read 读取。
     fn blob_path(&self, hash: &ContentHash) -> PathBuf;
+    /// 制品库（§3.4）。与 blob 同一套实现、不同的目录；制品不受清理策略影响。
+    async fn put_artifact(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
+    async fn artifact(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError>;
 }
 
 pub struct NodeRecord { pub id: NodeId, pub safe_mode: bool }
+
+/// 注册表的全部持久状态（11 §3）。
+pub struct RegistryState { pub generations: Vec<GenerationRecord>, pub active: Vec<(PluginId, Option<GenerationId>)> }
+
+/// 待插入的代际：除编号之外的全部字段。
+pub struct NewGeneration { pub plugin: PluginId, pub artifact: ContentHash, pub config: serde_json::Value, pub origin: Origin, pub status: GenerationStatus, pub created_at: DateTime<Utc> }
 
 /// 一次原子提交：若干 Log 条目，以及它们消费的 Inbox 行。
 pub struct Commit { pub entries: Vec<Entry>, pub consumed: Vec<EventId> }
@@ -408,8 +480,14 @@ pub enum StoreError {
     UnknownSession(SessionId),
     #[error("blob {0} is corrupt or missing")]
     Blob(ContentHash),
-    #[error("database was created by a newer Enco (schema version {0})")]
-    NewerSchema(u32),
+    #[error("artifact {0} is corrupt or missing")]
+    Artifact(ContentHash),
+    #[error("plugins.lock: {0}")]
+    Lock(String),                            // 读写或解析失败，或重复登记
+    #[error("unknown generation {0}")]
+    UnknownGeneration(GenerationId),
+    #[error("database schema version {found} is not {expected}; delete .data/enco.db to start over, or migrate it by hand")]
+    SchemaVersion { found: u32, expected: u32 },
     #[error("storage: {0}")]
     Backend(String),
     #[error("commit contains no entries")]
@@ -440,9 +518,10 @@ Inbox 是一个邮箱：任何人都可以投递（`accept`），只有归属者
 
 ### 3.1 连接
 
+- `SqliteStore::open(paths: StorePaths)`，`StorePaths { db, blobs, artifacts, plugins_lock }`：Store 负责的全部文件都在这里给出。
 - 数据库文件：`$ENCO_HOME/.data/enco.db`。
-- 新库在一个事务中建立完整 schema，写入 `schema_version = '1'`、新生成的 `node_id` 和 `safe_mode = '0'`。M9 之前直接修订 schema，不升级版本号，旧的开发库删除重建。M9 开始日常使用之后，schema 的任何变化都要升级版本号并写迁移，保留已有数据。
-- 已有库的 `schema_version` 大于 1 时返回 `NewerSchema`，拒绝启动。
+- 新库在一个事务中建立完整 schema，写入 `schema_version`、新生成的 `node_id` 和 `safe_mode = '0'`。当前版本号是 `2`（P1 的 schema；P0 的库是 `1`）。
+- 已有库的 `schema_version` 不等于当前版本时返回 `SchemaVersion`，拒绝启动。迁移只在主人有需要保留的数据时编写；没有迁移时，错误信息告诉主人删库重建或手动迁移。P1 期间开发库直接删除重建，不改版本号；P1 完成时版本号升到 2。
 - 一个 `rusqlite::Connection`，放在 `std::sync::Mutex` 中；每个方法在 `tokio::task::spawn_blocking` 中执行。不要引入连接池。
 - 打开时执行：`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;`
 - 写事务使用 `BEGIN IMMEDIATE`。
@@ -454,7 +533,7 @@ CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT;
--- Keys: schema_version = '1', node_id = <ULID>, safe_mode = '0' | '1'
+-- Keys: schema_version = '2', node_id = <ULID>, safe_mode = '0' | '1'
 
 CREATE TABLE sessions (
   id            TEXT PRIMARY KEY,
@@ -462,7 +541,7 @@ CREATE TABLE sessions (
   created_at    TEXT NOT NULL,
   binding_node  TEXT NOT NULL,
   binding_epoch INTEGER NOT NULL,
-  config        TEXT NOT NULL            -- SessionConfig 的 JSON
+  profile       TEXT NOT NULL            -- profile 的名字（12）
 ) STRICT;
 
 CREATE TABLE log (
@@ -515,14 +594,44 @@ CREATE TABLE deliveries (
 CREATE INDEX delivery_failures ON deliveries(connection, order_no)
   WHERE outcome IN ('failed', 'unknown');
 
+-- 注册表（11 §3）。写者是 Registry 的提交者。
+CREATE TABLE plugins (
+  id     TEXT PRIMARY KEY,                -- PluginId（ULID）；名字在 plugins.lock 中
+  active INTEGER REFERENCES generations(id)
+) STRICT;
+
+CREATE TABLE generations (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,   -- GenerationId：全局单调编号
+  plugin_id  TEXT NOT NULL REFERENCES plugins(id),
+  artifact   TEXT NOT NULL,                       -- 制品哈希
+  config     TEXT NOT NULL,                       -- 插件配置的 JSON
+  origin     TEXT NOT NULL CHECK (origin IN ('factory', 'deployed')),
+  status     TEXT NOT NULL CHECK (status IN ('trial', 'healthy', 'failed')),
+  created_at TEXT NOT NULL
+) STRICT;
+CREATE INDEX generations_by_plugin ON generations(plugin_id, id);
 ```
 
 `kind` 是生成列，只用于查询与调试，事实来源仍然是 `body`。
 
-### 3.3 Blob 存储（`blobs.rs`）
+`plugins` 与 `generations` 互相引用：插入顺序是先插件行（`active` 为空），再代际，再更新 `active`，都在同一个事务里。
+
+### 3.3 Blob 存储（`store/content.rs`）
 
 - 路径：`$ENCO_HOME/.data/blobs/<哈希前两位>/<完整哈希>`。
-- 写入：已存在则直接返回；否则写到同目录的 `<哈希>.tmp.<ULID>`，`sync_all` 之后 `rename`。
+- 写入：已有文件与本次字节相同则直接返回；缺失或内容不同则写到同目录的 `<哈希>.tmp.<ULID>`，`sync_all` 之后 `rename`。写入成功保证地址下是本次内容，因此重新部署同一制品可以修复损坏的文件。
 - 读取：读出后重新计算哈希，不一致则返回 `Blob` 错误。
 - 孤立的 blob（写入了但对应的 Commit 没有成功）是无害的。
-- 保留：Log 条目永不删除；任何 blob 都可以被删除，例如主人的清理策略（架构文档 §6）。读取缺失的 blob 返回 `Blob` 错误；超长结果的全文由模型用 `fs_read` 按路径读取，文件不在时由 `fs_read` 报告。P0 自身不做回收。
+- 保留：Log 条目永不删除；任何 blob 都可以被删除，例如主人的清理策略（架构文档 §6）。读取缺失的 blob 返回 `Blob` 错误；超长结果的全文由模型用 `fs_read` 按路径读取，文件不在时由 `fs_read` 报告。目前不做回收。
+
+### 3.4 制品库
+
+- 路径：`$ENCO_HOME/.data/artifacts/<完整哈希>.wasm`。写入与读取和 blob 用同一个内容寻址实现（`store/content.rs`），只是目录不同、文件带扩展名，便于主人直接查看。
+- 制品不是历史，不受 blob 的清理策略影响（架构文档 §6）；回收由代际管理，目前不做。
+- 读取缺失或损坏的制品返回 `Artifact` 错误；注册表启动时遇到活跃代际的制品缺失，按 11 §4.1 回退。
+
+### 3.5 `plugins.lock`（`store/lock.rs`）
+
+- 路径：`$ENCO_HOME/plugins.lock`，格式见 11 §2。它在仓库根部而不在 `.data/`，因为名字与身份是主人的意图，随仓库走。
+- 读取：文件不存在视为空；解析失败返回 `Lock` 错误，拒绝猜测。
+- 写入：整份重写，同目录临时文件加 `rename`，与 blob 相同。`register_plugin` 读出、追加、写回，在 Store 的锁内完成。

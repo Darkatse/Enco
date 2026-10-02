@@ -17,8 +17,13 @@
 | `enco schedules [--cancel <id>]` | 列出待触发的提醒，或取消一个 |
 | `enco memory [--forget <id>]` | 列出全部记忆（标出置顶与尚未进入索引的），或遗忘一条 |
 | `enco cancel [--session <name>]` | 取消正在进行的 Run |
+| `enco inspect [--session <name>] [--attempt <id>]` | 输出一次 Attempt 实际发出的请求（04 §14），默认最近一次 |
+| `enco profile <session> <profile>` | 改变 Session 的 profile，下一个 Round 生效（12 §4） |
+| `enco plugin status` | 每个插件的身份、活跃代际、回退目标、使用者与全部代际（11 §8） |
+| `enco plugin deploy <name> <path>` | 把一个组件文件部署为 `<name>` 的新代际 |
+| `enco plugin rollback <name>` | 回到上一个健康代际 |
 
-除 `init` 与 `serve` 外，所有命令都连接正在运行的守护进程；连接失败时提示 `enco serve is not running`。管理命令不经过模型，模型不可用时照样可以使用。
+除 `init` 与 `serve` 外，所有命令都连接正在运行的守护进程；连接失败时提示 `enco serve is not running`。管理命令不经过模型，模型不可用时照样可以使用。`enco plugin deploy` 把路径交给守护进程，由守护进程读取文件：两者在同一台机器上，不必把字节塞进协议。
 
 管理命令把协议返回的 `data` 输出为格式化的 JSON，这是唯一的输出形式；验收测试直接解析它（09 §4）。
 
@@ -30,6 +35,8 @@
 $ENCO_HOME/            主人的意图；P2 起是一个 git 仓库（架构文档 §4.8）
   config.toml
   AGENTS.md            主人的常驻指令，可选（05 §1）
+  plugins.lock         插件名字与身份，由守护进程维护（11 §2）
+  plugins/<name>/      主人修改的插件源码；P1 不读它，构建由主人自己完成（11 §8）
   .gitignore           /.data/ 与 /workspace/
   workspace/           工具的默认工作目录，不纳入版本管理
   .data/               运行时状态，不纳入版本管理
@@ -37,6 +44,7 @@ $ENCO_HOME/            主人的意图；P2 起是一个 git 仓库（架构文�
     memory.db          记忆的权威（06 §2）
     memory-index/      记忆索引，派生物，随时可以删除（06 §3）
     blobs/
+    artifacts/         制品库（03 §3.4）
     enco.sock
     enco.lock          单实例锁，永不删除（§5）
 ```
@@ -48,24 +56,35 @@ $ENCO_HOME/            主人的意图；P2 起是一个 git 仓库（架构文�
 `$ENCO_HOME/config.toml`，结构体全部 `#[serde(deny_unknown_fields)]`：
 
 ```toml
-[provider]                        # 必填
-plugin = "openai-compatible"      # 可选；openai-compatible 或 deepseek
-base_url = "https://api.openai.com/v1"
-model = "<model name>"
-api_key_env = "OPENAI_API_KEY"    # 可选；不需要认证的本地服务可以省略
+[endpoint.chat]                   # 至少一个；名字任取（12 §2）
+plugin = "deepseek"               # 插件名，须有活跃代际并导出 completion（11 §6）
+base_url = "https://api.deepseek.com"
+model = "deepseek-chat"
+api_key_env = "DEEPSEEK_API_KEY"  # 可选；不需要认证的本地服务可以省略
 options = {}                      # 可选；合并进请求体，例如 { temperature = 0.7 }
+window_tokens = 128000            # 这个模型的上下文窗口
+max_output_tokens = 8192          # 这个模型的输出上限，须小于窗口
+
+[endpoint.cheap]
+plugin = "openai-compatible"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+api_key_env = "OPENAI_API_KEY"
+window_tokens = 128000
+max_output_tokens = 4096
+
+[profile.default]                 # 必填；新 Session 用它
+reply = "chat"                    # 回复用的 endpoint
+compaction = "cheap"              # 压缩用的 endpoint；可以与 reply 相同
+requires_lifeline = true          # 可选，默认 true
 
 [embedding]                       # 必填；记忆使用（06）
-plugin = "openai-compatible"      # 可选，默认 openai-compatible
+plugin = "openai-compatible"      # 可选，默认 openai-compatible；须导出 embedding
 base_url = "https://api.openai.com/v1"
 model = "text-embedding-3-small"
 dimensions = 1536                 # 模型返回的向量维度；与现有索引不一致时，索引自动重建
 api_key_env = "OPENAI_API_KEY"    # 可选
 options = {}                      # 可选；合并进请求体，例如支持缩短维度的模型可写 { dimensions = 512 }
-
-[context]                         # 可选
-window_tokens = 128000            # 默认 128000
-max_output_tokens = 8192          # 默认 8192
 
 [run]                             # 可选
 max_rounds = 24                   # 默认 24
@@ -77,31 +96,35 @@ api_base = "https://api.telegram.org"   # 可选
 ```
 
 - 配置文件不存在：报错并提示运行 `enco init`。
-- 缺少 `[provider]` 或 `[embedding]`：报错并拒绝启动。`[embedding]` 可以指向与 `[provider]` 不同的服务，也可以指向本地的 OpenAI 兼容服务（例如 Ollama）。
-- 给出了 `api_key_env` 但该环境变量未设置：报错并拒绝启动。API key 只从环境变量读取，不写进配置文件。`[telegram]` 的 `token_env` 同理。
-- 这是 P0 的全部配置项。新增配置项需要先提问（01 §5）。
+- 缺少 `[profile.default]` 或 `[embedding]`，profile 引用了不存在的 endpoint，endpoint 的窗口或输出上限不合法：报错并拒绝启动。插件名是否存在、是否导出所需接口，由注册表启动时检查（11 §6）。
+- 给出了 `api_key_env` 但该环境变量未设置：报错并拒绝启动。API key 只从环境变量读取，不写进配置文件，读出后放在内存中的 `Endpoint.api_key`（12 §3）。`[telegram]` 的 `token_env` 同理。
+- 修改配置要重启守护进程。
+- 这是全部配置项。新增配置项需要先提问（01 §5）。
 
 ## 4. 组合根（`compose_root.rs`）
 
 ```text
 paths  = Paths::from_env()
-(config, embedding) = Config::load(paths.config())                          // 一次得到校验过的 EmbeddingSpec
-kernel_config = KernelConfig::new(budget, config.run.max_rounds)?  // 预算规则只在内核定义（04 §3），在打开任何资源之前失败
+config = Config::load(paths.config())                               // profiles、embedding endpoint、run、telegram 都已校验（§3）
+kernel_config = KernelConfig::new(config.run.max_rounds)?           // 在打开任何资源之前失败
 确保 workspace/ 存在
 clock  = Arc::new(SystemClock)
-store  = SqliteStore::open(paths.db(), paths.blobs())
-provider_bytes  = factory(config.provider.plugin); embedding_bytes = factory(config.embedding.plugin)   // 07 §5
-store.put_blob(provider_bytes); store.put_blob(embedding_bytes)
-engine   = Arc::new(WasmEngine::new())
-provider = WasmProvider::new(engine.clone(), provider_bytes, [provider] 的设置)
-embedder = WasmProvider::new(engine, embedding_bytes, [embedding] 的设置)
+store  = SqliteStore::open(StorePaths { db: paths.db(), blobs: paths.blobs(), artifacts: paths.artifacts(), plugins_lock: paths.plugins_lock() })
+runtime = Arc::new(WasmRuntime::new())                              // 07 §3
+registry = Registry::open(RegistryDeps {                            // 11 §4.1：登记出厂制品、加载活跃代际、检查接线
+    store, runtime,
+    factory: FACTORY 中每一项的 (name, id, 嵌入的字节),               // 07 §5
+    wiring: config.wiring(),                                        // 每个 profile 的两个用途 + embedding
+    clock,
+})
 memories = Memories::open(MemoryPaths { db: paths.memory_db(), index: paths.memory_index() },
-                          embedding, embedder, clock.clone())               // 06 §7
+                          config.embedding_endpoint(), registry.clone(), clock.clone())   // 06 §7
 deps = KernelDeps {
-    store, provider,
+    store, registry, profiles: config.profiles(),
     composer: FactoryComposer::new(paths.workspace(), paths.instructions()),
     context:  vec![InstructionsContextSource::new(paths.instructions()), MemoryContextSource::new(memories.clone())],
-    tools:    enco_host::native_tools(paths.workspace()) ++ enco_host::memory_tools(memories.clone()),
+    tools:    enco_host::native_tools(paths.workspace()) ++ enco_host::memory_tools(memories.clone())
+              ++ enco_host::plugin_tools(registry.clone(), paths.workspace()),
     lifeline: enco_host::LIFELINE 转为 Vec<String>,
     clock,
 }
@@ -109,7 +132,19 @@ kernel = Kernel::start(deps, kernel_config)
 channels = config.telegram.map(|c| Channel::start(kernel.clone(), Telegram::new(token, api_base), owner_id, clock)) // 10；配置先校验，Kernel 启动后注册
 ```
 
-依赖在这里一次性构造成具体的结构体。不要引入注册表、工厂或容器。
+出厂插件的名字与身份是组合根里的常量：
+
+```rust
+/// 出厂插件：名字由宿主保留，身份是固定的 ULID（11 §2），字节由 build.rs 嵌入（07 §5）。
+const FACTORY: [(&str, &str, &[u8]); 2] = [
+    ("openai-compatible", "01M3X4HYHSE2M3523YK35VX60W", OPENAI),
+    ("deepseek",          "01M3X4HYHSRXVVQYXVDK5WQ9D3", DEEPSEEK),
+];
+```
+
+两个 ULID 在第一次写进规格时定下，此后永不改变：它们就是这两个插件在任何 Space 里的身份。
+
+依赖在这里一次性构造成具体的结构体。`Registry` 是代际的归属者，不是服务定位器：它只回答"这个名字现在是哪个代际"，不构造其他依赖。注册表先于 Kernel 打开，因为记忆在 Kernel 之前就需要嵌入导出。
 
 ## 5. 守护进程（`daemon.rs`）
 
@@ -154,6 +189,11 @@ pub enum Command {
     CancelSchedule { schedule_id: ScheduleId },
     Memories {},
     ForgetMemory { memory_id: MemoryId },
+    Inspect { session: String, attempt_id: Option<AttemptId> },
+    SetProfile { session: String, profile: String },
+    PluginStatus {},
+    PluginDeploy { name: String, path: PathBuf },
+    PluginRollback { name: String },
 }
 ```
 
@@ -163,7 +203,7 @@ pub enum Command {
 
 `send` 与 `subscribe` 在 Session 不存在时创建它（`Kernel::open_session`）；其余命令遇到不存在的 Session 返回 `unknown_session`。
 
-`memories` 与 `forget_memory` 直接调用 `Memories::list` 与 `Memories::forget`，与 Agent 的记忆工具是同一组方法（06 §1）；其余命令调用 Kernel。
+`memories` 与 `forget_memory` 直接调用 `Memories::list` 与 `Memories::forget`，与 Agent 的记忆工具是同一组方法（06 §1）；`plugin_*` 调用 `kernel.registry()` 的方法，与 Agent 的插件工具是同一组方法（11 §8）；其余命令调用 Kernel。`plugin_deploy` 的 `path` 由 CLI 先解析为绝对路径再发送，守护进程读取文件，读不到时返回 `bad_request`。
 
 ### 6.2 服务端消息
 
@@ -190,8 +230,13 @@ pub enum ServerMessage {
 | `cancel_schedule` | `{ "cancelled": bool }` |
 | `memories` | `MemoryList`（06 §7） |
 | `forget_memory` | `{ "forgotten": bool }` |
+| `inspect` | `Inspection`（04 §14） |
+| `set_profile` | `{ "profile": string }` |
+| `plugin_status` | `[PluginStatus]`（11 §4） |
+| `plugin_deploy` | `Deployed`（11 §4） |
+| `plugin_rollback` | `GenerationRecord` |
 
-错误码：`bad_request`（无法解析的请求）、`unknown_session`、`already_subscribed`、`kernel`（message 为 `KernelError` 的文本）、`memory`（message 为 `MemoryError` 的文本）、`lagged`。
+错误码：`bad_request`（无法解析的请求，或 `plugin_deploy` 的文件读不到）、`unknown_session`、`already_subscribed`、`kernel`（message 为 `KernelError` 的文本，包括注册表与 profile 的错误）、`memory`（message 为 `MemoryError` 的文本）、`lagged`。
 
 ## 7. 客户端（`client.rs`、`chat.rs`）
 
@@ -207,6 +252,7 @@ pub enum ServerMessage {
 |---|---|
 | `EventConsumed`（UserMessage） | 不显示（主人刚刚输入过） |
 | `EventConsumed`（Reminder） | `⏰ {text}` |
+| `EventConsumed`（GenerationRolledBack） | `! plugin {plugin} rolled back: generation {from} failed ({code})` |
 | `RoundStarted`，`safe_mode` 为真（每个 Run 只提示一次） | `(safe mode)` |
 | `AttemptSettled`（Completed，目的为 Reply，文本非空） | 文本 |
 | `AttemptSettled`（Failed） | `! model request failed: {code}: {message}` |

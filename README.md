@@ -107,7 +107,7 @@ Set `ENCO_HOME` to use a directory other than `~/.enco`. Run `cargo xtask check`
 
 - [docs/Architecture.md](docs/Architecture.md): architecture outline, with chapters in `docs/architecture/` (Chinese)
 - [docs/Roadmap.md](docs/Roadmap.md): phases and their acceptance criteria (Chinese)
-- [docs/P0/](docs/P0/): the P0 kernel spec, describing the implemented system (Chinese)
+- [docs/spec/](docs/spec/): the specification of the implemented system (Chinese)
 - [wit/CONTRACT.md](wit/CONTRACT.md): the plugin contract, generated from WIT
 - [CONTRIBUTING.md](CONTRIBUTING.md): project principles and how to contribute
 

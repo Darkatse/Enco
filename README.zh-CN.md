@@ -107,7 +107,7 @@ cargo run -p enco -- chat      # 在另一个终端中
 
 - [docs/Architecture.md](docs/Architecture.md)：架构总纲，各章节在 `docs/architecture/`
 - [docs/Roadmap.md](docs/Roadmap.md)：各阶段的计划与验收标准
-- [docs/P0/](docs/P0/)：P0 内核规格，描述已实现的系统
+- [docs/spec/](docs/spec/)：已实现系统的规格
 - [wit/CONTRACT.md](wit/CONTRACT.md)：插件契约，由 WIT 生成
 - [CONTRIBUTING.md](CONTRIBUTING.md)：项目理念与贡献方式
 

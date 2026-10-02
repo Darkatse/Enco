@@ -1,38 +1,65 @@
 # 04 内核（enco-kernel）
 
-内核只负责四件事：**记录**（Log）、**绑定**（本轮用哪份代码）、**校验**（计划与工具调用）、**调度**（Session actor、Run/Round、Scheduler）。它不包含 IO 实现、上下文提示词或排版，也不按具体工具、Provider 或服务身份写分派逻辑（01 §2）。内核自己的 Schedule 命令经普通 Tool 端口接入（§11）。
+内核只负责四件事：**记录**（Log）、**绑定**（这一次用哪份代码）、**校验**（计划与工具调用）、**调度**（Session actor、Run/Round、Scheduler）。它不包含 IO 实现、上下文提示词或排版，也不按具体工具、Provider 或服务身份写分派逻辑（01 §2）。内核自己的 Schedule 命令经普通 Tool 端口接入（§11）。绑定的对象是代际，代际的归属者是注册表（11）；操作注册表的工具要读文件，所以由宿主提供（05 §2.6）。
 
 内核也不知道记忆：记忆是宿主经 Tool 与 ContextSource 两个端口接入的能力（06）。
 
 ## 1. 架构形态
 
-端口与适配器（hexagonal architecture）：内核通过六个端口与外界交互，适配器由宿主与 Wasm 层实现，在组合根一次性装配。
+端口与适配器（hexagonal architecture）：内核通过端口与外界交互，适配器由宿主与 Wasm 层实现，在组合根一次性装配。
 
 ```text
-            ┌──────────────── enco-kernel ────────────────┐
- CLI/守护进程 │  Kernel ── Session actor ── Run/Round ──┐    │
- ──submit──▶ │     │          (每 Session 一个)         │    │
-             │  Scheduler actor                         │    │
-             │     ports: Store · Provider · Composer · ContextSource · Tool · Clock
-             └─────────┬────────┬─────────┬──────────┬─────┘
-                  enco-host  enco-wasm  enco-host  enco-host / 内核内置
-                  (SQLite)  (Provider)  (composer、上下文、fs/shell、记忆)
+            ┌──────────────────── enco-kernel ────────────────────┐
+ CLI/守护进程 │  Kernel ── Session actor ── Run/Round ──┐            │
+ ──submit──▶ │     │          (每 Session 一个)         │            │
+             │  Scheduler actor      Registry（代际的归属者，11）   │
+             │     ports: Store · Runtime · Provider · Embedding · Composer · ContextSource · Tool · Clock
+             └─────────┬──────────┬───────────┬──────────────┬────┘
+                  enco-host    enco-wasm    enco-host     enco-host / 内核内置
+                  (SQLite)   (插件运行时)  (composer、上下文、fs/shell、记忆)
 ```
 
 ## 2. 端口
 
-六个端口都位于真实的边界上（IO、插件、策略、时间）。Store 的完整定义见 03 §2。
+端口都位于真实的边界上（IO、插件、策略、时间）。Store 的完整定义见 03 §2。
+
+插件一侧有四个端口，与 WIT 的四个接口一一对应（07 §1）：`Runtime` 把制品变成 `Loaded`，`Loaded` 里是另外三个接口的适配器。
+
+```rust
+// ports/runtime.rs
+#[async_trait]
+pub trait Runtime: Send + Sync {
+    /// 编译制品，实例化一次并调用 describe(config)，读出它导出的接口。
+    /// 失败说明制品或配置不可用：不是组件、导入不满足、describe 返回错误。
+    async fn load(&self, artifact: &[u8], config: &serde_json::Value) -> Result<Loaded, LoadError>;
+}
+
+/// 一个已加载的代际能提供的东西。没有导出的接口就是 None。
+pub struct Loaded {
+    pub summary: String,                       // describe 返回的一句话
+    pub lifecycle: Arc<dyn Lifecycle>,
+    pub completion: Option<Arc<dyn Provider>>,
+    pub embedding: Option<Arc<dyn Embedding>>,
+}
+
+#[async_trait]
+pub trait Lifecycle: Send + Sync {
+    /// 自检，不联网。失败即部署被拒绝（11 §7）。
+    async fn probe(&self) -> Result<(), Failure>;
+}
+
+#[derive(thiserror::Error)]
+#[error("{0}")]
+pub struct LoadError(pub String);
+```
 
 ```rust
 // ports/provider.rs
 #[async_trait]
 pub trait Provider: Send + Sync {
-    /// 当前提供服务的代码，写入 AttemptStarted。
-    fn code(&self) -> CodeRef;
-    /// 一次非流式补全。超时由实现负责，以 Failure { code: "timeout", retryable: true } 返回。
-    async fn complete(&self, request: ProviderRequest) -> Result<Completion, Failure>;
-    /// 把若干段文本转换为向量，结果与输入一一对应。内核自己不调用它，它供宿主使用（06 §3.3）。
-    async fn embed(&self, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure>;
+    /// 一次非流式补全。调用参数每次传入；密钥单独传，不属于参数（12 §3）。
+    /// 超时由实现负责，以 Failure { code: "timeout", retryable: true } 返回。
+    async fn complete(&self, settings: &ProviderSettings, api_key: Option<&str>, request: ProviderRequest) -> Result<Completion, Failure>;
 }
 
 pub struct ProviderRequest {
@@ -46,6 +73,17 @@ pub struct Completion { pub message: Message, pub usage: Usage, pub stop: StopRe
 ```
 
 ```rust
+// ports/embedding.rs
+#[async_trait]
+pub trait Embedding: Send + Sync {
+    /// 把若干段文本转换为向量，结果与输入一一对应。内核自己不调用它，它供宿主使用（06 §3.3）。
+    async fn embed(&self, settings: &ProviderSettings, api_key: Option<&str>, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure>;
+}
+```
+
+代际由谁记录：适配器不再自报 `code()`。调用方从导出表拿到 `Export { generation, adapter }`（11 §4.2），把 `generation` 写进 Log。
+
+```rust
 // ports/composer.rs
 pub trait Composer: Send + Sync {
     fn code(&self) -> CodeRef;
@@ -56,12 +94,12 @@ pub trait Composer: Send + Sync {
 pub struct ComposeInput {
     pub now: DateTime<FixedOffset>,        // 本 Round 读取的时刻与宿主当时的 UTC 偏移（Clock）
     pub session: SessionRecord,
+    pub profile: Profile,                  // 本 Round 解析出的 profile（12）：两个用途的预算与 requires_lifeline
     pub transcript: Transcript,
     pub previous_run_end: Option<RunEnd>,  // 上一个 Run 的结束方式，用于提示中断等情况
     pub context: Contribution,             // 各 ContextSource 的贡献按顺序合并；安全模式下为空
     pub tools: Vec<(CapabilityId, ToolSpec)>, // 本轮可披露的工具；安全模式下只有救生集
     pub safe_mode: bool,
-    pub budget: Budget,
 }
 
 pub struct Budget { pub context_tokens: u32, pub max_output_tokens: u32 }
@@ -73,7 +111,8 @@ pub struct Transcript {
     pub round_ends: Vec<LogPos>,        // 该次压缩之后的 RoundEnded 位置，按 Log 位置递增，也就是合法的压缩边界
 }
 
-pub struct TranscriptItem { pub pos: LogPos, pub message: Message }
+/// `generation` 只有 Assistant 消息有：产生它的 Attempt 所用的 Provider 代际，扩展字段按它回放（§6.5）。
+pub struct TranscriptItem { pub pos: LogPos, pub message: Message, pub generation: Option<GenerationId> }
 
 pub enum Composition {
     Plan(ContextPlan),
@@ -142,7 +181,8 @@ pub trait Clock: Send + Sync {
 ```rust
 pub struct KernelDeps {
     pub store: Arc<dyn Store>,
-    pub provider: Arc<dyn Provider>,
+    pub registry: Arc<Registry>,     // 代际的归属者，由组合根先于 Kernel 打开（11 §4）
+    pub profiles: BTreeMap<String, Profile>,   // 来自配置（12 §2）；必须含 "default"
     pub composer: Arc<dyn Composer>,
     pub context: Vec<Arc<dyn ContextSource>>,
     pub tools: Vec<Arc<dyn Tool>>,   // 宿主提供的工具；内核再加入自己的内置工具（§11）
@@ -150,23 +190,27 @@ pub struct KernelDeps {
     pub clock: Arc<dyn Clock>,
 }
 
-/// 字段不公开，只能经 `KernelConfig::new` 构造：预算的合法性只在这里定义一次。
+/// 字段不公开，只能经 `KernelConfig::new` 构造。
 pub struct KernelConfig {
-    budget: Budget,
     max_rounds_per_run: u32,
 }
 
 impl KernelConfig {
-    /// Round 数与预算必须为正，且输出上限小于窗口，否则返回 `KernelError::Config`。
-    /// 组合根读完配置立即构造它，所以不合法的配置在打开存储与记忆之前就失败。
-    pub fn new(budget: Budget, max_rounds_per_run: u32) -> Result<Self, KernelError>;
+    /// Round 数必须为正，否则返回 `KernelError::Config`。预算随 profile 走，由配置读取时检查（12 §2）。
+    pub fn new(max_rounds_per_run: u32) -> Result<Self, KernelError>;
 }
 
 impl Kernel {
     /// 构造 Snapshot，启动 Scheduler，为每个已有 Session 启动 actor（actor 启动时自行恢复）。
+    /// `profiles` 中没有 "default" 时返回 `KernelError::Config`。
     pub async fn start(deps: KernelDeps, config: KernelConfig) -> Result<Kernel, KernelError>;
-    /// 不存在则创建，并确保它的 actor 已经启动。
+    /// 不存在则创建（profile 为 "default"），并确保它的 actor 已经启动。
     pub async fn open_session(&self, name: &str) -> Result<SessionRecord, KernelError>;
+    /// 改变 Session 的 profile，下一个 Round 生效。名字不在 `profiles` 中返回 `UnknownProfile`。
+    pub async fn set_profile(&self, session: SessionId, profile: &str) -> Result<(), KernelError>;
+    /// 把一次 Attempt 记录的请求解析出来（§14）。`attempt` 为空时取该 Session 最近的一次。
+    pub async fn inspect(&self, session: SessionId, attempt: Option<AttemptId>) -> Result<Inspection, KernelError>;
+    pub fn registry(&self) -> &Arc<Registry>;
     /// 外部输入的唯一入口：经 `store.accept` 在一个事务中投递 `events` 并写入连接状态，然后唤醒这些 Event 的 Session。
     /// Event 的 Session 必须已经存在（`open_session`）。`events` 可以为空，此时只写连接状态。
     pub async fn accept(&self, events: &[Event], connection: Option<&ConnectionWrite>) -> Result<Vec<Accepted>, KernelError>;
@@ -192,27 +236,28 @@ impl Kernel {
 pub struct Status {
     pub node: NodeId,
     pub safe_mode: bool,
-    pub provider: CodeRef,
     pub composer: CodeRef,
+    pub profiles: Vec<String>,            // 配置中的 profile 名字
     pub sessions: Vec<SessionStatus>,
 }
 
 pub struct SessionStatus { pub session: SessionRecord, pub running: bool, pub stopped: Option<String> }
 ```
 
+Provider 不再出现在 `Status` 里：它随 profile 与代际变化，看 `enco plugin status` 与每次 Attempt 的记录。
+
 Scheduler 触发提醒时走 `store.fire_schedule`，它把 Schedule 的状态变化与 Inbox 投递放在同一个事务里，是同一种提交的内部形式。
 
-守护进程与内置工具调用的是同一组方法：主人执行 `enco schedules --cancel` 与 Agent 调用 `schedule_cancel`，走的是同一个 `Schedules::cancel`。
+守护进程与内置工具调用的是同一组方法：主人执行 `enco schedules --cancel` 与 Agent 调用 `schedule_cancel`，走的是同一个 `Schedules::cancel`；`enco plugin deploy` 与 `plugin_deploy` 走的是同一个 `Registry::deploy`。
 
 ## 4. Snapshot 与 Session actor
 
 ### 4.1 Snapshot（`snapshot.rs`）
 
-`Kernel::start` 构造一次，之后不变（P1 才引入替换）。
+`Kernel::start` 构造一次，之后不变：它只含原生的部分。插件的导出不在这里，而在注册表发布的导出表里，按调用解析（11 §4.2）。Round 钉住导出表要到 P2 有了工具插件才需要。
 
 ```rust
 pub(crate) struct Snapshot {
-    pub provider: Arc<dyn Provider>,
     pub composer: Arc<dyn Composer>,
     pub context: Vec<Arc<dyn ContextSource>>,
     pub tools: Vec<SnapshotTool>,        // 宿主工具 + 内置工具
@@ -254,6 +299,8 @@ loop:
     run()                                         // §6
 ```
 
+`SessionRecord` 中只有 `profile` 会在运行中改变（`Kernel::set_profile`）。actor 在每个 Round 开始时用 `store.session(id)` 重读一次记录，所以改动在下一个 Round 生效，不需要给 actor 发消息。
+
 **提交辅助函数** `commit(bodies, consumed)`：从 `next` 开始依次分配位置，`at = clock.now().to_utc()`，调用 `store.commit`；成功后追加到内存副本，并把每个条目发送到 broadcast（没有订阅者时忽略发送错误）。
 
 **错误处理**：`store.commit` 返回的任何错误都说明前提已被破坏（被 fence、位置错乱或存储故障）。actor 记录错误、写入 `stopped`，然后退出。不要尝试继续或修补；重启后恢复流程会处理。
@@ -263,9 +310,9 @@ loop:
 纯函数：`pub(crate) fn project(entries: &[Entry]) -> Transcript`。
 
 1. 找到最近一条 `Compacted`。位置不大于它的 `upto` 的条目被隐藏，`summary` 取它的摘要；没有则 `summary = None`、不隐藏任何条目。
-2. 遍历**全部**条目，记录每个 Attempt 的目的（来自 `AttemptStarted`）和每个 CallId 的 `provider_id`（来自已完成的 Reply 消息中的 `ToolCall`）。
+2. 遍历**全部**条目，记录每个 Attempt 的目的与 Provider 代际（来自 `AttemptStarted`）和每个 CallId 的 `provider_id`（来自已完成的 Reply 消息中的 `ToolCall`）。
 3. 对未被隐藏的条目，按 Log 顺序：
-   - 具有规范消息形态的条目（03 §1.5 的表）生成 `TranscriptItem`；目的为 `Compaction` 的 Attempt 不生成。
+   - 具有规范消息形态的条目（03 §1.5 的表）生成 `TranscriptItem`；目的为 `Compaction` 的 Attempt 不生成。`AttemptSettled` 生成的项带上该 Attempt 的代际，其余为空。
    - `RoundEnded` 的位置加入 `round_ends`。
 
 压缩边界总是 `RoundEnded`，所以工具调用与它的结果不会被拆开。
@@ -297,12 +344,14 @@ round(run, token, prefix) -> RoundEnd:
     round_id = RoundId::new()
     snapshot = self.snapshot.clone()               // 本轮钉住
     safe_mode = store.node().safe_mode             // 安全模式在 Round 边界生效
+    session = store.session(id)                    // 重读，profile 可能已改（§4.2）
     pending = store.pending(session)
     commit(prefix ++ [EventConsumed { e } for e in pending] ++ [RoundStarted { run, round_id, safe_mode }],
            consumed = pending 的 id)
+    profile = profiles[session.profile]，没有 → end_round(Failed(profile.unknown, "profile `{name}` is not configured"))
 
-    (plan, request) = compose(snapshot, round_id, safe_mode, token)?      // §6.3；取消或失败则 end_round
-    completion = attempt(snapshot, round_id, Reply, plan, request, token)? // §6.4；取消或失败则 end_round
+    (plan, request) = compose(snapshot, profile, round_id, safe_mode, token)?      // §6.3；取消或失败则 end_round
+    completion = attempt(profile, round_id, Reply, plan, request, token)?         // §6.4；取消或失败则 end_round
     calls = completion.message.tool_calls()
     if calls.is_empty(): return end_round(Replied)
     for call in calls: dispatch(snapshot, round_id, plan, call, token)   // §6.6：是否开始由 dispatch 决定
@@ -311,12 +360,14 @@ round(run, token, prefix) -> RoundEnd:
 
 `end_round(end)` 提交 `RoundEnded { round, end }` 并返回 `end`。
 
+profile 找不到是配置问题，不是模型问题，所以 Round 失败、Run 失败，模型下次从 `previous_run_end` 看到，主人从 `enco status` 或渠道的终止通知看到（12 §3）。
+
 ### 6.3 组装与压缩
 
 组装分两个时刻。**组装时**读取当前状态：时间与上下文贡献每个 Round 读取一次，压缩只改变 Transcript，重新组装时复用它们。**记录后**只解析记录：Attempt 与重试使用冻结的计划（§6.4），不再调用 ContextSource 或读取 Snapshot 中的工具定义。
 
 ```text
-compose(snapshot, round, safe_mode, token):
+compose(snapshot, profile, round, safe_mode, token):
     now = clock.now()                                          // 每个 Round 读取一次，偏移随宿主当前时区
     context = if safe_mode { Contribution::default() }
               else { 以 ContextQuery { session, latest_event, cancel: token.child_token() } 依次调用每个 ContextSource，
@@ -325,34 +376,43 @@ compose(snapshot, round, safe_mode, token):
     任何一个来源出错 → Failed(context.failed)
     for _ in 0..=MAX_COMPACTIONS_PER_ROUND:
         input = ComposeInput {
-            now, session, transcript: transcript::project(&entries),
+            now, session, profile, transcript: transcript::project(&entries),
             previous_run_end: 当前 Run 之前最后一条 RunEnded 的 end,
             context: context.clone(),
             tools: if safe_mode { 救生集 } else { 全部 },
-            safe_mode, budget,
+            safe_mode,
         }
         match composer.compose(&input):
             Err(e)                    => Failed(e 转为 Failure：ContextOverflow → context.overflow，其余 → compose.failed)
-            Ok(Plan(plan))            => return (plan, plan::resolve(&plan, &input, Reply, &snapshot.lifeline)?)   // 校验失败 → Failed(plan.invalid)
+            Ok(Plan(plan))            => plan::validate(&plan, &input, Reply, &snapshot.lifeline)?            // 失败 → Failed(plan.invalid)
+                                         return (plan, plan::resolve(&plan, &input.transcript, exports, target(Reply))?)
             Ok(Compact { upto, plan }) =>
                 upto 必须属于 input.transcript.round_ends，否则 Failed(plan.invalid)
-                request = plan::resolve(&plan, &input, Compaction, &snapshot.lifeline)?
-                attempt(snapshot, round, Compaction { upto }, plan, request, token)?   // 成功时同时提交 Compacted
+                plan::validate(&plan, &input, Compaction, &snapshot.lifeline)?
+                request = plan::resolve(&plan, &input.transcript, exports, target(Compaction))?
+                attempt(profile, round, Compaction { upto }, plan, request, token)?   // 成功时同时提交 Compacted
                 // 继续循环：用新的 Transcript 再次组装
     Failed(compose.failed, "too many compactions in one round")
 ```
 
+`exports = registry.exports()`，`target(用途)` 是 `profile.endpoint(用途).plugin` 在导出表中的身份（11 §4.2）；找不到 → Failed(plugin.unavailable)。一个 Round 内目标插件由 profile 固定，代际可以变（§6.4），所以解析一次的请求在重试中仍然有效。
+
 ### 6.4 Attempt 与重试（`attempt.rs`）
 
+模型请求与适配器以 Attempt 为单位固定（架构文档 §4.6）：每次 Attempt 开始时从导出表取当前代际，不从 Round 钉住的东西里取。
+
 ```text
-attempt(snapshot, round, kind, plan, request, token):
+attempt(profile, round, safe_mode, kind, plan, request, token):
     plan_hash = store.put_blob(serde_json::to_vec(plan))      // 先写 blob，再提交引用它的条目
+    endpoint = profile.endpoint(kind 的目的)
     for n in 1..=MAX_ATTEMPTS:
+        export = registry.exports().completion(endpoint.plugin, safe_mode)?   // 失败 → Ended(Failed(plugin.unavailable))，不写 AttemptStarted
         attempt_id = AttemptId::new()
         commit([AttemptStarted { round, attempt_id, purpose: kind 的目的, plan: plan_hash,
-                                 composer: snapshot.composer.code(), provider: snapshot.provider.code() }])
+                                 composer: snapshot.composer.code(),
+                                 provider: Generation { id: export.generation }, settings: endpoint.settings }])
         result = select {
-            r = snapshot.provider.complete(request.clone()) => r,
+            r = export.adapter.complete(&endpoint.settings, endpoint.api_key, request.clone()) => r,
             _ = token.cancelled() => { commit([AttemptSettled { Failed(cancelled) }]); return Ended(Cancelled) }
         }
         match result:
@@ -362,30 +422,44 @@ attempt(snapshot, round, kind, plan, request, token):
                     summary = c.message.joined_text()
                     if summary.trim().is_empty(): commit(bodies); return Ended(Failed(compose.failed, "empty summary"))
                     bodies.push(Compacted { upto, summary, attempt: attempt_id })
-                commit(bodies); return Settled(c)
+                commit(bodies)
+                registry.report(export.generation, Ok)                       // 11 §7
+                return Settled(c)
             Err(f) =>
                 commit([AttemptSettled { Failed(f) }])
-                if f.retryable && n < MAX_ATTEMPTS:
+                rolled_back = registry.report(export.generation, Failed(f))  // 11 §7；可归因的失败可能触发回退
+                if let Some(r) = rolled_back: store.accept([Event { source: Registry, body: GenerationRolledBack(r) }])
+                if n == MAX_ATTEMPTS: return Ended(Failed(f))
+                if rolled_back.is_some(): continue                            // 代际换了，立刻用新的再试，不退避
+                if f.retryable:
                     select { sleep(BACKOFF[n-1]) => continue, token.cancelled() => return Ended(Cancelled) }
                 return Ended(Failed(f))
 ```
 
-- 重试复用同一份计划，不重新组装。
+- 重试复用同一份计划，不重新组装。目标插件由 profile 固定，所以解析过的请求对回退后的代际同样有效（§6.3）。
+- 回退之后立即重试，是架构文档 §4.6 的"Provider 失败后改用健康代际，就是开始一次新的 Attempt"。回退事件送进本 Session 自己的 Inbox，下一个 Round 消费，模型因此知道发生了什么（11 §7）。
+- 导出表找不到插件时不写 `AttemptStarted`：没有代际可记。Round 以 `plugin.unavailable` 失败。
 - 取消时直接丢弃 Provider 的 future：模型请求没有需要结算的外部效果。
 - 内核不再另设超时，超时只在 Provider 实现中（07 §3.3）。
 
 ### 6.5 计划的校验与解析（`plan.rs`）
 
-`pub(crate) fn resolve(plan: &ContextPlan, input: &ComposeInput, purpose: AttemptPurpose, lifeline: &[CapabilityId]) -> Result<ProviderRequest, PlanError>`，按顺序检查：
+校验和解析分开：校验只在组装时做，解析在组装、重试与 `inspect`（§14）中做，三处用同一个函数。
+
+`pub(crate) fn validate(plan: &ContextPlan, input: &ComposeInput, purpose: AttemptPurpose, lifeline: &[CapabilityId]) -> Result<(), PlanError>`，按顺序检查：
 
 1. `items` 非空。
-2. 每个 `PlanItem::Log { pos }` 都必须是 `input.transcript.items` 中的某一项，解析为它的消息；`PlanItem::Message` 原样使用。
-3. **工具配对**：解析后的消息序列中，每条包含工具调用的 Assistant 消息之后，紧跟的是恰好覆盖这些调用的 Tool 消息（顺序不限），然后才能出现其他消息；每条 Tool 消息都对应前面的某个调用。
+2. 每个 `PlanItem::Log { pos }` 都必须是 `input.transcript.items` 中的某一项。
+3. **工具配对**：按 `items` 解析出的消息序列中，每条包含工具调用的 Assistant 消息之后，紧跟的是恰好覆盖这些调用的 Tool 消息（顺序不限），然后才能出现其他消息；每条 Tool 消息都对应前面的某个调用。
 4. `plan.tools` 中没有重复的名字，并且每一项都与 `input.tools` 中的某一项完全相同（`CapabilityId` 与 `ToolSpec` 都相同）。这保证记录下来的定义就是本轮 Snapshot 中的定义。
-5. 目的为 `Reply` 且 `session.config.requires_lifeline` 为真时，救生集中每个工具的 `CapabilityId` 都在 `plan.tools` 中。
+5. 目的为 `Reply` 且 `input.profile.requires_lifeline` 为真时，救生集中每个工具的 `CapabilityId` 都在 `plan.tools` 中。
 6. 目的为 `Compaction` 时，`plan.tools` 必须为空。
 
-结果：`ProviderRequest { messages, tools: plan.tools 中的 ToolSpec（按顺序）, max_output_tokens }`。请求只来自计划与 Log，不从 Snapshot 读取工具定义。
+`pub(crate) fn resolve(plan: &ContextPlan, transcript: &Transcript, exports: &Exports, target: PluginId) -> Result<ProviderRequest, PlanError>`：
+
+- 每个 `PlanItem::Log { pos }` 解析为 `transcript.items` 中该项的消息；`PlanItem::Message` 原样使用。
+- **扩展字段只回放给产生它的插件**：Assistant 消息中的 `Extension` 部分，只在 `exports.plugin_of(item.generation) == Some(target)` 时保留，否则去掉。内核不解释扩展字段，只决定给不给；插件收到的扩展字段一定是它自己的，不需要再过滤。
+- 结果：`ProviderRequest { messages, tools: plan.tools 中的 ToolSpec（按顺序）, max_output_tokens }`。请求只来自计划、Log 与注册表，不从 Snapshot 读取工具定义。
 
 **模型只能调用被披露的工具**：分派时只在 `plan.tools` 中查找（§6.6）。
 
@@ -409,7 +483,7 @@ dispatch(snapshot, round, plan, call, token):
     commit([ToolCallSettled { call: call.id, outcome: Settlement::from(&outcome), content, full }])
 ```
 
-- 工具按模型给出的顺序依次执行，P0 不并行。
+- 工具按模型给出的顺序依次执行，目前不并行。
 - `settle_without_start` 只提交 `ToolCallSettled`，不提交 `ToolCallStarted`：没有 Started 就意味着确定没有执行，恢复流程依赖这一点（§8）。
 - 工具调用总是被等待到返回（不 drop），这就是"等待静止"。工具实现负责响应 `cancel`（05 §2）。
 - 参数的归一化（`Arguments::parse`）与参数名检查（`ToolSpec::check_argument_names`，针对 `closed_object_schema` 构造的封闭对象）都只在这里。工具只校验自己读取的值，不再重复检查参数名，也不在开始前检查取消。
@@ -422,7 +496,7 @@ dispatch(snapshot, round, plan, call, token):
 | `Failed { failure }` | `error [{code}]: {message}` |
 | `Unknown { failure }` | `outcome unknown [{code}]: {message}. The action may already have taken effect; check the current state before retrying.` |
 
-**结果预算**：内核在 `CallContext.result_budget` 中给出结果可以内联的字节数（P0 为 `TOOL_RESULT_INLINE_BYTES`）。能分页的工具在预算内按自己的单位停下，并说明如何继续（`fs_read` 见 05 §2.1）；内核不按工具身份区分，下面的截断对所有工具一样，是兜底。
+**结果预算**：内核在 `CallContext.result_budget` 中给出结果可以内联的字节数（`TOOL_RESULT_INLINE_BYTES`）。能分页的工具在预算内按自己的单位停下，并说明如何继续（`fs_read` 见 05 §2.1）；内核不按工具身份区分，下面的截断对所有工具一样，是兜底。
 
 文本超过 `TOOL_RESULT_INLINE_BYTES` 时：完整文本写入 blob，`full = Some(hash)`；`content` 为前 `TOOL_RESULT_PREVIEW_BYTES`（在字符边界截断）加上一行说明：`[truncated: {总字节数} bytes. Full result: {store.blob_path(hash)}; it may be cleaned up later. Read it with fs_read using offset and limit; if a single line is too long, read byte ranges with shell, for example head -c.]`。Log 只记录 `Settlement`、`content` 与 `full`，工具返回的原始值不另存（03 §1.6）。
 
@@ -431,9 +505,9 @@ dispatch(snapshot, round, plan, call, token):
 ## 7. 安全模式
 
 - 节点级开关，存于 Store 的 meta，由 `Kernel::set_safe_mode` 写入，在下一个 Round 开始时生效。
-- 安全模式下，内核：不调用任何 ContextSource；只把救生集作为可披露的工具；在 `RoundStarted` 中记录 `safe_mode: true`；把 `ComposeInput.safe_mode` 设为真。
-- P0 的 composer 与 Provider 本来就是出厂代码，所以安全模式在 P0 中的效果是"最小上下文 + 只有救生集"。
-- 自动进入安全模式不在 P0 范围内：自动进入要等出现非出厂策略时才有意义。
+- 安全模式下，内核：不调用任何 ContextSource；只把救生集作为可披露的工具；在 `RoundStarted` 中记录 `safe_mode: true`；把 `ComposeInput.safe_mode` 设为真；Attempt 用出厂代际（`Exports::completion(插件, safe_mode = true)`，11 §4.2）。profile 不变，仍按它选插件与参数。
+- composer 目前只有出厂实现，所以安全模式的效果是"最小上下文 + 只有救生集 + 出厂 Provider"。
+- 自动进入安全模式目前不做：自动进入要等出现非出厂策略时才有意义。
 
 ## 8. 恢复（`recovery.rs`）
 
@@ -536,6 +610,7 @@ pub const TOOL_RESULT_PREVIEW_BYTES: usize = 4 * 1024;
 pub const SCHEDULER_TICK: Duration = Duration::from_secs(1);
 pub const SESSION_BROADCAST_CAPACITY: usize = 256;
 pub const SCHEDULER_CHANNEL_CAPACITY: usize = 64;
+pub const TRIAL_CALLS: u32 = 5;                      // 11 §7
 ```
 
 ## 13. 错误（`kernel.rs`）
@@ -547,6 +622,8 @@ pub enum KernelError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Schedule(#[from] ScheduleError),
+    #[error(transparent)]
+    Registry(#[from] RegistryError),         // 11 §9
     #[error("configuration: {0}")]
     Config(String),                          // 只用于组合根输入不合法
     #[error("kernel is shutting down")]
@@ -557,7 +634,43 @@ pub enum KernelError {
     SessionStopped(SessionId, String),
     #[error("unknown session {0}")]
     UnknownSession(SessionId),
+    #[error("unknown profile {0}")]
+    UnknownProfile(String),
+    #[error("session {0} has no attempt {1}")]
+    UnknownAttempt(SessionId, String),       // inspect；第二项是 attempt id 或 "latest"
+    #[error("attempt {attempt}: invalid recorded plan: {reason}")]
+    InvalidPlan { attempt: AttemptId, reason: String },
 }
 ```
 
-`PlanError`、`ComposeError`、`ContextError` 不会穿出内核：它们在 Round 内被转换为 `Failure` 并记录为 `RoundEnded { Failed }`。
+`PlanError`、`ComposeError`、`ContextError` 不会穿出内核：它们在 Round 内被转换为 `Failure` 并记录为 `RoundEnded { Failed }`；查看已记录计划的解析错误由 `KernelError::InvalidPlan` 报告。
+
+## 14. 请求查看：`Kernel::inspect`
+
+把一次 Attempt 记录的东西解析成模型实际收到的请求。它和 Round 用同一个 `plan::resolve`，所以看到的就是发出去的；A2 的验收（09 §4）用它核对。
+
+```rust
+pub struct Inspection {
+    pub attempt: AttemptId,
+    pub purpose: AttemptPurpose,
+    pub composer: CodeRef,
+    pub provider: CodeRef,
+    pub settings: ProviderSettings,
+    pub request: ProviderRequest,     // 解析后的消息、工具定义与输出上限
+    pub omitted: Vec<Omission>,       // 计划中记录的省略
+    pub result: Option<AttemptResult>,
+}
+```
+
+```text
+inspect(session, attempt):
+    entries = store.log(session, None)
+    started = attempt 指定时找那条 AttemptStarted，否则取最后一条；没有 → UnknownAttempt
+    plan = store.get_blob(started.plan)
+    transcript = transcript::project(位置小于 started.pos 的条目)    // 组装时看到的历史
+    target = registry.exports().plugin_of(started.provider 的代际)      // 当时用的插件
+    request = plan::resolve(&plan, &transcript, &exports, target)
+    result = 对应的 AttemptSettled（如果有）
+```
+
+Transcript 只取 Attempt 之前的条目，所以同一 Round 里压缩前后的两次 Attempt 各自解析出当时的历史。计划引用的 blob 已被清理时返回 `StoreError::Blob`，不猜。

@@ -6,7 +6,7 @@
 
 | 命令 | 作用 |
 |---|---|
-| `cargo xtask build-factory` | 构建 Provider 插件并复制到 `target/factory/`（07 §5） |
+| `cargo xtask build-factory` | 构建出厂插件并复制到 `target/factory/`（07 §5） |
 | `cargo xtask boundaries` | 检查工作区 crate 之间的依赖方向 |
 | `cargo xtask docs [--check]` | WIT 文档检查，生成 `wit/CONTRACT.md`；`--check` 时只比较、不写入 |
 | `cargo xtask check` | 仓库级检查：按下面的顺序执行，任何一步失败即停止 |
@@ -78,12 +78,13 @@ complete: async func(settings: settings, request: request) -> result<completion,
 | 层 | 位置 | 内容 |
 |---|---|---|
 | 单元 | 模块内 `#[cfg(test)]` | 只用于集成测试不易触达的纯函数边界。目前只有记忆索引的 `reconcile`：同一记忆的重复节点、无法解析的 payload、rev 不一致 |
-| 集成 | `crates/enco-host/tests/` | Kernel + `SqliteStore`（临时目录）+ 原生工具 + `InstructionsContextSource` + `Memories`（临时目录）+ `FactoryComposer` + `ScriptedProvider` + `TestClock`。恢复、Transcript 投影、计划校验、composer 的预算与压缩、工具行为都在这一层经过真实路径验证 |
-| 端到端 | `apps/enco/tests/` | 以子进程运行 `enco serve`（`env!("CARGO_BIN_EXE_enco")`），临时 `ENCO_HOME`，`[provider]` 与 `[embedding]` 都指向 `wiremock` 服务；经过真实的 Wasm 插件 |
+| 集成 | `crates/enco-host/tests/` | Kernel + `Registry`（`ScriptedRuntime`）+ `SqliteStore`（临时目录）+ 原生工具 + `InstructionsContextSource` + `Memories`（临时目录）+ `FactoryComposer` + `ScriptedProvider` + `TestClock`。恢复、Transcript 投影、计划校验、composer 的预算与压缩、工具行为、注册表与健康门控都在这一层经过真实路径验证 |
+| 端到端 | `apps/enco/tests/` | 以子进程运行 `enco serve`（`env!("CARGO_BIN_EXE_enco")`），临时 `ENCO_HOME`，各 endpoint 与 `[embedding]` 都指向 `wiremock` 服务；经过真实的 Wasm 插件与出厂代际 |
 
 测试辅助：
 
-- `ScriptedProvider`：按队列返回预设的 `Completion` 或 `Failure`，并记录收到的每个 `ProviderRequest`；可以在某次调用处阻塞在 barrier 上，用于模拟崩溃。`embed` 是确定性的：把文本的字符二元组做特征哈希（feature hashing）得到固定维度的向量并归一化，因此字面相近的文本向量相近；可以切换为返回 `provider.network` 失败。
+- `ScriptedProvider`：实现 `Provider` 与 `Embedding`。按队列返回预设的 `Completion` 或 `Failure`，并记录收到的每个 `ProviderRequest` 与 `ProviderSettings`；可以在某次调用处阻塞在 barrier 上，用于模拟崩溃。`embed` 是确定性的：把文本的字符二元组做特征哈希（feature hashing）得到固定维度的向量并归一化，因此字面相近的文本向量相近；可以切换为返回 `provider.network` 失败。
+- `ScriptedRuntime`：实现 `Runtime`。按制品的字节内容决定 `load` 的结果：预先登记的字节返回带 `ScriptedProvider` 的 `Loaded`（可以设定 probe 的结果、是否导出 embedding），其余返回 `LoadError`。健康门控的故障注入就是让某个代际的 `ScriptedProvider` 返回 `plugin.trap`，不需要真的构造会 trap 的组件。
 - `TestClock`：`Clock` 的实现，时刻与 UTC 偏移都可以设置。
 - **端到端测试中的等待**：测试辅助中写一个最小的本地协议客户端，订阅 Session 并等待期望的条目（例如 `RunEnded`），外加总超时；不要用固定时长的 sleep 或轮询代替。
 - **进程内模拟 `kill -9`**：Kernel 和 Session actor 都在独立的 tokio runtime 内创建；在注入点阻塞后调用 `runtime.shutdown_background()`，用 Drop 通知确认执行中的 future 已被丢弃，之后才释放 Kernel 句柄，避免误走正常取消结算；然后在同一个数据库上启动新的 Kernel，检查恢复写入的条目。
@@ -92,7 +93,19 @@ complete: async func(settings: settings, request: request) -> result<completion,
 
 ## 4. 验收场景
 
-P0 的完成以下列场景为准。里程碑按实施顺序排列：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。"层"指主要在哪一层验证。
+每个阶段的完成以下列场景为准。里程碑按实施顺序排列。P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。P1（可恢复替换，路线图）：M10 请求查看、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。"层"指主要在哪一层验证。
+
+P1 各里程碑的范围：
+
+| 里程碑 | 实现 | 暂不实现 |
+|---|---|---|
+| M10 | `Kernel::inspect` 与 `enco inspect`（04 §14）；`plan::validate` 与 `plan::resolve` 分开；A2 改用 `inspect`；`Inspection.settings` 与 M11 的记录字段一起加入 | 扩展字段按身份过滤（M12 才有身份） |
+| M11 | 11 §1–§6、§8：`plugins.lock`、制品库、注册表、`Registry` 与导出表、`Runtime` 端口、Provider 与 Embedding 按调用传参、`CodeRef::Generation`、`AttemptStarted.settings`、出厂代际登记、部署与回退、准入、三个插件工具与 CLI；记忆经导出表取嵌入；schema 加 `plugins`、`generations` 表 | 试用与 probe：部署直接以 `healthy` 激活。调用参数仍来自 P0 形态的 `[provider]` 节点配置，经一个临时的 `default` profile 传入（M13 替换） |
+| M12 | 07：WIT 0.2，`completion` 与 `embedding` 拆开，`describe(config)` 不再自报名字，`probe` 定义，`extension` 去掉 `provider`；enco-wasm 按导出建立 `InstancePre`；扩展字段在 `plan::resolve` 中按代际的身份过滤；插件重建；出厂插件目录改名 | 调用 `probe`（M14） |
+| M13 | 12 与 08 §3：`[endpoint.*]`、`[profile.*]`、`sessions.profile`、`Kernel::set_profile`、`enco profile`、`ComposeInput.profile`、两个用途的预算；删除 `[provider]`、`[context]` 与 `SessionConfig`；同步更新 `enco init` 的模板、README 与 `examples/` 中的配置示例 | — |
+| M14 | 11 §7：部署时 `probe`、`trial` 状态、`TRIAL_CALLS` 晋升、可归因失败的自动回退、`GenerationRolledBack` 事件、Attempt 回退后立即重试、安全模式用出厂代际；schema 升到 2 | 健康代际的降级 |
+
+每个里程碑结束时系统都完整可用。M11 到 M13 之间的过渡形态（临时 profile）只存在于代码中，规格只描述最终形态。
 
 | # | 里程碑 | 场景 | 层 | 必须观察到 |
 |---|---|---|---|---|
@@ -101,7 +114,7 @@ P0 的完成以下列场景为准。里程碑按实施顺序排列：M1 地基�
 | A3 | M2 | 一次工具调用后回复 | 端到端（与 A7 共用） | `fs_write` 真的写出文件；第二次 Provider 请求中包含对应的 Tool 消息；执行前预写由 A8 的崩溃恢复场景核对 |
 | A4 | M2 | 未披露的工具与非法参数 | 集成 | 调用不存在的工具 → `ToolCallSettled(Failed tool.unavailable)`，没有 `ToolCallStarted`；参数不是对象 → `tool.invalid_arguments`；随后的 Round 正常进行 |
 | A5 | M2 | Provider 重试 | 集成 | 一次可重试失败后成功：两对 Attempt，同一个 `plan` 哈希；不可重试失败：`RunEnded(Failed)` |
-| A6 | M3 | 端到端对话 | 端到端 | `enco send` 得到预设回复；订阅收到的条目与 `enco log` 一致；`AttemptStarted.provider` 是 `CodeRef::Wasm`，其哈希在 blob 存储中存在 |
+| A6 | M3 | 端到端对话 | 端到端 | `enco send` 得到预设回复；订阅收到的条目与 `enco log` 一致；`AttemptStarted.provider` 是 `CodeRef::Generation`，其编号在 `enco plugin status` 中是该插件的出厂代际（M11 起；之前为 `CodeRef::Wasm` 加 blob 中的制品） |
 | A7 | M3 | 端到端工具调用 | 端到端 | wiremock 先返回 `fs_write` 调用、再返回文本：文件被写出；第二次 HTTP 请求体中的 `tool_call_id` 与第一次响应中的 id 一致 |
 | A8 | M4 | 工具执行中 `kill -9` | 端到端 | wiremock 返回 `shell_exec`，命令为 `echo run >> marker.txt; sleep 60`；等 `marker.txt` 出现一行后 SIGKILL 守护进程并重启：`ToolCallSettled(Unknown interrupted)`、`RoundEnded(Interrupted)`、`RunEnded(Interrupted)`；`marker.txt` 仍然只有一行；再发一条消息，新的 Run 正常完成 |
 | A9 | M4 | 模型请求中 `kill -9` | 集成 | Provider 阻塞时模拟崩溃；重启后出现 `AttemptSettled(Failed interrupted)`，没有任何 `ToolCallStarted` |
@@ -127,6 +140,20 @@ P0 的完成以下列场景为准。里程碑按实施顺序排列：M1 地基�
 | A29 | M9 | 入站不丢不重 | 集成 | 一条更新提交之后停止并重启：下一次 `getUpdates` 的 offset 为 `update_id + 1`，Inbox 中这条消息恰好一条；在提交之前停止：重启后同一条更新被再次取回，并恰好接纳一次 |
 | A30 | M9 | 出站投递 | 集成 | 最近交互输入的来源决定投递目标；Markdown 经原生富文本接口发送；超过 32768 字符的回复拆成多条，拼接后与原文相同；由 CLI 触发的回复不发往 Telegram；提醒触发的回复在重启后仍发往主人最近使用的聊天；聊天挂着别的 Session 时回复带独立成段的 `[<Session 名>]` 前缀；`sending` 已写入时重启不重发；每次逻辑投递都有最终结算，后续成功不覆盖此前 unknown / failed，`enco status.channels` 可读取其 Session 与 Log 位置；Run 失败或取消有终止通知 |
 | A31 | M9 | 真实 Telegram | 手动一次 | 配置真实的 bot，在手机上完成对话、`/session` 切换、`/cancel`，并收到一分钟后的提醒 |
+| A32 | M10 | 请求查看 | 集成（取代 A2 的自写解析） | 一个含工具调用与压缩的 Session：对每次 Attempt，`Kernel::inspect` 得到的 `request` 与 `ScriptedProvider` 当时收到的完全相同；压缩前后的两次 Attempt 各自解析出当时的历史；`enco inspect` 输出相同内容；计划的 blob 被删除后返回 `Blob` 错误而不是空请求 |
+| A33 | M11 | 出厂代际与启动 | 集成 | 空库启动：每个出厂插件有一条 `healthy`、来源 `factory` 的代际并处于活跃，`plugins.lock` 含两条宿主固定的身份；再次启动不新增代际；换一份出厂字节启动：新增一条出厂代际并成为活跃；主人部署过的插件在换出厂字节后活跃代际不变；`plugins.lock` 中出厂身份被改后拒绝启动 |
+| A34 | M11 | 部署、回退与记录 | 集成 | `deploy` 之后下一次 `AttemptStarted.provider` 是新编号，`settings` 等于 endpoint 的参数且不含密钥；`rollback` 之后回到上一个健康代际，被回退的代际状态不变；再次 `rollback` 回到出厂代际；没有目标时返回 `NoRollbackTarget`；`plugin_deploy` 与 `enco plugin deploy` 的结果一致；两个部署并发提交后两条代际都在 `status` 中，活跃的是后提交的那条 |
+| A35 | M11 | 准入 | 集成 | 把一份不导出 embedding 的制品部署到 `[embedding].plugin` 指向的插件：被拒绝，message 列出使用者 `embedding`，注册表不变；配置引用了没有登记的插件名：启动失败并指出 profile；不是组件的文件：`Rejected`，制品库中不留下记录以外的痕迹无妨 |
+| A36 | M11 | 崩溃恢复 | 集成 | 模拟 `insert_generation` 已提交、导出表未发布的持久状态：重启后活跃代际是新代际，导出表与注册表一致；活跃代际的制品文件被删除后启动：自动回退到回退目标，被回退的代际标为 `failed`，日志说明原因 |
+| A37 | M11 | 记忆经导出表 | 集成 | 部署嵌入插件的新代际后，下一次召回的 `embed` 由新代际的 `ScriptedProvider` 收到；回退后再次回到旧的 |
+| A38 | M12 | 契约 0.2 | 端到端 | 两个出厂插件以 0.2 契约重建通过 `cargo xtask check`；`[embedding].plugin = "deepseek"` 时启动失败，错误说明它不导出 `embedding`；wiremock 让 DeepSeek 返回 `reasoning_content`：下一次对同一插件的请求体含它，把 Session 的 profile 换到 openai-compatible 的 endpoint 后，请求体不含它 |
+| A39 | M13 | profile | 集成 | 两个 Session 用不同 profile：各自的 `AttemptStarted.settings.model` 不同；同一个 Session 的回复与压缩用不同 endpoint：两类 Attempt 的 `settings` 与 `max_output_tokens` 不同，压缩请求放进压缩模型的窗口；`enco profile` 之后下一个 Round 用新 profile，正在进行的 Round 不变；Session 的 profile 不在配置中：`RoundEnded(Failed profile.unknown)`，`RunEnded(Failed)`，改回之后下一条消息正常 |
+| A40 | M13 | 配置校验 | 端到端 | 缺少 `[profile.default]`、profile 引用不存在的 endpoint、输出上限不小于窗口、`api_key_env` 未设置，各自拒绝启动并指出位置；`enco init` 生成的模板能通过校验 |
+| A41 | M14 | probe 与试用 | 集成 | probe 失败的制品：`Rejected`，注册表不变；probe 通过：代际为 `trial` 并活跃；连续 `TRIAL_CALLS` 次 `Ok` 后变为 `healthy`；`provider.network` 失败不计数也不回退 |
+| A42 | M14 | 自动回退 | 集成 | 试用代际的 `ScriptedProvider` 返回 `plugin.trap`：`AttemptSettled(Failed plugin.trap)` 之后，同一 Round 的下一次 `AttemptStarted.provider` 是回退目标，Run 正常完成；该代际状态为 `failed`，不再活跃；下一个 Round 消费一条 `GenerationRolledBack` 事件，模型请求中含它的规范消息；`enco chat` 显示回退提示 |
+| A43 | M14 | 迟到的回报 | 集成 | 对已经不是活跃代际的编号回报 `Failed(plugin.trap)`：注册表不变；对 `healthy` 代际回报同样不变 |
+| A44 | M14 | 安全模式 | 集成 | 部署新代际后开启安全模式：`AttemptStarted.provider` 是出厂代际；关闭后回到活跃代际 |
+| A45 | M14 | 真实插件 | 手动一次 | 复制出厂插件源码到 `~/.enco/plugins/`，改一处可观察的行为（例如请求头），构建、`enco plugin deploy`，在 `enco chat` 中确认生效；再改成一个会 panic 的版本部署：第一次对话自动回退并收到回退提示，`enco plugin status` 显示失败的代际与当前活跃代际；`enco plugin rollback` 回到出厂代际 |
 
 ## 5. 每个里程碑的完成条件
 

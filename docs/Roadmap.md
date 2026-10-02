@@ -19,26 +19,25 @@ P1 之后的四个方向（P2、Session 监督树、P3、P4）互不依赖，先
 
 **P0 内核主干（单节点，遵守 §3.7 的不变式）**：Session actor、Inbox、Round、SQLite Log、原生 CLI 管理通道、原生 fs/shell 工具、OpenAI-Compatible 与 DeepSeek Wasm Provider 插件作为出厂代际；Binding 等可变记录存放在本地 SQLite 中；`round.compose` 使用原生出厂策略（救生集 + 一行目录），输出 ContextPlan；记忆（SQLite 权威 + TriviumDB 派生索引 + 经 Provider 插件的 embedding；置顶记忆优先参与预算，其余混合召回）；一个能跨越重启的提醒；安全模式与原生管理入口；门禁脚本和 `cargo xtask docs --check`（WIT lint + CONTRACT.md）从第一天起生效。
 验收：可以在 CLI 对话；`kill -9` 后 Round 的中断状态明确，副作用不会重复；一条简单记忆经过更正、压缩和重启后仍能查回，被更正的旧内容不再被当作当前事实；删除记忆索引后可以从权威重建；提醒在重启后按时触发；门禁能拦下"违反依赖方向"、"WIT 条目缺少文档"和"生成物过期"的提交。
-状态：已完成。已实现系统的规格见 [P0/](P0/)。
+状态：已完成。已实现系统的规格见 [spec/](spec/)。
 
 **原生 Telegram 渠道（P1 之前）**：把 `ENCO_HOME` 调整为 §4.8 的布局；原生 Telegram 适配器（长轮询、只接受主人的私聊）；聊天与 Session 的映射与切换命令、入站游标与 Inbox 同一次提交、出站游标与投递结算（§4.3）；登记为原生实现，P3 改为插件。它让主人可以日常使用，也让会话映射与投递的设计在 P1 定稿 WIT 之前经过真实使用。
-验收：主人在 Telegram 私聊中对话，其他人的消息被丢弃；`/session` 切换与新建 Session，不经过模型；重启前后入站消息不丢也不重复处理；投递途中崩溃的回复记为 `unknown`，不重发；提醒沿用该 Session 最近的交互输入来源（CLI 输入之后不再自动投递到渠道）；最近失败与未知投递可以从 `enco status.channels` 追溯到 Log。实施规格见 [P0/10-telegram.md](P0/10-telegram.md)。
-状态：已实现，待主人从第一性原理审核与真实 Telegram 日常使用验证。
+验收：主人在 Telegram 私聊中对话，其他人的消息被丢弃；`/session` 切换与新建 Session，不经过模型；重启前后入站消息不丢也不重复处理；投递途中崩溃的回复记为 `unknown`，不重发；提醒沿用该 Session 最近的交互输入来源（CLI 输入之后不再自动投递到渠道）；最近失败与未知投递可以从 `enco status.channels` 追溯到 Log。实施规格见 [spec/10-telegram.md](spec/10-telegram.md)。
+状态：已实现，主人在 VPS 上日常使用，运行稳定。
 
-**P1 可恢复替换**：制品库、每调用一实例、`ArcSwap` 快照、deploy/rollback/status、probe、试用代际晋升与自动回退；构建时生成 README 生成区，部署时生成该代际的运行时手册（§7.5）；Attempt 与调用记录中的代码引用改为代际（§4.5）；Provider 与模型的选择从节点配置移入 Session 配置，并按 Attempt 用途选择，Attempt 记录调用参数（§3.2、§4.6）；WIT 定稿（§4.4）：补全与嵌入拆成 `completion` 与 `embedding` 两个接口，加入流式补全，以及工具接口与 `state-get`，状态写入作为返回值由归属者提交（§3.6）；WIT 由此第一次需要 `log`、`http` 之外的宿主导入，按 §10 拆分 `enco-host`；接线与准入进入注册表提交，能力 ID 带插件名，插件身份由 `plugins.lock` 记录、不再自报，出厂插件以宿主固定的身份登记，扩展字段按 Attempt 记录的代际回放（§4.10）。
+**P1 可恢复替换**：围绕一个概念，代际。制品库、注册表与唯一的部署提交者、`ArcSwap` 发布的导出表、deploy/rollback/status（CLI 与工具同源）、probe、试用代际晋升与自动回退（§4.5、§4.6）；Attempt 记录中的代码引用改为代际，并记录调用参数（§4.5）；Provider 与模型的选择从节点配置移入 Session 的 profile，按 Attempt 用途选择，Provider 按 Attempt 解析、工具按 Round 钉住（§3.2、§4.6）；插件身份由 `plugins.lock` 记录、不再自报，出厂插件以宿主固定的身份登记，扩展字段按 Attempt 记录的代际回放，接线与准入进入注册表提交（§4.10）；WIT 升到 0.2，定稿 P1 自己消费的五个接口：`types`、`host`、`completion`、`embedding`、`lifecycle`（§4.4）。
+按五个里程碑实施（实施规格见 [spec/](spec/)，里程碑的范围与验收见 spec/09 §4）：M10 请求查看（`enco inspect`）、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。
 验收：通过故障注入矩阵，包括：
-- 构建失败、WIT 不匹配、probe 失败、10% 的调用 trap；
-- 部署会拆掉正在使用的接线（例如 Session 配置所用的 Provider）时被拒绝，并指出使用者；
-- 同一份制品以两份插件配置部署为两个代际时，健康状态、运行时手册和 Attempt 记录互不混淆；
+- WIT 不匹配、probe 失败的制品被拒绝；试用代际的调用 trap 后自动回退，本次 Run 仍然完成，模型在下一个 Round 看到回退事件；
+- 部署会拆掉正在使用的接线（例如 profile 所用的 Provider）时被拒绝，并指出使用者；
 - 两个 Session 选用不同的模型时，各自的 Attempt 记录写明所用的模型与参数；同一个 Session 的回复与压缩可以使用不同的模型；
-- Round 内部署自身；部署过程中宿主崩溃；数据库已提交、快照尚未发布时崩溃；
-- 两个插件同时部署，最终目录包含两次更新；v2 的迟到健康结果不影响 v3；
-- 有状态工具的并发调用不丢失更新；写入后 trap 的调用不留下写入；
-- Provider 返回 stream 后导出函数结束，流仍能完成，也能被取消；Provider 回退时，旧流迟到的数据不进入新的 Attempt；
-- Provider 被改坏后能自愈；披露策略被改坏后，安全模式仍能调用文件、Shell 和部署管理。
+- Round 内部署自身：下一次 Attempt 用新代际，工具不变；部署过程中宿主崩溃；数据库已提交、导出表尚未发布时崩溃，重启后按数据库重建；
+- 两个插件同时部署，最终目录包含两次更新；迟到的健康结果不影响更新之后的代际；
+- Provider 被改坏后能自愈；安全模式下 Attempt 用出厂代际。
+移到后面的事，原因都是"第一个真实使用者还没出现"：工具接口与 `state-get`、`enco-host` 的拆分、运行时手册与 README 生成区、`plugin_build` 与 lint 表，都在 P2 随第一个工具插件一起定稿；"同一份制品以两份配置部署为两个代际"在 P3 渠道插件有配置时验收；流式补全在有消费者时作为 `completion` 的新增函数加入，只改插件一侧。
 
-**P2 Agent 自主改进**：`plugin_*` 工具、结构化诊断、`enco-sdk`（含宏）、内核与 SDK 的 API.md（§7.4，二者同时启用 `missing_docs`）、git 集成、`manual_read` / `capability_search`、跨插件接口导入与宿主转发（§4.10）、`plugin_build` 按仓库的 lint 表检查（§7.6）；默认 composer 改为 Wasm 插件（包括缓存友好的披露策略），由 Agent 自己迭代，以 Attempt 中记录的缓存命中率作为观测指标；fs/shell 工具经宿主的 fs 与 exec 导入改为 Wasm 插件，原生版本保留为安全模式的救生集；记忆的召回与写入策略按需改为插件（`docs/decisions/native-exceptions.md`）。
-验收：Agent 独立修复一个真实缺陷，并且**全程只读手册和插件源码，不需要读宿主源码**。这同时检验手册是否够用，以及双向不泄露是否成立。回退一个被导入的插件后，依赖它的插件退出快照，原因写入 Log 且对模型可见。`plugin_rename` 之后插件的状态、代际历史与连接不变；只执行 `git mv` 时构建被拦下，并提示改用 `plugin_rename` 或 `plugin_remove`；复制出的目录在首次构建时得到新身份。插件导入 `completion` 在准入时被拒绝。**验证第一个原始动机。**
+**P2 Agent 自主改进**：工具接口与 `state-get` 随第一个工具插件定稿，状态写入作为返回值由归属者提交（§3.6、§4.4），WIT 由此第一次需要 `log`、`http` 之外的宿主导入，按 §10 拆分 `enco-host`；Round 钉住导出表，被撤销的代际在同一 Round 内返回 `generation_revoked`（§4.5）；`plugin_build`（含仓库的 lint 表与结构化诊断，§7.6）、`scaffold` / `rename` / `remove`、`enco-sdk`（含宏）、内核与 SDK 的 API.md（§7.4，二者同时启用 `missing_docs`）、git 集成、运行时手册与 README 生成区（§7.5）、`manual_read` / `capability_search`、跨插件接口导入与宿主转发（§4.10）；默认 composer 改为 Wasm 插件（包括缓存友好的披露策略），由 Agent 自己迭代，以 Attempt 中记录的缓存命中率作为观测指标；fs/shell 工具经宿主的 fs 与 exec 导入改为 Wasm 插件，原生版本保留为安全模式的救生集；记忆的召回与写入策略按需改为插件（`docs/decisions/native-exceptions.md`）。
+验收：Agent 独立修复一个真实缺陷，并且**全程只读手册和插件源码，不需要读宿主源码**。这同时检验手册是否够用，以及双向不泄露是否成立。回退一个被导入的插件后，依赖它的插件退出快照，原因写入 Log 且对模型可见。有状态工具的并发调用不丢失更新；写入后 trap 的调用不留下写入；披露策略被改坏后，安全模式仍能调用文件、Shell 和部署管理。`plugin_rename` 之后插件的状态、代际历史与连接不变；只执行 `git mv` 时构建被拦下，并提示改用 `plugin_rename` 或 `plugin_remove`；复制出的目录在首次构建时得到新身份。插件导入 `completion` 在准入时被拒绝。**验证第一个原始动机。**
 
 **Session 监督树（需要多模型协作时实施）**：`session_delegate` / `session_send` / `session_read`、profile、Brief 作为 Attempt 用途、`ChildReturned` 回报、取消传播与限额（§6）。
 验收：父 Session 被取消后，所有子 Session 静止，未确认的副作用记为 `unknown`；子 Session 崩溃时父 Session 收到 `ChildReturned`，父 Session 被取消后不会被子 Session 的回报重新唤醒；父 Session 在子 Session 回报后可以继续给它发消息；发往树外的 `session_send` 返回 `failed`；崩溃恢复后委派不会重复创建子 Session；超过深度限制的委派返回 `failed`。

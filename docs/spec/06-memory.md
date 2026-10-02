@@ -13,7 +13,7 @@
    └────────────────────────────────────────────────────────────────────────┘
                                         │ embed
                                         ▼
-                      Provider 端口 → Wasm 插件 → /embeddings
+            Embedding 端口（导出表中 [embedding].plugin 的活跃代际，11 §4.2）→ Wasm 插件 → /embeddings
 ```
 
 全部机制都从下面三条规则推出。遇到规格没有写到的情况，先回到这三条。
@@ -96,13 +96,17 @@ sync(query: Option<&str>, cancel) -> Result<Synced, MemoryError>
     rows = 权威中 batch 的当前内容（期间被遗忘的跳过）
     inputs = [query（如果有）] ++ rows 的文本
     if inputs 为空: return Synced { query_vector: None, unindexed: [], failure: None }
-    vectors = select { provider.embed(inputs), cancel.cancelled() => return Err(Cancelled) }
+    export = registry.exports().embedding(endpoint.plugin)          // 按调用解析（11 §4.2）；失败即 failure = plugin.unavailable
+    vectors = select { export.adapter.embed(&endpoint.settings, endpoint.api_key, inputs), cancel.cancelled() => return Err(Cancelled) }
+    registry.report(export.generation, 结果)                           // 11 §7；只有 plugin.* 的失败计入健康
     成功，且数量与维度正确:
         替换每个 row 的节点，节点的 rev 取自 row；build_text_index()
         return Synced { query_vector, unindexed: r.unindexed 去掉 rows, failure: None }
     否则（失败，或数量、维度不符，视为 provider.bad_response）:
         return Synced { query_vector: None, unindexed: r.unindexed, failure }
 ```
+
+嵌入插件部署了新代际，下一次 `sync` 就用新代际，与内核的 Attempt 按调用解析是同一条规则。回报触发回退时（返回 `RolledBack`），记忆只写一条 warn 日志：它没有 Session 可以通知，回退的事实在 `enco plugin status` 里能看到。
 
 - **状态只在权威与索引中**：`sync` 被取消、失败或与写入并发时都没有需要恢复的东西，下一次对账会看到同样的差异。与 `sync` 并发提交的写入，由下一次召回补上。
 - 代价是每次召回读取一遍按更新时间排序的 `(id, rev)`，O(记忆数)，个人规模下是毫秒级。
@@ -123,9 +127,9 @@ Memories::recall(query: &str, limit: usize, cancel) -> Result<Recall, MemoryErro
 ```
 
 - 向量不可用时，TriviumDB 仍可只按文本检索（中文按两字切分计算 BM25，已实测）。
-- 不设相关性阈值：阈值依赖具体的 embedding 模型，P0 固定取前 `limit` 条，由提示词说明它们"可能相关"。
+- 不设相关性阈值：阈值依赖具体的 embedding 模型，固定取前 `limit` 条，由提示词说明它们"可能相关"。
 - 没有新 Event 被消费时，查询文本不变（§5）；记忆写入与对账仍可能改变召回结果，不能据此保证前缀稳定。
-- 每个 Round 贡献一次上下文（04 §6.3），也就是一次 embedding 请求。P0 不缓存查询向量（01 §2），后续根据实际延迟与用量判断是否优化。
+- 每个 Round 贡献一次上下文（04 §6.3），也就是一次 embedding 请求。不缓存查询向量（01 §2），后续根据实际延迟与用量判断是否优化。
 - 取消只打断两种等待：索引锁与 embedding 响应。已经开始的 `spawn_blocking`（SQLite、TriviumDB）等它结束，然后返回 `MemoryError::Cancelled`。
 
 ## 5. 上下文源：MemoryContextSource（`memory/context.rs`）
@@ -170,15 +174,15 @@ pub fn memory_tools(memories: Arc<Memories>) -> Vec<Arc<dyn Tool>>;
 pub struct Memories { /* 见下 */ }
 
 pub struct MemoryPaths { pub db: PathBuf, pub index: PathBuf }
-/// 来自配置的 [embedding]（08 §3）。
-pub struct EmbeddingSpec { pub model: String, pub dimensions: usize }
+/// 来自配置的 [embedding]（08 §3）：哪个插件、什么参数、什么维度。索引的身份是 (settings.model, dimensions)。
+pub struct EmbeddingEndpoint { pub plugin: String, pub settings: ProviderSettings, pub api_key: Option<String>, pub dimensions: usize }
 
 pub struct Recall { pub memories: Vec<Memory>, pub unindexed: Vec<Memory>, pub lexical_only: Option<Failure> }
 pub struct MemoryList { pub memories: Vec<Memory>, pub unindexed: Vec<MemoryId> }
 
 impl Memories {
-    /// 打开权威与索引并完成对账（§3.2）。
-    pub async fn open(paths: MemoryPaths, embedding: EmbeddingSpec, provider: Arc<dyn Provider>, clock: Arc<dyn Clock>) -> Result<Arc<Memories>, MemoryError>;
+    /// 打开权威与索引并完成对账（§3.2）。嵌入适配器不在这里固定，每次 sync 从注册表的导出表取（§3.3）。
+    pub async fn open(paths: MemoryPaths, endpoint: EmbeddingEndpoint, registry: Arc<Registry>, clock: Arc<dyn Clock>) -> Result<Arc<Memories>, MemoryError>;
     pub async fn save(&self, text: String, pinned: bool) -> Result<Memory, MemoryError>;
     /// 记忆不存在时返回 None。
     pub async fn update(&self, id: MemoryId, text: Option<String>, pinned: Option<bool>) -> Result<Option<Memory>, MemoryError>;
@@ -216,6 +220,6 @@ pub const EMBED_BATCH: usize = 64;
 pub const MEMORY_TEXT_BYTES: usize = 2_000;
 ```
 
-## 9. P0 不做
+## 9. 目前不做
 
 实体与关系图、图扩散式的联想召回、DPP 去重、疲劳（这些都是 TriviumDB 已有的能力，接入时不需要换引擎）；从 Session Log 派生的对话记忆（架构文档 §3.6 的 Observer）；自动抽取与整理记忆；本地 embedding 模型；相关性阈值。

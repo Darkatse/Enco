@@ -45,7 +45,7 @@ api_base = "https://api.telegram.org"   # 可选；测试与自建 Bot API 服�
 1. 不是主人发来的私聊文本（聊天类型不是私聊、发送者不是 `owner_user_id`，或者没有文本）：只推进协议状态，不进入模型。同时写一条 info 日志，包含发送者 ID、聊天 ID 和聊天类型，不包含消息内容。`owner_user_id` 配错时，主人可以从这条日志里查到自己的 ID。
 2. 命令：适配器负责识别写法，共同机制负责执行，都不经过模型。
    - `/session`：按 Markdown 列表列出全部 Session，当前项写为 `- **main** (current)`，其余项写为 `- work`。
-   - `/session <名字>`：打开这个 Session（不存在就创建），把当前聊天挂上去。
+   - `/session <名字>`：打开这个 Session（不存在就创建，profile 为 `default`，12 §4），把当前聊天挂上去。
    - `/cancel`：取消当前挂着的 Session 正在进行的 Run。
    - 其他以 `/` 开头的文本，包括 Telegram 自动发送的 `/start`，都按普通消息处理。
 
