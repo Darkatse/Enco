@@ -23,7 +23,7 @@
 
 端口都位于真实的边界上（IO、插件、策略、时间）。Store 的完整定义见 03 §2。
 
-完整 P1 的插件侧端口如下：`Runtime` 把制品变成 `Loaded`，其中的适配器对应 WIT 的接口（07 §1）。M12 声明 WIT `probe`；Rust `Lifecycle` 端口、`Loaded.lifecycle` 与调用方在 M14 一起加入。
+插件一侧的端口如下：`Runtime` 把制品变成 `Loaded`，其中的适配器对应 WIT 的接口（07 §1）。
 
 ```rust
 // ports/runtime.rs

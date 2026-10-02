@@ -1,6 +1,6 @@
 # 12 Profile 与接线（enco-kernel `profile.rs`）
 
-Session 用哪个模型、什么参数，由它的 profile 决定。Session 只记 profile 的名字；profile 写在 `config.toml` 里，按 Attempt 的用途各选一个 endpoint。这是架构文档 §4.10 接线表中"`completion` | 每种 Attempt 用途一个 | Session 配置"这一行。
+Session 用哪个模型、什么参数，由它的 profile 决定。Session 只记 profile 的名字；profile 写在 `config.toml` 里，为每种 Attempt 用途各选一个 endpoint。这就是架构文档 §4.10 所说的"每种 Attempt 用途接一个 `completion`"。
 
 ## 1. 类型
 

@@ -2,9 +2,7 @@
 
 OpenAI-Compatible 与 DeepSeek 两个 Provider 插件共享 `plugins/provider-protocol` 中的 WIT 绑定和线上协议转换代码。它们都以 Wasm 组件运行，作为出厂代际嵌入宿主二进制（11 §3）。插件边界从第一天起真实存在：插件只看到 WIT，宿主只看到端口。
 
-本章描述契约 `enco:plugin@0.2.0`。它定稿了 P1 自己消费的接口：`types`、`host`、`completion`、`embedding`、`lifecycle`。工具接口随 P2 的第一个工具插件定稿，渠道接口在 P3，状态读取在第一个有状态的插件出现时加入；它们都是新增的接口，不改这里的五个（架构文档 §4.4）。
-
-M12 定稿 `probe` 的 WIT 契约与插件导出；Rust 的 `Lifecycle` 端口、`Loaded.lifecycle` 及其适配器到 M14 首次调用时一起加入。
+本章描述契约 `enco:plugin@0.2.0`，它定稿了 P1 用到的五个接口：`types`、`host`、`completion`、`embedding`、`lifecycle`。工具接口随 P2 的第一个工具插件定稿，渠道接口在 P3 定稿，状态读取等到第一个有状态的插件出现时加入。它们都以新增接口的方式加入，不改动这五个（架构文档 §4.4）。
 
 ## 1. WIT（`wit/`）
 
@@ -84,7 +82,7 @@ impl Runtime for WasmRuntime {
 
 bindgen 生成两个 world 的绑定（`completion-plugin`、`embedding-plugin`），各自只要求自己的导出。一份同时导出两个接口的组件（`provider-plugin`）用两个 `InstancePre` 分别实例化，多出来的导出不影响实例化；已用出厂 openai-compatible 制品经两个 world 分别实例化并调用核对。
 
-`Loaded` 的适配器共享同一个 `Arc<WasmPlugin>`。`describe`（以及 M14 的 `probe`）取任一已有视图的 lifecycle 导出，无需另存第三份视图：
+`Loaded` 的适配器共享同一个 `Arc<WasmPlugin>`。`describe` 与 `probe` 取任一已有视图的 lifecycle 导出，无需另存第三份视图：
 
 ```rust
 pub struct WasmPlugin {

@@ -37,7 +37,7 @@
 - **代码一致性**：实现前检查是否已有类似的代码或定义，尽量复用或保持一致。
 - **收尾标准**：逐路径自审概念、职责、状态归属和数据链路，确保代码可读且易维护；测试通过只是行为核对，永远不会是收尾依据。可读性、可维护性与认知一致性才是硬性收尾门控。交付后由主人从第一性原理人工审核，通过审核才算收尾。
 - **错误处理**：错误要清晰地传播；遵循 fail fast，避免静默降级。
-- **Lint**：lint 清单以根 `Cargo.toml` 的 `[workspace.lints]` 为准，`plugins/Cargo.toml` 保存一份副本，只有 `unsafe_code` 为 `deny`（插件由 Wasm 沙箱隔离，生成的 ABI 胶水用 `expect` 标注）；每个 crate 都写 `[lints] workspace = true`，由 `cargo xtask check` 校验。抑制 lint 必须写 `reason`，能用 `#[expect]` 就不用 `#[allow]`。新增 lint 须对应一条已写下的规则或补上它的漏洞，并先在现有代码上测量误报。
+- **Lint**：lint 清单以根 `Cargo.toml` 的 `[workspace.lints]` 为准，`plugins/Cargo.toml` 保存一份副本，唯一的差别是 `unsafe_code` 为 `deny` 而不是 `forbid`：插件由 Wasm 沙箱隔离，生成的 ABI 胶水需要用 `expect` 放行；每个 crate 都写 `[lints] workspace = true`，由 `cargo xtask check` 校验。抑制 lint 必须写 `reason`，能用 `#[expect]` 就不用 `#[allow]`。新增 lint 须对应一条已写下的规则或补上它的漏洞，并先在现有代码上测量误报。
 - **异步与取消**：IO 与并发使用 `async`/`await` 和 tokio。取消 = 发出信号 + 等待静止，不要只 drop 句柄。
 - **文档与生成物**：每个 WIT 条目都要有 `///` 文档；面向模型的文本与开发文档出自同一段注释；生成物不得手改。源码级文档（rustdoc、WIT、代码与 SQL 注释、工具描述、提示词）使用英文，设计文档使用中文；面向模型的文本中的上限由常量生成。本文件只写常驻指令。（§7）
 - **注释**：为复杂、非显而易见的逻辑或算法添加清晰、简洁的注释。

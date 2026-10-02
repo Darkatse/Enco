@@ -47,7 +47,9 @@
 - **出站**：模型显式发送是一次普通的工具调用。默认投递是壳在渲染 Log，与 `enco chat` 相同：连接 actor 以出站游标跟随它送过 Event 的 Session，与入站游标对称；每次投递先记下再发送，按 `outcome` 为每次逻辑投递保存一条最终结算，与出站游标在同一事务提交，发送途中崩溃记为 `unknown`，不自动重发。出站文本是 Markdown，由各生成方按 Markdown 书写；映射到渠道协议、协议解析、分段和错误分类由插件承担；连接归属者执行共同的路由与结算规则。结算引用 Session 与 Log 位置，不复制正文；`enco status.channels` 提供最近 failed / unknown 的读取入口。
 - **由谁投递**：回复发往该 Session 中最近一条交互式 Event（CLI 或渠道）的来源；来源是 CLI 时不投递到渠道。提醒这类非交互 Event 触发的 Round 遵循同一规则。各个壳读同一份 Log 得出同一结论，彼此不需要协调。
 
-## 4.4 契约（WIT 草图；`completion`、`embedding`、`lifecycle` 已在 P1 定稿为 0.2，`tools` 随 P2 的第一个工具插件定稿，`channel` 在 P3，`state-get` 在第一个有状态的插件出现时加入）
+## 4.4 契约（WIT 草图）
+
+`completion`、`embedding` 和 `lifecycle` 已在 P1 定稿为 0.2。`tools` 随 P2 的第一个工具插件定稿，`channel` 在 P3 定稿，`state-get` 等到第一个有状态的插件出现时再加入。
 
 ```wit
 package enco:plugin@0.2.0;

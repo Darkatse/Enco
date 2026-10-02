@@ -25,8 +25,15 @@ P1 之后的四个方向（P2、Session 监督树、P3、P4）互不依赖，先
 验收：主人在 Telegram 私聊中对话，其他人的消息被丢弃；`/session` 切换与新建 Session，不经过模型；重启前后入站消息不丢也不重复处理；投递途中崩溃的回复记为 `unknown`，不重发；提醒沿用该 Session 最近的交互输入来源（CLI 输入之后不再自动投递到渠道）；最近失败与未知投递可以从 `enco status.channels` 追溯到 Log。实施规格见 [spec/10-telegram.md](spec/10-telegram.md)。
 状态：已实现，主人在 VPS 上日常使用，运行稳定。
 
-**P1 可恢复替换**：围绕一个概念，代际。制品库、注册表与唯一的部署提交者、`ArcSwap` 发布的导出表、deploy/rollback/status（CLI 与工具同源）、probe、试用代际晋升与自动回退（§4.5、§4.6）；Attempt 记录中的代码引用改为代际，并记录调用参数（§4.5）；Provider 与模型的选择从节点配置移入 Session 的 profile，按 Attempt 用途选择，Provider 按 Attempt 解析、工具按 Round 钉住（§3.2、§4.6）；插件身份由 `plugins.lock` 记录、不再自报，出厂插件以宿主固定的身份登记，扩展字段按 Attempt 记录的代际回放，接线与准入进入注册表提交（§4.10）；WIT 升到 0.2，定稿 P1 自己消费的五个接口：`types`、`host`、`completion`、`embedding`、`lifecycle`（§4.4）。
-按五个里程碑实施（实施规格见 [spec/](spec/)，里程碑的范围与验收见 spec/09 §4）：M10 请求查看（`enco inspect`）、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。
+**P1 可恢复替换**：换掉一个插件后出了问题，能回到上一个能用的版本。核心概念是代际（§4.5）。
+- 部署与回退：制品库；注册表是唯一的部署提交者，用 `ArcSwap` 发布导出表；`deploy` / `rollback` / `status`，CLI 与工具同源；probe；试用代际自动晋升或回退（§4.6）。
+- 记录：Attempt 记下所用的代际和调用参数（§4.5）。
+- 模型选择：Provider 与模型从节点配置移到 Session 的 profile，每种 Attempt 用途各选一个。Provider 在每次 Attempt 时解析，工具在每个 Round 钉住（§3.2、§4.6）。
+- 身份与接线：插件身份记在 `plugins.lock`，插件不再自报名字；出厂插件使用宿主固定的身份；扩展字段按 Attempt 记录的代际回放；接线与准入在注册表提交时检查（§4.10）。
+- 契约：WIT 升到 0.2，定稿 P1 用到的五个接口：`types`、`host`、`completion`、`embedding`、`lifecycle`（§4.4）。
+
+分五个里程碑实施：M10 请求查看（`enco inspect`）、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。各里程碑的范围与验收见 [spec/09 §4](spec/09-gates-and-acceptance.md)。
+
 验收：通过故障注入矩阵，包括：
 - WIT 不匹配、probe 失败的制品被拒绝；试用代际的调用 trap 后自动回退，本次 Run 仍然完成，模型在下一个 Round 看到回退事件；
 - 部署会拆掉正在使用的接线（例如 profile 所用的 Provider）时被拒绝，并指出使用者；
@@ -34,10 +41,27 @@ P1 之后的四个方向（P2、Session 监督树、P3、P4）互不依赖，先
 - Round 内部署自身：下一次 Attempt 用新代际，工具不变；部署过程中宿主崩溃；数据库已提交、导出表尚未发布时崩溃，重启后按数据库重建；
 - 两个插件同时部署，最终目录包含两次更新；迟到的健康结果不影响更新之后的代际；
 - Provider 被改坏后能自愈；安全模式下 Attempt 用出厂代际。
-移到后面的事，原因都是"第一个真实使用者还没出现"：工具接口与 `state-get`、`enco-host` 的拆分、运行时手册与 README 生成区、`plugin_build` 与 lint 表，都在 P2 随第一个工具插件一起定稿；"同一份制品以两份配置部署为两个代际"在 P3 渠道插件有配置时验收；流式补全在有消费者时作为 `completion` 的新增函数加入，只改插件一侧。
 
-**P2 Agent 自主改进**：工具接口与 `state-get` 随第一个工具插件定稿，状态写入作为返回值由归属者提交（§3.6、§4.4），WIT 由此第一次需要 `log`、`http` 之外的宿主导入，按 §10 拆分 `enco-host`；Round 钉住导出表，被撤销的代际在同一 Round 内返回 `generation_revoked`（§4.5）；`plugin_build`（含仓库的 lint 表与结构化诊断，§7.6）、`scaffold` / `rename` / `remove`、`enco-sdk`（含宏）、内核与 SDK 的 API.md（§7.4，二者同时启用 `missing_docs`）、git 集成、运行时手册与 README 生成区（§7.5）、`manual_read` / `capability_search`、跨插件接口导入与宿主转发（§4.10）；默认 composer 改为 Wasm 插件（包括缓存友好的披露策略），由 Agent 自己迭代，以 Attempt 中记录的缓存命中率作为观测指标；fs/shell 工具经宿主的 fs 与 exec 导入改为 Wasm 插件，原生版本保留为安全模式的救生集；记忆的召回与写入策略按需改为插件（`docs/decisions/native-exceptions.md`）。
-验收：Agent 独立修复一个真实缺陷，并且**全程只读手册和插件源码，不需要读宿主源码**。这同时检验手册是否够用，以及双向不泄露是否成立。回退一个被导入的插件后，依赖它的插件退出快照，原因写入 Log 且对模型可见。有状态工具的并发调用不丢失更新；写入后 trap 的调用不留下写入；披露策略被改坏后，安全模式仍能调用文件、Shell 和部署管理。`plugin_rename` 之后插件的状态、代际历史与连接不变；只执行 `git mv` 时构建被拦下，并提示改用 `plugin_rename` 或 `plugin_remove`；复制出的目录在首次构建时得到新身份。插件导入 `completion` 在准入时被拒绝。**验证第一个原始动机。**
+下面几项推迟了，原因相同：还没有第一个真正用到它们的地方。
+- 工具接口与 `state-get`、`enco-host` 的拆分、运行时手册与 README 生成区、`plugin_build` 与 lint 表：在 P2 随第一个工具插件一起定稿。
+- "同一份制品以两份配置部署为两个代际"：等 P3 的渠道插件有了配置再验收。
+- 流式补全：有消费者时作为 `completion` 的新增函数加入，只改插件一侧。
+
+**P2 Agent 自主改进**：Agent 能自己构建、部署和修复插件。
+- 工具与状态：工具接口与 `state-get` 随第一个工具插件定稿，状态写入作为返回值由归属者提交（§3.6、§4.4）。WIT 从此第一次需要 `log`、`http` 之外的宿主导入，所以按 §10 拆分 `enco-host`。
+- Round 钉住导出表：被撤销的代际在同一个 Round 内返回 `generation_revoked`（§4.5）。
+- 构建与部署：`plugin_build`（含仓库的 lint 表与结构化诊断，§7.6）、`scaffold` / `rename` / `remove`、`enco-sdk`（含宏）、git 集成。
+- 手册：内核与 SDK 的 API.md（§7.4，二者同时启用 `missing_docs`）、运行时手册与 README 生成区（§7.5）、`manual_read` / `capability_search`。
+- 插件之间：跨插件接口导入与宿主转发（§4.10）。
+- 原生实现改为插件：默认 composer 改为 Wasm 插件（包括缓存友好的披露策略），由 Agent 自己迭代，以 Attempt 记录的缓存命中率作为观测指标；fs/shell 工具经宿主的 fs 与 exec 导入改为 Wasm 插件，原生版本保留为安全模式的救生集；记忆的召回与写入策略按需改为插件（`docs/decisions/native-exceptions.md`）。
+
+验收：
+- Agent 独立修复一个真实缺陷，并且**全程只读手册和插件源码，不需要读宿主源码**。这同时检验手册是否够用，以及双向不泄露是否成立。**验证第一个原始动机。**
+- 回退一个被导入的插件后，依赖它的插件退出快照，原因写入 Log，对模型可见。
+- 有状态工具的并发调用不丢失更新；写入后 trap 的调用不留下写入。
+- 披露策略被改坏后，安全模式仍能调用文件、Shell 和部署管理。
+- `plugin_rename` 之后，插件的状态、代际历史与连接不变；只执行 `git mv` 时构建被拦下，并提示改用 `plugin_rename` 或 `plugin_remove`；复制出的目录在首次构建时得到新身份。
+- 插件导入 `completion` 在准入时被拒绝。
 
 **Session 监督树（需要多模型协作时实施）**：`session_delegate` / `session_send` / `session_read`、profile、Brief 作为 Attempt 用途、`ChildReturned` 回报、取消传播与限额（§6）。
 验收：父 Session 被取消后，所有子 Session 静止，未确认的副作用记为 `unknown`；子 Session 崩溃时父 Session 收到 `ChildReturned`，父 Session 被取消后不会被子 Session 的回报重新唤醒；父 Session 在子 Session 回报后可以继续给它发消息；发往树外的 `session_send` 返回 `failed`；崩溃恢复后委派不会重复创建子 Session；超过深度限制的委派返回 `failed`。
