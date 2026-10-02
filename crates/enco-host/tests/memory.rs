@@ -48,7 +48,7 @@ async fn memory_kernel(
     provider: Arc<ScriptedProvider>,
     memories: Arc<Memories>,
 ) -> Kernel {
-    kernel_with(root, provider, |deps, _| {
+    kernel_with(root, provider, |deps| {
         deps.context
             .push(Arc::new(MemoryContextSource::new(memories.clone())));
         deps.tools.extend(memory_tools(memories));
@@ -159,7 +159,7 @@ async fn recall_uses_current_records_during_embedding_failure_and_rebuilds_deriv
             node: NodeId::new(),
             epoch: Epoch(1),
         },
-        config: SessionConfig::default(),
+        profile: "default".into(),
     };
     let query = ContextQuery {
         latest_event: Some(Event {

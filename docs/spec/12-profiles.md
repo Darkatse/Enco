@@ -94,4 +94,4 @@ Session 存名字而不是复制一份配置，是为了让主人改一次 `conf
 
 - 回复计划用 `profile.reply.budget`：常驻指令与记忆的比例、是否压缩的阈值、`max_output_tokens`，都按它算（05 §4.2–§4.4）。
 - 压缩计划用 `profile.compaction.budget`：`max_output_tokens = min(COMPACTION_OUTPUT_TOKENS, compaction.budget.max_output_tokens)`；压缩请求的估算总量必须放进 `compaction.budget.context_tokens`，放不进就返回 `ContextOverflow`，窗口写压缩模型的窗口（05 §4.5）。
-- `plan::resolve` 的救生集检查读 `profile.requires_lifeline`（04 §6.5）。
+- `plan::validate` 的救生集检查读 `profile.requires_lifeline`（04 §6.5）。

@@ -58,6 +58,10 @@ enum Action {
         #[arg(long)]
         attempt: Option<AttemptId>,
     },
+    Profile {
+        session: String,
+        profile: String,
+    },
     SafeMode {
         state: Switch,
     },
@@ -122,6 +126,7 @@ async fn main() -> Result<()> {
             Some(memory_id) => Command::ForgetMemory { memory_id },
             None => Command::Memories {},
         },
+        Action::Profile { session, profile } => Command::SetProfile { session, profile },
         Action::Status => Command::Status {},
         Action::Sessions => Command::Sessions {},
         Action::Log { session } => Command::Log {

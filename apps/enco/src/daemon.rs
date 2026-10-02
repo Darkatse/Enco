@@ -326,6 +326,14 @@ async fn process(
             let session = existing_session(kernel, &name).await?;
             json!(kernel.inspect(session.id, attempt_id).await?)
         }
+        Command::SetProfile {
+            session: name,
+            profile,
+        } => {
+            let session = existing_session(kernel, &name).await?;
+            kernel.set_profile(session.id, &profile).await?;
+            json!({ "profile": profile })
+        }
         Command::SafeMode { enabled } => {
             kernel.set_safe_mode(enabled).await?;
             json!({ "enabled": enabled })

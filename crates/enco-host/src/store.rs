@@ -15,7 +15,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-const SESSION_COLUMNS: &str = "id,name,created_at,binding_node,binding_epoch,config";
+const SESSION_COLUMNS: &str = "id,name,created_at,binding_node,binding_epoch,profile";
 const SCHEDULE_COLUMNS: &str = "id,session_id,due_at,message,created_at,state,fired_event_id";
 
 /// Files owned by the persistence adapter.
@@ -199,6 +199,37 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError> {
+        self.run(move |connection| {
+            connection
+                .query_row(
+                    &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id=?"),
+                    [id.to_string()],
+                    rows::session,
+                )
+                .optional()
+                .map_err(backend)
+        })
+        .await
+    }
+
+    async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError> {
+        let profile = profile.to_owned();
+        self.run(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE sessions SET profile=? WHERE id=?",
+                    params![profile, id.to_string()],
+                )
+                .map_err(backend)?;
+            if changed == 0 {
+                return Err(StoreError::UnknownSession(id));
+            }
+            Ok(())
+        })
+        .await
+    }
+
     async fn ensure_session(
         &self,
         name: &str,
@@ -218,7 +249,7 @@ impl Store for SqliteStore {
                     timestamp(created_at),
                     node.to_string(),
                     1,
-                    encode(&SessionConfig::default())?
+                    DEFAULT_PROFILE
                 ],
             )
             .map_err(backend)?;

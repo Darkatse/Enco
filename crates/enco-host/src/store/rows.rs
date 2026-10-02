@@ -10,7 +10,7 @@ pub(super) fn session(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
             node: text(row, 3)?,
             epoch: Epoch(unsigned(row, 4)?),
         },
-        config: document(row, 5)?,
+        profile: row.get(5)?,
     })
 }
 

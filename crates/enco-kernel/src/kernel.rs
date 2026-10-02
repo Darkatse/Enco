@@ -5,7 +5,7 @@ use crate::{
 };
 use enco_core::*;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 use tokio::sync::broadcast;
@@ -17,8 +17,8 @@ pub struct KernelDeps {
     pub store: Arc<dyn Store>,
     /// Sole owner of code activations and published exports.
     pub registry: Arc<Registry>,
-    /// Default profile translated from the existing node configuration in M11.
-    pub profile: Profile,
+    /// Named Session policies resolved once by the composition root.
+    pub profiles: BTreeMap<String, Profile>,
     /// Pure context policy.
     pub composer: Arc<dyn Composer>,
     /// Context sources in contribution order.
@@ -34,29 +34,17 @@ pub struct KernelDeps {
 /// Execution limits validated before starting any owner.
 #[derive(Clone)]
 pub struct KernelConfig {
-    /// Model context and output limits.
-    pub(crate) budget: Budget,
     /// Maximum Rounds in one activation.
     pub(crate) max_rounds_per_run: u32,
 }
 
 impl KernelConfig {
-    /// Validate execution budgets before any owner or persistent resource is started.
-    pub fn new(budget: Budget, max_rounds_per_run: u32) -> Result<Self, KernelError> {
-        if max_rounds_per_run == 0
-            || budget.context_tokens == 0
-            || budget.max_output_tokens == 0
-            || budget.max_output_tokens >= budget.context_tokens
-        {
-            return Err(KernelError::Config(
-                "Round and token budgets must be positive, with output smaller than the window"
-                    .into(),
-            ));
+    /// Validate the Run limit before any owner or persistent resource is started.
+    pub fn new(max_rounds_per_run: u32) -> Result<Self, KernelError> {
+        if max_rounds_per_run == 0 {
+            return Err(KernelError::Config("max_rounds must be positive".into()));
         }
-        Ok(Self {
-            budget,
-            max_rounds_per_run,
-        })
+        Ok(Self { max_rounds_per_run })
     }
 }
 
@@ -77,6 +65,8 @@ pub struct Status {
     pub safe_mode: bool,
     /// Configured composer code.
     pub composer: CodeRef,
+    /// Available profile names; endpoint credentials are never exposed.
+    pub profiles: Vec<String>,
     /// State of every registered Session actor.
     pub sessions: Vec<SessionStatus>,
 }
@@ -130,11 +120,17 @@ pub enum KernelError {
     /// No such Session is registered.
     #[error("unknown session {0}")]
     UnknownSession(SessionId),
+    /// The requested profile is absent from the node configuration.
+    #[error("unknown profile {0}")]
+    UnknownProfile(String),
 }
 
 impl Kernel {
     /// Bind capabilities and start one actor for each existing Session.
     pub async fn start(mut deps: KernelDeps, config: KernelConfig) -> Result<Self, KernelError> {
+        if !deps.profiles.contains_key(DEFAULT_PROFILE) {
+            return Err(KernelError::UnknownProfile(DEFAULT_PROFILE.into()));
+        }
         let (schedules, scheduler) = crate::scheduler::Scheduler::channel();
         deps.tools.extend(crate::builtin::tools(schedules.clone()));
         let node = deps.store.node().await?;
@@ -146,7 +142,7 @@ impl Kernel {
                 store: deps.store,
                 clock: deps.clock,
                 registry: deps.registry,
-                profile: deps.profile,
+                profiles: deps.profiles,
                 snapshot,
                 config,
                 shutdown: CancellationToken::new(),
@@ -275,22 +271,36 @@ impl Kernel {
         Ok(self.deps.store.set_safe_mode(enabled).await?)
     }
 
+    /// Persist a profile choice; the current Round keeps its sampled policy.
+    pub async fn set_profile(&self, session: SessionId, profile: &str) -> Result<(), KernelError> {
+        if !self.deps.profiles.contains_key(profile) {
+            return Err(KernelError::UnknownProfile(profile.into()));
+        }
+        self.handle(session)?;
+        Ok(self.deps.store.set_profile(session, profile).await?)
+    }
+
     /// Inspect live state without involving the model.
     pub async fn status(&self) -> Result<Status, KernelError> {
         let node = self.deps.store.node().await?;
-        let mut sessions: Vec<_> = lock(&self.sessions)
-            .values()
-            .map(|h| SessionStatus {
-                session: h.session.clone(),
-                running: lock(&h.run_cancel).is_some(),
-                stopped: lock(&h.stopped).clone(),
+        let records = self.deps.store.sessions().await?;
+        let handles = lock(&self.sessions);
+        let sessions = records
+            .into_iter()
+            .map(|session| {
+                let handle = handles.get(&session.id);
+                SessionStatus {
+                    running: handle.is_some_and(|h| lock(&h.run_cancel).is_some()),
+                    stopped: handle.and_then(|h| lock(&h.stopped).clone()),
+                    session,
+                }
             })
             .collect();
-        sessions.sort_by(|a, b| a.session.name.cmp(&b.session.name));
         Ok(Status {
             node: node.id,
             safe_mode: node.safe_mode,
             composer: self.deps.snapshot.composer.code(),
+            profiles: self.deps.profiles.keys().cloned().collect(),
             sessions,
         })
     }
@@ -332,7 +342,7 @@ impl Kernel {
             {
                 failure = Some(KernelError::TaskFailed(format!(
                     "Session {}: {error}",
-                    handle.session.id
+                    handle.id
                 )));
             }
         }

@@ -33,7 +33,7 @@ pub(crate) fn validate(
         return Err(PlanError("compaction must not disclose tools".into()));
     }
     if purpose == AttemptPurpose::Reply
-        && input.session.config.requires_lifeline
+        && input.profile.requires_lifeline
         && lifeline
             .iter()
             .any(|id| !plan.tools.iter().any(|(given, _)| given == id))

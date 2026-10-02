@@ -154,6 +154,8 @@ pub mod code {
     pub const CONTEXT_FAILED: &str = "context.failed";
     /// The smallest valid request exceeds the configured window.
     pub const CONTEXT_OVERFLOW: &str = "context.overflow";
+    /// The Session refers to a profile absent from the current node configuration.
+    pub const PROFILE_UNKNOWN: &str = "profile.unknown";
     /// The provider request failed in transport.
     pub const PROVIDER_NETWORK: &str = "provider.network";
     /// The service rejected the configured credentials.

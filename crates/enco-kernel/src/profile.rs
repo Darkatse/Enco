@@ -1,3 +1,4 @@
+use crate::Budget;
 use enco_core::{AttemptPurpose, ProviderSettings};
 
 /// A caller's endpoint and credentials, independent of the chosen code generation.
@@ -9,15 +10,19 @@ pub struct Endpoint {
     pub settings: ProviderSettings,
     /// Credential read once by the composition root; never serialized.
     pub api_key: Option<String>,
+    /// Context window and reserved output of this model.
+    pub budget: Budget,
 }
 
-/// Per-purpose endpoints. M11 maps the existing node configuration to one default profile.
+/// Session policy sampled once at the start of a Round.
 #[derive(Clone)]
 pub struct Profile {
     /// Endpoint used for ordinary replies.
     pub reply: Endpoint,
     /// Endpoint used for summarizing history.
     pub compaction: Endpoint,
+    /// Whether every reply plan must disclose all lifeline tools.
+    pub requires_lifeline: bool,
 }
 
 impl Profile {

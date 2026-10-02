@@ -132,6 +132,18 @@ pub fn endpoint() -> Endpoint {
         plugin: "fixture".into(),
         settings: settings(),
         api_key: None,
+        budget: Budget {
+            context_tokens: 128000,
+            max_output_tokens: 8192,
+        },
+    }
+}
+
+pub fn profile() -> Profile {
+    Profile {
+        reply: endpoint(),
+        compaction: endpoint(),
+        requires_lifeline: true,
     }
 }
 
@@ -204,13 +216,13 @@ pub fn calls(calls: Vec<ToolCall>) -> Result<Completion, Failure> {
 }
 
 pub async fn kernel(root: &Path, provider: Arc<dyn Provider>) -> (Kernel, Arc<SqliteStore>) {
-    kernel_with(root, provider, |_, _| {}).await
+    kernel_with(root, provider, |_| {}).await
 }
 
 pub async fn kernel_with(
     root: &Path,
     provider: Arc<dyn Provider>,
-    configure: impl FnOnce(&mut KernelDeps, &mut Budget),
+    configure: impl FnOnce(&mut KernelDeps),
 ) -> (Kernel, Arc<SqliteStore>) {
     let (registry, store) = registry(
         root,
@@ -225,10 +237,7 @@ pub async fn kernel_with(
     std::fs::create_dir_all(&workspace).unwrap();
     let mut deps = KernelDeps {
         store: store.clone(),
-        profile: Profile {
-            reply: endpoint(),
-            compaction: endpoint(),
-        },
+        profiles: [("default".into(), profile())].into(),
         registry: registry.clone(),
         composer: Arc::new(FactoryComposer::new(
             workspace.clone(),
@@ -242,12 +251,8 @@ pub async fn kernel_with(
         clock: Arc::new(SystemClock),
     };
     deps.tools.extend(plugin_tools(registry, workspace));
-    let mut budget = Budget {
-        context_tokens: 128000,
-        max_output_tokens: 8192,
-    };
-    configure(&mut deps, &mut budget);
-    let config = KernelConfig::new(budget, 24).unwrap();
+    configure(&mut deps);
+    let config = KernelConfig::new(24).unwrap();
     (Kernel::start(deps, config).await.unwrap(), store)
 }
 

@@ -1,49 +1,61 @@
 use anyhow::{Context, Result, bail};
-use enco_core::ProviderSettings;
+use enco_core::{DEFAULT_PROFILE, ProviderSettings};
 use enco_host::EmbeddingEndpoint;
-use enco_kernel::Profile;
+use enco_kernel::{Budget, Endpoint, Interface, Profile, Use};
 use serde::Deserialize;
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Resolved once at startup; routing and invocation share these same values.
 pub(crate) struct Config {
-    pub provider: Endpoint,
-    pub embedding: Endpoint,
-    #[serde(default)]
-    pub context: ContextConfig,
-    #[serde(default)]
+    pub profiles: BTreeMap<String, Profile>,
+    pub embedding: EmbeddingEndpoint,
     pub run: RunConfig,
     pub telegram: Option<TelegramConfig>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Endpoint {
-    #[serde(default = "default_plugin")]
-    pub plugin: String,
-    pub base_url: String,
-    pub model: String,
-    pub api_key_env: Option<String>,
-    #[serde(default = "empty_options")]
-    pub options: serde_json::Value,
-    pub dimensions: Option<usize>,
+struct RawConfig {
+    endpoint: BTreeMap<String, EndpointConfig>,
+    profile: BTreeMap<String, ProfileConfig>,
+    embedding: EmbeddingConfig,
+    #[serde(default)]
+    run: RunConfig,
+    telegram: Option<TelegramConfig>,
 }
 
 #[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct ContextConfig {
-    pub window_tokens: u32,
-    pub max_output_tokens: u32,
+#[serde(deny_unknown_fields)]
+struct EndpointConfig {
+    plugin: String,
+    base_url: String,
+    model: String,
+    api_key_env: Option<String>,
+    #[serde(default = "empty_options")]
+    options: serde_json::Value,
+    window_tokens: u32,
+    max_output_tokens: u32,
 }
 
-impl Default for ContextConfig {
-    fn default() -> Self {
-        Self {
-            window_tokens: 128000,
-            max_output_tokens: 8192,
-        }
-    }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmbeddingConfig {
+    plugin: String,
+    base_url: String,
+    model: String,
+    api_key_env: Option<String>,
+    #[serde(default = "empty_options")]
+    options: serde_json::Value,
+    dimensions: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileConfig {
+    reply: String,
+    compaction: String,
+    #[serde(default = "requires_lifeline")]
+    requires_lifeline: bool,
 }
 
 #[derive(Deserialize)]
@@ -58,68 +70,141 @@ impl Default for RunConfig {
     }
 }
 
-fn default_plugin() -> String {
-    "openai-compatible".into()
-}
-
 fn empty_options() -> serde_json::Value {
     serde_json::json!({})
 }
 
+fn requires_lifeline() -> bool {
+    true
+}
+
 impl Config {
-    pub async fn load(path: &Path) -> Result<(Self, Profile, EmbeddingEndpoint)> {
+    pub async fn load(path: &Path) -> Result<Self> {
         let text = tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("cannot read {}; run `enco init` first", path.display()))?;
-        let config: Self = toml::from_str(&text).context("invalid config.toml")?;
-        let reply = config.provider.resolve()?;
-        let embedding = config.embedding.resolve()?;
-        if config.provider.dimensions.is_some() {
-            bail!("dimensions belongs in [embedding], not [provider]");
+        let raw: RawConfig = toml::from_str(&text).context("invalid config.toml")?;
+        if !raw.profile.contains_key(DEFAULT_PROFILE) {
+            bail!("[profile.{DEFAULT_PROFILE}] is required");
         }
-        let dimensions = config
-            .embedding
-            .dimensions
-            .filter(|dimensions| *dimensions > 0)
-            .context("[embedding].dimensions must be positive")?;
-        let embedding = EmbeddingEndpoint {
-            plugin: embedding.plugin,
-            settings: embedding.settings,
-            api_key: embedding.api_key,
-            dimensions,
-        };
-        let profile = Profile {
-            compaction: reply.clone(),
-            reply,
-        };
-        Ok((config, profile, embedding))
+        let endpoints = raw
+            .endpoint
+            .into_iter()
+            .map(|(name, endpoint)| {
+                endpoint
+                    .resolve()
+                    .with_context(|| format!("[endpoint.{name}]"))
+                    .map(|endpoint| (name, endpoint))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let mut profiles = BTreeMap::new();
+        for (name, profile) in raw.profile {
+            let endpoint = |purpose: &str, reference: &str| {
+                endpoints.get(reference).cloned().with_context(|| {
+                    format!("[profile.{name}].{purpose}: unknown endpoint {reference}")
+                })
+            };
+            profiles.insert(
+                name.clone(),
+                Profile {
+                    reply: endpoint("reply", &profile.reply)?,
+                    compaction: endpoint("compaction", &profile.compaction)?,
+                    requires_lifeline: profile.requires_lifeline,
+                },
+            );
+        }
+        Ok(Self {
+            profiles,
+            embedding: raw.embedding.resolve().context("[embedding]")?,
+            run: raw.run,
+            telegram: raw.telegram,
+        })
+    }
+
+    pub fn wiring(&self) -> Vec<Use> {
+        let mut wiring = Vec::new();
+        for (name, profile) in &self.profiles {
+            for (purpose, endpoint) in [
+                ("reply", &profile.reply),
+                ("compaction", &profile.compaction),
+            ] {
+                wiring.push(Use {
+                    user: format!("profile {name}.{purpose}"),
+                    plugin: endpoint.plugin.clone(),
+                    interface: Interface::Completion,
+                });
+            }
+        }
+        wiring.push(Use {
+            user: "embedding".into(),
+            plugin: self.embedding.plugin.clone(),
+            interface: Interface::Embedding,
+        });
+        wiring
     }
 }
 
-impl Endpoint {
-    fn resolve(&self) -> Result<enco_kernel::Endpoint> {
-        if self.base_url.trim().is_empty() || self.model.trim().is_empty() {
-            bail!("provider base_url and model must not be empty");
+impl EndpointConfig {
+    fn resolve(self) -> Result<Endpoint> {
+        if self.window_tokens == 0
+            || self.max_output_tokens == 0
+            || self.max_output_tokens >= self.window_tokens
+        {
+            bail!(
+                "window_tokens and max_output_tokens must be positive, with output smaller than the window"
+            );
         }
-        let api_key = self
-            .api_key_env
-            .as_ref()
-            .map(|name| {
-                std::env::var(name)
-                    .with_context(|| format!("API key environment variable {name} is not set"))
-            })
-            .transpose()?;
-        Ok(enco_kernel::Endpoint {
-            plugin: self.plugin.clone(),
-            settings: ProviderSettings {
-                base_url: self.base_url.clone(),
-                model: self.model.clone(),
-                api_key_env: self.api_key_env.clone(),
-                options: self.options.clone(),
-            },
+        let (settings, api_key) = resolve_settings(ProviderSettings {
+            base_url: self.base_url,
+            model: self.model,
+            api_key_env: self.api_key_env,
+            options: self.options,
+        })?;
+        Ok(Endpoint {
+            plugin: self.plugin,
+            settings,
             api_key,
+            budget: Budget {
+                context_tokens: self.window_tokens,
+                max_output_tokens: self.max_output_tokens,
+            },
         })
     }
+}
+
+impl EmbeddingConfig {
+    fn resolve(self) -> Result<EmbeddingEndpoint> {
+        if self.dimensions == 0 {
+            bail!("dimensions must be positive");
+        }
+        let (settings, api_key) = resolve_settings(ProviderSettings {
+            base_url: self.base_url,
+            model: self.model,
+            api_key_env: self.api_key_env,
+            options: self.options,
+        })?;
+        Ok(EmbeddingEndpoint {
+            plugin: self.plugin,
+            settings,
+            api_key,
+            dimensions: self.dimensions,
+        })
+    }
+}
+
+fn resolve_settings(settings: ProviderSettings) -> Result<(ProviderSettings, Option<String>)> {
+    if settings.base_url.trim().is_empty() || settings.model.trim().is_empty() {
+        bail!("base_url and model must not be empty");
+    }
+    let api_key = settings
+        .api_key_env
+        .as_ref()
+        .map(|name| {
+            std::env::var(name)
+                .with_context(|| format!("API key environment variable {name} is not set"))
+        })
+        .transpose()?;
+    Ok((settings, api_key))
 }
 
 #[derive(Deserialize)]

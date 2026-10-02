@@ -49,6 +49,10 @@ pub(crate) enum Command {
         session: String,
         attempt_id: Option<AttemptId>,
     },
+    SetProfile {
+        session: String,
+        profile: String,
+    },
     SafeMode {
         enabled: bool,
     },

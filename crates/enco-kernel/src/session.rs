@@ -3,7 +3,10 @@ use crate::{
     snapshot::Snapshot,
 };
 use enco_core::*;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, MutexGuard},
+};
 use tokio::{
     sync::{Notify, broadcast},
     task::JoinHandle,
@@ -18,14 +21,14 @@ pub(crate) struct SessionDeps {
     pub store: Arc<dyn Store>,
     pub clock: Arc<dyn Clock>,
     pub registry: Arc<crate::Registry>,
-    pub profile: crate::Profile,
+    pub profiles: BTreeMap<String, crate::Profile>,
     pub snapshot: Arc<Snapshot>,
     pub config: KernelConfig,
     pub shutdown: CancellationToken,
 }
 
 pub(crate) struct SessionHandle {
-    pub session: SessionRecord,
+    pub id: SessionId,
     pub wake: Notify,
     pub entries: broadcast::Sender<Entry>,
     pub run_cancel: Mutex<Option<CancellationToken>>,
@@ -36,7 +39,7 @@ pub(crate) struct SessionHandle {
 impl SessionHandle {
     pub fn start(session: SessionRecord, deps: Arc<SessionDeps>) -> Arc<Self> {
         let handle = Arc::new(Self {
-            session: session.clone(),
+            id: session.id,
             wake: Notify::new(),
             entries: broadcast::channel(SESSION_BROADCAST_CAPACITY).0,
             run_cancel: Mutex::new(None),

@@ -129,6 +129,8 @@ pub enum ComposeError {
 }
 ```
 
+`ComposeInput.profile` 带着整份 `Profile`，其中包括 `Endpoint.api_key`。P1 的 composer 是原生代码，输入既不序列化也不记录，所以可以接受；composer 成为插件、输入要跨越 WIT 之前，先把密钥从 `Profile` 中分离出去。
+
 ```rust
 // ports/context.rs
 #[async_trait]

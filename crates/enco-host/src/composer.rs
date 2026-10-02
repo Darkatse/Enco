@@ -27,6 +27,7 @@ impl Composer for FactoryComposer {
     }
 
     fn compose(&self, input: &ComposeInput) -> Result<Composition, ComposeError> {
+        let budget = input.profile.reply.budget;
         let (system, omitted) = self.system(input);
         let sizes = input
             .transcript
@@ -39,8 +40,8 @@ impl Composer for FactoryComposer {
         let total = estimate_tokens(&system)
             .saturating_add(history_tokens)
             .saturating_add(encoded_tokens(&definitions)?)
-            .saturating_add(input.budget.max_output_tokens);
-        let window = input.budget.context_tokens;
+            .saturating_add(budget.max_output_tokens);
+        let window = budget.context_tokens;
         let compact_at = window.saturating_mul(COMPACTION_TRIGGER_PERCENT) / 100;
         if total > compact_at {
             let keep = window.saturating_mul(COMPACTION_TAIL_PERCENT) / 100;
@@ -54,14 +55,14 @@ impl Composer for FactoryComposer {
                 if tail <= keep {
                     return Ok(Composition::Compact {
                         upto: *boundary,
-                        plan: compaction(input, *boundary),
+                        plan: compaction(input, *boundary)?,
                     });
                 }
             }
-            if total > input.budget.context_tokens {
+            if total > window {
                 return Err(ComposeError::ContextOverflow {
                     needed: total,
-                    window: input.budget.context_tokens,
+                    window,
                 });
             }
         }
@@ -78,7 +79,7 @@ impl Composer for FactoryComposer {
         Ok(Composition::Plan(ContextPlan {
             items,
             tools: input.tools.clone(),
-            max_output_tokens: Some(input.budget.max_output_tokens),
+            max_output_tokens: Some(budget.max_output_tokens),
             omitted,
         }))
     }
@@ -141,6 +142,8 @@ fn append_instructions(text: &mut String, omitted: &mut Vec<Omission>, input: &C
         .map(|c| estimate_tokens(&c.text))
         .sum::<u32>();
     let budget = input
+        .profile
+        .reply
         .budget
         .context_tokens
         .saturating_mul(INSTRUCTION_PERCENT)
@@ -161,7 +164,13 @@ fn append_instructions(text: &mut String, omitted: &mut Vec<Omission>, input: &C
 }
 
 fn append_memories(text: &mut String, omitted: &mut Vec<Omission>, input: &ComposeInput) {
-    let budget = input.budget.context_tokens.saturating_mul(MEMORY_PERCENT) / 100;
+    let budget = input
+        .profile
+        .reply
+        .budget
+        .context_tokens
+        .saturating_mul(MEMORY_PERCENT)
+        / 100;
     let mut memory = String::new();
     let mut used = 0;
     for candidate in input
@@ -201,7 +210,7 @@ fn section(text: &mut String, title: &str, body: &str) {
     }
 }
 
-fn compaction(input: &ComposeInput, upto: LogPos) -> ContextPlan {
+fn compaction(input: &ComposeInput, upto: LogPos) -> Result<ContextPlan, ComposeError> {
     let mut text = String::new();
     let mut names = HashMap::new();
     if let Some(summary) = &input.transcript.summary {
@@ -237,19 +246,31 @@ fn compaction(input: &ComposeInput, upto: LogPos) -> ContextPlan {
         }
     }
     text.push_str("\nWrite the summary now.");
-    ContextPlan {
+    let budget = input.profile.compaction.budget;
+    let max_output_tokens = budget.max_output_tokens.min(COMPACTION_OUTPUT_TOKENS);
+    let system = include_str!("prompts/compaction.md");
+    let needed = estimate_tokens(system)
+        .saturating_add(estimate_tokens(&text))
+        .saturating_add(max_output_tokens);
+    if needed > budget.context_tokens {
+        return Err(ComposeError::ContextOverflow {
+            needed,
+            window: budget.context_tokens,
+        });
+    }
+    Ok(ContextPlan {
         items: vec![
             PlanItem::Message {
-                message: Message::text(Role::System, include_str!("prompts/compaction.md")),
+                message: Message::text(Role::System, system),
             },
             PlanItem::Message {
                 message: Message::text(Role::User, text),
             },
         ],
         tools: vec![],
-        max_output_tokens: Some(input.budget.max_output_tokens.min(COMPACTION_OUTPUT_TOKENS)),
+        max_output_tokens: Some(max_output_tokens),
         omitted: vec![],
-    }
+    })
 }
 
 fn encoded_tokens(value: &impl serde::Serialize) -> Result<u32, ComposeError> {

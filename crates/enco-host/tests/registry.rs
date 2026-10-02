@@ -331,10 +331,15 @@ async fn deployment_tool_changes_the_next_attempt_and_memory_call() {
         KernelDeps {
             store,
             registry: registry.clone(),
-            profile: Profile {
-                reply: endpoint.clone(),
-                compaction: endpoint.clone(),
-            },
+            profiles: [(
+                "default".into(),
+                Profile {
+                    reply: endpoint.clone(),
+                    compaction: endpoint.clone(),
+                    requires_lifeline: true,
+                },
+            )]
+            .into(),
             composer: Arc::new(FactoryComposer::new(
                 workspace,
                 dir.path().join("AGENTS.md"),
@@ -344,14 +349,7 @@ async fn deployment_tool_changes_the_next_attempt_and_memory_call() {
             lifeline: LIFELINE.iter().map(|name| (*name).into()).collect(),
             clock: Arc::new(SystemClock),
         },
-        KernelConfig::new(
-            Budget {
-                context_tokens: 128000,
-                max_output_tokens: 8192,
-            },
-            24,
-        )
-        .unwrap(),
+        KernelConfig::new(24).unwrap(),
     )
     .await
     .unwrap();

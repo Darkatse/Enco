@@ -34,7 +34,7 @@ async fn model_requests_follow_the_current_clock_offset_across_rounds() {
     let second = DateTime::parse_from_rfc3339("2026-09-29T15:01:00+02:00").unwrap();
     let clock = Arc::new(TestClock(Mutex::new(first)));
     let provider = ScriptedProvider::new(vec![reply("first"), reply("second")]);
-    let (kernel, _) = kernel_with(dir.path(), provider.clone(), |deps, _| {
+    let (kernel, _) = kernel_with(dir.path(), provider.clone(), |deps| {
         deps.clock = clock.clone();
     })
     .await;
@@ -59,7 +59,7 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(TestClock(Mutex::new(Utc::now().fixed_offset())));
     let provider = ScriptedProvider::new(vec![reply("first reminder"), reply("overdue reminder")]);
-    let (kernel, _) = kernel_with(dir.path(), provider.clone(), |deps, _| {
+    let (kernel, _) = kernel_with(dir.path(), provider.clone(), |deps| {
         deps.clock = clock.clone()
     })
     .await;
@@ -118,7 +118,7 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
     kernel.shutdown().await.unwrap();
     drop(kernel);
     clock.advance(30);
-    let (kernel, _) = kernel_with(dir.path(), provider, |deps, _| deps.clock = clock.clone()).await;
+    let (kernel, _) = kernel_with(dir.path(), provider, |deps| deps.clock = clock.clone()).await;
     let mut rx = kernel.subscribe(session.id).unwrap();
     let log = kernel.log(session.id, None).await.unwrap();
     if !log.iter().any(|entry| is_reminder(entry, overdue.id)) {
@@ -161,14 +161,18 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
     .await
     .unwrap();
     memories.save("Owner is River".into(), true).await.unwrap();
-    let configure = |deps: &mut KernelDeps, budget: &mut Budget| {
+    let configure = |deps: &mut KernelDeps| {
         deps.context
             .push(Arc::new(MemoryContextSource::new(memories.clone())));
         deps.tools.extend(memory_tools(memories.clone()));
-        *budget = Budget {
+        let profile = deps.profiles.get_mut("default").unwrap();
+        profile.reply.budget = Budget {
             context_tokens: 6000,
             max_output_tokens: 256,
         };
+        profile.reply.settings.model = "reply".into();
+        profile.compaction.settings.model = "compaction".into();
+        profile.compaction.budget.max_output_tokens = 512;
     };
     let (kernel, store) = kernel_with(dir.path(), provider.clone(), configure).await;
     let session = kernel.open_session("main").await.unwrap();
@@ -200,15 +204,17 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
         })
         .collect();
     assert_eq!(attempts.len(), requests.len());
-    for (attempt, request) in attempts.into_iter().zip(requests) {
-        assert_eq!(
-            kernel
-                .inspect(session.id, Some(attempt))
-                .await
-                .unwrap()
-                .request,
-            request
-        );
+    let settings = provider.settings.lock().unwrap().clone();
+    for ((attempt, request), settings) in attempts.into_iter().zip(requests).zip(settings) {
+        let inspection = kernel.inspect(session.id, Some(attempt)).await.unwrap();
+        let (model, output) = match inspection.purpose {
+            AttemptPurpose::Reply => ("reply", 256),
+            AttemptPurpose::Compaction => ("compaction", 512),
+        };
+        assert_eq!(settings.model, model);
+        assert_eq!(inspection.settings, settings);
+        assert_eq!(request.max_output_tokens, Some(output));
+        assert_eq!(inspection.request, request);
     }
     let (upto, summary) = log
         .iter()
@@ -262,9 +268,7 @@ fn budget_omissions_are_explicit_and_do_not_make_oversized_candidates_mandatory(
                 node: NodeId::new(),
                 epoch: Epoch(1),
             },
-            config: SessionConfig {
-                requires_lifeline: false,
-            },
+            profile: "default".into(),
         },
         transcript: Transcript::default(),
         previous_run_end: None,
@@ -290,9 +294,15 @@ fn budget_omissions_are_explicit_and_do_not_make_oversized_candidates_mandatory(
         },
         tools: vec![],
         safe_mode: false,
-        budget: Budget {
-            context_tokens: 1500,
-            max_output_tokens: 100,
+        profile: Profile {
+            reply: Endpoint {
+                budget: Budget {
+                    context_tokens: 1500,
+                    max_output_tokens: 100,
+                },
+                ..endpoint()
+            },
+            ..profile()
         },
     };
     let Composition::Plan(plan) = FactoryComposer::new("/workspace".into(), "/AGENTS.md".into())

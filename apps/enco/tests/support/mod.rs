@@ -26,12 +26,19 @@ impl Daemon {
     pub async fn start(server: &MockServer, plugin: &str) -> Self {
         let base_url = server.uri();
         let config = format!(
-            r#"[provider]
+            r#"[endpoint.chat]
 plugin = {plugin:?}
 base_url = {base_url:?}
 model = 'mock'
+window_tokens = 128000
+max_output_tokens = 8192
+
+[profile.default]
+reply = 'chat'
+compaction = 'chat'
 
 [embedding]
+plugin = "openai-compatible"
 base_url = {base_url:?}
 model = 'embed'
 dimensions = 4

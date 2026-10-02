@@ -1,9 +1,18 @@
-[provider]
+[endpoint.chat]
+plugin = "openai-compatible"
 base_url = "https://api.openai.com/v1"
 model = "<chat model>"
 api_key_env = "OPENAI_API_KEY"
 
+window_tokens = 128000
+max_output_tokens = 8192
+
+[profile.default]
+reply = "chat"
+compaction = "chat"
+
 [embedding]
+plugin = "openai-compatible"
 base_url = "https://api.openai.com/v1"
 model = "text-embedding-3-small"
 dimensions = 1536

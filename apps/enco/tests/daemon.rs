@@ -202,6 +202,103 @@ async fn both_plugins_preserve_tool_ids_and_provider_extensions_across_rounds() 
                 && m["reasoning_content"] == "write the requested file")
         );
         daemon.stop().await;
+        if plugin == "deepseek" {
+            let config_path = daemon.root.path().join("config.toml");
+            let config = std::fs::read_to_string(&config_path).unwrap();
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"{config}
+[endpoint.alternate]
+plugin = "openai-compatible"
+base_url = {:?}
+model = "alternate"
+window_tokens = 128000
+max_output_tokens = 4096
+
+[profile.alternate]
+reply = "alternate"
+compaction = "alternate"
+"#,
+                    server.uri()
+                ),
+            )
+            .unwrap();
+            daemon.restart().await;
+            let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+                .args(["profile", "main", "alternate"])
+                .env("ENCO_HOME", daemon.root.path())
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let mut client = daemon.connect().await;
+            client
+                .request(Command::Subscribe {
+                    session: "main".into(),
+                })
+                .await
+                .unwrap();
+            client
+                .send(Command::Send {
+                    session: "main".into(),
+                    text: "continue with another plugin".into(),
+                    event_id: EventId::new(),
+                })
+                .await
+                .unwrap();
+            finish(&mut client).await;
+            let requests = server.received_requests().await.unwrap();
+            let chat = requests
+                .iter()
+                .rev()
+                .find(|request| request.url.path() == "/chat/completions")
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&chat.body).unwrap();
+            assert!(
+                body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|message| message.get("reasoning_content").is_none())
+            );
+            daemon.stop().await;
+            daemon.restart().await;
+            let mut client = daemon.connect().await;
+            let status = client.request(Command::Status {}).await.unwrap();
+            assert_eq!(status["sessions"][0]["session"]["profile"], "alternate");
+            let attempt = entries
+                .iter()
+                .rev()
+                .find_map(|entry| match entry.body {
+                    EntryBody::AttemptStarted { attempt, .. } => Some(attempt),
+                    _ => None,
+                })
+                .unwrap();
+            let inspection: Inspection = serde_json::from_value(
+                client
+                    .request(Command::Inspect {
+                        session: "main".into(),
+                        attempt_id: Some(attempt),
+                    })
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(
+                inspection
+                    .request
+                    .messages
+                    .iter()
+                    .flat_map(|message| &message.parts)
+                    .any(|part| matches!(part, Part::Extension(_)))
+            );
+            daemon.stop().await;
+        }
     }
 }
 

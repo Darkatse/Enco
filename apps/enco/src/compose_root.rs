@@ -4,9 +4,7 @@ use enco_host::{
     FactoryComposer, InstructionsContextSource, LIFELINE, Memories, MemoryContextSource,
     MemoryPaths, SqliteStore, StorePaths, SystemClock, memory_tools, native_tools, plugin_tools,
 };
-use enco_kernel::{
-    Budget, FactoryPlugin, Interface, Kernel, KernelConfig, KernelDeps, Registry, RegistryDeps, Use,
-};
+use enco_kernel::{FactoryPlugin, Kernel, KernelConfig, KernelDeps, Registry, RegistryDeps};
 use enco_wasm::WasmRuntime;
 use std::sync::Arc;
 
@@ -25,19 +23,13 @@ pub(crate) struct Application {
 }
 
 pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
-    let (config, profile, embedding) = Config::load(&paths.config()).await?;
+    let config = Config::load(&paths.config()).await?;
     let channel = config
         .telegram
         .as_ref()
         .map(|config| Ok::<_, anyhow::Error>((config.adapter()?, config.owner_user_id.to_string())))
         .transpose()?;
-    let kernel_config = KernelConfig::new(
-        Budget {
-            context_tokens: config.context.window_tokens,
-            max_output_tokens: config.context.max_output_tokens,
-        },
-        config.run.max_rounds,
-    )?;
+    let kernel_config = KernelConfig::new(config.run.max_rounds)?;
     tokio::fs::create_dir_all(paths.workspace()).await?;
     let store = Arc::new(
         SqliteStore::open(StorePaths {
@@ -63,23 +55,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
         store: store.clone(),
         runtime: Arc::new(WasmRuntime::new()?),
         factory,
-        wiring: vec![
-            Use {
-                user: "profile default.reply".into(),
-                plugin: profile.reply.plugin.clone(),
-                interface: Interface::Completion,
-            },
-            Use {
-                user: "profile default.compaction".into(),
-                plugin: profile.compaction.plugin.clone(),
-                interface: Interface::Completion,
-            },
-            Use {
-                user: "embedding".into(),
-                plugin: embedding.plugin.clone(),
-                interface: Interface::Embedding,
-            },
-        ],
+        wiring: config.wiring(),
         clock: clock.clone(),
     })
     .await?;
@@ -88,7 +64,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
             db: paths.memory_db(),
             index: paths.memory_index(),
         },
-        embedding,
+        config.embedding,
         registry.clone(),
         clock.clone(),
     )
@@ -100,7 +76,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
         KernelDeps {
             store,
             registry,
-            profile,
+            profiles: config.profiles,
             composer: Arc::new(FactoryComposer::new(
                 paths.workspace(),
                 paths.instructions(),

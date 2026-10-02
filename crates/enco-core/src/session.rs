@@ -1,7 +1,10 @@
 use crate::{DateTime, Epoch, EventId, NodeId, ScheduleId, SessionId, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Persistent Session identity, execution binding and requirements.
+/// Profile selected when a Session is created; every node configuration must define it.
+pub const DEFAULT_PROFILE: &str = "default";
+
+/// Persistent Session identity, execution binding and selected profile.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionRecord {
     /// Identity joining the Session’s Inbox, Log and execution binding.
@@ -12,8 +15,8 @@ pub struct SessionRecord {
     pub created_at: DateTime<Utc>,
     /// Node and generation authorized to execute this Session.
     pub binding: Binding,
-    /// Requirements declared by this Session.
-    pub config: SessionConfig,
+    /// Name of the configuration selected at the next Round boundary.
+    pub profile: String,
 }
 
 /// Execution owner and fencing generation; a single node uses itself at epoch one.
@@ -23,13 +26,6 @@ pub struct Binding {
     pub node: NodeId,
     /// Ownership generation.
     pub epoch: Epoch,
-}
-
-/// Declared requirements enforced when validating a plan.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SessionConfig {
-    /// Whether every reply plan must disclose all lifeline tools.
-    pub requires_lifeline: bool,
 }
 
 /// A durable one-shot reminder delivered to a Session Inbox.
@@ -62,12 +58,4 @@ pub enum ScheduleState {
     },
     /// Cancelled before delivery.
     Cancelled,
-}
-
-impl Default for SessionConfig {
-    fn default() -> Self {
-        Self {
-            requires_lifeline: true,
-        }
-    }
 }

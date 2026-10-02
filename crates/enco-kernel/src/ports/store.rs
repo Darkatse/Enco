@@ -14,9 +14,13 @@ pub trait Store: Send + Sync {
     // ---- Sessions (writer: Kernel)
     /// List existing Sessions.
     async fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError>;
+    /// Read the metadata sampled by the Session actor at each Round boundary.
+    async fn session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError>;
+    /// Select the profile name to use from the next Round onward.
+    async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError>;
     /// Look up a Session without creating it.
     async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError>;
-    /// Create if absent, with the supplied time, local binding at epoch one and default requirements.
+    /// Create if absent, with local binding at epoch one and the default profile.
     async fn ensure_session(
         &self,
         name: &str,

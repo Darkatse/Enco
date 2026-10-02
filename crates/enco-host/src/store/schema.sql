@@ -10,7 +10,7 @@ CREATE TABLE sessions (
   created_at    TEXT NOT NULL,
   binding_node  TEXT NOT NULL,
   binding_epoch INTEGER NOT NULL,
-  config        TEXT NOT NULL            -- Serialized SessionConfig
+  profile       TEXT NOT NULL            -- Selected profile name
 ) STRICT;
 
 CREATE TABLE log (

@@ -1,7 +1,6 @@
 use crate::{
     run::{RoundError, cancelled, failed},
     session::SessionActor,
-    snapshot::Snapshot,
     *,
 };
 use enco_core::*;
@@ -25,7 +24,7 @@ impl SessionActor {
     pub(crate) async fn attempt(
         &mut self,
         round: RoundId,
-        snapshot: &Snapshot,
+        endpoint: &Endpoint,
         kind: AttemptKind,
         plan: &ContextPlan,
         request: ProviderRequest,
@@ -34,7 +33,6 @@ impl SessionActor {
         let bytes =
             serde_json::to_vec(plan).map_err(|e| failed(code::PLAN_INVALID, e.to_string()))?;
         let plan_hash = self.deps.store.put_blob(&bytes).await?;
-        let endpoint = self.deps.profile.endpoint(kind.purpose()).clone();
         let mut attempt_number = 0;
         loop {
             cancelled(token)?;
@@ -51,7 +49,7 @@ impl SessionActor {
                     attempt,
                     purpose: kind.purpose(),
                     plan: plan_hash,
-                    composer: snapshot.composer.code(),
+                    composer: self.deps.snapshot.composer.code(),
                     provider: CodeRef::Generation {
                         id: export.generation,
                     },

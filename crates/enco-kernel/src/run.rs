@@ -62,6 +62,12 @@ impl SessionActor {
         mut prefix: Vec<EntryBody>,
     ) -> Result<RoundEnd, StoreError> {
         let round = RoundId::new();
+        self.session = self
+            .deps
+            .store
+            .session(self.session.id)
+            .await?
+            .ok_or(StoreError::UnknownSession(self.session.id))?;
         let snapshot = self.deps.snapshot.clone();
         let safe_mode = self.deps.store.node().await?.safe_mode;
         let pending = self.deps.store.pending(self.session.id).await?;
@@ -99,9 +105,25 @@ impl SessionActor {
         safe_mode: bool,
         token: &CancellationToken,
     ) -> Result<RoundEnd, RoundError> {
-        let (plan, request) = self.compose(round, &snapshot, safe_mode, token).await?;
+        let deps = self.deps.clone();
+        let profile = deps.profiles.get(&self.session.profile).ok_or_else(|| {
+            failed(
+                code::PROFILE_UNKNOWN,
+                format!("unknown profile {}", self.session.profile),
+            )
+        })?;
+        let (plan, request) = self
+            .compose(round, &snapshot, profile, safe_mode, token)
+            .await?;
         let completion = self
-            .attempt(round, &snapshot, AttemptKind::Reply, &plan, request, token)
+            .attempt(
+                round,
+                &profile.reply,
+                AttemptKind::Reply,
+                &plan,
+                request,
+                token,
+            )
             .await?;
         for call in completion.message.tool_calls() {
             self.dispatch(round, &snapshot, &plan, call, token).await?;
@@ -118,11 +140,14 @@ impl SessionActor {
         &mut self,
         round: RoundId,
         snapshot: &Snapshot,
+        profile: &Profile,
         safe_mode: bool,
         token: &CancellationToken,
     ) -> Result<(ContextPlan, ProviderRequest), RoundError> {
         // Capture external context once. Compaction changes only the Log projection.
-        let mut input = self.compose_input(snapshot, safe_mode, token).await?;
+        let mut input = self
+            .compose_input(snapshot, profile, safe_mode, token)
+            .await?;
         let mut compactions = 0;
         loop {
             let composition = snapshot.composer.compose(&input).map_err(|e| {
@@ -157,7 +182,7 @@ impl SessionActor {
                 .map_err(|e| failed(code::PLAN_INVALID, e.to_string()))?;
             let exports = self.deps.registry.exports();
             let target = exports
-                .completion(&self.deps.profile.endpoint(kind.purpose()).plugin)
+                .completion(&profile.endpoint(kind.purpose()).plugin)
                 .map_err(|failure| RoundError::Ended(RoundEnd::Failed { failure }))?
                 .plugin;
             let request = crate::plan::resolve(&plan, &input.transcript, &exports, target)
@@ -165,8 +190,15 @@ impl SessionActor {
             if matches!(kind, AttemptKind::Reply) {
                 return Ok((plan, request));
             }
-            self.attempt(round, snapshot, kind, &plan, request, token)
-                .await?;
+            self.attempt(
+                round,
+                profile.endpoint(kind.purpose()),
+                kind,
+                &plan,
+                request,
+                token,
+            )
+            .await?;
             compactions += 1;
             input.transcript = crate::transcript::project(&self.entries);
         }
@@ -175,6 +207,7 @@ impl SessionActor {
     async fn compose_input(
         &self,
         snapshot: &Snapshot,
+        profile: &Profile,
         safe_mode: bool,
         token: &CancellationToken,
     ) -> Result<ComposeInput, RoundError> {
@@ -218,7 +251,7 @@ impl SessionActor {
             context,
             tools,
             safe_mode,
-            budget: self.deps.config.budget,
+            profile: profile.clone(),
         })
     }
 }

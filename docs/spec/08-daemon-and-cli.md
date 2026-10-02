@@ -79,7 +79,7 @@ compaction = "cheap"              # 压缩用的 endpoint；可以与 reply 相�
 requires_lifeline = true          # 可选，默认 true
 
 [embedding]                       # 必填；记忆使用（06）
-plugin = "openai-compatible"      # 可选，默认 openai-compatible；须导出 embedding
+plugin = "openai-compatible"      # 必填；每个 endpoint 显式指定插件，须导出 embedding
 base_url = "https://api.openai.com/v1"
 model = "text-embedding-3-small"
 dimensions = 1536                 # 模型返回的向量维度；与现有索引不一致时，索引自动重建
@@ -118,9 +118,9 @@ registry = Registry::open(RegistryDeps {                            // 11 §4.1�
     clock,
 })
 memories = Memories::open(MemoryPaths { db: paths.memory_db(), index: paths.memory_index() },
-                          config.embedding_endpoint(), registry.clone(), clock.clone())   // 06 §7
+                          config.embedding, registry.clone(), clock.clone())   // 06 §7
 deps = KernelDeps {
-    store, registry, profiles: config.profiles(),
+    store, registry, profiles: config.profiles,
     composer: FactoryComposer::new(paths.workspace(), paths.instructions()),
     context:  vec![InstructionsContextSource::new(paths.instructions()), MemoryContextSource::new(memories.clone())],
     tools:    enco_host::native_tools(paths.workspace()) ++ enco_host::memory_tools(memories.clone())

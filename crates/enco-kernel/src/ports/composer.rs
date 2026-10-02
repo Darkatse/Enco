@@ -13,7 +13,7 @@ pub trait Composer: Send + Sync {
 pub struct ComposeInput {
     /// Owner-local time supplied by the kernel.
     pub now: DateTime<FixedOffset>,
-    /// Session identity and requirements.
+    /// Session metadata sampled for this Round.
     pub session: SessionRecord,
     /// Canonical history after the latest compaction.
     pub transcript: Transcript,
@@ -25,8 +25,8 @@ pub struct ComposeInput {
     pub tools: Vec<(CapabilityId, ToolSpec)>,
     /// Whether only factory instructions and lifeline tools may be used.
     pub safe_mode: bool,
-    /// Input and output limits of the configured model.
-    pub budget: Budget,
+    /// Endpoints, budgets and requirements selected for this Round.
+    pub profile: crate::Profile,
 }
 
 /// Context limits supplied by configuration.
