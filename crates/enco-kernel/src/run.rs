@@ -155,7 +155,12 @@ impl SessionActor {
             };
             crate::plan::validate(&plan, &input, kind.purpose(), &snapshot.lifeline)
                 .map_err(|e| failed(code::PLAN_INVALID, e.to_string()))?;
-            let request = crate::plan::resolve(&plan, &input.transcript)
+            let exports = self.deps.registry.exports();
+            let target = exports
+                .completion(&self.deps.profile.endpoint(kind.purpose()).plugin)
+                .map_err(|failure| RoundError::Ended(RoundEnd::Failed { failure }))?
+                .plugin;
+            let request = crate::plan::resolve(&plan, &input.transcript, &exports, target)
                 .map_err(|e| failed(code::PLAN_INVALID, e.to_string()))?;
             if matches!(kind, AttemptKind::Reply) {
                 return Ok((plan, request));

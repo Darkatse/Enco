@@ -114,6 +114,11 @@ impl State {
 
     pub fn exports(&self) -> Exports {
         Exports {
+            generations: self
+                .generations
+                .iter()
+                .map(|(id, record)| (*id, record.plugin))
+                .collect(),
             active: self
                 .names
                 .iter()

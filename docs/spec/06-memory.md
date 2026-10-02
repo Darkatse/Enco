@@ -99,14 +99,16 @@ sync(query: Option<&str>, cancel) -> Result<Synced, MemoryError>
     export = registry.exports().embedding(endpoint.plugin)          // 按调用解析（11 §4.2）；失败即 failure = plugin.unavailable
     vectors = select { export.adapter.embed(&endpoint.settings, endpoint.api_key, inputs), cancel.cancelled() => return Err(Cancelled) }
     registry.report(export.generation, 结果)                           // 11 §7；只有 plugin.* 的失败计入健康
-    成功，且数量与维度正确:
+    成功，且向量维度与索引配置相符:
         替换每个 row 的节点，节点的 rev 取自 row；build_text_index()
         return Synced { query_vector, unindexed: r.unindexed 去掉 rows, failure: None }
-    否则（失败，或数量、维度不符，视为 provider.bad_response）:
+    否则（失败，或目标维度不符，后者为 provider.bad_response）:
         return Synced { query_vector: None, unindexed: r.unindexed, failure }
 ```
 
 嵌入插件部署了新代际，下一次 `sync` 就用新代际，与内核的 Attempt 按调用解析是同一条规则。回报触发回退时（返回 `RolledBack`），记忆只写一条 warn 日志：它没有 Session 可以通知，回退的事实在 `enco plugin status` 里能看到。
+
+数量、向量非空、维度彼此一致与数值有限属于 `Embedding` 的返回契约，由运行时边界核对（07 §3.3）。Memories 只核对索引配置的目标维度；配置不匹配不能据此把插件标为失败。
 
 - **状态只在权威与索引中**：`sync` 被取消、失败或与写入并发时都没有需要恢复的东西，下一次对账会看到同样的差异。与 `sync` 并发提交的写入，由下一次召回补上。
 - 代价是每次召回读取一遍按更新时间排序的 `(id, rev)`，O(记忆数)，个人规模下是毫秒级。

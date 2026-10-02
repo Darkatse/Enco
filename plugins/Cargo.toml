@@ -1,5 +1,5 @@
 [workspace]
-members = ["provider-protocol", "provider-openai", "provider-deepseek"]
+members = ["provider-protocol", "openai-compatible", "deepseek"]
 resolver = "3"
 [workspace.package]
 version = "0.1.0"
@@ -14,9 +14,12 @@ opt-level = "s"
 lto = true
 strip = true
 
-# Identical copy of the root `[workspace.lints]`; `cargo xtask check` rejects any difference.
+# Copy of the root `[workspace.lints]`, differing only in `unsafe_code`; `cargo xtask check`
+# rejects any other difference.
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# Plugins write no unsafe by hand; the generated canonical ABI glue is accepted with
+# `expect`. The Wasm sandbox, not this lint, protects the host (docs/spec/02 §5).
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 # Production code propagates errors with context instead of panicking. In a plugin a

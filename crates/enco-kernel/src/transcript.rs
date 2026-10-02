@@ -11,20 +11,30 @@ pub(crate) fn project(entries: &[Entry]) -> Transcript {
         summary: compacted.as_ref().map(|(_, s)| s.clone()),
         ..Default::default()
     };
-    let mut purposes = HashMap::new();
+    let mut attempts = HashMap::new();
     let mut calls = HashMap::new();
     // Resolve call identities even before the compaction boundary; only visibility is filtered.
     for entry in entries {
         match &entry.body {
             EntryBody::AttemptStarted {
-                attempt, purpose, ..
+                attempt,
+                purpose,
+                provider,
+                ..
             } => {
-                purposes.insert(*attempt, *purpose);
+                let generation = match provider {
+                    CodeRef::Generation { id } => Some(*id),
+                    CodeRef::Native { .. } => None,
+                };
+                attempts.insert(*attempt, (*purpose, generation));
             }
             EntryBody::AttemptSettled {
                 attempt,
                 result: AttemptResult::Completed { message, .. },
-            } if purposes.get(attempt) == Some(&AttemptPurpose::Reply) => {
+            } if attempts
+                .get(attempt)
+                .is_some_and(|(purpose, _)| *purpose == AttemptPurpose::Reply) =>
+            {
                 for call in message.tool_calls() {
                     calls.insert(call.id, call);
                 }
@@ -37,15 +47,23 @@ pub(crate) fn project(entries: &[Entry]) -> Transcript {
         {
             continue;
         }
-        let (purpose, call) = match &entry.body {
-            EntryBody::AttemptSettled { attempt, .. } => (purposes.get(attempt).copied(), None),
-            EntryBody::ToolCallSettled { call, .. } => (None, calls.get(call).copied()),
-            _ => (None, None),
+        let (purpose, generation, call) = match &entry.body {
+            EntryBody::AttemptSettled { attempt, .. } => {
+                let info = attempts.get(attempt);
+                (
+                    info.map(|(purpose, _)| *purpose),
+                    info.and_then(|(_, generation)| *generation),
+                    None,
+                )
+            }
+            EntryBody::ToolCallSettled { call, .. } => (None, None, calls.get(call).copied()),
+            _ => (None, None, None),
         };
         if let Some(message) = entry.body.canonical_message(purpose, call) {
             transcript.items.push(TranscriptItem {
                 pos: entry.pos,
                 message,
+                generation,
             });
         }
         if matches!(entry.body, EntryBody::RoundEnded { .. }) {

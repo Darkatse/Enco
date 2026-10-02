@@ -5,6 +5,7 @@ use enco_core::{Failure, ProviderSettings};
 #[async_trait]
 pub trait Embedding: Send + Sync {
     /// Embed texts in input order; credentials are never persisted with settings.
+    /// Return one nonempty, finite vector per input, all with the same width.
     async fn embed(
         &self,
         settings: &ProviderSettings,

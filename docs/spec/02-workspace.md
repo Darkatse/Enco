@@ -33,7 +33,7 @@ xtask/                     # cargo xtask：build-factory、boundaries、docs、c
 plugins/                   # 独立的 Cargo 工作区，目标 wasm32-wasip2；插件目录名就是插件名（架构文档 §4.10）
   openai-compatible/
   deepseek/
-  provider-protocol/      # 插件内部共享 WIT 绑定与线上协议；不是插件，不依赖宿主 crate
+  provider-protocol/      # 插件内部共享的类型绑定与线上协议；不是插件，不依赖宿主 crate
 wit/                       # enco:plugin 包；CONTRACT.md 为生成物
 docs/
 ```
@@ -100,21 +100,11 @@ tempfile = "3.27.0"
 
 ## 5. Lint
 
-根 `Cargo.toml`：
+lint 清单只有一份来源：根 `Cargo.toml` 的 `[workspace.lints]`，每条附有理由。`plugins/` 是独立工作区，不能跨工作区继承，所以保存一份副本，由 `cargo xtask check` 校验。每个 crate 都写 `[lints] workspace = true`。
 
-```toml
-[workspace.lints.rust]
-unsafe_code = "forbid"
+两份清单只有一处不同：`unsafe_code` 在根工作区为 `forbid`，在插件工作区为 `deny`。宿主进程的内存安全是插件边界成立的前提，所以宿主代码不写 unsafe，经过审计的依赖（wasmtime、TriviumDB 等）内部的 unsafe 不在此列。插件运行在 Wasm 沙箱里，其中的 unsafe 最多让插件自己 trap，由健康门控归因到代际并回退（11 §7），所以这条 lint 在插件侧只约束写法：插件源码不手写 unsafe；wit-bindgen 生成的导出胶水按语言定义含 unsafe，在生成它的模块上写 `#![expect(unsafe_code, reason = …)]` 接受（07 §4）。
 
-[workspace.lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-dbg_macro = "deny"
-todo = "deny"
-unimplemented = "deny"
-```
-
-每个 crate 都写 `[lints] workspace = true`。`unsafe_code = "forbid"` 只约束本仓库的 crate；wasmtime、TriviumDB 等依赖内部经过审计的 unsafe 不在此列。`enco-core` 与 `enco-kernel` 的 `lib.rs` 另加 `#![warn(missing_docs)]`（`xtask check` 以 `-D warnings` 运行，所以实际是错误）。
+`enco-core` 与 `enco-kernel` 的 `lib.rs` 另加 `#![warn(missing_docs)]`（`xtask check` 以 `-D warnings` 运行，所以实际是错误）。
 
 `clippy.toml`：
 

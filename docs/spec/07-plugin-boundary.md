@@ -4,6 +4,8 @@ OpenAI-Compatible 与 DeepSeek 两个 Provider 插件共享 `plugins/provider-pr
 
 本章描述契约 `enco:plugin@0.2.0`。它定稿了 P1 自己消费的接口：`types`、`host`、`completion`、`embedding`、`lifecycle`。工具接口随 P2 的第一个工具插件定稿，渠道接口在 P3，状态读取在第一个有状态的插件出现时加入；它们都是新增的接口，不改这里的五个（架构文档 §4.4）。
 
+M12 定稿 `probe` 的 WIT 契约与插件导出；Rust 的 `Lifecycle` 端口、`Loaded.lifecycle` 及其适配器到 M14 首次调用时一起加入。
+
 ## 1. WIT（`wit/`）
 
 包 `enco:plugin@0.2.0`。契约只有一份来源：[`wit/plugin.wit`](../../wit/plugin.wit)，它的文档注释生成 [`wit/CONTRACT.md`](../../wit/CONTRACT.md)（§2）。规格不另存 WIT 副本。
@@ -76,22 +78,21 @@ impl Runtime for WasmRuntime {
 `load` 按顺序做四件事，任何一步失败都返回 `LoadError`，message 带 wasmtime 的原文：
 
 1. `Component::new`。不是组件、格式不对，在这里失败。
-2. 读取组件的导出（`component_type().exports()`），判断它导出 `enco:plugin/completion@0.2.x` 还是 `enco:plugin/embedding@0.2.x`，或者两者。一个都没有也是失败：这份制品对 Enco 没有用处。
-3. 构造 `Linker`（`wasmtime_wasi::p2::add_to_linker_async` 加上 bindgen 生成的宿主导入），为每个导出的接口建一个 `InstancePre`：`CompletionPluginPre`、`EmbeddingPluginPre`。导入不满足（WIT 版本不匹配、要了宿主没有的导入）在这里失败。
+2. 构造 `Linker`（`wasmtime_wasi::p2::add_to_linker_async` 加上 bindgen 生成的宿主导入），链接一次得到未类型化的 `InstancePre`。导入不满足（WIT 版本不匹配、要了宿主没有的导入）在这里失败。
+3. 用 `get_export_index(None, "enco:plugin/<interface>@0.2.0")` 查询 `completion` 与 `embedding`，由 wasmtime 处理兼容的补丁版本。把上一步的 `InstancePre` 转为实际导出所需的 `CompletionPluginPre`、`EmbeddingPluginPre` 视图；一个都没有也是失败：这份制品对 Enco 没有用处。
 4. 实例化一次，调用 `describe(config)`。返回 `failure` 即失败。
 
-bindgen 生成两个 world 的绑定（`completion-plugin`、`embedding-plugin`），各自只要求自己的导出。一份同时导出两个接口的组件（`provider-plugin`）用两个 `InstancePre` 分别实例化，多出来的导出不影响实例化。这是 M12 开始时要先核实的一点；核实的方法是用出厂的 openai-compatible 制品分别经两个 world 实例化并各调一次。
+bindgen 生成两个 world 的绑定（`completion-plugin`、`embedding-plugin`），各自只要求自己的导出。一份同时导出两个接口的组件（`provider-plugin`）用两个 `InstancePre` 分别实例化，多出来的导出不影响实例化；已用出厂 openai-compatible 制品经两个 world 分别实例化并调用核对。
 
-`Loaded` 的三个适配器都是同一个 `Arc<WasmPlugin>` 的视图：
+`Loaded` 的适配器共享同一个 `Arc<WasmPlugin>`。`describe`（以及 M14 的 `probe`）取任一已有视图的 lifecycle 导出，无需另存第三份视图：
 
 ```rust
 pub struct WasmPlugin {
     engine: Arc<WasmEngine>,
     http: reqwest::Client,
-    artifact: ContentHash,                  // 只用于日志
+    name: String,                          // 制品哈希前八位，只用于日志
     completion: Option<CompletionPluginPre<HostState>>,
     embedding: Option<EmbeddingPluginPre<HostState>>,
-    lifecycle: CompletionPluginPre 或 EmbeddingPluginPre 之一   // 两者都导出 lifecycle，任取一个
 }
 ```
 
@@ -110,7 +111,7 @@ pub struct WasmPlugin {
 | 情况 | code | retryable |
 |---|---|---|
 | wasmtime 报错：trap、实例化失败、内存超限、导出函数不存在 | `plugin.trap` | false |
-| 返回值违反契约：`completion.message.role` 不是 assistant、`extension.data` 不是合法 JSON、向量数量与输入不符、向量维度彼此不同 | `plugin.contract` | false |
+| 返回值违反契约：`completion.message.role` 不是 assistant、`extension.data` 不是合法 JSON、向量数量与输入不符、向量为空、维度彼此不同或含非有限数 | `plugin.contract` | false |
 | 超时 | `timeout` | true |
 | 插件自己返回的 `failure` | 原样 | 原样 |
 
@@ -118,6 +119,8 @@ pub struct WasmPlugin {
 
 - 请求：`ToolCall` → `tool-call { id: provider_id, … }`；`ToolResult` → `tool-result { call-id: provider_id, … }`；`Extension { data }` → `extension { data: 序列化的 JSON }`。
 - 结果：每个 `tool-call` 生成一个新的 `CallId`，`provider_id` 取自 `tool-call.id`；`extension.data` 解析为 JSON 值，失败即 `plugin.contract`。
+
+嵌入的通用返回契约只在这个边界检查；记忆归属者只核对配置要求的目标维度（06 §3.3），配置不匹配不归因于插件代际。
 
 原型中验证过的 wasmtime 49 细节：`wasmtime::Error` 是独立的类型，不是 `anyhow::Error`；bindgen 为异步导入生成 `HostWithStore<U>` trait，实现在 `HasSelf<HostState>` 上；`list` 是 WIT 关键字。
 
@@ -133,7 +136,9 @@ pub const HTTP_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 ## 4. Provider 插件（`plugins/`）
 
-目录名就是插件名（架构文档 §4.10）：`plugins/openai-compatible/`（包名 `openai-compatible`，world `provider-plugin`）与 `plugins/deepseek/`（包名 `deepseek`，world `completion-plugin`）。两个薄 `cdylib` 入口复用 `provider-protocol` 中生成的 WIT 绑定与 Chat Completions 转换。`provider-protocol` 为两个 world 各生成一份绑定，线上协议的代码只有一份，以泛型或共享的数据类型接入。
+目录名就是插件名（架构文档 §4.10）：`plugins/openai-compatible/`（包名 `openai-compatible`，world `provider-plugin`）与 `plugins/deepseek/`（包名 `deepseek`，world `completion-plugin`）。两个薄 `cdylib` 入口复用 `provider-protocol` 的类型与 Chat Completions 转换。
+
+绑定的划分只有一条规则：world 属于插件，类型属于共享 crate。每个插件在自己的 crate 里 `generate!` 自己的 world，用 bindgen 的 `with` 把 `host`、`types` 与 `completion` 的四个类型指向 `provider-protocol`，所以两个插件与协议代码用的是同一份 Rust 类型；`provider-protocol` 为了得到这些类型生成最小的 `completion-plugin` world，不公开它的导出宏。wit-bindgen 对导出接口总是重新生成同名的 `#[macro_export]` 宏，所以一个 crate 只能生成一个 world，这与"一个插件一个 world"正好一致。导出宏展开出的 canonical ABI 胶水含 unsafe，生成它的模块写 `#![expect(unsafe_code, reason = …)]`（02 §5）。
 
 插件里不再有名字常量。DeepSeek 插件目前没有专有逻辑，它存在的作用是一个独立的身份：它产生的扩展字段（例如 `reasoning_content`）只会回放给它自己（04 §6.5）。
 

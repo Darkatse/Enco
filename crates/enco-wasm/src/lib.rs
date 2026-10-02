@@ -1,11 +1,5 @@
 //! WIT adapters for the Runtime, Provider and Embedding ports. No provider-specific business logic lives here.
-mod bindings {
-    wasmtime::component::bindgen!({
-        path: "../../wit",
-        world: "provider-plugin",
-        exports: { default: async },
-    });
-}
+mod bindings;
 
 mod convert;
 mod engine;

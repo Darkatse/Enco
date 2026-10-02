@@ -128,6 +128,10 @@ pub mod code {
     pub const PLUGIN_UNAVAILABLE: &str = "plugin.unavailable";
     /// An explicit deployment or rollback could not be accepted.
     pub const PLUGIN_REJECTED: &str = "plugin.rejected";
+    /// The component trapped or could not be instantiated or invoked.
+    pub const PLUGIN_TRAP: &str = "plugin.trap";
+    /// The component returned data that violates its WIT interface contract.
+    pub const PLUGIN_CONTRACT: &str = "plugin.contract";
     /// The previous process stopped before settlement.
     pub const INTERRUPTED: &str = "interrupted";
     /// A proposed invocation never reached its tool.

@@ -125,20 +125,27 @@ fn boundaries() -> Result<()> {
     Ok(())
 }
 
-/// Both workspaces enforce one lint table. The plugin workspace cannot inherit across
-/// workspaces, so it keeps a copy that must equal the root table, and every member of
-/// either workspace must opt in with `[lints] workspace = true`.
+/// Both workspaces enforce one lint table, except that plugins deny rather than forbid
+/// `unsafe_code`: the Wasm sandbox protects the host, and the generated export glue is
+/// accepted with `expect`. The plugin workspace cannot inherit across workspaces, so it
+/// keeps a copy, and every member of either workspace must opt in with
+/// `[lints] workspace = true`.
 fn lints() -> Result<()> {
     fn manifest(path: &str) -> Result<toml::Table> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
         toml::from_str(&text).with_context(|| format!("parsing {path}"))
     }
     let workspace_lints = |table: &toml::Table| table.get("workspace")?.get("lints").cloned();
-    if workspace_lints(&manifest("Cargo.toml")?)
-        != workspace_lints(&manifest("plugins/Cargo.toml")?)
+    let mut expected = workspace_lints(&manifest("Cargo.toml")?);
+    if let Some(level) = expected
+        .as_mut()
+        .and_then(|lints| lints.get_mut("rust")?.get_mut("unsafe_code"))
     {
+        *level = "deny".into();
+    }
+    if workspace_lints(&manifest("plugins/Cargo.toml")?) != expected {
         bail!(
-            "[workspace.lints] in plugins/Cargo.toml differs from Cargo.toml; copy the root table"
+            "[workspace.lints] in plugins/Cargo.toml must equal the root table with `unsafe_code = \"deny\"`"
         );
     }
     for root in ["Cargo.toml", "plugins/Cargo.toml"] {
@@ -181,7 +188,7 @@ fn build_factory() -> Result<()> {
         .no_deps()
         .exec()?;
     std::fs::create_dir_all("target/factory")?;
-    for name in ["provider-openai", "provider-deepseek"] {
+    for name in ["openai-compatible", "deepseek"] {
         let source = metadata
             .target_directory
             .join("wasm32-wasip2/release")

@@ -56,6 +56,8 @@ pub struct TranscriptItem {
     pub pos: LogPos,
     /// Canonical message used when resolving a plan reference.
     pub message: Message,
+    /// Provider generation of the producing Attempt, present only for Assistant messages.
+    pub generation: Option<GenerationId>,
 }
 
 /// A ready reply request or a request to summarize earlier complete Rounds first.

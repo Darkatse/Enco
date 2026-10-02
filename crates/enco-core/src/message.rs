@@ -70,9 +70,7 @@ pub struct ToolResult {
 /// Opaque provider-owned message fields retained for subsequent requests.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Extension {
-    /// Opaque namespace identifying the adapter that can replay these fields.
-    pub provider: String,
-    /// Opaque provider-owned JSON.
+    /// Opaque JSON; the producing Attempt's generation identifies its owner.
     pub data: serde_json::Value,
 }
 

@@ -1,8 +1,5 @@
 use crate::{
-    bindings::{
-        ProviderPlugin, ProviderPluginPre, enco::plugin::types,
-        exports::enco::plugin::provider as wit,
-    },
+    bindings::{CompletionPluginPre, EmbeddingPluginPre, enco::plugin::types},
     convert,
     engine::WasmEngine,
     host_imports::HostState,
@@ -15,16 +12,21 @@ use std::sync::Arc;
 use wasmtime::{Store, StoreLimitsBuilder, component::ResourceTable};
 use wasmtime_wasi::WasiCtx;
 
-/// Compiled code with no captured endpoint or credentials; each invocation owns a fresh Store.
+/// Compiled exports with no captured endpoint or credentials.
 pub(super) struct WasmPlugin {
-    pub pre: ProviderPluginPre<HostState>,
+    pub completion: Option<CompletionPluginPre<HostState>>,
+    pub embedding: Option<EmbeddingPluginPre<HostState>>,
     pub engine: Arc<WasmEngine>,
     pub http: reqwest::Client,
     pub name: String,
 }
 
 impl WasmPlugin {
-    pub(super) async fn instance(&self) -> wasmtime::Result<(Store<HostState>, ProviderPlugin)> {
+    /// Every logical call owns a fresh Store and shares the same limits and failure boundary.
+    async fn invoke<T>(
+        &self,
+        call: impl AsyncFnOnce(Store<HostState>) -> wasmtime::Result<Result<T, types::Failure>>,
+    ) -> Result<T, Failure> {
         let state = HostState {
             wasi: WasiCtx::builder().inherit_stderr().build(),
             table: ResourceTable::new(),
@@ -37,39 +39,56 @@ impl WasmPlugin {
         let mut store = Store::new(&self.engine.engine, state);
         store.limiter(|state| &mut state.limits);
         store.epoch_deadline_async_yield_and_update(1);
-        let plugin = self.pre.instantiate_async(&mut store).await?;
-        Ok((store, plugin))
-    }
-
-    async fn invoke<T>(
-        &self,
-        settings: &ProviderSettings,
-        api_key: Option<&str>,
-        call: impl AsyncFnOnce(
-            Store<HostState>,
-            ProviderPlugin,
-            wit::Settings,
-        ) -> wasmtime::Result<Result<T, types::Failure>>,
-    ) -> Result<T, Failure> {
-        let operation = async {
-            let (store, plugin) = self.instance().await?;
-            let settings = wit::Settings {
-                base_url: settings.base_url.clone(),
-                model: settings.model.clone(),
-                api_key: api_key.map(str::to_owned),
-                options: settings.options.to_string(),
-            };
-            call(store, plugin, settings).await
-        };
-        let result = tokio::time::timeout(limits::PROVIDER_CALL_TIMEOUT, operation)
+        tokio::time::timeout(limits::PLUGIN_CALL_TIMEOUT, call(store))
             .await
             .map_err(|_| Failure {
                 code: code::TIMEOUT.into(),
-                message: "provider invocation timed out".into(),
+                message: "plugin invocation timed out".into(),
                 retryable: true,
             })?
-            .map_err(|error| convert::bad(format!("plugin call failed: {error}")))?;
-        result.map_err(convert::failure)
+            .map_err(|error| trap(format!("plugin call failed: {error}")))?
+            .map_err(convert::failure)
+    }
+
+    pub async fn describe(&self, config: &serde_json::Value) -> Result<String, Failure> {
+        let config = config.to_string();
+        self.invoke(async |mut store| {
+            if let Some(pre) = &self.completion {
+                let plugin = pre.instantiate_async(&mut store).await?;
+                Ok(plugin
+                    .enco_plugin_lifecycle()
+                    .call_describe(&mut store, &config)
+                    .await?
+                    .map(|description| description.summary))
+            } else if let Some(pre) = &self.embedding {
+                let plugin = pre.instantiate_async(&mut store).await?;
+                Ok(plugin
+                    .enco_plugin_lifecycle()
+                    .call_describe(&mut store, &config)
+                    .await?
+                    .map(|description| description.summary))
+            } else {
+                Err(wasmtime::format_err!("component has no supported export"))
+            }
+        })
+        .await
+    }
+}
+
+fn settings(settings: &ProviderSettings, api_key: Option<&str>) -> types::Settings {
+    types::Settings {
+        base_url: settings.base_url.clone(),
+        model: settings.model.clone(),
+        api_key: api_key.map(str::to_owned),
+        options: settings.options.to_string(),
+    }
+}
+
+fn trap(message: impl Into<String>) -> Failure {
+    Failure {
+        code: code::PLUGIN_TRAP.into(),
+        message: message.into(),
+        retryable: false,
     }
 }
 
@@ -77,26 +96,28 @@ impl WasmPlugin {
 impl Provider for WasmPlugin {
     async fn complete(
         &self,
-        settings: &ProviderSettings,
+        params: &ProviderSettings,
         api_key: Option<&str>,
         request: ProviderRequest,
     ) -> Result<Completion, Failure> {
+        let pre = self
+            .completion
+            .as_ref()
+            .ok_or_else(|| trap("completion export is missing"))?;
         let request = convert::request(request);
+        let settings = settings(params, api_key);
         let result = self
-            .invoke(
-                settings,
-                api_key,
-                async move |mut store, plugin, settings| {
-                    store
-                        .run_concurrent(async move |accessor| {
-                            plugin
-                                .enco_plugin_provider()
-                                .call_complete(accessor, settings, request)
-                                .await
-                        })
-                        .await?
-                },
-            )
+            .invoke(async move |mut store| {
+                let plugin = pre.instantiate_async(&mut store).await?;
+                store
+                    .run_concurrent(async move |accessor| {
+                        plugin
+                            .enco_plugin_completion()
+                            .call_complete(accessor, settings, request)
+                            .await
+                    })
+                    .await?
+            })
             .await?;
         convert::completion(result)
     }
@@ -106,24 +127,29 @@ impl Provider for WasmPlugin {
 impl Embedding for WasmPlugin {
     async fn embed(
         &self,
-        settings: &ProviderSettings,
+        params: &ProviderSettings,
         api_key: Option<&str>,
         inputs: Vec<String>,
     ) -> Result<Vec<Vec<f32>>, Failure> {
-        self.invoke(
-            settings,
-            api_key,
-            async move |mut store, plugin, settings| {
+        let pre = self
+            .embedding
+            .as_ref()
+            .ok_or_else(|| trap("embedding export is missing"))?;
+        let count = inputs.len();
+        let settings = settings(params, api_key);
+        let vectors = self
+            .invoke(async move |mut store| {
+                let plugin = pre.instantiate_async(&mut store).await?;
                 store
                     .run_concurrent(async move |accessor| {
                         plugin
-                            .enco_plugin_provider()
+                            .enco_plugin_embedding()
                             .call_embed(accessor, settings, inputs)
                             .await
                     })
                     .await?
-            },
-        )
-        .await
+            })
+            .await?;
+        convert::embeddings(vectors, count)
     }
 }

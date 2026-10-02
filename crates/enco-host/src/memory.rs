@@ -237,7 +237,6 @@ impl Memories {
             ));
         }
 
-        let count = inputs.len();
         let result = match self.registry.exports().embedding(&self.embedding.plugin) {
             Ok(export) => tokio::select! {
                 biased;
@@ -248,7 +247,7 @@ impl Memories {
         };
         check_cancel(cancel)?;
         let vectors = match result
-            .and_then(|vectors| validate_embeddings(vectors, count, self.embedding.dimensions))
+            .and_then(|vectors| validate_dimensions(vectors, self.embedding.dimensions))
         {
             Ok(vectors) => vectors,
             Err(failure) => {
@@ -315,20 +314,15 @@ async fn index_work<T: Send + 'static>(
     .map_err(index_error)?
 }
 
-fn validate_embeddings(
+fn validate_dimensions(
     vectors: Vec<Vec<f32>>,
-    count: usize,
     dimensions: usize,
 ) -> Result<Vec<Vec<f32>>, Failure> {
-    let valid = vectors.len() == count
-        && vectors.iter().all(|vector| {
-            vector.len() == dimensions && vector.iter().all(|value| value.is_finite())
-        });
+    let valid = vectors.iter().all(|vector| vector.len() == dimensions);
     if !valid {
         return Err(Failure {
             code: code::PROVIDER_BAD_RESPONSE.into(),
-            message: "embedding count, dimensions or numeric values do not match the request"
-                .into(),
+            message: "embedding dimensions do not match the index configuration".into(),
             retryable: false,
         });
     }

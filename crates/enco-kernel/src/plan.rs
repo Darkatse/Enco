@@ -1,4 +1,4 @@
-use crate::{ComposeInput, ProviderRequest, Transcript};
+use crate::{ComposeInput, Exports, ProviderRequest, Transcript};
 use enco_core::*;
 use std::collections::HashSet;
 
@@ -46,9 +46,26 @@ pub(crate) fn validate(
 pub(crate) fn resolve(
     plan: &ContextPlan,
     transcript: &Transcript,
+    exports: &Exports,
+    target: PluginId,
 ) -> Result<ProviderRequest, PlanError> {
     Ok(ProviderRequest {
-        messages: messages(plan, transcript)?.into_iter().cloned().collect(),
+        messages: messages(plan, transcript)?
+            .into_iter()
+            .map(|(message, generation)| {
+                let own_extensions =
+                    generation.and_then(|id| exports.plugin_of(id)) == Some(target);
+                Message {
+                    role: message.role,
+                    parts: message
+                        .parts
+                        .iter()
+                        .filter(|part| own_extensions || !matches!(part, Part::Extension(_)))
+                        .cloned()
+                        .collect(),
+                }
+            })
+            .collect(),
         tools: plan.tools.iter().map(|(_, spec)| spec.clone()).collect(),
         max_output_tokens: plan.max_output_tokens,
     })
@@ -57,15 +74,18 @@ pub(crate) fn resolve(
 fn messages<'a>(
     plan: &'a ContextPlan,
     transcript: &'a Transcript,
-) -> Result<Vec<&'a Message>, PlanError> {
+) -> Result<Vec<(&'a Message, Option<GenerationId>)>, PlanError> {
     plan.items
         .iter()
         .map(|item| match item {
-            PlanItem::Message { message } => Ok(message),
+            PlanItem::Message { message } => Ok((message, None)),
             PlanItem::Log { pos } => transcript
                 .items
                 .binary_search_by_key(pos, |item| item.pos)
-                .map(|index| &transcript.items[index].message)
+                .map(|index| {
+                    let item = &transcript.items[index];
+                    (&item.message, item.generation)
+                })
                 .map_err(|_| {
                     PlanError(format!(
                         "Log position {pos:?} is not in the recorded transcript"
@@ -75,9 +95,9 @@ fn messages<'a>(
         .collect()
 }
 
-fn validate_messages(messages: &[&Message]) -> Result<(), PlanError> {
+fn validate_messages(messages: &[(&Message, Option<GenerationId>)]) -> Result<(), PlanError> {
     let mut pending = std::collections::HashMap::new();
-    for message in messages {
+    for (message, _) in messages {
         if message.role == Role::Tool {
             let [Part::ToolResult(result)] = message.parts.as_slice() else {
                 return Err(PlanError(

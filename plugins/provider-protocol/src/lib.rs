@@ -2,16 +2,14 @@
 pub mod bindings {
     wit_bindgen::generate!({
         path: "../../wit",
-        world: "provider-plugin",
-        pub_export_macro: true,
+        world: "completion-plugin",
     });
 }
 
 pub use bindings::enco::plugin::{host, types};
-pub use bindings::exports::enco::plugin::provider::{
-    Completion, Request, Settings, StopReason, Usage,
-};
+pub use bindings::exports::enco::plugin::completion::{Completion, Request, StopReason, Usage};
 use serde_json::{Map, Value, json};
+pub use types::Settings;
 use types::{Failure, Message, Part, Role};
 
 pub fn failure(code: &str, message: impl Into<String>, retryable: bool) -> Failure {
@@ -50,15 +48,11 @@ fn apply_options(body: &mut Value, raw: &str, reserved: &[&str]) -> Result<(), F
     Ok(())
 }
 
-pub async fn complete(
-    settings: Settings,
-    request: Request,
-    provider: &str,
-) -> Result<Completion, Failure> {
+pub async fn complete(settings: Settings, request: Request) -> Result<Completion, Failure> {
     let messages = request
         .messages
         .iter()
-        .map(|m| message(m, provider))
+        .map(message)
         .collect::<Result<Vec<_>, _>>()?;
     let mut body = json!({ "model": settings.model, "messages": messages });
     if !request.tools.is_empty() {
@@ -96,10 +90,7 @@ pub async fn complete(
             "stream_options",
         ],
     )?;
-    parse_completion(
-        post(&settings, "chat/completions", body, None).await?,
-        provider,
-    )
+    parse_completion(post(&settings, "chat/completions", body, None).await?)
 }
 
 pub async fn embed(settings: Settings, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure> {
@@ -142,6 +133,12 @@ pub async fn embed(settings: Settings, inputs: Vec<String>) -> Result<Vec<Vec<f3
             Ok((index, vector))
         })
         .collect::<Result<_, Failure>>()?;
+    if embeddings
+        .windows(2)
+        .any(|pair| pair[0].1.len() != pair[1].1.len())
+    {
+        return Err(bad("embedding vectors have inconsistent widths"));
+    }
     embeddings.sort_by_key(|(index, _)| *index);
     if embeddings
         .iter()
@@ -153,7 +150,7 @@ pub async fn embed(settings: Settings, inputs: Vec<String>) -> Result<Vec<Vec<f3
     Ok(embeddings.into_iter().map(|(_, vector)| vector).collect())
 }
 
-fn message(message: &Message, provider: &str) -> Result<Value, Failure> {
+fn message(message: &Message) -> Result<Value, Failure> {
     let text = message
         .parts
         .iter()
@@ -204,9 +201,7 @@ fn message(message: &Message, provider: &str) -> Result<Value, Failure> {
                 wire["tool_calls"] = json!(calls);
             }
             for part in &message.parts {
-                if let Part::Extension(extension) = part
-                    && extension.provider == provider
-                {
+                if let Part::Extension(extension) = part {
                     let fields: Map<String, Value> = serde_json::from_str(&extension.data)
                         .map_err(|e| failure("provider.bad_request", e.to_string(), false))?;
                     for (key, value) in fields {
@@ -226,11 +221,11 @@ fn message(message: &Message, provider: &str) -> Result<Value, Failure> {
     })
 }
 
-fn parse_completion(response: Value, provider: &str) -> Result<Completion, Failure> {
+fn parse_completion(response: Value) -> Result<Completion, Failure> {
     let choice = response
         .pointer("/choices/0")
         .ok_or_else(|| bad("missing choices[0]"))?;
-    let message = parse_message(choice.get("message"), provider)?;
+    let message = parse_message(choice.get("message"))?;
     let usage = parse_usage(response.get("usage"))?;
     let stop_reason = match choice.get("finish_reason").and_then(Value::as_str) {
         Some("stop") => StopReason::EndTurn,
@@ -245,7 +240,7 @@ fn parse_completion(response: Value, provider: &str) -> Result<Completion, Failu
     })
 }
 
-fn parse_message(value: Option<&Value>, provider: &str) -> Result<Message, Failure> {
+fn parse_message(value: Option<&Value>) -> Result<Message, Failure> {
     let mut wire = value
         .and_then(Value::as_object)
         .cloned()
@@ -279,7 +274,6 @@ fn parse_message(value: Option<&Value>, provider: &str) -> Result<Message, Failu
     }
     if !wire.is_empty() {
         parts.push(Part::Extension(types::Extension {
-            provider: provider.into(),
             data: Value::Object(wire).to_string(),
         }));
     }

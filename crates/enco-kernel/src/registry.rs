@@ -83,9 +83,15 @@ struct Active {
 #[derive(Default)]
 pub struct Exports {
     active: BTreeMap<String, Option<Active>>,
+    generations: BTreeMap<GenerationId, PluginId>,
 }
 
 impl Exports {
+    /// Look up any recorded generation, including failed or unloaded history.
+    pub fn plugin_of(&self, generation: GenerationId) -> Option<PluginId> {
+        self.generations.get(&generation).copied()
+    }
+
     fn active(&self, plugin: &str) -> Result<&Active, Failure> {
         self.active
             .get(plugin)

@@ -235,6 +235,22 @@ async fn wasm_embedding_preserves_batch_order_and_rejects_reserved_options() {
             .unwrap(),
         vec![vec![1., 0.], vec![0., 1.]]
     );
+    server.reset().await;
+    Mock::given(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [
+            { "embedding": [1., 0.] },
+            { "index": 1, "embedding": [0.] },
+        ] })))
+        .mount(&server)
+        .await;
+    assert_eq!(
+        provider
+            .embed(&settings, None, vec!["one".into(), "two".into()])
+            .await
+            .unwrap_err()
+            .code,
+        code::PROVIDER_BAD_RESPONSE
+    );
     let bad = ProviderSettings {
         options: json!({ "input": ["not the caller's input"] }),
         ..settings

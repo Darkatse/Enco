@@ -57,8 +57,19 @@ impl Kernel {
         let bytes = self.deps.store.get_blob(hash).await?;
         let plan: ContextPlan =
             serde_json::from_slice(&bytes).map_err(|error| invalid(error.to_string()))?;
-        let request = plan::resolve(&plan, &transcript::project(&entries[..index]))
-            .map_err(|error| invalid(error.to_string()))?;
+        let exports = self.deps.registry.exports();
+        let target = match provider {
+            CodeRef::Generation { id } => exports.plugin_of(*id),
+            CodeRef::Native { .. } => None,
+        }
+        .ok_or_else(|| invalid("recorded provider has no registered plugin identity".into()))?;
+        let request = plan::resolve(
+            &plan,
+            &transcript::project(&entries[..index]),
+            &exports,
+            target,
+        )
+        .map_err(|error| invalid(error.to_string()))?;
         let result = entries[index + 1..]
             .iter()
             .find_map(|entry| match &entry.body {

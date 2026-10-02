@@ -23,7 +23,7 @@
 
 端口都位于真实的边界上（IO、插件、策略、时间）。Store 的完整定义见 03 §2。
 
-插件一侧有四个端口，与 WIT 的四个接口一一对应（07 §1）：`Runtime` 把制品变成 `Loaded`，`Loaded` 里是另外三个接口的适配器。
+完整 P1 的插件侧端口如下：`Runtime` 把制品变成 `Loaded`，其中的适配器对应 WIT 的接口（07 §1）。M12 声明 WIT `probe`；Rust `Lifecycle` 端口、`Loaded.lifecycle` 与调用方在 M14 一起加入。
 
 ```rust
 // ports/runtime.rs
@@ -444,7 +444,7 @@ attempt(profile, round, safe_mode, kind, plan, request, token):
 
 ### 6.5 计划的校验与解析（`plan.rs`）
 
-校验和解析分开：校验只在组装时做，解析在组装、重试与 `inspect`（§14）中做，三处用同一个函数。
+校验和解析分开：校验只在组装时做，组装与 `inspect`（§14）共用一个解析函数；重试复用已经解析的请求。
 
 `pub(crate) fn validate(plan: &ContextPlan, input: &ComposeInput, purpose: AttemptPurpose, lifeline: &[CapabilityId]) -> Result<(), PlanError>`，按顺序检查：
 
@@ -457,8 +457,8 @@ attempt(profile, round, safe_mode, kind, plan, request, token):
 
 `pub(crate) fn resolve(plan: &ContextPlan, transcript: &Transcript, exports: &Exports, target: PluginId) -> Result<ProviderRequest, PlanError>`：
 
-- 每个 `PlanItem::Log { pos }` 解析为 `transcript.items` 中该项的消息；`PlanItem::Message` 原样使用。
-- **扩展字段只回放给产生它的插件**：Assistant 消息中的 `Extension` 部分，只在 `exports.plugin_of(item.generation) == Some(target)` 时保留，否则去掉。内核不解释扩展字段，只决定给不给；插件收到的扩展字段一定是它自己的，不需要再过滤。
+- 每个 `PlanItem::Log { pos }` 解析为 `transcript.items` 中该项的消息与来源代际；`PlanItem::Message` 使用内联消息，来源代际为空。
+- **扩展字段只回放给产生它的插件**：`Extension` 部分只在来源代际属于 `target` 身份时保留，否则去掉；没有来源的内联扩展同样去掉。内核不解释扩展字段，只决定给不给；插件收到的扩展字段一定是它自己的，不需要再过滤。
 - 结果：`ProviderRequest { messages, tools: plan.tools 中的 ToolSpec（按顺序）, max_output_tokens }`。请求只来自计划、Log 与注册表，不从 Snapshot 读取工具定义。
 
 **模型只能调用被披露的工具**：分派时只在 `plan.tools` 中查找（§6.6）。

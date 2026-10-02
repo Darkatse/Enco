@@ -3,8 +3,8 @@ use std::path::Path;
 fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for (name, key) in [
-        ("provider-openai", "ENCO_FACTORY_OPENAI"),
-        ("provider-deepseek", "ENCO_FACTORY_DEEPSEEK"),
+        ("openai-compatible", "ENCO_FACTORY_OPENAI"),
+        ("deepseek", "ENCO_FACTORY_DEEPSEEK"),
     ] {
         let path = root.join(format!("target/factory/{name}.wasm"));
         assert!(

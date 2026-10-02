@@ -1,13 +1,12 @@
 use crate::{
-    bindings::{ProviderPlugin, ProviderPluginPre},
+    bindings::{CompletionPluginPre, EmbeddingPluginPre, enco::plugin::host},
     engine::WasmEngine,
     host_imports::HostState,
-    limits,
     plugin::WasmPlugin,
 };
 use async_trait::async_trait;
 use enco_core::ContentHash;
-use enco_kernel::{LoadError, Loaded, Runtime};
+use enco_kernel::{Embedding, LoadError, Loaded, Provider, Runtime};
 use std::sync::Arc;
 use wasmtime::component::{Component, HasSelf, Linker};
 
@@ -46,31 +45,44 @@ impl Runtime for WasmRuntime {
             .map_err(load_error)?;
         let mut linker = Linker::new(&self.engine.engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(load_error)?;
-        ProviderPlugin::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |s| s)
+        host::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |s| s).map_err(load_error)?;
+        let pre = linker.instantiate_pre(&component).map_err(load_error)?;
+        let completion = component
+            .get_export_index(None, "enco:plugin/completion@0.2.0")
+            .map(|_| CompletionPluginPre::new(pre.clone()))
+            .transpose()
             .map_err(load_error)?;
-        let pre = ProviderPluginPre::new(linker.instantiate_pre(&component).map_err(load_error)?)
+        let embedding = component
+            .get_export_index(None, "enco:plugin/embedding@0.2.0")
+            .map(|_| EmbeddingPluginPre::new(pre))
+            .transpose()
             .map_err(load_error)?;
+        if completion.is_none() && embedding.is_none() {
+            return Err(LoadError(
+                "component exports neither completion nor embedding".into(),
+            ));
+        }
         let plugin = Arc::new(WasmPlugin {
-            pre,
+            completion,
+            embedding,
             engine: self.engine.clone(),
             http: self.http.clone(),
             name: hash.to_string()[..8].into(),
         });
-        let info = tokio::time::timeout(limits::PROVIDER_CALL_TIMEOUT, async {
-            let (mut store, instance) = plugin.instance().await?;
-            instance
-                .enco_plugin_lifecycle()
-                .call_describe(&mut store, &config.to_string())
-                .await
-        })
-        .await
-        .map_err(load_error)?
-        .map_err(load_error)?;
-        // WIT 0.1 exports both operations together. M12 discovers the separate 0.2 interfaces.
+        let summary = plugin
+            .describe(config)
+            .await
+            .map_err(|failure| LoadError(format!("{}: {}", failure.code, failure.message)))?;
         Ok(Loaded {
-            summary: format!("{} {}", info.name, info.version),
-            completion: Some(plugin.clone()),
-            embedding: Some(plugin),
+            summary,
+            completion: plugin
+                .completion
+                .is_some()
+                .then(|| plugin.clone() as Arc<dyn Provider>),
+            embedding: plugin
+                .embedding
+                .is_some()
+                .then(|| plugin.clone() as Arc<dyn Embedding>),
         })
     }
 }
