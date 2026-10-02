@@ -63,3 +63,20 @@ CREATE TABLE deliveries (
 ) STRICT;
 CREATE INDEX delivery_failures ON deliveries(connection, order_no)
   WHERE outcome IN ('failed', 'unknown');
+
+-- Registry state is committed by the single Registry writer.
+CREATE TABLE plugins (
+  id     TEXT PRIMARY KEY,
+  active INTEGER REFERENCES generations(id)
+) STRICT;
+
+CREATE TABLE generations (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  plugin_id  TEXT NOT NULL REFERENCES plugins(id),
+  artifact   TEXT NOT NULL,
+  config     TEXT NOT NULL,
+  origin     TEXT NOT NULL CHECK (origin IN ('factory', 'deployed')),
+  status     TEXT NOT NULL CHECK (status IN ('healthy', 'failed')),
+  created_at TEXT NOT NULL
+) STRICT;
+CREATE INDEX generations_by_plugin ON generations(plugin_id, id);

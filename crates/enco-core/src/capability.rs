@@ -1,4 +1,4 @@
-use crate::{ContentHash, NodeId};
+use crate::{GenerationId, NodeId};
 use serde::{Deserialize, Serialize};
 
 /// A node-qualified capability, displayed as `name@node`; the model sees only `name`.
@@ -21,10 +21,10 @@ pub enum CodeRef {
         /// Version of the linked native crate.
         version: String,
     },
-    /// An immutable component addressed by its bytes.
-    Wasm {
-        /// Content hash of the component bytes.
-        artifact: ContentHash,
+    /// A registered activation whose artifact and plugin identity can be inspected.
+    Generation {
+        /// Immutable registry record for this invocation.
+        id: GenerationId,
     },
 }
 

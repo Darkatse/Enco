@@ -1,5 +1,7 @@
 pub(crate) mod args;
 mod files;
+mod plugins;
+pub use plugins::plugin_tools;
 mod shell;
 
 use enco_core::CodeRef;
@@ -10,7 +12,16 @@ use std::{
 };
 
 /// Minimal repair tools, also required by ordinary Agent Sessions.
-pub const LIFELINE: [&str; 5] = ["fs_read", "fs_write", "fs_edit", "fs_list", "shell_exec"];
+pub const LIFELINE: [&str; 8] = [
+    "fs_read",
+    "fs_write",
+    "fs_edit",
+    "fs_list",
+    "shell_exec",
+    "plugin_status",
+    "plugin_deploy",
+    "plugin_rollback",
+];
 
 /// Native capabilities share the workspace path rules and ordinary Tool dispatch.
 pub fn native_tools(workspace: PathBuf) -> Vec<Arc<dyn Tool>> {

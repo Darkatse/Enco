@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use enco_core::{AttemptId, EventId, MemoryId, ScheduleId};
 use paths::Paths;
 use protocol::Command;
+use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
 #[derive(Parser)]
@@ -22,6 +23,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    Plugin {
+        #[command(subcommand)]
+        command: PluginAction,
+    },
     Init,
     Serve,
     Chat {
@@ -62,6 +67,13 @@ enum Action {
     },
 }
 
+#[derive(Subcommand)]
+enum PluginAction {
+    Status,
+    Deploy { name: String, path: PathBuf },
+    Rollback { name: String },
+}
+
 #[derive(Clone, ValueEnum)]
 enum Switch {
     On,
@@ -77,6 +89,14 @@ async fn main() -> Result<()> {
     let paths = Paths::from_env()?;
     let cli = Cli::parse();
     let command = match cli.command {
+        Action::Plugin { command } => match command {
+            PluginAction::Status => Command::PluginStatus {},
+            PluginAction::Deploy { name, path } => Command::PluginDeploy {
+                name,
+                path: std::path::absolute(path)?,
+            },
+            PluginAction::Rollback { name } => Command::PluginRollback { name },
+        },
         Action::Init => return init(&paths).await,
         Action::Serve => {
             tracing_subscriber::fmt()

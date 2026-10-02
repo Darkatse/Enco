@@ -1,3 +1,4 @@
+mod support;
 use chrono::SubsecRound;
 use enco_core::*;
 use enco_host::SqliteStore;
@@ -6,7 +7,7 @@ use enco_kernel::{Accepted, Commit, ConnectionWrite, Store, StoreError};
 #[tokio::test]
 async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
     let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::open(dir.path().join("enco.db"), dir.path().join("blobs"))
+    let store = SqliteStore::open(support::store_paths(dir.path()))
         .await
         .unwrap();
     let session = store
@@ -156,7 +157,7 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
     );
     let node = store.node().await.unwrap().id;
     drop(store);
-    let reopened = SqliteStore::open(dir.path().join("enco.db"), dir.path().join("blobs"))
+    let reopened = SqliteStore::open(support::store_paths(dir.path()))
         .await
         .unwrap();
     assert_eq!(reopened.node().await.unwrap().id, node);
@@ -173,7 +174,7 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
 #[tokio::test]
 async fn blob_reads_reject_content_that_no_longer_matches_its_address() {
     let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::open(dir.path().join("enco.db"), dir.path().join("blobs"))
+    let store = SqliteStore::open(support::store_paths(dir.path()))
         .await
         .unwrap();
     let hash = store.put_blob(b"original").await.unwrap();

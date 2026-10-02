@@ -1,4 +1,4 @@
-//! WIT adapters for the Provider port. No provider-specific business logic lives here.
+//! WIT adapters for the Runtime, Provider and Embedding ports. No provider-specific business logic lives here.
 mod bindings {
     wasmtime::component::bindgen!({
         path: "../../wit",
@@ -11,6 +11,6 @@ mod convert;
 mod engine;
 mod host_imports;
 mod limits;
-mod provider;
-pub use engine::WasmEngine;
-pub use provider::{ProviderSettings, WasmError, WasmProvider};
+mod plugin;
+mod runtime;
+pub use runtime::{WasmError, WasmRuntime};

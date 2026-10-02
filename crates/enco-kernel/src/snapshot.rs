@@ -1,9 +1,8 @@
-use crate::{Composer, ContextSource, KernelError, Provider, Tool};
+use crate::{Composer, ContextSource, KernelError, Tool};
 use enco_core::*;
 use std::{collections::HashSet, sync::Arc};
 
 pub(crate) struct Snapshot {
-    pub provider: Arc<dyn Provider>,
     pub composer: Arc<dyn Composer>,
     pub context: Vec<Arc<dyn ContextSource>>,
     pub tools: Vec<SnapshotTool>,
@@ -50,7 +49,6 @@ impl Snapshot {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
-            provider: deps.provider.clone(),
             composer: deps.composer.clone(),
             context: deps.context.clone(),
             tools,

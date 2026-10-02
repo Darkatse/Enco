@@ -1,5 +1,8 @@
 mod accept;
 mod commit;
+mod content;
+mod lock;
+mod registry;
 mod rows;
 
 use crate::{limits::RECENT_DELIVERY_FAILURES, sqlite::timestamp};
@@ -11,35 +14,56 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use tokio::io::AsyncWriteExt;
 
 const SESSION_COLUMNS: &str = "id,name,created_at,binding_node,binding_epoch,config";
 const SCHEDULE_COLUMNS: &str = "id,session_id,due_at,message,created_at,state,fired_event_id";
 
-/// SQLite authority for a node's Sessions, Inbox, Log and reminders.
+/// Files owned by the persistence adapter.
+pub struct StorePaths {
+    /// SQLite authority.
+    pub db: PathBuf,
+    /// Removable content-addressed history.
+    pub blobs: PathBuf,
+    /// Retained content-addressed components.
+    pub artifacts: PathBuf,
+    /// Authoritative plugin name-to-identity mapping.
+    pub plugins_lock: PathBuf,
+}
+
+/// SQLite authority and its associated content and identity files.
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
-    blobs: PathBuf,
+    paths: StorePaths,
     node: NodeId,
 }
 
 impl SqliteStore {
     /// Open the authority, initializing the schema and node identity on first use.
-    pub async fn open(path: impl AsRef<Path>, blobs: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let path = path.as_ref().to_path_buf();
-        let blobs = blobs.as_ref().to_path_buf();
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(backend)?;
+    pub async fn open(paths: StorePaths) -> Result<Self, StoreError> {
+        for path in [&paths.db, &paths.plugins_lock] {
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(backend)?;
+            }
         }
-        tokio::fs::create_dir_all(&blobs).await.map_err(backend)?;
-        let (connection, node) = tokio::task::spawn_blocking(move || open(&path))
+        tokio::fs::create_dir_all(&paths.blobs)
+            .await
+            .map_err(backend)?;
+        tokio::fs::create_dir_all(&paths.artifacts)
+            .await
+            .map_err(backend)?;
+        let db = paths.db.clone();
+        let (connection, node) = tokio::task::spawn_blocking(move || open(&db))
             .await
             .map_err(backend)??;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
-            blobs,
+            paths,
             node,
         })
+    }
+
+    fn artifact_path(&self, hash: &ContentHash) -> PathBuf {
+        self.paths.artifacts.join(format!("{hash}.wasm"))
     }
 
     async fn run<T: Send + 'static>(
@@ -399,40 +423,67 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn plugin_names(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, PluginId>, StoreError> {
+        let path = self.paths.plugins_lock.clone();
+        self.run(move |_| lock::read(&path)).await
+    }
+
+    async fn register_plugin(&self, name: &str, id: PluginId) -> Result<(), StoreError> {
+        let path = self.paths.plugins_lock.clone();
+        let name = name.to_owned();
+        self.run(move |_| lock::register(&path, name, id)).await
+    }
+
+    async fn registry(&self) -> Result<RegistryState, StoreError> {
+        self.run(|connection| registry::read(connection)).await
+    }
+
+    async fn insert_generation(
+        &self,
+        generation: &NewGeneration,
+        activate: bool,
+    ) -> Result<GenerationId, StoreError> {
+        let generation = generation.clone();
+        self.run(move |connection| registry::insert(connection, &generation, activate))
+            .await
+    }
+
+    async fn activate(
+        &self,
+        plugin: PluginId,
+        to: Option<GenerationId>,
+        failed: &[GenerationId],
+    ) -> Result<(), StoreError> {
+        let failed = failed.to_vec();
+        self.run(move |connection| registry::activate(connection, plugin, to, &failed))
+            .await
+    }
+
     async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError> {
         let hash = ContentHash::of(bytes);
-        let path = self.blob_path(&hash);
-        if tokio::fs::try_exists(&path).await.map_err(backend)? {
-            return Ok(hash);
-        }
-        let parent = path
-            .parent()
-            .ok_or_else(|| backend("blob path has no parent"))?;
-        tokio::fs::create_dir_all(parent).await.map_err(backend)?;
-        let temp = path.with_extension(format!("tmp.{}", ulid::Ulid::generate()));
-        let mut file = tokio::fs::File::create(&temp).await.map_err(backend)?;
-        file.write_all(bytes).await.map_err(backend)?;
-        file.sync_all().await.map_err(backend)?;
-        tokio::fs::rename(temp, path).await.map_err(backend)?;
+        content::put(&self.blob_path(&hash), bytes).await?;
         Ok(hash)
     }
 
     async fn get_blob(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError> {
-        let bytes = tokio::fs::read(self.blob_path(hash))
-            .await
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => StoreError::Blob(*hash),
-                _ => backend(format!("reading blob {hash}: {e}")),
-            })?;
-        if ContentHash::of(&bytes) != *hash {
-            return Err(StoreError::Blob(*hash));
-        }
-        Ok(bytes)
+        content::get(&self.blob_path(hash), hash, StoreError::Blob).await
+    }
+
+    async fn put_artifact(&self, bytes: &[u8]) -> Result<ContentHash, StoreError> {
+        let hash = ContentHash::of(bytes);
+        content::put(&self.artifact_path(&hash), bytes).await?;
+        Ok(hash)
+    }
+
+    async fn artifact(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError> {
+        content::get(&self.artifact_path(hash), hash, StoreError::Artifact).await
     }
 
     fn blob_path(&self, hash: &ContentHash) -> PathBuf {
         let address = hash.to_string();
-        self.blobs.join(&address[..2]).join(address)
+        self.paths.blobs.join(&address[..2]).join(address)
     }
 }
 

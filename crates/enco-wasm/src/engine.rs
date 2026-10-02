@@ -12,7 +12,7 @@ impl WasmEngine {
         config
             .wasm_component_model_async(true)
             .epoch_interruption(true);
-        let engine = wasmtime::Engine::new(&config).map_err(WasmError::Runtime)?;
+        let engine = wasmtime::Engine::new(&config).map_err(WasmError::Engine)?;
         let clock = engine.clone();
         let ticker = tokio::spawn(async move {
             let mut tick = tokio::time::interval(limits::EPOCH_TICK);

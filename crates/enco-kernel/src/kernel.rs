@@ -15,8 +15,10 @@ use tokio_util::sync::CancellationToken;
 pub struct KernelDeps {
     /// Durable authority.
     pub store: Arc<dyn Store>,
-    /// Completion adapter.
-    pub provider: Arc<dyn Provider>,
+    /// Sole owner of code activations and published exports.
+    pub registry: Arc<Registry>,
+    /// Default profile translated from the existing node configuration in M11.
+    pub profile: Profile,
     /// Pure context policy.
     pub composer: Arc<dyn Composer>,
     /// Context sources in contribution order.
@@ -73,8 +75,6 @@ pub struct Status {
     pub node: NodeId,
     /// Policy observed at the next Round boundary.
     pub safe_mode: bool,
-    /// Configured provider code.
-    pub provider: CodeRef,
     /// Configured composer code.
     pub composer: CodeRef,
     /// State of every registered Session actor.
@@ -101,6 +101,9 @@ pub enum KernelError {
     /// The reminder owner failed.
     #[error(transparent)]
     Schedule(#[from] ScheduleError),
+    /// A registry operation failed.
+    #[error(transparent)]
+    Registry(#[from] RegistryError),
     /// Invalid composition-root input.
     #[error("configuration: {0}")]
     Config(String),
@@ -142,6 +145,8 @@ impl Kernel {
             deps: Arc::new(SessionDeps {
                 store: deps.store,
                 clock: deps.clock,
+                registry: deps.registry,
+                profile: deps.profile,
                 snapshot,
                 config,
                 shutdown: CancellationToken::new(),
@@ -285,7 +290,6 @@ impl Kernel {
         Ok(Status {
             node: node.id,
             safe_mode: node.safe_mode,
-            provider: self.deps.snapshot.provider.code(),
             composer: self.deps.snapshot.composer.code(),
             sessions,
         })
@@ -303,6 +307,11 @@ impl Kernel {
         after: Option<LogPos>,
     ) -> Result<Vec<Entry>, KernelError> {
         Ok(self.deps.store.log(session, after).await?)
+    }
+
+    /// Plugin commands share the registry used by completion and embedding callers.
+    pub fn registry(&self) -> &Arc<Registry> {
+        &self.deps.registry
     }
 
     /// Commands to the single reminder owner, shared by CLI and model tools.

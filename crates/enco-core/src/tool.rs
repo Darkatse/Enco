@@ -124,6 +124,10 @@ impl Arguments {
 
 /// Stable failure codes shared with WIT plugins.
 pub mod code {
+    /// No active generation exports the caller's required interface.
+    pub const PLUGIN_UNAVAILABLE: &str = "plugin.unavailable";
+    /// An explicit deployment or rollback could not be accepted.
+    pub const PLUGIN_REJECTED: &str = "plugin.rejected";
     /// The previous process stopped before settlement.
     pub const INTERRUPTED: &str = "interrupted";
     /// A proposed invocation never reached its tool.

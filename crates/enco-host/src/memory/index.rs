@@ -1,4 +1,4 @@
-use super::{EmbeddingSpec, MemoryError, authority::Revision};
+use super::{MemoryError, authority::Revision};
 use enco_core::{Memory, MemoryId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -86,12 +86,13 @@ fn reconcile(
 impl MemoryIndex {
     pub fn open(
         path: &Path,
-        embedding: &EmbeddingSpec,
+        model: &str,
+        dimensions: usize,
         active: &[Memory],
     ) -> Result<Self, MemoryError> {
         let identity = Identity {
-            model: embedding.model.clone(),
-            dimensions: embedding.dimensions,
+            model: model.to_owned(),
+            dimensions,
         };
         let previous = std::fs::read(path.join("index.json"))
             .ok()
@@ -104,7 +105,7 @@ impl MemoryIndex {
             .to_str()
             .ok_or_else(|| error("index path is not UTF-8"))?;
         let config = Config {
-            dim: embedding.dimensions,
+            dim: dimensions,
             load_text_index: false,
             ..Default::default()
         };

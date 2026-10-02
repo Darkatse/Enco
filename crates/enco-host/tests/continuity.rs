@@ -140,16 +140,22 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
             .map(|_| reply("Concise summary or reply."))
             .collect(),
     );
+    let (embedding_registry, _) = registry(
+        &dir.path().join("embedding-registry"),
+        Loaded {
+            summary: "embedding".into(),
+            completion: None,
+            embedding: Some(provider.clone()),
+        },
+    )
+    .await;
     let memories = Memories::open(
         MemoryPaths {
             db: dir.path().join("memory.db"),
             index: dir.path().join("memory-index"),
         },
-        EmbeddingSpec {
-            model: "fixture".into(),
-            dimensions: 64,
-        },
-        provider.clone(),
+        embedding_endpoint("fixture", 64),
+        embedding_registry,
         Arc::new(SystemClock),
     )
     .await

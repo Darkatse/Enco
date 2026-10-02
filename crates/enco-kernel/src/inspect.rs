@@ -12,6 +12,8 @@ pub struct Inspection {
     pub composer: CodeRef,
     /// Code to which the recorded request was bound.
     pub provider: CodeRef,
+    /// Recorded invocation parameters, excluding the credential itself.
+    pub settings: ProviderSettings,
     /// Exact canonical request at this Attempt's Log position.
     pub request: ProviderRequest,
     /// Context omissions already recorded in the plan.
@@ -35,6 +37,7 @@ impl Kernel {
                 purpose,
                 composer,
                 provider,
+                settings,
                 plan: hash,
                 ..
             },
@@ -70,6 +73,7 @@ impl Kernel {
             purpose: *purpose,
             composer: composer.clone(),
             provider: provider.clone(),
+            settings: settings.clone(),
             request,
             omitted: plan.omitted,
             result,

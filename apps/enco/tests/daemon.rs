@@ -5,11 +5,10 @@ mod client;
 mod protocol;
 
 use enco_core::*;
-use enco_kernel::{Inspection, Provider};
-use enco_wasm::{ProviderSettings, WasmEngine, WasmProvider};
+use enco_kernel::{Inspection, Runtime};
+use enco_wasm::WasmRuntime;
 use protocol::Command;
 use serde_json::json;
-use std::sync::Arc;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
 
 mod support;
@@ -55,20 +54,26 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         .unwrap();
     assert!(output.status.success());
     let inspection: Inspection = serde_json::from_slice(&output.stdout).unwrap();
-    let CodeRef::Wasm { artifact: hash } = inspection.provider else {
-        panic!("provider must reference a Wasm artifact");
+    let CodeRef::Generation { id: generation } = inspection.provider else {
+        panic!("provider must reference a generation");
     };
-    let text = hash.to_string();
+    let plugins = client.request(Command::PluginStatus {}).await.unwrap();
+    let active = plugins
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|plugin| plugin["name"] == "openai-compatible")
+        .unwrap();
+    assert_eq!(active["active"]["id"], json!(generation));
+    let hash = active["active"]["artifact"].as_str().unwrap();
     let bytes = std::fs::read(
         daemon
             .root
             .path()
-            .join(".data/blobs")
-            .join(&text[..2])
-            .join(&text),
+            .join(".data/artifacts")
+            .join(format!("{hash}.wasm")),
     )
     .unwrap();
-    assert_eq!(ContentHash::of(&bytes), hash);
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
         .arg("log")
         .env("ENCO_HOME", daemon.root.path())
@@ -88,6 +93,44 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         .await
         .unwrap();
     assert_eq!(by_id, json!(log));
+    // CLI deployment resolves a caller-relative path and uses the daemon's registry.
+    std::fs::write(daemon.root.path().join("replacement.wasm"), bytes).unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+        .args(["plugin", "deploy", "openai-compatible", "replacement.wasm"])
+        .current_dir(daemon.root.path())
+        .env("ENCO_HOME", daemon.root.path())
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let deployed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_ne!(deployed["generation"]["id"], json!(generation));
+    daemon.stop().await;
+    daemon.restart().await;
+    let mut client = daemon.connect().await;
+    let plugins = client.request(Command::PluginStatus {}).await.unwrap();
+    assert_eq!(
+        plugins
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|plugin| plugin["name"] == "openai-compatible")
+            .unwrap()["active"],
+        deployed["generation"]
+    );
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+        .args(["plugin", "rollback", "openai-compatible"])
+        .env("ENCO_HOME", daemon.root.path())
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    let restored: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(restored["id"], json!(generation));
     daemon.stop().await;
 }
 
@@ -172,39 +215,36 @@ async fn wasm_embedding_preserves_batch_order_and_rejects_reserved_options() {
                 ] })))
         .mount(&server)
         .await;
-    let engine = Arc::new(WasmEngine::new().unwrap());
+    let runtime = WasmRuntime::new().unwrap();
     let settings = ProviderSettings {
         base_url: server.uri(),
         model: "embedding".into(),
-        api_key: None,
+        api_key_env: None,
         options: json!({}),
     };
-    let provider = WasmProvider::new(
-        engine.clone(),
-        include_bytes!(env!("ENCO_FACTORY_OPENAI")),
-        settings.clone(),
-    )
-    .await
-    .unwrap();
+    let provider = runtime
+        .load(include_bytes!(env!("ENCO_FACTORY_OPENAI")), &json!({}))
+        .await
+        .unwrap()
+        .embedding
+        .unwrap();
     assert_eq!(
         provider
-            .embed(vec!["one".into(), "two".into()])
+            .embed(&settings, None, vec!["one".into(), "two".into()])
             .await
             .unwrap(),
         vec![vec![1., 0.], vec![0., 1.]]
     );
-    let bad = WasmProvider::new(
-        engine,
-        include_bytes!(env!("ENCO_FACTORY_OPENAI")),
-        ProviderSettings {
-            options: json!({ "input": ["not the caller's input"] }),
-            ..settings
-        },
-    )
-    .await
-    .unwrap();
+    let bad = ProviderSettings {
+        options: json!({ "input": ["not the caller's input"] }),
+        ..settings
+    };
     assert_eq!(
-        bad.embed(vec!["one".into()]).await.unwrap_err().code,
+        provider
+            .embed(&bad, None, vec!["one".into()])
+            .await
+            .unwrap_err()
+            .code,
         code::PROVIDER_BAD_REQUEST
     );
 }

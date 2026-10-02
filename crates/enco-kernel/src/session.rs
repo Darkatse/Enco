@@ -17,6 +17,8 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) struct SessionDeps {
     pub store: Arc<dyn Store>,
     pub clock: Arc<dyn Clock>,
+    pub registry: Arc<crate::Registry>,
+    pub profile: crate::Profile,
     pub snapshot: Arc<Snapshot>,
     pub config: KernelConfig,
     pub shutdown: CancellationToken,

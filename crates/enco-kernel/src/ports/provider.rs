@@ -1,15 +1,17 @@
 use async_trait::async_trait;
 use enco_core::*;
 
-/// Adapter boundary for completions and embeddings. Implementations own timeouts.
+/// Completion boundary. Implementations own timeouts and per-invocation state.
 #[async_trait]
 pub trait Provider: Send + Sync {
-    /// Code serving this request, recorded before calling it.
-    fn code(&self) -> CodeRef;
-    /// Complete a frozen request. Dropping the future cancels local work.
-    async fn complete(&self, request: ProviderRequest) -> Result<Completion, Failure>;
-    /// Embed texts in input order; used by host context sources, not the kernel.
-    async fn embed(&self, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure>;
+    /// Complete a frozen request with the caller's settings and separately supplied credential.
+    /// Dropping the future cancels local work.
+    async fn complete(
+        &self,
+        settings: &ProviderSettings,
+        api_key: Option<&str>,
+        request: ProviderRequest,
+    ) -> Result<Completion, Failure>;
 }
 
 /// Resolved request; all content comes from the frozen plan and its Log references.

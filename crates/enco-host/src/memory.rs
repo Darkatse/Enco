@@ -7,7 +7,7 @@ use crate::limits::EMBED_BATCH;
 use authority::Authority;
 pub use context::MemoryContextSource;
 use enco_core::*;
-use enco_kernel::{Clock, Provider};
+use enco_kernel::{Clock, Registry};
 use index::MemoryIndex;
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -20,10 +20,16 @@ pub struct MemoryPaths {
     pub index: PathBuf,
 }
 
-/// Identity of the vector space used by the derived index.
+/// Configured embedding caller. The adapter is resolved for each synchronization call.
 #[derive(Clone)]
-pub struct EmbeddingSpec {
-    pub model: String,
+pub struct EmbeddingEndpoint {
+    /// Registered plugin whose embedding interface is used.
+    pub plugin: String,
+    /// Durable service parameters, excluding the credential itself.
+    pub settings: ProviderSettings,
+    /// Credential held only in memory.
+    pub api_key: Option<String>,
+    /// Expected vector width, paired with the model name to identify the derived index.
     pub dimensions: usize,
 }
 
@@ -58,8 +64,8 @@ pub enum MemoryError {
 pub struct Memories {
     authority: Authority,
     index: Arc<Mutex<MemoryIndex>>,
-    embedding: EmbeddingSpec,
-    provider: Arc<dyn Provider>,
+    embedding: EmbeddingEndpoint,
+    registry: Arc<Registry>,
     clock: Arc<dyn Clock>,
 }
 
@@ -72,22 +78,24 @@ struct Synced {
 impl Memories {
     pub async fn open(
         paths: MemoryPaths,
-        embedding: EmbeddingSpec,
-        provider: Arc<dyn Provider>,
+        embedding: EmbeddingEndpoint,
+        registry: Arc<Registry>,
         clock: Arc<dyn Clock>,
     ) -> Result<Arc<Self>, MemoryError> {
         let authority = Authority::open(paths.db).await?;
         let active = authority.all(false).await?;
-        let spec = embedding.clone();
-        let index =
-            tokio::task::spawn_blocking(move || MemoryIndex::open(&paths.index, &spec, &active))
-                .await
-                .map_err(index_error)??;
+        let model = embedding.settings.model.clone();
+        let dimensions = embedding.dimensions;
+        let index = tokio::task::spawn_blocking(move || {
+            MemoryIndex::open(&paths.index, &model, dimensions, &active)
+        })
+        .await
+        .map_err(index_error)??;
         let memories = Arc::new(Self {
             authority,
             index: Arc::new(Mutex::new(index)),
             embedding,
-            provider,
+            registry,
             clock,
         });
 
@@ -230,10 +238,13 @@ impl Memories {
         }
 
         let count = inputs.len();
-        let result = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(MemoryError::Cancelled),
-            result = self.provider.embed(inputs) => result,
+        let result = match self.registry.exports().embedding(&self.embedding.plugin) {
+            Ok(export) => tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(MemoryError::Cancelled),
+                result = export.adapter.embed(&self.embedding.settings, self.embedding.api_key.as_deref(), inputs) => result,
+            },
+            Err(failure) => Err(failure),
         };
         check_cancel(cancel)?;
         let vectors = match result

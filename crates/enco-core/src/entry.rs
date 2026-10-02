@@ -52,6 +52,8 @@ pub enum EntryBody {
         composer: CodeRef,
         /// Adapter code used by this Attempt.
         provider: CodeRef,
+        /// Exact per-call parameters; credentials are never recorded.
+        settings: crate::ProviderSettings,
     },
     /// A provider attempt completed or failed.
     AttemptSettled {

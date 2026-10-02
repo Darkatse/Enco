@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
-use enco_host::EmbeddingSpec;
-use enco_wasm::ProviderSettings;
+use enco_core::ProviderSettings;
+use enco_host::EmbeddingEndpoint;
+use enco_kernel::Profile;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -66,14 +67,13 @@ fn empty_options() -> serde_json::Value {
 }
 
 impl Config {
-    pub async fn load(path: &Path) -> Result<(Self, EmbeddingSpec)> {
+    pub async fn load(path: &Path) -> Result<(Self, Profile, EmbeddingEndpoint)> {
         let text = tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("cannot read {}; run `enco init` first", path.display()))?;
         let config: Self = toml::from_str(&text).context("invalid config.toml")?;
-        for endpoint in [&config.provider, &config.embedding] {
-            endpoint.settings()?;
-        }
+        let reply = config.provider.resolve()?;
+        let embedding = config.embedding.resolve()?;
         if config.provider.dimensions.is_some() {
             bail!("dimensions belongs in [embedding], not [provider]");
         }
@@ -82,16 +82,22 @@ impl Config {
             .dimensions
             .filter(|dimensions| *dimensions > 0)
             .context("[embedding].dimensions must be positive")?;
-        let embedding = EmbeddingSpec {
-            model: config.embedding.model.clone(),
+        let embedding = EmbeddingEndpoint {
+            plugin: embedding.plugin,
+            settings: embedding.settings,
+            api_key: embedding.api_key,
             dimensions,
         };
-        Ok((config, embedding))
+        let profile = Profile {
+            compaction: reply.clone(),
+            reply,
+        };
+        Ok((config, profile, embedding))
     }
 }
 
 impl Endpoint {
-    pub fn settings(&self) -> Result<ProviderSettings> {
+    fn resolve(&self) -> Result<enco_kernel::Endpoint> {
         if self.base_url.trim().is_empty() || self.model.trim().is_empty() {
             bail!("provider base_url and model must not be empty");
         }
@@ -103,11 +109,15 @@ impl Endpoint {
                     .with_context(|| format!("API key environment variable {name} is not set"))
             })
             .transpose()?;
-        Ok(ProviderSettings {
-            base_url: self.base_url.clone(),
-            model: self.model.clone(),
+        Ok(enco_kernel::Endpoint {
+            plugin: self.plugin.clone(),
+            settings: ProviderSettings {
+                base_url: self.base_url.clone(),
+                model: self.model.clone(),
+                api_key_env: self.api_key_env.clone(),
+                options: self.options.clone(),
+            },
             api_key,
-            options: self.options.clone(),
         })
     }
 }

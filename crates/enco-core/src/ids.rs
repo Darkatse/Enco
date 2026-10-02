@@ -54,6 +54,21 @@ id!(
 id!(ScheduleId, "Identity of a durable reminder.");
 id!(MemoryId, "Identity of an editable memory.");
 id!(NodeId, "Persistent identity of an Enco installation.");
+id!(
+    PluginId,
+    "Persistent identity assigned when a plugin name is registered."
+);
+
+/// Registry-global activation number, ordered by commit rather than time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GenerationId(pub u64);
+
+impl fmt::Display for GenerationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 /// Ownership generation; single-node execution uses one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

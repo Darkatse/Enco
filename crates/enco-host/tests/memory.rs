@@ -20,17 +20,23 @@ use support::*;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-async fn open(root: &Path, provider: Arc<dyn Provider>, dimensions: usize) -> Arc<Memories> {
+async fn open(root: &Path, provider: Arc<dyn Embedding>, dimensions: usize) -> Arc<Memories> {
+    let (registry, _) = registry(
+        &root.join("embedding-registry"),
+        Loaded {
+            summary: "embedding".into(),
+            completion: None,
+            embedding: Some(provider),
+        },
+    )
+    .await;
     Memories::open(
         MemoryPaths {
             db: root.join("memory.db"),
             index: root.join("memory-index"),
         },
-        EmbeddingSpec {
-            model: "test-embedding".into(),
-            dimensions,
-        },
-        provider,
+        embedding_endpoint("test-embedding", dimensions),
+        registry,
         Arc::new(SystemClock),
     )
     .await
@@ -235,19 +241,13 @@ struct GatedEmbedding {
 }
 
 #[async_trait]
-impl Provider for GatedEmbedding {
-    fn code(&self) -> CodeRef {
-        CodeRef::Native {
-            name: "embedding-gate".into(),
-            version: "test".into(),
-        }
-    }
-
-    async fn complete(&self, _: ProviderRequest) -> Result<Completion, Failure> {
-        reply("unused")
-    }
-
-    async fn embed(&self, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure> {
+impl Embedding for GatedEmbedding {
+    async fn embed(
+        &self,
+        _: &ProviderSettings,
+        _: Option<&str>,
+        inputs: Vec<String>,
+    ) -> Result<Vec<Vec<f32>>, Failure> {
         if self.blocked.load(Ordering::SeqCst) {
             self.entered.notify_one();
             std::future::pending::<()>().await;

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use enco_core::*;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 /// Persistence boundary; only the owning actor may commit its state.
 #[async_trait]
@@ -60,6 +60,31 @@ pub trait Store: Send + Sync {
     /// Mark a pending Schedule fired and accept its Event into the Inbox in one transaction.
     async fn fire_schedule(&self, id: ScheduleId, event: &Event) -> Result<(), StoreError>;
 
+    // ---- Plugin identity and generations (writer: Registry)
+    /// Read the authoritative name-to-identity mapping from plugins.lock.
+    async fn plugin_names(&self) -> Result<BTreeMap<String, PluginId>, StoreError>;
+    /// Register a new name before any generation is committed for its identity.
+    async fn register_plugin(&self, name: &str, id: PluginId) -> Result<(), StoreError>;
+    /// Read all durable generations and active routing.
+    async fn registry(&self) -> Result<RegistryState, StoreError>;
+    /// Assign a generation number and optionally activate it in the same transaction.
+    async fn insert_generation(
+        &self,
+        generation: &NewGeneration,
+        activate: bool,
+    ) -> Result<GenerationId, StoreError>;
+    /// Commit failed candidates and the resulting active generation atomically.
+    async fn activate(
+        &self,
+        plugin: PluginId,
+        to: Option<GenerationId>,
+        failed: &[GenerationId],
+    ) -> Result<(), StoreError>;
+    /// Persist immutable component bytes separately from removable history blobs.
+    async fn put_artifact(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
+    /// Read and verify component bytes by content address.
+    async fn artifact(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError>;
+
     // ---- Blobs (content-addressed, idempotent writes)
     /// Persist immutable bytes before recording their content address.
     async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
@@ -76,6 +101,46 @@ pub struct NodeRecord {
     pub id: NodeId,
     /// Whether the next Round uses only the lifeline.
     pub safe_mode: bool,
+}
+
+/// Durable registry facts; compiled exports are a derived view.
+pub struct RegistryState {
+    /// All generation records in commit order.
+    pub generations: Vec<GenerationRecord>,
+    /// The active generation, if any, for each registered plugin row.
+    pub active: BTreeMap<PluginId, Option<GenerationId>>,
+}
+
+/// A generation awaiting its registry-assigned sequence number.
+#[derive(Clone)]
+pub struct NewGeneration {
+    /// Plugin identity which owns this history.
+    pub plugin: PluginId,
+    /// Component content address.
+    pub artifact: ContentHash,
+    /// Configuration of this activation, not model invocation settings.
+    pub config: serde_json::Value,
+    /// Factory registration or explicit deployment.
+    pub origin: Origin,
+    /// Initial activation eligibility.
+    pub status: GenerationStatus,
+    /// Observation time supplied by the registry clock.
+    pub created_at: DateTime<Utc>,
+}
+
+impl NewGeneration {
+    /// Attach the number allocated by the durable commit.
+    pub fn numbered(self, id: GenerationId) -> GenerationRecord {
+        GenerationRecord {
+            id,
+            plugin: self.plugin,
+            artifact: self.artifact,
+            config: self.config,
+            origin: self.origin,
+            status: self.status,
+            created_at: self.created_at,
+        }
+    }
 }
 
 /// An atomic append of Log facts and consumption of their corresponding Inbox rows.
@@ -155,6 +220,15 @@ pub enum StoreError {
     /// Immutable bytes are missing or do not match their address.
     #[error("blob {0} is corrupt or missing")]
     Blob(ContentHash),
+    /// Component bytes are missing or do not match their address.
+    #[error("artifact {0} is corrupt or missing")]
+    Artifact(ContentHash),
+    /// A referenced registry record does not exist.
+    #[error("unknown generation {0}")]
+    UnknownGeneration(GenerationId),
+    /// Plugin identity file could not be read, interpreted or atomically replaced.
+    #[error("plugins.lock: {0}")]
+    Lock(String),
     /// The database requires a newer Enco binary.
     #[error("database was created by a newer Enco (schema version {0})")]
     NewerSchema(u32),

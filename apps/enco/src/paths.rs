@@ -41,6 +41,12 @@ impl Paths {
     pub fn blobs(&self) -> PathBuf {
         self.data().join("blobs")
     }
+    pub fn artifacts(&self) -> PathBuf {
+        self.data().join("artifacts")
+    }
+    pub fn plugins_lock(&self) -> PathBuf {
+        self.home.join("plugins.lock")
+    }
     pub fn memory_db(&self) -> PathBuf {
         self.data().join("memory.db")
     }

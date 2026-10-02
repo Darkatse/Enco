@@ -37,6 +37,14 @@ pub(crate) enum Command {
         session: String,
         after: Option<LogPos>,
     },
+    PluginStatus {},
+    PluginDeploy {
+        name: String,
+        path: std::path::PathBuf,
+    },
+    PluginRollback {
+        name: String,
+    },
     Inspect {
         session: String,
         attempt_id: Option<AttemptId>,

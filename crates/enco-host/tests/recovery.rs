@@ -22,20 +22,14 @@ struct PendingProvider {
 
 #[async_trait]
 impl Provider for PendingProvider {
-    fn code(&self) -> CodeRef {
-        CodeRef::Native {
-            name: "pending-provider".into(),
-            version: "test".into(),
-        }
-    }
-
-    async fn complete(&self, _: ProviderRequest) -> Result<Completion, Failure> {
+    async fn complete(
+        &self,
+        _: &ProviderSettings,
+        _: Option<&str>,
+        _: ProviderRequest,
+    ) -> Result<Completion, Failure> {
         let _dropped = Dropped(&self.dropped);
         self.entered.notify_one();
-        std::future::pending().await
-    }
-
-    async fn embed(&self, _: Vec<String>) -> Result<Vec<Vec<f32>>, Failure> {
         std::future::pending().await
     }
 }

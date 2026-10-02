@@ -298,6 +298,27 @@ async fn process(
             let session = existing_session(kernel, &name).await?;
             json!(kernel.log(session.id, after).await?)
         }
+        Command::PluginStatus {} => json!(kernel.registry().status().await),
+        Command::PluginDeploy { name, path } => {
+            let bytes = tokio::fs::read(&path).await.map_err(|error| CommandError {
+                code: "bad_request",
+                message: format!("{}: {error}", path.display()),
+            })?;
+            json!(
+                kernel
+                    .registry()
+                    .deploy(&name, bytes)
+                    .await
+                    .map_err(KernelError::from)?
+            )
+        }
+        Command::PluginRollback { name } => json!(
+            kernel
+                .registry()
+                .rollback(&name)
+                .await
+                .map_err(KernelError::from)?
+        ),
         Command::Inspect {
             session: name,
             attempt_id,

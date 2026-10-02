@@ -34,9 +34,16 @@ impl SessionActor {
         let bytes =
             serde_json::to_vec(plan).map_err(|e| failed(code::PLAN_INVALID, e.to_string()))?;
         let plan_hash = self.deps.store.put_blob(&bytes).await?;
+        let endpoint = self.deps.profile.endpoint(kind.purpose()).clone();
         let mut attempt_number = 0;
         loop {
             cancelled(token)?;
+            let export = self
+                .deps
+                .registry
+                .exports()
+                .completion(&endpoint.plugin)
+                .map_err(|failure| RoundError::Ended(RoundEnd::Failed { failure }))?;
             let attempt = AttemptId::new();
             self.commit(
                 vec![EntryBody::AttemptStarted {
@@ -45,7 +52,10 @@ impl SessionActor {
                     purpose: kind.purpose(),
                     plan: plan_hash,
                     composer: snapshot.composer.code(),
-                    provider: snapshot.provider.code(),
+                    provider: CodeRef::Generation {
+                        id: export.generation,
+                    },
+                    settings: endpoint.settings.clone(),
                 }],
                 vec![],
             )
@@ -57,7 +67,7 @@ impl SessionActor {
                     message: "model request cancelled".into(),
                     retryable: false,
                 }),
-                result = snapshot.provider.complete(request.clone()) => result,
+                result = export.adapter.complete(&endpoint.settings, endpoint.api_key.as_deref(), request.clone()) => result,
             };
             match result {
                 Ok(completion) => {

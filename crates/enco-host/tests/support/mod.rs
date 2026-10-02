@@ -9,7 +9,7 @@ use enco_core::*;
 use enco_host::*;
 use enco_kernel::*;
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::Path,
     sync::{Arc, Mutex},
     time::Duration,
@@ -21,6 +21,7 @@ pub struct ScriptedProvider {
     pub embedding_dimensions: std::sync::atomic::AtomicUsize,
     pub steps: Mutex<VecDeque<Result<Completion, Failure>>>,
     pub requests: Mutex<Vec<ProviderRequest>>,
+    pub settings: Mutex<Vec<ProviderSettings>>,
 }
 
 impl ScriptedProvider {
@@ -30,29 +31,37 @@ impl ScriptedProvider {
             embedding_dimensions: std::sync::atomic::AtomicUsize::new(64),
             steps: Mutex::new(steps.into()),
             requests: Mutex::new(vec![]),
+            settings: Mutex::new(vec![]),
         })
     }
 }
 
 #[async_trait]
 impl Provider for ScriptedProvider {
-    fn code(&self) -> CodeRef {
-        CodeRef::Native {
-            name: "scripted".into(),
-            version: "test".into(),
-        }
-    }
-
-    async fn complete(&self, request: ProviderRequest) -> Result<Completion, Failure> {
+    async fn complete(
+        &self,
+        settings: &ProviderSettings,
+        _api_key: Option<&str>,
+        request: ProviderRequest,
+    ) -> Result<Completion, Failure> {
         self.requests.lock().unwrap().push(request);
+        self.settings.lock().unwrap().push(settings.clone());
         self.steps
             .lock()
             .unwrap()
             .pop_front()
             .expect("unexpected extra provider request")
     }
+}
 
-    async fn embed(&self, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure> {
+#[async_trait]
+impl Embedding for ScriptedProvider {
+    async fn embed(
+        &self,
+        _settings: &ProviderSettings,
+        _api_key: Option<&str>,
+        inputs: Vec<String>,
+    ) -> Result<Vec<Vec<f32>>, Failure> {
         if self
             .embedding_failure
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -69,6 +78,93 @@ impl Provider for ScriptedProvider {
                 .load(std::sync::atomic::Ordering::SeqCst),
         ))
     }
+}
+
+pub const FACTORY_BYTES: &[u8] = b"scripted-factory";
+pub const FIXTURE_ID: &str = "01M3X4HYHSE2M3523YK35VX60W";
+
+#[derive(Default)]
+pub struct ScriptedRuntime {
+    exports: Mutex<HashMap<ContentHash, Loaded>>,
+}
+
+impl ScriptedRuntime {
+    pub fn insert(&self, bytes: &[u8], loaded: Loaded) {
+        self.exports
+            .lock()
+            .unwrap()
+            .insert(ContentHash::of(bytes), loaded);
+    }
+}
+
+#[async_trait]
+impl Runtime for ScriptedRuntime {
+    async fn load(&self, bytes: &[u8], _config: &serde_json::Value) -> Result<Loaded, LoadError> {
+        self.exports
+            .lock()
+            .unwrap()
+            .get(&ContentHash::of(bytes))
+            .cloned()
+            .ok_or_else(|| LoadError("unknown fixture artifact".into()))
+    }
+}
+
+pub fn store_paths(root: &Path) -> StorePaths {
+    StorePaths {
+        db: root.join("enco.db"),
+        blobs: root.join("blobs"),
+        artifacts: root.join("artifacts"),
+        plugins_lock: root.join("plugins.lock"),
+    }
+}
+
+pub fn settings() -> ProviderSettings {
+    ProviderSettings {
+        base_url: "https://fixture.invalid".into(),
+        model: "fixture".into(),
+        api_key_env: None,
+        options: serde_json::json!({}),
+    }
+}
+
+pub fn endpoint() -> Endpoint {
+    Endpoint {
+        plugin: "fixture".into(),
+        settings: settings(),
+        api_key: None,
+    }
+}
+
+pub fn embedding_endpoint(model: &str, dimensions: usize) -> EmbeddingEndpoint {
+    EmbeddingEndpoint {
+        plugin: "fixture".into(),
+        settings: ProviderSettings {
+            model: model.into(),
+            ..settings()
+        },
+        api_key: None,
+        dimensions,
+    }
+}
+
+pub async fn registry(root: &Path, loaded: Loaded) -> (Arc<Registry>, Arc<SqliteStore>) {
+    let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
+    let runtime = Arc::new(ScriptedRuntime::default());
+    runtime.insert(FACTORY_BYTES, loaded);
+    let registry = Registry::open(RegistryDeps {
+        store: store.clone(),
+        runtime,
+        factory: vec![FactoryPlugin {
+            name: "fixture".into(),
+            id: FIXTURE_ID.parse().unwrap(),
+            artifact: FACTORY_BYTES.to_vec(),
+        }],
+        wiring: vec![],
+        clock: Arc::new(SystemClock),
+    })
+    .await
+    .unwrap();
+    (registry, store)
 }
 
 pub fn reply(text: &str) -> Result<Completion, Failure> {
@@ -116,16 +212,24 @@ pub async fn kernel_with(
     provider: Arc<dyn Provider>,
     configure: impl FnOnce(&mut KernelDeps, &mut Budget),
 ) -> (Kernel, Arc<SqliteStore>) {
-    let store = Arc::new(
-        SqliteStore::open(root.join("enco.db"), root.join("blobs"))
-            .await
-            .unwrap(),
-    );
+    let (registry, store) = registry(
+        root,
+        Loaded {
+            summary: "scripted".into(),
+            completion: Some(provider),
+            embedding: None,
+        },
+    )
+    .await;
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
     let mut deps = KernelDeps {
         store: store.clone(),
-        provider,
+        profile: Profile {
+            reply: endpoint(),
+            compaction: endpoint(),
+        },
+        registry: registry.clone(),
         composer: Arc::new(FactoryComposer::new(
             workspace.clone(),
             root.join("AGENTS.md"),
@@ -133,10 +237,11 @@ pub async fn kernel_with(
         context: vec![Arc::new(InstructionsContextSource::new(
             root.join("AGENTS.md"),
         ))],
-        tools: native_tools(workspace),
+        tools: native_tools(workspace.clone()),
         lifeline: LIFELINE.iter().map(|s| s.to_string()).collect(),
         clock: Arc::new(SystemClock),
     };
+    deps.tools.extend(plugin_tools(registry, workspace));
     let mut budget = Budget {
         context_tokens: 128000,
         max_output_tokens: 8192,
