@@ -130,7 +130,7 @@ A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP �
 | A15 | M5 | 召回与"索引提名，权威裁决" | 集成 | 保存 20 条记忆，其中一条置顶：预算可容纳时，置顶的那条在无关的消息下也出现在计划中；与某条非置顶记忆字面相近的消息把它召回。随后让 `embed` 失败：更新一条记忆后，计划中只出现新内容；失败期间新保存的记忆以"尚未进入索引"出现；`plan.omitted` 含 `memory:semantic`。恢复 `embed` 后，下一次召回把它们写入索引。`embed` 阻塞时取消 Run：迅速以 `RoundEnded(Cancelled)` 结束，之后的召回照常把记忆写入索引 |
 | A16 | M5 | 索引重建 | 集成 | 删除 `memory-index/` 后重启：召回照常，索引的节点数等于记忆数；改变配置的 `dimensions` 后重启：索引自动重建；`embed` 失败时启动：照常启动，记忆以"尚未进入索引"出现在召回中 |
 | A17 | M5 | 端到端记忆 | 端到端 | wiremock 先返回 `memory_save` 调用、再返回文本，并模拟 `/embeddings`：`enco memory` 的输出列出该记忆；下一条消息的 `/chat/completions` 请求体中，System 消息包含它；`/embeddings` 请求体的 `input` 包含记忆文本 |
-| A18 | M6 | 压缩与重启 | 集成 | 用较小但记忆预算仍可容纳置顶条目的 `context_tokens` 迫使压缩（出现 `Compacted`）；重启 Kernel；之后的计划仍包含该置顶记忆，并且不引用被压缩隐藏的位置 |
+| A18 | M6 | 压缩与重启 | 集成 | 用较小但记忆预算仍可容纳置顶条目的 `context_tokens` 迫使压缩（出现 `Compacted`）；重启 Kernel；之后的计划仍包含该置顶记忆，并且不引用被压缩隐藏的位置；压缩模型的窗口小于回复窗口时分几次压缩，每个 Run 都正常完成，每次压缩请求都放得进压缩窗口 |
 | A19 | M6 | 提醒 | 集成 | `TestClock` 下，到期后恰好一次 `EventConsumed(Reminder)` 并触发一个 Run；在到期前"崩溃"并在到期后重启，提醒补发一次；创建一个已经过去的时间返回错误 |
 | A20 | M6 | 端到端提醒管理 | 端到端 | 模型通过 `schedule_create` 创建提醒，CLI 可以列出并取消同一条提醒，取消后不再列出；到期与重启补发由 A19 的可控时钟场景核对 |
 | A21 | M7 | 门禁有效 | 手动一次 | 临时让 enco-kernel 依赖 enco-host → `boundaries` 失败；删掉一个 WIT 函数的文档 → `docs --check` 失败；手改 `CONTRACT.md` → `docs --check` 失败。验证后还原 |

@@ -257,6 +257,75 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
     kernel.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn a_smaller_compaction_window_compacts_in_steps_and_the_conversation_continues() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(
+        (0..40)
+            .map(|_| reply("Concise summary or reply."))
+            .collect(),
+    );
+    let compaction_window = 2500;
+    let (kernel, _) = kernel_with(dir.path(), provider, |deps| {
+        let profile = deps.profiles.get_mut("default").unwrap();
+        profile.reply.budget = Budget {
+            context_tokens: 6000,
+            max_output_tokens: 256,
+        };
+        profile.compaction.budget = Budget {
+            context_tokens: compaction_window,
+            max_output_tokens: 512,
+        };
+    })
+    .await;
+    let session = kernel.open_session("main").await.unwrap();
+    let mut rx = kernel.subscribe(session.id).unwrap();
+    for n in 0..8 {
+        kernel
+            .submit(
+                session.id,
+                EventId::new(),
+                format!("History {n}: {}", "some detailed history ".repeat(150)),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            finish(&mut rx).await.last().unwrap().body,
+            EntryBody::RunEnded {
+                end: RunEnd::Completed,
+                ..
+            }
+        ));
+    }
+    let log = kernel.log(session.id, None).await.unwrap();
+    let compactions: Vec<_> = log
+        .iter()
+        .filter_map(|entry| match entry.body {
+            EntryBody::AttemptStarted {
+                attempt,
+                purpose: AttemptPurpose::Compaction,
+                ..
+            } => Some(attempt),
+            _ => None,
+        })
+        .collect();
+    assert!(!compactions.is_empty());
+    for attempt in compactions {
+        let request = kernel
+            .inspect(session.id, Some(attempt))
+            .await
+            .unwrap()
+            .request;
+        let prompt: u32 = request
+            .messages
+            .iter()
+            .map(|message| estimate_tokens(&message.joined_text()))
+            .sum();
+        assert!(prompt + request.max_output_tokens.unwrap() <= compaction_window);
+    }
+    kernel.shutdown().await.unwrap();
+}
+
 #[test]
 fn budget_omissions_are_explicit_and_do_not_make_oversized_candidates_mandatory() {
     let input = ComposeInput {
@@ -305,6 +374,7 @@ fn budget_omissions_are_explicit_and_do_not_make_oversized_candidates_mandatory(
             },
             ..profile()
         },
+        compactions_left: 2,
     };
     let Composition::Plan(plan) = FactoryComposer::new("/workspace".into(), "/AGENTS.md".into())
         .compose(&input)

@@ -196,9 +196,9 @@ async fn profile_changes_bind_at_round_boundaries_and_missing_profiles_remain_re
 }
 
 #[tokio::test]
-async fn compaction_rejects_history_that_exceeds_its_own_model_window() {
+async fn history_too_large_for_the_compaction_window_fails_only_when_the_reply_no_longer_fits() {
     let dir = tempfile::tempdir().unwrap();
-    let provider = ScriptedProvider::new((0..6).map(|_| reply("reply")).collect());
+    let provider = ScriptedProvider::new((0..10).map(|_| reply("reply")).collect());
     let (kernel, _) = kernel_with(dir.path(), provider.clone(), |deps| {
         configure(deps);
         deps.profiles.get_mut("default").unwrap().compaction.budget = Budget {
@@ -210,7 +210,7 @@ async fn compaction_rejects_history_that_exceeds_its_own_model_window() {
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     let mut overflow = None;
-    for _ in 0..6 {
+    for _ in 0..10 {
         kernel
             .submit(
                 session.id,
@@ -229,9 +229,10 @@ async fn compaction_rejects_history_that_exceeds_its_own_model_window() {
             break;
         }
     }
-    let failure = overflow.expect("history must require compaction");
+    let failure = overflow.expect("history must outgrow the reply window");
     assert_eq!(failure.code, code::CONTEXT_OVERFLOW);
-    assert!(failure.message.contains("window is 100"));
+    assert!(failure.message.contains("window is 6000"));
+    // No boundary fits a 100-token window, so no summary request is ever sent.
     assert!(
         provider
             .settings

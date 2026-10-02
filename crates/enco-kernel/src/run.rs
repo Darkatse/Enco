@@ -155,7 +155,6 @@ impl SessionActor {
         let mut input = self
             .compose_input(snapshot, profile, safe_mode, token)
             .await?;
-        let mut compactions = 0;
         loop {
             let composition = snapshot.composer.compose(&input).map_err(|e| {
                 failed(
@@ -170,7 +169,7 @@ impl SessionActor {
             let (plan, kind) = match composition {
                 Composition::Plan(plan) => (plan, AttemptKind::Reply),
                 Composition::Compact { upto, plan } => {
-                    if compactions == limits::MAX_COMPACTIONS_PER_ROUND {
+                    if input.compactions_left == 0 {
                         return Err(failed(
                             code::COMPOSE_FAILED,
                             "too many compactions in one Round",
@@ -210,7 +209,7 @@ impl SessionActor {
                 token,
             )
             .await?;
-            compactions += 1;
+            input.compactions_left -= 1;
             input.transcript = crate::transcript::project(&self.entries);
         }
     }
@@ -263,6 +262,7 @@ impl SessionActor {
             tools,
             safe_mode,
             profile: profile.clone(),
+            compactions_left: limits::MAX_COMPACTIONS_PER_ROUND,
         })
     }
 }

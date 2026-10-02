@@ -100,6 +100,7 @@ pub struct ComposeInput {
     pub context: Contribution,             // 各 ContextSource 的贡献按顺序合并；安全模式下为空
     pub tools: Vec<(CapabilityId, ToolSpec)>, // 本轮可披露的工具；安全模式下只有救生集
     pub safe_mode: bool,
+    pub compactions_left: u32,             // 本 Round 还允许几次压缩；为 0 时只能返回 Plan 或失败
 }
 
 pub struct Budget { pub context_tokens: u32, pub max_output_tokens: u32 }
@@ -116,7 +117,7 @@ pub struct TranscriptItem { pub pos: LogPos, pub message: Message, pub generatio
 
 pub enum Composition {
     Plan(ContextPlan),
-    /// 请求先压缩：`upto` 必须属于 `round_ends`，`plan` 是生成摘要的请求（不带工具）。
+    /// 请求先压缩：`upto` 必须属于 `round_ends`，`plan` 是生成摘要的请求（不带工具）。`compactions_left` 为 0 时不能返回它。
     Compact { upto: LogPos, plan: ContextPlan },
 }
 
@@ -376,25 +377,27 @@ compose(snapshot, profile, round, safe_mode, token):
                      按顺序合并 candidates 与 omitted }
     if token.is_cancelled(): return Ended(Cancelled)          // 无论来源返回了什么（§9）
     任何一个来源出错 → Failed(context.failed)
-    for _ in 0..=MAX_COMPACTIONS_PER_ROUND:
-        input = ComposeInput {
-            now, session, profile, transcript: transcript::project(&entries),
-            previous_run_end: 当前 Run 之前最后一条 RunEnded 的 end,
-            context: context.clone(),
-            tools: if safe_mode { 救生集 } else { 全部 },
-            safe_mode,
-        }
+    input = ComposeInput {
+        now, session, profile, transcript: transcript::project(&entries),
+        previous_run_end: 当前 Run 之前最后一条 RunEnded 的 end,
+        context,
+        tools: if safe_mode { 救生集 } else { 全部 },
+        safe_mode,
+        compactions_left: MAX_COMPACTIONS_PER_ROUND,
+    }
+    loop:
         match composer.compose(&input):
             Err(e)                    => Failed(e 转为 Failure：ContextOverflow → context.overflow，其余 → compose.failed)
             Ok(Plan(plan))            => plan::validate(&plan, &input, Reply, &snapshot.lifeline)?            // 失败 → Failed(plan.invalid)
                                          return (plan, plan::resolve(&plan, &input.transcript, exports, target(Reply))?)
             Ok(Compact { upto, plan }) =>
+                compactions_left 为 0 时 Failed(compose.failed, "too many compactions in one round")
                 upto 必须属于 input.transcript.round_ends，否则 Failed(plan.invalid)
                 plan::validate(&plan, &input, Compaction, &snapshot.lifeline)?
                 request = plan::resolve(&plan, &input.transcript, exports, target(Compaction))?
                 attempt(profile, round, safe_mode, Compaction { upto }, plan, request, token)?   // 成功时同时提交 Compacted
-                // 继续循环：用新的 Transcript 再次组装
-    Failed(compose.failed, "too many compactions in one round")
+                input.compactions_left -= 1
+                input.transcript = transcript::project(&entries)                             // 用新的 Transcript 再次组装
 ```
 
 `exports = registry.exports()`，`target(用途)` 是 `profile.endpoint(用途).plugin` 通过 `completion(插件, safe_mode)` 取得的身份（11 §4.2）；找不到 → Failed(plugin.unavailable)。一个 Round 内目标插件由 profile 固定，代际可以变（§6.4），所以解析一次的请求在重试中仍然有效。

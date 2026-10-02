@@ -158,14 +158,16 @@ total = est(System 消息) + Σ est(serde_json::to_string(item.message)) + est(s
 if total <= context_tokens * 80%:
     返回 Plan
 keep = context_tokens * 30%
-b = round_ends 中最早的那个位置，使得 Σ est(pos > b 的条目) <= keep
-if b 存在:
+b = 压缩边界（见下）
+if b 存在 且 compactions_left > 0:
     返回 Compact { upto: b, plan: compaction_plan(b) }
 elif total <= context_tokens:
     返回 Plan                                   // 超过阈值但仍然放得下
 else:
     返回 Err(ContextOverflow { needed: total, window: context_tokens })
 ```
+
+压缩边界按 `round_ends` 从早到晚选：首选最早一个使 `Σ est(pos > b 的条目) <= keep` 的位置；如果摘要到那里放不进压缩窗口（§4.5），就选仍然放得下的最晚位置，先压缩一部分。每份摘要都带着上一份，所以部分压缩也是进展，同一个 Round 还有压缩次数时会接着压缩。连第一个 Round 都放不进压缩窗口时，没有边界。
 
 ### 4.5 压缩计划
 
@@ -178,7 +180,7 @@ items = [
           + "Conversation to summarize:\n" + 按顺序渲染 pos <= b 的条目：
               User 消息       → "Owner: {text}"
               Assistant 文本  → "Enco: {text}"
-              工具调用        → "Enco called {name} with {arguments}"
+              工具调用        → "Enco called {name} with {arguments，最多 2000 字节}"
               Tool 消息       → "Result of {name}: {content，最多 2000 字节}"
           + "\n\nWrite the summary now."
 ]
@@ -186,7 +188,7 @@ tools = []
 max_output_tokens = min(2048, profile.compaction.budget.max_output_tokens)
 ```
 
-压缩计划的估算总量（两条消息加输出上限）必须不超过 `profile.compaction.budget.context_tokens`，否则返回 `ContextOverflow`，`window` 写压缩模型的窗口。压缩模型可以比回复模型小，这条检查让它不至于收到放不下的请求。
+压缩计划的估算总量（两条消息加输出上限）不超过 `profile.compaction.budget.context_tokens`：§4.4 选边界时就按这个窗口计算，所以压缩模型可以比回复模型小。窗口小只会让每次摘要的历史变少、压缩次数变多；只有一个 Round 的历史都放不进压缩窗口，而回复本身也放不下时，才返回 `ContextOverflow`。
 
 ### 4.6 提示词（`prompts/`，用 `include_str!` 嵌入）
 
@@ -219,7 +221,7 @@ You are Enco, a personal assistant, running in safe mode. Only basic file and sh
 `compaction.md`：
 
 ```text
-You are summarizing a conversation between Enco, a personal assistant, and its owner, so that the conversation can continue with less context. Write a concise summary that keeps: the owner's current goals and requests; decisions made and why; facts learned about the task; actions taken and their results, including any whose outcome is unknown; and open questions or unfinished work. Do not restate saved memories; they are kept separately. Write in the language of the conversation.
+You are summarizing a conversation between Enco, a personal assistant, and its owner, so that the conversation can continue with less context. Write a concise summary that keeps: the owner's current goals and requests; decisions made and why; facts learned about the task; actions taken and their results, including any whose outcome is unknown; and open questions or unfinished work. System notices, such as reminders and plugin rollbacks, also appear as Owner lines; they are not the owner's words. Do not restate saved memories; they are kept separately. Write in the language of the conversation.
 ```
 
 ## 5. SystemClock（`clock.rs`）
@@ -239,6 +241,6 @@ pub const COMPACTION_TRIGGER_PERCENT: u32 = 80;
 pub const COMPACTION_TAIL_PERCENT: u32 = 30;
 pub const INSTRUCTION_PERCENT: u32 = 10;
 pub const MEMORY_PERCENT: u32 = 15;
-pub const COMPACTION_RESULT_BYTES: usize = 2_000;
+pub const COMPACTION_TOOL_BYTES: usize = 2_000;
 pub const COMPACTION_OUTPUT_TOKENS: u32 = 2_048;
 ```

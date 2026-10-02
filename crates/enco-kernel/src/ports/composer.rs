@@ -27,6 +27,8 @@ pub struct ComposeInput {
     pub safe_mode: bool,
     /// Endpoints, budgets and requirements selected for this Round.
     pub profile: crate::Profile,
+    /// Compactions this Round still allows; at zero the composer must return a plan or fail.
+    pub compactions_left: u32,
 }
 
 /// Context limits supplied by configuration.

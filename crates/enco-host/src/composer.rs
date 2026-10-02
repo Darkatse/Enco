@@ -42,20 +42,14 @@ impl Composer for FactoryComposer {
             .saturating_add(encoded_tokens(&definitions)?)
             .saturating_add(budget.max_output_tokens);
         let window = budget.context_tokens;
-        let compact_at = window.saturating_mul(COMPACTION_TRIGGER_PERCENT) / 100;
-        if total > compact_at {
-            let keep = window.saturating_mul(COMPACTION_TAIL_PERCENT) / 100;
-            let mut tail = history_tokens;
-            let mut remaining = sizes.iter().peekable();
-            // Both sequences follow Log order, so each message leaves the tail only once.
-            for boundary in &input.transcript.round_ends {
-                while let Some((_, size)) = remaining.next_if(|(pos, _)| pos <= boundary) {
-                    tail -= size;
-                }
-                if tail <= keep {
+        if total > window.saturating_mul(COMPACTION_TRIGGER_PERCENT) / 100 {
+            if input.compactions_left > 0 {
+                let keep = window.saturating_mul(COMPACTION_TAIL_PERCENT) / 100;
+                let compaction = Compaction::new(input);
+                if let Some(upto) = compaction.boundary(input, &sizes, history_tokens, keep) {
                     return Ok(Composition::Compact {
-                        upto: *boundary,
-                        plan: compaction(input, *boundary)?,
+                        upto,
+                        plan: compaction.plan(upto),
                     });
                 }
             }
@@ -210,67 +204,142 @@ fn section(text: &mut String, title: &str, body: &str) {
     }
 }
 
-fn compaction(input: &ComposeInput, upto: LogPos) -> Result<ContextPlan, ComposeError> {
-    let mut text = String::new();
-    let mut names = HashMap::new();
-    if let Some(summary) = &input.transcript.summary {
-        text.push_str(&format!("Previous summary:\n{summary}\n\n"));
-    }
-    text.push_str("Conversation to summarize:\n");
-    for item in input.transcript.items.iter().filter(|i| i.pos <= upto) {
-        for part in &item.message.parts {
-            match part {
-                Part::Text { text: body } => {
-                    let speaker = if item.message.role == Role::User {
-                        "Owner"
-                    } else {
-                        "Enco"
-                    };
-                    text.push_str(&format!("{speaker}: {body}\n"));
+const COMPACTION_PROMPT: &str = include_str!("prompts/compaction.md");
+const COMPACTION_FOOTER: &str = "\nWrite the summary now.";
+
+/// The history as the summarizer reads it. Choosing the boundary and building the plan share
+/// one rendering, so the plan fits the window the boundary was chosen for.
+struct Compaction {
+    header: String,
+    /// One rendered chunk per Transcript item, in Log order.
+    chunks: Vec<(LogPos, String)>,
+    max_output_tokens: u32,
+    /// Tokens the request needs besides the chunks: prompt, header, footer and output.
+    overhead: u32,
+}
+
+impl Compaction {
+    fn new(input: &ComposeInput) -> Self {
+        let mut header = String::new();
+        if let Some(summary) = &input.transcript.summary {
+            header.push_str(&format!("Previous summary:\n{summary}\n\n"));
+        }
+        header.push_str("Conversation to summarize:\n");
+        let mut names = HashMap::new();
+        let chunks = input
+            .transcript
+            .items
+            .iter()
+            .map(|item| {
+                let mut chunk = String::new();
+                for part in &item.message.parts {
+                    match part {
+                        Part::Text { text } => {
+                            let speaker = if item.message.role == Role::User {
+                                "Owner"
+                            } else {
+                                "Enco"
+                            };
+                            chunk.push_str(&format!("{speaker}: {text}\n"));
+                        }
+                        Part::ToolCall(call) => {
+                            names.insert(call.id, call.name.as_str());
+                            let arguments = clip(&call.arguments);
+                            chunk
+                                .push_str(&format!("Enco called {} with {arguments}\n", call.name));
+                        }
+                        Part::ToolResult(result) => {
+                            let name = names.get(&result.call).copied().unwrap_or("tool");
+                            chunk.push_str(&format!(
+                                "Result of {name}: {}\n",
+                                clip(&result.content)
+                            ));
+                        }
+                        Part::Extension(_) => {}
+                    }
                 }
-                Part::ToolCall(call) => {
-                    names.insert(call.id, call.name.as_str());
-                    text.push_str(&format!(
-                        "Enco called {} with {}\n",
-                        call.name, call.arguments
-                    ));
-                }
-                Part::ToolResult(result) => {
-                    let name = names.get(&result.call).copied().unwrap_or("tool");
-                    let end = result.content.floor_char_boundary(COMPACTION_RESULT_BYTES);
-                    let preview = &result.content[..end];
-                    text.push_str(&format!("Result of {name}: {preview}\n"));
-                }
-                Part::Extension(_) => {}
-            }
+                (item.pos, chunk)
+            })
+            .collect();
+        let max_output_tokens = input
+            .profile
+            .compaction
+            .budget
+            .max_output_tokens
+            .min(COMPACTION_OUTPUT_TOKENS);
+        // Estimating parts separately never undercounts their concatenation.
+        let overhead = estimate_tokens(COMPACTION_PROMPT)
+            .saturating_add(estimate_tokens(&header))
+            .saturating_add(estimate_tokens(COMPACTION_FOOTER))
+            .saturating_add(max_output_tokens);
+        Self {
+            header,
+            chunks,
+            max_output_tokens,
+            overhead,
         }
     }
-    text.push_str("\nWrite the summary now.");
-    let budget = input.profile.compaction.budget;
-    let max_output_tokens = budget.max_output_tokens.min(COMPACTION_OUTPUT_TOKENS);
-    let system = include_str!("prompts/compaction.md");
-    let needed = estimate_tokens(system)
-        .saturating_add(estimate_tokens(&text))
-        .saturating_add(max_output_tokens);
-    if needed > budget.context_tokens {
-        return Err(ComposeError::ContextOverflow {
-            needed,
-            window: budget.context_tokens,
-        });
+
+    /// The earliest Round end that leaves at most `keep` tokens of history, or, when
+    /// summarizing that far would not fit the compaction window, the latest Round end that
+    /// does. Each summary carries the previous one forward, so a partial compaction is progress.
+    fn boundary(
+        &self,
+        input: &ComposeInput,
+        sizes: &[(LogPos, u32)],
+        history_tokens: u32,
+        keep: u32,
+    ) -> Option<LogPos> {
+        let window = input.profile.compaction.budget.context_tokens;
+        let mut tail = history_tokens;
+        let mut needed = self.overhead;
+        let mut sizes = sizes.iter().peekable();
+        let mut chunks = self.chunks.iter().peekable();
+        let mut fitting = None;
+        // All three sequences follow Log order, so each item is counted once.
+        for &end in &input.transcript.round_ends {
+            while let Some((_, size)) = sizes.next_if(|(pos, _)| *pos <= end) {
+                tail -= size;
+            }
+            while let Some((_, chunk)) = chunks.next_if(|(pos, _)| *pos <= end) {
+                needed = needed.saturating_add(estimate_tokens(chunk));
+            }
+            if needed > window {
+                break;
+            }
+            fitting = Some(end);
+            if tail <= keep {
+                break;
+            }
+        }
+        fitting
     }
-    Ok(ContextPlan {
-        items: vec![
-            PlanItem::Message {
-                message: Message::text(Role::System, system),
-            },
-            PlanItem::Message {
-                message: Message::text(Role::User, text),
-            },
-        ],
-        tools: vec![],
-        max_output_tokens: Some(max_output_tokens),
-        omitted: vec![],
-    })
+
+    fn plan(&self, upto: LogPos) -> ContextPlan {
+        let mut text = self.header.clone();
+        for (_, chunk) in self.chunks.iter().take_while(|(pos, _)| *pos <= upto) {
+            text.push_str(chunk);
+        }
+        text.push_str(COMPACTION_FOOTER);
+        ContextPlan {
+            items: vec![
+                PlanItem::Message {
+                    message: Message::text(Role::System, COMPACTION_PROMPT),
+                },
+                PlanItem::Message {
+                    message: Message::text(Role::User, text),
+                },
+            ],
+            tools: vec![],
+            max_output_tokens: Some(self.max_output_tokens),
+            omitted: vec![],
+        }
+    }
+}
+
+/// Tool arguments and results are evidence for the summary, not its subject; long ones are cut.
+fn clip(text: &str) -> &str {
+    &text[..text.floor_char_boundary(COMPACTION_TOOL_BYTES)]
 }
 
 fn encoded_tokens(value: &impl serde::Serialize) -> Result<u32, ComposeError> {

@@ -235,7 +235,7 @@ impl Arguments { pub fn parse(raw: &str) -> Self; }
 | `plan.invalid` | ContextPlan 未通过校验 | 内核 |
 | `compose.failed` | composer 返回错误 | 内核 |
 | `context.failed` | ContextSource 返回错误 | 内核 |
-| `context.overflow` | 压缩之后仍然放不下 | composer |
+| `context.overflow` | 回复请求超出窗口，而这个 Round 已经无法再压缩：没有放得进压缩窗口的边界，或者压缩次数已经用完 | composer |
 | `profile.unknown` | Session 的 profile 不在配置中（12 §3） | 内核 |
 | `provider.network` `provider.auth` `provider.rate_limited` `provider.server` `provider.bad_request` `provider.bad_response` | Provider 的失败分类（07 §4.4）；外部失败，不计入健康 | Provider |
 | `plugin.trap` | wasmtime 在实例化或调用中报错（07 §3.3）；计入健康 | enco-wasm |
