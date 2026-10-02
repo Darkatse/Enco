@@ -8,7 +8,9 @@ use tokio::io::AsyncWriteExt;
 pub(super) async fn put(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     match tokio::fs::read(path).await {
         Ok(existing) if existing == bytes => return Ok(()),
-        Ok(_) => {}
+        Ok(_) => {
+            tracing::warn!(path = %path.display(), "replacing mismatched content-addressed file")
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(backend(format!("reading {}: {error}", path.display()))),
     }
