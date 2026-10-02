@@ -1,5 +1,5 @@
 use crate::{
-    bindings::{CompletionPluginPre, EmbeddingPluginPre, enco::plugin::types},
+    bindings::{BasePre, CompletionPluginPre, EmbeddingPluginPre, enco::plugin::types},
     convert,
     engine::WasmEngine,
     host_imports::HostState,
@@ -7,13 +7,14 @@ use crate::{
 };
 use async_trait::async_trait;
 use enco_core::*;
-use enco_kernel::{Completion, Embedding, Provider, ProviderRequest};
+use enco_kernel::{Completion, Embedding, Lifecycle, Provider, ProviderRequest};
 use std::sync::Arc;
 use wasmtime::{Store, StoreLimitsBuilder, component::ResourceTable};
 use wasmtime_wasi::WasiCtx;
 
 /// Compiled exports with no captured endpoint or credentials.
 pub(super) struct WasmPlugin {
+    pub lifecycle: BasePre<HostState>,
     pub completion: Option<CompletionPluginPre<HostState>>,
     pub embedding: Option<EmbeddingPluginPre<HostState>>,
     pub engine: Arc<WasmEngine>,
@@ -53,23 +54,12 @@ impl WasmPlugin {
     pub async fn describe(&self, config: &serde_json::Value) -> Result<String, Failure> {
         let config = config.to_string();
         self.invoke(async |mut store| {
-            if let Some(pre) = &self.completion {
-                let plugin = pre.instantiate_async(&mut store).await?;
-                Ok(plugin
-                    .enco_plugin_lifecycle()
-                    .call_describe(&mut store, &config)
-                    .await?
-                    .map(|description| description.summary))
-            } else if let Some(pre) = &self.embedding {
-                let plugin = pre.instantiate_async(&mut store).await?;
-                Ok(plugin
-                    .enco_plugin_lifecycle()
-                    .call_describe(&mut store, &config)
-                    .await?
-                    .map(|description| description.summary))
-            } else {
-                Err(wasmtime::format_err!("component has no supported export"))
-            }
+            let plugin = self.lifecycle.instantiate_async(&mut store).await?;
+            Ok(plugin
+                .enco_plugin_lifecycle()
+                .call_describe(&mut store, &config)
+                .await?
+                .map(|description| description.summary))
         })
         .await
     }
@@ -89,6 +79,21 @@ fn trap(message: impl Into<String>) -> Failure {
         code: code::PLUGIN_TRAP.into(),
         message: message.into(),
         retryable: false,
+    }
+}
+
+#[async_trait]
+impl Lifecycle for WasmPlugin {
+    async fn probe(&self) -> Result<(), Failure> {
+        self.invoke(async |mut store| {
+            let plugin = self.lifecycle.instantiate_async(&mut store).await?;
+            store
+                .run_concurrent(async move |accessor| {
+                    plugin.enco_plugin_lifecycle().call_probe(accessor).await
+                })
+                .await?
+        })
+        .await
     }
 }
 

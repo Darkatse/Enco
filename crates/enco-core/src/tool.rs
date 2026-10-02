@@ -128,6 +128,8 @@ pub mod code {
     pub const PLUGIN_UNAVAILABLE: &str = "plugin.unavailable";
     /// An explicit deployment or rollback could not be accepted.
     pub const PLUGIN_REJECTED: &str = "plugin.rejected";
+    /// A registered component could not be read or loaded by the runtime.
+    pub const PLUGIN_LOAD: &str = "plugin.load";
     /// The component trapped or could not be instantiated or invoked.
     pub const PLUGIN_TRAP: &str = "plugin.trap";
     /// The component returned data that violates its WIT interface contract.

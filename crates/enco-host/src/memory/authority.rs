@@ -7,6 +7,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// `PRAGMA user_version` of the memories table; follows the same rule as `enco.db`.
+const SCHEMA_VERSION: u32 = 1;
 const COLUMNS: &str = "id,text,pinned,created_at,updated_at,rev";
 pub(super) struct Authority {
     connection: Arc<Mutex<Connection>>,
@@ -40,27 +42,31 @@ impl Authority {
         }
         let connection = tokio::task::spawn_blocking(move || {
             let mut connection = sqlite::open(&path).map_err(error)?;
-            let version: u32 = connection
-                .query_row("PRAGMA user_version", [], |row| row.get(0))
-                .map_err(error)?;
-            if version > 1 {
-                return Err(MemoryError::NewerSchema(version));
-            }
-            if version == 0 {
-                let tx = connection
-                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            match sqlite::schema_version(&connection).map_err(error)? {
+                None => {
+                    let tx = connection
+                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                        .map_err(error)?;
+                    tx.execute_batch(
+                        "CREATE TABLE memories(
+                         id TEXT PRIMARY KEY, text TEXT NOT NULL,
+                         pinned INTEGER NOT NULL CHECK(pinned IN(0,1)),
+                         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                         rev INTEGER NOT NULL
+                         ) STRICT;",
+                    )
                     .map_err(error)?;
-                tx.execute_batch(
-                    "CREATE TABLE memories(
-                     id TEXT PRIMARY KEY, text TEXT NOT NULL,
-                     pinned INTEGER NOT NULL CHECK(pinned IN(0,1)),
-                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                     rev INTEGER NOT NULL
-                     ) STRICT;
-                     PRAGMA user_version=1;",
-                )
-                .map_err(error)?;
-                tx.commit().map_err(error)?;
+                    tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+                        .map_err(error)?;
+                    tx.commit().map_err(error)?;
+                }
+                Some(SCHEMA_VERSION) => {}
+                Some(found) => {
+                    return Err(MemoryError::SchemaVersion {
+                        found,
+                        expected: SCHEMA_VERSION,
+                    });
+                }
             }
             Ok(connection)
         })

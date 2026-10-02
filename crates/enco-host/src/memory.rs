@@ -7,7 +7,7 @@ use crate::limits::EMBED_BATCH;
 use authority::Authority;
 pub use context::MemoryContextSource;
 use enco_core::*;
-use enco_kernel::{Clock, Registry};
+use enco_kernel::{Clock, Registry, RegistryError, Verdict};
 use index::MemoryIndex;
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -50,10 +50,15 @@ pub struct MemoryList {
 
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
+    #[error(transparent)]
+    Registry(#[from] RegistryError),
     #[error("memory database: {0}")]
     Authority(String),
-    #[error("memory database was created by a newer Enco (schema version {0})")]
-    NewerSchema(u32),
+    #[error(
+        "memory database schema version {found} does not match this Enco ({expected}); {}",
+        if .found > .expected { "upgrade Enco" } else { "migrate the database by hand or recreate it" }
+    )]
+    SchemaVersion { found: u32, expected: u32 },
     #[error("memory index: {0}; stop Enco and delete memory-index to rebuild it")]
     Index(String),
     #[error("cancelled")]
@@ -238,11 +243,23 @@ impl Memories {
         }
 
         let result = match self.registry.exports().embedding(&self.embedding.plugin) {
-            Ok(export) => tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return Err(MemoryError::Cancelled),
-                result = export.adapter.embed(&self.embedding.settings, self.embedding.api_key.as_deref(), inputs) => result,
-            },
+            Ok(export) => {
+                let result = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => Err(Failure {
+                        code: code::CANCELLED.into(), message: "embedding cancelled".into(), retryable: false,
+                    }),
+                    result = export.adapter.embed(&self.embedding.settings, self.embedding.api_key.as_deref(), inputs) => result,
+                };
+                let verdict = match &result {
+                    Ok(_) => Verdict::Ok,
+                    Err(failure) => Verdict::Failed(failure.clone()),
+                };
+                self.registry
+                    .report(export.generation, verdict, None)
+                    .await?;
+                result
+            }
             Err(failure) => Err(failure),
         };
         check_cancel(cancel)?;

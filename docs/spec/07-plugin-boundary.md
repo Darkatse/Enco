@@ -77,18 +77,19 @@ impl Runtime for WasmRuntime {
 
 1. `Component::new`。不是组件、格式不对，在这里失败。
 2. 构造 `Linker`（`wasmtime_wasi::p2::add_to_linker_async` 加上 bindgen 生成的宿主导入），链接一次得到未类型化的 `InstancePre`。导入不满足（WIT 版本不匹配、要了宿主没有的导入）在这里失败。
-3. 用 `get_export_index(None, "enco:plugin/<interface>@0.2.0")` 查询 `completion` 与 `embedding`，由 wasmtime 处理兼容的补丁版本。把上一步的 `InstancePre` 转为实际导出所需的 `CompletionPluginPre`、`EmbeddingPluginPre` 视图；一个都没有也是失败：这份制品对 Enco 没有用处。
+3. 用 `get_export_index(None, "enco:plugin/<interface>@0.2.0")` 查询 `completion` 与 `embedding`，由 wasmtime 处理兼容的补丁版本。把上一步的 `InstancePre` 转为必需的 `BasePre`，以及实际导出所需的 `CompletionPluginPre`、`EmbeddingPluginPre` 视图；后两种一个都没有也是失败：这份制品对 Enco 没有用处。
 4. 实例化一次，调用 `describe(config)`。返回 `failure` 即失败。
 
-bindgen 生成两个 world 的绑定（`completion-plugin`、`embedding-plugin`），各自只要求自己的导出。一份同时导出两个接口的组件（`provider-plugin`）用两个 `InstancePre` 分别实例化，多出来的导出不影响实例化；已用出厂 openai-compatible 制品经两个 world 分别实例化并调用核对。
+bindgen 生成三个 world 的绑定（`base`、`completion-plugin`、`embedding-plugin`），各自只要求自己的导出，通过 `with` 共享同一份 `types` 与 `host`。它们从同一个 `InstancePre` 建立视图；组件多出来的导出不影响实例化。
 
-`Loaded` 的适配器共享同一个 `Arc<WasmPlugin>`。`describe` 与 `probe` 取任一已有视图的 lifecycle 导出，无需另存第三份视图：
+`Loaded` 的适配器共享同一个 `Arc<WasmPlugin>`。`describe` 与 `probe` 都经 `lifecycle`（`BasePre`）调用：
 
 ```rust
 pub struct WasmPlugin {
     engine: Arc<WasmEngine>,
     http: reqwest::Client,
     name: String,                          // 制品哈希前八位，只用于日志
+    lifecycle: BasePre<HostState>,
     completion: Option<CompletionPluginPre<HostState>>,
     embedding: Option<EmbeddingPluginPre<HostState>>,
 }

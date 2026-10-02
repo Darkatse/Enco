@@ -16,8 +16,17 @@ use std::{
 };
 use tokio::sync::broadcast;
 
+pub struct Probe(pub Result<(), Failure>);
+
+#[async_trait]
+impl Lifecycle for Probe {
+    async fn probe(&self) -> Result<(), Failure> {
+        self.0.clone()
+    }
+}
+
 pub struct ScriptedProvider {
-    pub embedding_failure: std::sync::atomic::AtomicBool,
+    pub embedding_failure: Mutex<Option<Failure>>,
     pub embedding_dimensions: std::sync::atomic::AtomicUsize,
     pub steps: Mutex<VecDeque<Result<Completion, Failure>>>,
     pub requests: Mutex<Vec<ProviderRequest>>,
@@ -27,7 +36,7 @@ pub struct ScriptedProvider {
 impl ScriptedProvider {
     pub fn new(steps: Vec<Result<Completion, Failure>>) -> Arc<Self> {
         Arc::new(Self {
-            embedding_failure: std::sync::atomic::AtomicBool::new(false),
+            embedding_failure: Mutex::new(None),
             embedding_dimensions: std::sync::atomic::AtomicUsize::new(64),
             steps: Mutex::new(steps.into()),
             requests: Mutex::new(vec![]),
@@ -62,15 +71,8 @@ impl Embedding for ScriptedProvider {
         _api_key: Option<&str>,
         inputs: Vec<String>,
     ) -> Result<Vec<Vec<f32>>, Failure> {
-        if self
-            .embedding_failure
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(Failure {
-                code: code::PROVIDER_NETWORK.into(),
-                message: "embedding service unavailable".into(),
-                retryable: true,
-            });
+        if let Some(failure) = self.embedding_failure.lock().unwrap().clone() {
+            return Err(failure);
         }
         Ok(vectors(
             &inputs,
@@ -227,6 +229,7 @@ pub async fn kernel_with(
     let (registry, store) = registry(
         root,
         Loaded {
+            lifecycle: Arc::new(Probe(Ok(()))),
             summary: "scripted".into(),
             completion: Some(provider),
             embedding: None,

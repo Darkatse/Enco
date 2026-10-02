@@ -1,5 +1,5 @@
 use crate::{
-    bindings::{CompletionPluginPre, EmbeddingPluginPre, enco::plugin::host},
+    bindings::{BasePre, CompletionPluginPre, EmbeddingPluginPre, enco::plugin::host},
     engine::WasmEngine,
     host_imports::HostState,
     plugin::WasmPlugin,
@@ -47,6 +47,7 @@ impl Runtime for WasmRuntime {
         wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(load_error)?;
         host::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |s| s).map_err(load_error)?;
         let pre = linker.instantiate_pre(&component).map_err(load_error)?;
+        let lifecycle = BasePre::new(pre.clone()).map_err(load_error)?;
         let completion = component
             .get_export_index(None, "enco:plugin/completion@0.2.0")
             .map(|_| CompletionPluginPre::new(pre.clone()))
@@ -63,6 +64,7 @@ impl Runtime for WasmRuntime {
             ));
         }
         let plugin = Arc::new(WasmPlugin {
+            lifecycle,
             completion,
             embedding,
             engine: self.engine.clone(),
@@ -75,6 +77,7 @@ impl Runtime for WasmRuntime {
             .map_err(|failure| LoadError(format!("{}: {}", failure.code, failure.message)))?;
         Ok(Loaded {
             summary,
+            lifecycle: plugin.clone(),
             completion: plugin
                 .completion
                 .is_some()

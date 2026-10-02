@@ -7,6 +7,18 @@ mod completion {
     });
 }
 
+mod base {
+    wasmtime::component::bindgen!({
+        path: "../../wit",
+        world: "base",
+        exports: { default: async },
+        with: {
+            "enco:plugin/types": super::completion::enco::plugin::types,
+            "enco:plugin/host": super::completion::enco::plugin::host,
+        },
+    });
+}
+
 mod embedding {
     wasmtime::component::bindgen!({
         path: "../../wit",
@@ -19,5 +31,6 @@ mod embedding {
     });
 }
 
+pub(crate) use base::BasePre;
 pub(crate) use completion::{CompletionPluginPre, enco, exports};
 pub(crate) use embedding::EmbeddingPluginPre;

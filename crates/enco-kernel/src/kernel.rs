@@ -103,7 +103,7 @@ pub enum KernelError {
     /// An owner task exited without completing its normal shutdown path.
     #[error("owner task failed: {0}")]
     TaskFailed(String),
-    /// The actor stopped after a storage failure.
+    /// The actor stopped after an owner could not commit its state.
     #[error("session {0} is stopped: {1}")]
     SessionStopped(SessionId, String),
     /// The requested Session has no matching recorded Attempt.

@@ -6,6 +6,7 @@ pub(super) struct State {
     pub active: BTreeMap<PluginId, Option<GenerationId>>,
     pub factory: BTreeMap<PluginId, GenerationId>,
     pub loaded: BTreeMap<GenerationId, Loaded>,
+    pub trial_successes: BTreeMap<GenerationId, u32>,
 }
 
 impl State {
@@ -35,6 +36,7 @@ impl State {
             active: records.active,
             factory: BTreeMap::new(),
             loaded: BTreeMap::new(),
+            trial_successes: BTreeMap::new(),
         };
         for factory in &deps.factory {
             state.register_factory(deps, factory).await?;
@@ -75,7 +77,7 @@ impl State {
         let id = match existing {
             Some(id) => {
                 if activate && self.active.get(&factory.id) != Some(&Some(id)) {
-                    deps.store.activate(factory.id, Some(id), &[]).await?;
+                    deps.store.activate(factory.id, Some(id), &[], None).await?;
                 }
                 id
             }
@@ -100,6 +102,14 @@ impl State {
         Ok(())
     }
 
+    pub fn name_of(&self, plugin: PluginId) -> Result<&str, RegistryError> {
+        self.names
+            .iter()
+            .find(|(_, id)| **id == plugin)
+            .map(|(name, _)| name.as_str())
+            .ok_or_else(|| RegistryError::UnknownPlugin(plugin.to_string()))
+    }
+
     /// Candidates strictly descend in commit order; exhaustion does not require a factory plugin.
     pub fn candidates(&self, plugin: PluginId, before: GenerationId) -> Vec<GenerationRecord> {
         self.generations
@@ -119,23 +129,24 @@ impl State {
                 .iter()
                 .map(|(id, record)| (*id, record.plugin))
                 .collect(),
-            active: self
+            plugins: self
                 .names
                 .iter()
                 .map(|(name, plugin)| {
-                    let active =
-                        self.active
-                            .get(plugin)
-                            .copied()
-                            .flatten()
-                            .and_then(|generation| {
-                                self.loaded.get(&generation).map(|loaded| Active {
-                                    plugin: *plugin,
-                                    generation,
-                                    loaded: loaded.clone(),
-                                })
-                            });
-                    (name.clone(), active)
+                    let export = |generation: GenerationId| {
+                        self.loaded.get(&generation).map(|loaded| LoadedGeneration {
+                            plugin: *plugin,
+                            generation,
+                            loaded: loaded.clone(),
+                        })
+                    };
+                    (
+                        name.clone(),
+                        Routes {
+                            active: self.active.get(plugin).copied().flatten().and_then(export),
+                            factory: self.factory.get(plugin).copied().and_then(export),
+                        },
+                    )
                 })
                 .collect(),
         }

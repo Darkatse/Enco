@@ -353,7 +353,7 @@ round(run, token, prefix) -> RoundEnd:
     profile = profiles[session.profile]，没有 → end_round(Failed(profile.unknown, "profile `{name}` is not configured"))
 
     (plan, request) = compose(snapshot, profile, round_id, safe_mode, token)?      // §6.3；取消或失败则 end_round
-    completion = attempt(profile, round_id, Reply, plan, request, token)?         // §6.4；取消或失败则 end_round
+    completion = attempt(profile, round_id, safe_mode, Reply, plan, request, token)?         // §6.4；取消或失败则 end_round
     calls = completion.message.tool_calls()
     if calls.is_empty(): return end_round(Replied)
     for call in calls: dispatch(snapshot, round_id, plan, call, token)   // §6.6：是否开始由 dispatch 决定
@@ -392,12 +392,12 @@ compose(snapshot, profile, round, safe_mode, token):
                 upto 必须属于 input.transcript.round_ends，否则 Failed(plan.invalid)
                 plan::validate(&plan, &input, Compaction, &snapshot.lifeline)?
                 request = plan::resolve(&plan, &input.transcript, exports, target(Compaction))?
-                attempt(profile, round, Compaction { upto }, plan, request, token)?   // 成功时同时提交 Compacted
+                attempt(profile, round, safe_mode, Compaction { upto }, plan, request, token)?   // 成功时同时提交 Compacted
                 // 继续循环：用新的 Transcript 再次组装
     Failed(compose.failed, "too many compactions in one round")
 ```
 
-`exports = registry.exports()`，`target(用途)` 是 `profile.endpoint(用途).plugin` 在导出表中的身份（11 §4.2）；找不到 → Failed(plugin.unavailable)。一个 Round 内目标插件由 profile 固定，代际可以变（§6.4），所以解析一次的请求在重试中仍然有效。
+`exports = registry.exports()`，`target(用途)` 是 `profile.endpoint(用途).plugin` 通过 `completion(插件, safe_mode)` 取得的身份（11 §4.2）；找不到 → Failed(plugin.unavailable)。一个 Round 内目标插件由 profile 固定，代际可以变（§6.4），所以解析一次的请求在重试中仍然有效。
 
 ### 6.4 Attempt 与重试（`attempt.rs`）
 
@@ -415,22 +415,25 @@ attempt(profile, round, safe_mode, kind, plan, request, token):
                                  provider: Generation { id: export.generation }, settings: endpoint.settings }])
         result = select {
             r = export.adapter.complete(&endpoint.settings, endpoint.api_key, request.clone()) => r,
-            _ = token.cancelled() => { commit([AttemptSettled { Failed(cancelled) }]); return Ended(Cancelled) }
+            _ = token.cancelled() => Err(Failure(cancelled))
         }
         match result:
             Ok(c) =>
                 bodies = [AttemptSettled { Completed { c.message, c.usage, c.stop } }]
+                empty_summary = false
                 if kind == Compaction { upto }:
                     summary = c.message.joined_text()
-                    if summary.trim().is_empty(): commit(bodies); return Ended(Failed(compose.failed, "empty summary"))
-                    bodies.push(Compacted { upto, summary, attempt: attempt_id })
+                    empty_summary = summary.trim().is_empty()
+                    if !empty_summary: bodies.push(Compacted { upto, summary, attempt: attempt_id })
                 commit(bodies)
-                registry.report(export.generation, Ok)                       // 11 §7
+                registry.report(export.generation, Ok, Some(session))       // 11 §7；空摘要是压缩自己的判断，插件调用仍算成功
+                if token.is_cancelled(): return Ended(Cancelled)
+                if empty_summary: return Ended(Failed(compose.failed, "empty summary"))
                 return Settled(c)
             Err(f) =>
                 commit([AttemptSettled { Failed(f) }])
-                rolled_back = registry.report(export.generation, Failed(f))  // 11 §7；可归因的失败可能触发回退
-                if let Some(r) = rolled_back: store.accept([Event { source: Registry, body: GenerationRolledBack(r) }])
+                rolled_back = registry.report(export.generation, Failed(f), Some(session)) // 回退与事件由注册表同事务提交
+                if token.is_cancelled(): return Ended(Cancelled)
                 if n == MAX_ATTEMPTS: return Ended(Failed(f))
                 if rolled_back.is_some(): continue                            // 代际换了，立刻用新的再试，不退避
                 if f.retryable:
@@ -439,9 +442,10 @@ attempt(profile, round, safe_mode, kind, plan, request, token):
 ```
 
 - 重试复用同一份计划，不重新组装。目标插件由 profile 固定，所以解析过的请求对回退后的代际同样有效（§6.3）。
-- 回退之后立即重试，是架构文档 §4.6 的"Provider 失败后改用健康代际，就是开始一次新的 Attempt"。回退事件送进本 Session 自己的 Inbox，下一个 Round 消费，模型因此知道发生了什么（11 §7）。
+- 回退之后立即重试，是架构文档 §4.6 的"Provider 失败后改用健康代际，就是开始一次新的 Attempt"。回退事件与注册表状态同事务写入本 Session 的 Inbox，下一个 Round 消费，模型因此知道发生了什么（11 §7）。
 - 导出表找不到插件时不写 `AttemptStarted`：没有代际可记。Round 以 `plugin.unavailable` 失败。
-- 取消时直接丢弃 Provider 的 future：模型请求没有需要结算的外部效果。
+- 健康回报提交失败时 Session 停止（`KernelError::Registry`），与 Store 失败相同。
+- 取消时直接丢弃 Provider 的 future：模型请求没有需要结算的外部效果。`AttemptSettled` 与健康回报照常提交之后，才以 `Cancelled` 结束。
 - 内核不再另设超时，超时只在 Provider 实现中（07 §3.3）。
 
 ### 6.5 计划的校验与解析（`plan.rs`）

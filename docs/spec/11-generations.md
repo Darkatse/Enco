@@ -9,7 +9,7 @@ P1 的插件只有 Provider。工具插件、手册与构建命令在 P2 加入�
 | 名称 | 是什么 | 存在哪里 |
 |---|---|---|
 | 制品 | 不可变的组件文件，按内容哈希寻址 | `$ENCO_HOME/.data/artifacts/<哈希>.wasm`，经 Store 的 `put_artifact` / `artifact` 读写（03 §3.4） |
-| 代际 | 一次激活：`(编号, 插件身份, 制品哈希, 插件配置, 来源, 状态)`。编号是注册表全局自增的整数，所以一个编号就能定位一个代际，不需要插件名 | `enco.db` 的 `generations` 表（03 §3.2） |
+| 代际 | 一次激活：`(编号, 插件身份, 制品哈希, 插件配置, 来源, 状态, 失败原因)`。编号是注册表全局自增的整数，所以一个编号就能定位一个代际，不需要插件名 | `enco.db` 的 `generations` 表（03 §3.2） |
 | 调用 | 一次导出函数调用，独占一个 Store，到返回为止 | 07 §3.3，P0 已经如此 |
 
 插件配置是 `describe(config)` 的输入。P1 的 Provider 插件没有配置，一律为空对象 `{}`。架构文档 §4.5 规定，同一份制品配上不同配置是不同的代际；这条规则要等渠道插件出现才有实例，所以 P1 不加配置节。
@@ -37,7 +37,7 @@ P1 不检查 `~/.enco/plugins/<名字>/` 目录是否存在，也不做 `scaffol
 
 两张表，定义在 03 §3.2：
 
-- `generations`：编号、插件身份、制品哈希、插件配置、来源（`factory` / `deployed`）、状态（`trial` / `healthy` / `failed`）、创建时间。记录只追加，状态字段会更新。
+- `generations`：编号、插件身份、制品哈希、插件配置、来源（`factory` / `deployed`）、状态（`trial` / `healthy` / `failed`）、失败原因（只有 `failed` 的代际有）、创建时间。记录只追加，状态与失败原因一起更新。
 - `plugins`：插件身份、活跃代际的编号（可以为空）。
 
 规则：
@@ -69,13 +69,14 @@ impl Registry {
     pub fn exports(&self) -> Arc<Exports>;
     pub async fn deploy(&self, name: &str, artifact: Vec<u8>) -> Result<Deployed, RegistryError>;
     pub async fn rollback(&self, name: &str) -> Result<GenerationRecord, RegistryError>;
-    /// 调用方结算之后回报一次（§7）。返回值非空说明这次回报触发了回退。
-    pub async fn report(&self, generation: GenerationId, verdict: Verdict) -> Result<Option<RolledBack>, RegistryError>;
+    /// 调用方结算之后回报一次（§7）。`session` 接收可能产生的回退通知；返回值非空说明这次回报触发了回退。
+    pub async fn report(&self, generation: GenerationId, verdict: Verdict, session: Option<SessionId>) -> Result<Option<RolledBack>, RegistryError>;
     pub async fn status(&self) -> Vec<PluginStatus>;
 }
 
 pub struct Deployed { pub generation: GenerationRecord, pub users: Vec<String> }
 pub enum Verdict { Ok, Failed(Failure) }
+// 定义在 enco-core，也是 EventBody::GenerationRolledBack 的内容。
 pub struct RolledBack { pub plugin: String, pub from: GenerationId, pub to: Option<GenerationId>, pub failure: Failure }
 
 pub struct PluginStatus {
@@ -100,7 +101,7 @@ pub struct PluginStatus {
 1. 用 `store.plugin_names()` 读出名字与身份，核对出厂插件的身份（§2）。
 2. 读注册表。如果某个代际引用的插件身份没有在 `plugins.lock` 登记，返回 `UnknownPlugin`。
 3. 登记出厂制品：每份出厂制品写入制品库。还没有这个插件、这个哈希的出厂健康代际时，插入一条状态为 `healthy` 的出厂代际。插件没有活跃代际，或者活跃代际本身也是出厂代际时，把当前二进制的这条出厂代际设为活跃；主人自己部署的活跃代际保持不变。
-4. 加载每个插件的活跃代际，以及第 3 步登记的当前出厂代际（安全模式要用，§7）；两者是同一个时只加载一次。出厂代际加载失败说明宿主自身坏了，拒绝启动。活跃代际加载失败时，按 §5 的激活流程回退到回退目标，把失败的代际标为 `failed`，在日志里写明原因，然后继续启动。
+4. 加载每个插件的活跃代际，以及第 3 步登记的当前出厂代际（安全模式要用，§7）；两者是同一个时只加载一次。出厂代际加载失败说明宿主自身坏了，拒绝启动。活跃代际加载失败时，按 §5 的激活流程回退到回退目标，把失败的代际标为 `failed` 并保存加载失败的原因，然后继续启动。
 5. 接线检查（§6）。
 6. 发布第一份 `Exports`。
 
@@ -138,19 +139,19 @@ impl Exports {
 
 两个部署并发时，各自在锁外加载，再按顺序提交，最终的导出表包含两次更新。部署的含义是"换掉现在活跃的那个"，所以不核对加载期间活跃代际是否变过。同一份制品再次部署会得到新的编号，不做去重；只有出厂代际在启动时去重。
 
-**激活**是手动回退、自动回退（§7）和启动恢复（§4.1）共用的流程，形式为 `activate(插件, expected, 目标, 要标为失败的代际)`。调用方先持锁确定当前活跃代际（即 expected）和激活目标，然后：
+**激活**是手动回退、自动回退（§7）和启动恢复（§4.1）共用的流程，形式为 `activate(插件, expected, 候选, 原因)`。原因是手动回退、启动恢复、试用失败三者之一，试用失败还带着故障和来源 Session。调用方先持锁确定当前活跃代际（即 expected）和候选，然后：
 
-1. 锁外准备：目标还没加载就加载它。加载失败时记下这个代际，改选更早的健康候选，直到候选用尽。
-2. 持锁核对：活跃代际已经不是 expected，或者目标已被标为 `failed` 时，返回 `Conflict`，本次准备的写入一律不提交。
-3. 在同一个事务里，把要标为失败的代际（包括第 1 步加载失败的）标为 `failed`，并更新活跃代际；然后更新内存，发布 `Exports`。
+1. 锁外准备：按顺序取候选作为目标，还没加载就加载它。加载失败时记下这个代际及其原因，改用下一个候选，直到候选用尽。
+2. 持锁核对：活跃代际已经不是 expected、目标已被标为 `failed`，或者试用失败时 expected 已经晋升为 `healthy`，都返回 `Conflict`，本次准备的写入一律不提交。
+3. 在同一个事务里：把要标为失败的代际（包括第 1 步加载失败的）连同原因标为 `failed`，更新活跃代际；试用失败有来源 Session 时，把回退事件写入它的 Inbox。事务成功后更新内存，发布 `Exports`。
 
-第 2 步就是架构文档 §3.6 所说的"携带期望的当前代际"：准备期间有人部署了新代际，这次激活就作废。手动回退遇到 `Conflict` 时把错误返回给主人，重试即可。自动回退遇到时直接忽略，因为失败的那个代际已经不再活跃，这和忽略迟到的回报是同一条规则。
+第 2 步就是架构文档 §3.6 所说的"携带期望的当前代际与状态"：准备期间有人部署了新代际，或者试用代际已经晋升，这次激活就作废。手动回退遇到 `Conflict` 时把错误返回给主人，重试即可。自动回退遇到时直接忽略，因为原来的试用条件已经改变，这和忽略迟到的回报是同一条规则。
 
 `rollback(name)` 持锁取出当前活跃代际和 §3 的回退目标，没有目标就返回 `NoRollbackTarget`；有目标就激活它，调用方自己不要求标记任何代际。当前代际的状态保持不变：它没有坏，只是主人不想用。如果所有候选都加载失败，就提交这些失败，保留当前活跃代际，返回 `NoRollbackTarget`。启动恢复和自动回退则不同，候选用尽时允许插件没有活跃代际。
 
 提交的顺序是：制品完整写入 → 检查 → SQLite 事务 → 发布内存中的导出表。数据库已提交、导出表尚未发布时崩溃，下次启动会按数据库重建，结果相同。
 
-只有制品缺失、损坏或 Runtime 加载失败，才能判定候选不可用。底层存储故障直接向上传播，不会因此把代际标为失败。
+只有制品缺失、损坏或 Runtime 加载失败，才能判定代际不可用；统一记录为 `plugin.load`，message 保留原始错误。底层存储故障直接向上传播，不会因此把代际标为失败。
 
 ## 6. 准入：接线
 
@@ -186,19 +187,19 @@ pub enum Interface { Completion, Embedding }
 
 `provider.*`、`timeout`、`cancelled` 是外部失败或主人的操作，在任何代际上都可能出现，不计入。
 
-- **回报**：凡是调用了插件导出的地方，都在结算之后调用一次 `report(代际编号, verdict)`。P1 有两处：内核的 Attempt（04 §6.4）和记忆的 `sync`（06 §3.3）。回报带着代际编号，所以迟到的回报碰不到更新之后的代际。
+- **回报**：凡是调用了插件导出的地方，都在结算之后调用一次 `report(代际编号, verdict, 来源 Session)`。P1 有两处：内核的 Attempt（04 §6.4）和记忆的 `sync`（06 §3.3）。Attempt 传入本 Session，记忆传入 `None`。回报带着代际编号，所以迟到的回报碰不到更新之后的代际。verdict 只看插件调用本身：空摘要、向量维度与索引配置不符，是调用方自己的判断，不算插件失败。
 - **处理**（持锁进行）：
   - 代际已经不是所属插件的活跃代际：忽略。
-  - 代际是 `healthy`：忽略。P1 不降级健康代际；失败已经记在 Log 里，由主人判断。
+  - 代际是 `healthy`：忽略。P1 不降级健康代际。
   - 试用代际调用成功：成功次数加一，达到 `TRIAL_CALLS` 时晋升为 `healthy`。
-  - 试用代际出现可以归因于它自身的失败：立即回退。以这个代际为 expected 激活回退目标，并把它标为失败（§5），成功则返回 `RolledBack`；没有回退目标时，插件不再有活跃代际。一次失败就回退，不设阈值。
+  - 试用代际出现可以归因于它自身的失败：立即回退。以这个代际为 expected 激活回退目标，并以这次的 `Failure` 为原因把它标为失败（§5），成功则返回 `RolledBack`；没有回退目标时，插件不再有活跃代际。一次失败就回退，不设阈值。
   - 试用代际出现不能归因于它的失败：忽略。
-- 成功次数只记在内存里，重启后从零开始。
-- **收到 `RolledBack` 之后**：Attempt 按 04 §6.4 用新的代际重试，同时向所在 Session 的 Inbox 投递一个 Event，来源是 `EventSource::Registry`，内容是 `EventBody::GenerationRolledBack`（03 §1.4），模型在下一个 Round 就能看到。这就是架构文档 §4.6 所说的 `deploy.rolled_back`。记忆不属于任何 Session，只写一条 warn 日志；回退本身可以在 `plugin status` 里看到。
+- 成功次数按代际累计，补全与嵌入、不同 Session 与 endpoint 共用计数。外部失败既不增加也不清零；计数只记在内存里，重启后从零开始。
+- **回退通知**：回报带有来源 Session 时，注册表在回退的同一事务里向它的 Inbox 投递 `EventBody::GenerationRolledBack`，来源是 `EventSource::Registry`（03 §1.4）。这就是架构文档 §4.6 所说的 `deploy.rolled_back`。模型在下一个 Round 看到它；回退后进程立即崩溃，事件也会在重启后消费。Attempt 收到 `RolledBack` 后按 04 §6.4 立即用新代际重试。通知只发给出故障的 Session；其他 Session，包括部署它的那个，从 `plugin_status` 查看失败原因。
 - **probe**：`lifecycle.probe()` 只做自检，不联网，也不依赖主人的配置。P1 的 Provider 插件直接返回成功。它的作用是让实例化之后就无法使用的制品在部署时被拦下，而不是等到主人下一句话时才暴露。
 - **安全模式**：`Exports::completion(插件, safe_mode = true)` 返回出厂代际的导出（§4.2）。没有出厂代际的插件在安全模式下仍用活跃代际，没有更好的选择。
 
-迟到的健康结果、两个并发的部署、回退之后旧代际的失败，都由"回报带编号、提交者唯一"消解，不需要别的规则。
+迟到的健康结果、两个并发的部署、回退之后旧代际的失败，都由"回报带编号、提交时核对期望的代际与状态、提交者唯一"消解，不需要别的规则。
 
 ## 8. 命令与工具
 
@@ -210,7 +211,7 @@ CLI 与 Agent 工具同源，都调用 `Registry` 的方法。`Registry::deploy`
 | `enco plugin deploy <name> <path>` | `plugin_deploy` | 把一个组件文件部署为 `<name>` 的新代际 |
 | `enco plugin rollback <name>` | `plugin_rollback` | 回到上一个健康代际 |
 
-工具描述要写清楚：新部署的代际先处于试用期，前几次调用失败会自动回退；`plugin_status` 可以看到每个代际的状态和回退目标。描述中的试用次数 `TRIAL_CALLS` 由常量生成。
+工具描述要写清楚：新部署的代际先处于试用期，前几次调用失败会自动回退；`plugin_status` 可以看到每个代际的状态、失败原因和回退目标。描述中的试用次数 `TRIAL_CALLS` 由常量生成。
 
 P1 的构建由主人自己完成：在 `~/.enco/plugins/<name>/` 里 `cargo build --release --target wasm32-wasip2`，然后把产物路径交给 `deploy`。出厂插件依赖 `provider-protocol`，复制出来的目录用 path 或 git 依赖指向 Enco 仓库即可。`plugin_build`、lint 表与结构化诊断在 P2。
 

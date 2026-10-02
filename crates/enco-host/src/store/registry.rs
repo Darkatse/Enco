@@ -5,7 +5,7 @@ use enco_kernel::{NewGeneration, RegistryState, StoreError};
 use rusqlite::{Connection, TransactionBehavior, params};
 
 pub(super) fn read(connection: &Connection) -> Result<RegistryState, StoreError> {
-    let mut generations = connection.prepare("SELECT id,plugin_id,artifact,config,origin,status,created_at FROM generations ORDER BY id").map_err(backend)?;
+    let mut generations = connection.prepare("SELECT id,plugin_id,artifact,config,origin,status,COALESCE(failure,'null'),created_at FROM generations ORDER BY id").map_err(backend)?;
     let generations = generations
         .query_map([], |row| {
             Ok(GenerationRecord {
@@ -15,7 +15,8 @@ pub(super) fn read(connection: &Connection) -> Result<RegistryState, StoreError>
                 config: rows::document(row, 3)?,
                 origin: rows::text(row, 4)?,
                 status: rows::text(row, 5)?,
-                created_at: rows::text(row, 6)?,
+                failure: rows::document(row, 6)?,
+                created_at: rows::text(row, 7)?,
             })
         })
         .map_err(backend)?
@@ -61,6 +62,7 @@ pub(super) fn insert(
         Origin::Deployed => "deployed",
     };
     let status = match generation.status {
+        GenerationStatus::Trial => "trial",
         GenerationStatus::Healthy => "healthy",
         GenerationStatus::Failed => "failed",
     };
@@ -81,16 +83,17 @@ pub(super) fn activate(
     connection: &mut Connection,
     plugin: PluginId,
     to: Option<GenerationId>,
-    failed: &[GenerationId],
+    failed: &[(GenerationId, Failure)],
+    event: Option<&Event>,
 ) -> Result<(), StoreError> {
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
-    for id in failed {
+    for (id, failure) in failed {
         let changed = tx
             .execute(
-                "UPDATE generations SET status='failed' WHERE id=? AND plugin_id=?",
-                params![signed(id.0)?, plugin.to_string()],
+                "UPDATE generations SET status='failed',failure=? WHERE id=? AND plugin_id=?",
+                params![encode(failure)?, signed(id.0)?, plugin.to_string()],
             )
             .map_err(backend)?;
         if changed != 1 {
@@ -106,5 +109,23 @@ pub(super) fn activate(
     if changed != 1 {
         return Err(backend(format!("unknown plugin {plugin}")));
     }
+    if let Some(event) = event {
+        super::accept::events_in(&tx, std::slice::from_ref(event))?;
+    }
     tx.commit().map_err(backend)
+}
+
+pub(super) fn promote(connection: &Connection, generation: GenerationId) -> Result<(), StoreError> {
+    let changed = connection
+        .execute(
+            "UPDATE generations SET status='healthy' WHERE id=? AND status='trial'",
+            [signed(generation.0)?],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(backend(format!(
+            "generation {generation} is absent or not trial"
+        )));
+    }
+    Ok(())
 }

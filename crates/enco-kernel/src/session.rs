@@ -1,6 +1,6 @@
 use crate::{
-    Clock, Commit, KernelConfig, Store, StoreError, limits::SESSION_BROADCAST_CAPACITY,
-    snapshot::Snapshot,
+    Clock, Commit, KernelConfig, KernelError, Store, StoreError,
+    limits::SESSION_BROADCAST_CAPACITY, snapshot::Snapshot,
 };
 use enco_core::*;
 use std::{
@@ -76,7 +76,7 @@ pub(crate) struct SessionActor {
 }
 
 impl SessionActor {
-    async fn serve(&mut self) -> Result<(), StoreError> {
+    async fn serve(&mut self) -> Result<(), KernelError> {
         self.entries = self.deps.store.log(self.session.id, None).await?;
         self.next = self
             .entries

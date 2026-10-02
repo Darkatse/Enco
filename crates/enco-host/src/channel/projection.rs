@@ -25,7 +25,7 @@ pub(super) fn project(
                         target = (channel == identity.channel && account == identity.account)
                             .then_some(conversation);
                     }
-                    EventSource::Scheduler => {}
+                    EventSource::Scheduler | EventSource::Registry => {}
                 }
                 continue;
             }

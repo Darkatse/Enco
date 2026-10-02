@@ -77,12 +77,15 @@ pub trait Store: Send + Sync {
         generation: &NewGeneration,
         activate: bool,
     ) -> Result<GenerationId, StoreError>;
-    /// Commit failed candidates and the resulting active generation atomically.
+    /// Promote a trial generation after successful observation.
+    async fn promote(&self, generation: GenerationId) -> Result<(), StoreError>;
+    /// Commit each failed generation with its reason, routing and an optional notice atomically.
     async fn activate(
         &self,
         plugin: PluginId,
         to: Option<GenerationId>,
-        failed: &[GenerationId],
+        failed: &[(GenerationId, Failure)],
+        event: Option<&Event>,
     ) -> Result<(), StoreError>;
     /// Persist immutable component bytes separately from removable history blobs.
     async fn put_artifact(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
@@ -126,7 +129,7 @@ pub struct NewGeneration {
     pub config: serde_json::Value,
     /// Factory registration or explicit deployment.
     pub origin: Origin,
-    /// Initial activation eligibility.
+    /// Initial eligibility: trial or healthy; failures are committed through activate.
     pub status: GenerationStatus,
     /// Observation time supplied by the registry clock.
     pub created_at: DateTime<Utc>,
@@ -142,6 +145,7 @@ impl NewGeneration {
             config: self.config,
             origin: self.origin,
             status: self.status,
+            failure: None,
             created_at: self.created_at,
         }
     }
@@ -233,9 +237,17 @@ pub enum StoreError {
     /// Plugin identity file could not be read, interpreted or atomically replaced.
     #[error("plugins.lock: {0}")]
     Lock(String),
-    /// The database requires a newer Enco binary.
-    #[error("database was created by a newer Enco (schema version {0})")]
-    NewerSchema(u32),
+    /// The authority uses another schema version; opening it never deletes or migrates data.
+    #[error(
+        "database schema version {found} does not match this Enco ({expected}); {}",
+        if .found > .expected { "upgrade Enco" } else { "migrate the database by hand or recreate it" }
+    )]
+    SchemaVersion {
+        /// Version recorded in the database.
+        found: u32,
+        /// Version understood by this binary.
+        expected: u32,
+    },
     /// The storage engine or filesystem operation failed.
     #[error("storage: {0}")]
     Backend(String),

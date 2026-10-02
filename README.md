@@ -72,7 +72,7 @@ The whole system is described with ten concepts and two rules for mutable state.
 |---|---|---|
 | P0 | Kernel: sessions, durable log, crash recovery, OpenAI-Compatible and DeepSeek provider plugins, memory, reminders, safe mode | Done |
 | Telegram | Daily chat through a native Telegram channel | Implemented; owner review and live use pending |
-| P1 | Replacing plugins at runtime with health checks and rollback | Planned |
+| P1 | Replacing plugins at runtime with health checks and rollback | Implemented; owner review pending |
 | P2 | The agent maintains its own plugins, reading only the manual and plugin source | Planned |
 | Supervision tree | Delegating work to child sessions that can use other models, report back and take further messages | Planned |
 | P3 | Channels as plugins: Telegram moves to WebAssembly, QQ (OneBot) | Planned |

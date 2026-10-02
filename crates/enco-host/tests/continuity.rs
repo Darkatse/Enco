@@ -143,6 +143,7 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
     let (embedding_registry, _) = registry(
         &dir.path().join("embedding-registry"),
         Loaded {
+            lifecycle: Arc::new(Probe(Ok(()))),
             summary: "embedding".into(),
             completion: None,
             embedding: Some(provider.clone()),

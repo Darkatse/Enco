@@ -1,8 +1,10 @@
 //! The single committer of plugin identities, activation history and published exports.
 mod activation;
+mod health;
 mod state;
 
 use crate::{Clock, Embedding, Loaded, NewGeneration, Provider, Runtime, Store, StoreError};
+use activation::ActivationReason;
 use arc_swap::ArcSwap;
 use enco_core::*;
 use state::State;
@@ -73,7 +75,7 @@ pub struct Export<T: ?Sized> {
     pub adapter: Arc<T>,
 }
 
-struct Active {
+struct LoadedGeneration {
     plugin: PluginId,
     generation: GenerationId,
     loaded: Loaded,
@@ -82,8 +84,13 @@ struct Active {
 /// Derived routing view. Holding it does not prevent the registry from publishing a new view.
 #[derive(Default)]
 pub struct Exports {
-    active: BTreeMap<String, Option<Active>>,
+    plugins: BTreeMap<String, Routes>,
     generations: BTreeMap<GenerationId, PluginId>,
+}
+
+struct Routes {
+    active: Option<LoadedGeneration>,
+    factory: Option<LoadedGeneration>,
 }
 
 impl Exports {
@@ -92,31 +99,43 @@ impl Exports {
         self.generations.get(&generation).copied()
     }
 
-    fn active(&self, plugin: &str) -> Result<&Active, Failure> {
-        self.active
+    fn routes(&self, plugin: &str) -> Result<&Routes, Failure> {
+        self.plugins
             .get(plugin)
-            .ok_or_else(|| unavailable(plugin, "name is not registered"))?
-            .as_ref()
-            .ok_or_else(|| unavailable(plugin, "no active generation"))
+            .ok_or_else(|| unavailable(plugin, "name is not registered"))
     }
 
-    /// Resolve completion at the start of an Attempt.
-    pub fn completion(&self, plugin: &str) -> Result<Export<dyn Provider>, Failure> {
-        let active = self.active(plugin)?;
+    /// Resolve completion at the start of an Attempt using the Round's fixed mode.
+    pub fn completion(
+        &self,
+        plugin: &str,
+        safe_mode: bool,
+    ) -> Result<Export<dyn Provider>, Failure> {
+        let routes = self.routes(plugin)?;
+        let selected = if safe_mode {
+            routes.factory.as_ref().or(routes.active.as_ref())
+        } else {
+            routes.active.as_ref()
+        }
+        .ok_or_else(|| unavailable(plugin, "no active generation"))?;
         let adapter =
-            active.loaded.completion.clone().ok_or_else(|| {
-                unavailable(plugin, "active generation does not export completion")
+            selected.loaded.completion.clone().ok_or_else(|| {
+                unavailable(plugin, "selected generation does not export completion")
             })?;
         Ok(Export {
-            plugin: active.plugin,
-            generation: active.generation,
+            plugin: selected.plugin,
+            generation: selected.generation,
             adapter,
         })
     }
 
     /// Resolve embedding at the start of one synchronization call.
     pub fn embedding(&self, plugin: &str) -> Result<Export<dyn Embedding>, Failure> {
-        let active = self.active(plugin)?;
+        let active = self
+            .routes(plugin)?
+            .active
+            .as_ref()
+            .ok_or_else(|| unavailable(plugin, "no active generation"))?;
         let adapter =
             active.loaded.embedding.clone().ok_or_else(|| {
                 unavailable(plugin, "active generation does not export embedding")
@@ -135,6 +154,14 @@ fn unavailable(plugin: &str, reason: &str) -> Failure {
         message: format!("plugin {plugin}: {reason}"),
         retryable: false,
     }
+}
+
+/// One completed invocation's verdict, before caller-specific result handling.
+pub enum Verdict {
+    /// A valid plugin result, regardless of the caller's subsequent policy checks.
+    Ok,
+    /// A failed invocation; only attributable plugin faults affect health.
+    Failed(Failure),
 }
 
 /// Result of accepting a component as a new activation.
@@ -227,6 +254,14 @@ impl Registry {
                 name: name.into(),
                 reason: error.to_string(),
             })?;
+        loaded
+            .lifecycle
+            .probe()
+            .await
+            .map_err(|failure| RegistryError::Rejected {
+                name: name.into(),
+                reason: format!("probe failed: {}: {}", failure.code, failure.message),
+            })?;
         let mut state = self.state.lock().await;
         self.admit(name, &loaded)?;
         let plugin = match state.names.get(name) {
@@ -243,7 +278,7 @@ impl Registry {
             artifact: hash,
             config,
             origin: Origin::Deployed,
-            status: GenerationStatus::Healthy,
+            status: GenerationStatus::Trial,
             created_at: self.clock.now().to_utc(),
         };
         let id = self.store.insert_generation(&generation, true).await?;
@@ -277,8 +312,9 @@ impl Registry {
         if candidates.is_empty() {
             return Err(RegistryError::NoRollbackTarget(name.into()));
         }
-        self.activate(name, plugin, expected, candidates, None)
+        self.activate(name, plugin, expected, candidates, ActivationReason::Manual)
             .await?
+            .target
             .ok_or_else(|| RegistryError::NoRollbackTarget(name.into()))
     }
 
@@ -356,6 +392,13 @@ impl Registry {
         state.loaded.retain(|id, _| {
             state.active.values().any(|active| active == &Some(*id))
                 || state.factory.values().any(|factory| factory == id)
+        });
+        state.trial_successes.retain(|id, _| {
+            state.active.values().any(|active| active == &Some(*id))
+                && state
+                    .generations
+                    .get(id)
+                    .is_some_and(|record| record.status == GenerationStatus::Trial)
         });
         self.exports.store(Arc::new(state.exports()));
     }

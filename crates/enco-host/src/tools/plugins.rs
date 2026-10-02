@@ -1,7 +1,7 @@
 use super::{args, resolve_path};
 use async_trait::async_trait;
 use enco_core::*;
-use enco_kernel::{CallContext, Registry, RegistryError, Tool};
+use enco_kernel::{CallContext, Registry, RegistryError, TRIAL_CALLS, Tool};
 use serde_json::{Map, Value, json};
 use std::{path::PathBuf, sync::Arc};
 
@@ -39,21 +39,21 @@ impl Tool for PluginTool {
         let (name, description, effect, properties, required) = match self.kind {
             Kind::Status => (
                 "plugin_status",
-                "Inspect registered plugins, active generations, rollback targets and configured users.",
+                "Inspect registered plugins, active generations, failure reasons, rollback targets and configured users.".into(),
                 Effect::ReadOnly,
                 json!({}),
                 vec![],
             ),
             Kind::Deploy => (
                 "plugin_deploy",
-                "Deploy a WebAssembly component as a new generation. path is relative to the workspace unless absolute. New completion and embedding calls use it immediately. Inspect with plugin_status; use plugin_rollback to return to an earlier healthy generation.",
+                format!("Deploy a WebAssembly component after its local self-check. path is relative to the workspace unless absolute. New calls use the trial generation immediately; {TRIAL_CALLS} successful calls make it healthy. A plugin trap or contract violation during trial automatically rolls back to an earlier healthy generation. Service failures do not affect plugin health. Inspect with plugin_status; use plugin_rollback for manual recovery."),
                 Effect::SideEffect,
                 json!({"name": {"type": "string"}, "path": {"type": "string"}}),
                 vec!["name", "path"],
             ),
             Kind::Rollback => (
                 "plugin_rollback",
-                "Activate the nearest earlier usable healthy generation of a registered plugin. The current generation is preserved if no usable target exists. A conflict means another activation won; inspect status before retrying.",
+                "Activate the nearest earlier usable healthy generation of a registered plugin. The current generation is preserved if no usable target exists. A conflict means another activation won; inspect status before retrying.".into(),
                 Effect::SideEffect,
                 json!({"name": {"type": "string"}}),
                 vec!["name"],
@@ -61,7 +61,7 @@ impl Tool for PluginTool {
         };
         ToolSpec {
             name: name.into(),
-            description: description.into(),
+            description,
             effect,
             input_schema: closed_object_schema(properties, &required),
         }

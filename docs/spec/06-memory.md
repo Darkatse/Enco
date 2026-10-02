@@ -26,7 +26,7 @@
 
 - 文件：`$ENCO_HOME/.data/memory.db`，与 `enco.db` 分开：一个归属者，一个文件。
 - 连接方式与 Store 相同（03 §3.1）：一个 `rusqlite::Connection` 放在 `std::sync::Mutex` 中，在 `spawn_blocking` 中执行；`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;`；写事务使用 `BEGIN IMMEDIATE`。
-- 版本使用 `PRAGMA user_version`：为 0 时建表并设为 1；为 1 时直接使用；大于 1 时返回 `MemoryError::NewerSchema`，拒绝启动。
+- 版本规则与 `enco.db` 相同（03 §3.1）：空库建表并把 `PRAGMA user_version` 设为 1；已有库的版本不是 1 时返回 `MemoryError::SchemaVersion`，拒绝启动。
 
 ```sql
 CREATE TABLE memories (
@@ -97,8 +97,9 @@ sync(query: Option<&str>, cancel) -> Result<Synced, MemoryError>
     inputs = [query（如果有）] ++ rows 的文本
     if inputs 为空: return Synced { query_vector: None, unindexed: [], failure: None }
     export = registry.exports().embedding(endpoint.plugin)          // 按调用解析（11 §4.2）；失败即 failure = plugin.unavailable
-    vectors = select { export.adapter.embed(&endpoint.settings, endpoint.api_key, inputs), cancel.cancelled() => return Err(Cancelled) }
-    registry.report(export.generation, 结果)                           // 11 §7；只有 plugin.* 的失败计入健康
+    结果 = select { export.adapter.embed(&endpoint.settings, endpoint.api_key, inputs), cancel.cancelled() => Err(Failure(cancelled)) }
+    registry.report(export.generation, 结果, None)                     // 11 §7；仅 plugin.trap / plugin.contract 的失败计入健康
+    if cancel 已取消: return Err(Cancelled)
     成功，且向量维度与索引配置相符:
         替换每个 row 的节点，节点的 rev 取自 row；build_text_index()
         return Synced { query_vector, unindexed: r.unindexed 去掉 rows, failure: None }
@@ -106,7 +107,7 @@ sync(query: Option<&str>, cancel) -> Result<Synced, MemoryError>
         return Synced { query_vector: None, unindexed: r.unindexed, failure }
 ```
 
-嵌入插件部署了新代际，下一次 `sync` 就用新代际，与内核的 Attempt 按调用解析是同一条规则。回报触发回退时（返回 `RolledBack`），记忆只写一条 warn 日志：它没有 Session 可以通知，回退的事实在 `enco plugin status` 里能看到。
+嵌入插件部署了新代际，下一次 `sync` 就用新代际，与内核的 Attempt 按调用解析是同一条规则。回报触发回退时，注册表记下失败原因（11 §7）。记忆没有来源 Session，所以不投递通知，原因在 `plugin_status` 里查看。
 
 数量、向量非空、维度彼此一致与数值有限属于 `Embedding` 的返回契约，由运行时边界核对（07 §3.3）。Memories 只核对索引配置的目标维度；配置不匹配不能据此把插件标为失败。
 
@@ -198,10 +199,12 @@ impl Memories {
 
 #[derive(thiserror::Error)]
 pub enum MemoryError {
+    #[error(transparent)]
+    Registry(#[from] RegistryError),          // 健康回报提交失败；召回随之失败，不退回关键词召回
     #[error("memory database: {0}")]
     Authority(String),
-    #[error("memory database was created by a newer Enco (schema version {0})")]
-    NewerSchema(u32),
+    #[error("memory database schema version {found} does not match this Enco ({expected}); …")]
+    SchemaVersion { found: u32, expected: u32 },   // 提示与 StoreError::SchemaVersion 相同
     #[error("memory index: {0}; deleting the memory-index directory is always safe and rebuilds it")]
     Index(String),
     #[error("cancelled")]

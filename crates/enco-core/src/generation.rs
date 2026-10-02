@@ -1,4 +1,4 @@
-use crate::{ContentHash, DateTime, GenerationId, PluginId, Utc};
+use crate::{ContentHash, DateTime, Failure, GenerationId, PluginId, Utc};
 use serde::{Deserialize, Serialize};
 
 /// One immutable activation identity, with a mutable availability status.
@@ -16,6 +16,8 @@ pub struct GenerationRecord {
     pub origin: Origin,
     /// Whether this activation remains eligible for use.
     pub status: GenerationStatus,
+    /// The reason this generation was marked failed; absent for trial and healthy records.
+    pub failure: Option<Failure>,
     /// Observation time for display, never ordering.
     pub created_at: DateTime<Utc>,
 }
@@ -30,12 +32,27 @@ pub enum Origin {
     Deployed,
 }
 
-/// Eligibility for activation. Trial and health reporting arrive with M14.
+/// Eligibility for activation and automatic recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GenerationStatus {
+    /// Active under observation; not yet eligible as a rollback target.
+    Trial,
     /// Eligible for activation and rollback.
     Healthy,
     /// Unavailable; redeploying its bytes creates a new identity.
     Failed,
+}
+
+/// A committed automatic rollback, also accepted as a Session input when applicable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RolledBack {
+    /// Registered plugin name.
+    pub plugin: String,
+    /// Failed trial generation.
+    pub from: GenerationId,
+    /// Replacement, or none when no healthy generation remains.
+    pub to: Option<GenerationId>,
+    /// Plugin fault which triggered recovery.
+    pub failure: Failure,
 }

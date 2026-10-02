@@ -1,5 +1,19 @@
 use super::*;
 
+pub(super) enum ActivationReason {
+    Manual,
+    Recovery(Failure),
+    TrialFailure {
+        failure: Failure,
+        session: Option<SessionId>,
+    },
+}
+
+pub(super) struct Activated {
+    pub target: Option<GenerationRecord>,
+    pub rollback: Option<RolledBack>,
+}
+
 impl Registry {
     /// Startup is unpublished until all restoration and admission steps finish.
     pub(super) async fn restore(&self) -> Result<(), RegistryError> {
@@ -24,13 +38,18 @@ impl Registry {
                 Ok(loaded) => {
                     self.state.lock().await.loaded.insert(generation, loaded);
                 }
-                Err(error) if is_load_failure(&error) => {
-                    tracing::warn!(plugin = %name, %generation, %error, "active generation could not load; recovering");
+                Err(error) => {
+                    let failure = load_failure(error)?;
                     let candidates = self.state.lock().await.candidates(plugin, generation);
-                    self.activate(&name, plugin, generation, candidates, Some(generation))
-                        .await?;
+                    self.activate(
+                        &name,
+                        plugin,
+                        generation,
+                        candidates,
+                        ActivationReason::Recovery(failure),
+                    )
+                    .await?;
                 }
-                Err(error) => return Err(error),
             }
         }
         let mut state = self.state.lock().await;
@@ -64,12 +83,7 @@ impl Registry {
         generation: GenerationId,
     ) -> Result<(String, GenerationRecord), RegistryError> {
         let state = self.state.lock().await;
-        let name = state
-            .names
-            .iter()
-            .find(|(_, id)| **id == plugin)
-            .map(|(name, _)| name.clone())
-            .ok_or_else(|| RegistryError::UnknownPlugin(plugin.to_string()))?;
+        let name = state.name_of(plugin)?.to_owned();
         let record = state
             .generations
             .get(&generation)
@@ -96,9 +110,15 @@ impl Registry {
         plugin: PluginId,
         expected: GenerationId,
         candidates: Vec<GenerationRecord>,
-        failed_active: Option<GenerationId>,
-    ) -> Result<Option<GenerationRecord>, RegistryError> {
-        let mut failed: Vec<_> = failed_active.into_iter().collect();
+        reason: ActivationReason,
+    ) -> Result<Activated, RegistryError> {
+        let mut failed = match &reason {
+            ActivationReason::Manual => vec![],
+            ActivationReason::Recovery(failure)
+            | ActivationReason::TrialFailure { failure, .. } => {
+                vec![(expected, failure.clone())]
+            }
+        };
         let mut prepared = None;
         for record in candidates {
             let cached = self.state.lock().await.loaded.get(&record.id).cloned();
@@ -111,15 +131,16 @@ impl Registry {
                     prepared = Some((record, loaded));
                     break;
                 }
-                Err(error) if is_load_failure(&error) => {
-                    tracing::warn!(plugin = name, generation = %record.id, %error, "rollback candidate could not load");
-                    failed.push(record.id);
-                }
-                Err(error) => return Err(error),
+                Err(error) => failed.push((record.id, load_failure(error)?)),
             }
         }
         let mut state = self.state.lock().await;
         if state.active.get(&plugin) != Some(&Some(expected))
+            || (matches!(reason, ActivationReason::TrialFailure { .. })
+                && state
+                    .generations
+                    .get(&expected)
+                    .is_none_or(|record| record.status != GenerationStatus::Trial))
             || prepared.as_ref().is_some_and(|(target, _)| {
                 state
                     .generations
@@ -132,28 +153,59 @@ impl Registry {
         let to = match &prepared {
             Some((record, _)) => Some(record.id),
             // Manual rollback keeps the working generation when no usable target remains.
-            None if failed_active.is_none() => Some(expected),
+            None if matches!(reason, ActivationReason::Manual) => Some(expected),
             None => None,
         };
-        self.store.activate(plugin, to, &failed).await?;
-        for id in failed {
+        let (rollback, event) = match reason {
+            ActivationReason::TrialFailure { failure, session } => {
+                let rollback = RolledBack {
+                    plugin: name.into(),
+                    from: expected,
+                    to,
+                    failure,
+                };
+                let event = session.map(|session| Event {
+                    id: EventId::new(),
+                    session,
+                    source: EventSource::Registry,
+                    body: EventBody::GenerationRolledBack(rollback.clone()),
+                    received_at: self.clock.now().to_utc(),
+                });
+                (Some(rollback), event)
+            }
+            ActivationReason::Manual | ActivationReason::Recovery(_) => (None, None),
+        };
+        self.store
+            .activate(plugin, to, &failed, event.as_ref())
+            .await?;
+        for (id, failure) in failed {
+            tracing::warn!(plugin = name, generation = %id, code = %failure.code, reason = %failure.message, "generation marked failed");
             if let Some(record) = state.generations.get_mut(&id) {
                 record.status = GenerationStatus::Failed;
+                record.failure = Some(failure);
             }
         }
         state.active.insert(plugin, to);
-        let result = prepared.map(|(record, loaded)| {
+        let target = prepared.map(|(record, loaded)| {
             state.loaded.insert(record.id, loaded);
             record
         });
         self.publish(&mut state);
-        Ok(result)
+        Ok(Activated { target, rollback })
     }
 }
 
-fn is_load_failure(error: &RegistryError) -> bool {
-    matches!(
-        error,
-        RegistryError::Store(StoreError::Artifact(_)) | RegistryError::Rejected { .. }
-    )
+/// Only unavailable artifacts or runtime rejection belong to the generation.
+/// Storage faults must stop the owner without changing plugin health.
+fn load_failure(error: RegistryError) -> Result<Failure, RegistryError> {
+    match error {
+        RegistryError::Store(StoreError::Artifact(_)) | RegistryError::Rejected { .. } => {
+            Ok(Failure {
+                code: code::PLUGIN_LOAD.into(),
+                message: error.to_string(),
+                retryable: false,
+            })
+        }
+        _ => Err(error),
+    }
 }

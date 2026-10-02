@@ -24,6 +24,7 @@ async fn open(root: &Path, provider: Arc<dyn Embedding>, dimensions: usize) -> A
     let (registry, _) = registry(
         &root.join("embedding-registry"),
         Loaded {
+            lifecycle: Arc::new(Probe(Ok(()))),
             summary: "embedding".into(),
             completion: None,
             embedding: Some(provider),
@@ -174,7 +175,11 @@ async fn recall_uses_current_records_during_embedding_failure_and_rebuilds_deriv
         session,
         cancel: cancel.clone(),
     };
-    provider.embedding_failure.store(true, Ordering::SeqCst);
+    *provider.embedding_failure.lock().unwrap() = Some(Failure {
+        code: code::PROVIDER_NETWORK.into(),
+        message: "embedding service unavailable".into(),
+        retryable: true,
+    });
     memories
         .update(tea.id, Some("主人现在喜欢喝普洱茶".into()), None)
         .await
@@ -208,7 +213,7 @@ async fn recall_uses_current_records_during_embedding_failure_and_rebuilds_deriv
             .iter()
             .any(|o| o.source == "memory:semantic")
     );
-    provider.embedding_failure.store(false, Ordering::SeqCst);
+    *provider.embedding_failure.lock().unwrap() = None;
     memories.recall("陶艺", 20, &cancel).await.unwrap();
     assert!(memories.list().await.unwrap().unindexed.is_empty());
     drop(source);
@@ -221,7 +226,11 @@ async fn recall_uses_current_records_during_embedding_failure_and_rebuilds_deriv
     let memories = open(dir.path(), provider.clone(), 32).await;
     assert!(memories.list().await.unwrap().unindexed.is_empty());
     drop(memories);
-    provider.embedding_failure.store(true, Ordering::SeqCst);
+    *provider.embedding_failure.lock().unwrap() = Some(Failure {
+        code: code::PROVIDER_NETWORK.into(),
+        message: "embedding service unavailable".into(),
+        retryable: true,
+    });
     std::fs::remove_dir_all(dir.path().join("memory-index")).unwrap();
     let memories = open(dir.path(), provider, 32).await;
     assert_eq!(memories.list().await.unwrap().unindexed.len(), 20);

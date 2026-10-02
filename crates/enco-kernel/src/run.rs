@@ -1,16 +1,28 @@
-use crate::{attempt::AttemptKind, session::SessionActor, snapshot::Snapshot, *};
+use crate::{
+    attempt::{AttemptKind, PlannedAttempt},
+    session::SessionActor,
+    snapshot::Snapshot,
+    *,
+};
 use enco_core::*;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) enum RoundError {
-    Store(StoreError),
+    /// An owner could not commit its state; stop the Session without ending the Round.
+    Stopped(KernelError),
     Ended(RoundEnd),
 }
 
 impl From<StoreError> for RoundError {
     fn from(e: StoreError) -> Self {
-        Self::Store(e)
+        Self::Stopped(e.into())
+    }
+}
+
+impl From<RegistryError> for RoundError {
+    fn from(e: RegistryError) -> Self {
+        Self::Stopped(e.into())
     }
 }
 
@@ -33,7 +45,7 @@ pub(crate) fn cancelled(token: &CancellationToken) -> Result<(), RoundError> {
 }
 
 impl SessionActor {
-    pub(crate) async fn run(&mut self, token: CancellationToken) -> Result<(), StoreError> {
+    pub(crate) async fn run(&mut self, token: CancellationToken) -> Result<(), KernelError> {
         let run = RunId::new();
         // The first Round accepts RunStarted and its Inbox inputs in one Commit.
         let mut prefix = vec![EntryBody::RunStarted { run }];
@@ -52,7 +64,8 @@ impl SessionActor {
             }
         }
         self.commit(vec![EntryBody::RunEnded { run, end: ending }], vec![])
-            .await
+            .await?;
+        Ok(())
     }
 
     async fn round(
@@ -60,7 +73,7 @@ impl SessionActor {
         run: RunId,
         token: &CancellationToken,
         mut prefix: Vec<EntryBody>,
-    ) -> Result<RoundEnd, StoreError> {
+    ) -> Result<RoundEnd, KernelError> {
         let round = RoundId::new();
         self.session = self
             .deps
@@ -85,7 +98,7 @@ impl SessionActor {
         self.commit(prefix, consumed).await?;
         let end = match self.execute_round(round, snapshot, safe_mode, token).await {
             Ok(end) | Err(RoundError::Ended(end)) => end,
-            Err(RoundError::Store(e)) => return Err(e),
+            Err(RoundError::Stopped(e)) => return Err(e),
         };
         self.commit(
             vec![EntryBody::RoundEnded {
@@ -112,21 +125,15 @@ impl SessionActor {
                 format!("unknown profile {}", self.session.profile),
             )
         })?;
-        let (plan, request) = self
+        let planned = self
             .compose(round, &snapshot, profile, safe_mode, token)
             .await?;
         let completion = self
-            .attempt(
-                round,
-                &profile.reply,
-                AttemptKind::Reply,
-                &plan,
-                request,
-                token,
-            )
+            .attempt(round, &profile.reply, safe_mode, &planned, token)
             .await?;
         for call in completion.message.tool_calls() {
-            self.dispatch(round, &snapshot, &plan, call, token).await?;
+            self.dispatch(round, &snapshot, &planned.plan, call, token)
+                .await?;
         }
         cancelled(token)?;
         Ok(if completion.message.tool_calls().next().is_some() {
@@ -143,7 +150,7 @@ impl SessionActor {
         profile: &Profile,
         safe_mode: bool,
         token: &CancellationToken,
-    ) -> Result<(ContextPlan, ProviderRequest), RoundError> {
+    ) -> Result<PlannedAttempt, RoundError> {
         // Capture external context once. Compaction changes only the Log projection.
         let mut input = self
             .compose_input(snapshot, profile, safe_mode, token)
@@ -182,20 +189,24 @@ impl SessionActor {
                 .map_err(|e| failed(code::PLAN_INVALID, e.to_string()))?;
             let exports = self.deps.registry.exports();
             let target = exports
-                .completion(&profile.endpoint(kind.purpose()).plugin)
+                .completion(&profile.endpoint(kind.purpose()).plugin, safe_mode)
                 .map_err(|failure| RoundError::Ended(RoundEnd::Failed { failure }))?
                 .plugin;
             let request = crate::plan::resolve(&plan, &input.transcript, &exports, target)
                 .map_err(|e| failed(code::PLAN_INVALID, e.to_string()))?;
-            if matches!(kind, AttemptKind::Reply) {
-                return Ok((plan, request));
+            let planned = PlannedAttempt {
+                kind,
+                plan,
+                request,
+            };
+            if matches!(planned.kind, AttemptKind::Reply) {
+                return Ok(planned);
             }
             self.attempt(
                 round,
-                profile.endpoint(kind.purpose()),
-                kind,
-                &plan,
-                request,
+                profile.endpoint(planned.kind.purpose()),
+                safe_mode,
+                &planned,
                 token,
             )
             .await?;

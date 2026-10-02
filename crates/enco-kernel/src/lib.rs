@@ -20,6 +20,7 @@ mod transcript;
 
 pub use inspect::Inspection;
 pub use kernel::*;
+pub use limits::TRIAL_CALLS;
 pub use ports::*;
 pub use profile::*;
 pub use registry::*;

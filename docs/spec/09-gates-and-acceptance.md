@@ -107,7 +107,9 @@ P1 各里程碑的范围：
 
 每个里程碑结束时系统都完整可用。M11 到 M13 之间的过渡形态（临时 profile）只存在于代码中，规格只描述最终形态。
 
-当前实现已到 M13，M12 与 M13 待主人审核。WIT 已为 0.2，profile 按 Round 取定、endpoint 按用途选择；部署仍直接成为健康代际，Rust `Lifecycle` 端口与运行时健康门控留到 M14。
+当前实现已到 M14，P1 的里程碑全部完成，待主人审核。schema 版本为 2，旧库由 Agent 手动迁移或重建（03 §3.1）。
+
+A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP 服务代替模型服务，另外核对了晋升、probe 拒绝、安全模式和下一个 Round 的规范消息。旧 schema 的库被拒绝启动，库本身不变。
 
 | # | 里程碑 | 场景 | 层 | 必须观察到 |
 |---|---|---|---|---|
@@ -146,13 +148,13 @@ P1 各里程碑的范围：
 | A33 | M11 | 出厂代际与启动 | 集成 | 空库启动：每个出厂插件有一条 `healthy`、来源 `factory` 的代际并处于活跃，`plugins.lock` 含两条宿主固定的身份；再次启动不新增代际；换一份出厂字节启动：新增一条出厂代际并成为活跃；主人部署过的插件在换出厂字节后活跃代际不变；`plugins.lock` 中出厂身份被改后拒绝启动 |
 | A34 | M11 | 部署、回退与记录 | 集成 | `deploy` 之后下一次 `AttemptStarted.provider` 是新编号，`settings` 等于 endpoint 的参数且不含密钥；`rollback` 之后回到上一个健康代际，被回退的代际状态不变；再次 `rollback` 回到出厂代际；没有目标时返回 `NoRollbackTarget`；`plugin_deploy` 与 `enco plugin deploy` 的结果一致；两个部署并发提交后两条代际都在 `status` 中，活跃的是后提交的那条 |
 | A35 | M11 | 准入 | 集成 | 把一份不导出 embedding 的制品部署到 `[embedding].plugin` 指向的插件：被拒绝，message 列出使用者 `embedding`，注册表不变；配置引用了没有登记的插件名：启动失败并指出 profile；不是组件的文件：`Rejected`，制品库中不留下记录以外的痕迹无妨 |
-| A36 | M11 | 崩溃恢复 | 集成 | 模拟 `insert_generation` 已提交、导出表未发布的持久状态：重启后活跃代际是新代际，导出表与注册表一致；活跃代际的制品文件被删除后启动：自动回退到回退目标，被回退的代际标为 `failed`，日志说明原因 |
+| A36 | M11 | 崩溃恢复 | 集成 | 模拟 `insert_generation` 已提交、导出表未发布的持久状态：重启后活跃代际是新代际，导出表与注册表一致；活跃代际的制品文件被删除后启动：自动回退到回退目标，被回退的代际标为 `failed`，`plugin_status` 显示加载失败原因，重启后保留 |
 | A37 | M11 | 记忆经导出表 | 集成 | 部署嵌入插件的新代际后，下一次召回的 `embed` 由新代际的 `ScriptedProvider` 收到；回退后再次回到旧的 |
 | A38 | M12 | 契约 0.2 | 端到端 | 两个出厂插件以 0.2 契约重建通过 `cargo xtask check`；`[embedding].plugin = "deepseek"` 时启动失败，错误说明它不导出 `embedding`；wiremock 让 DeepSeek 返回 `reasoning_content`：下一次对同一插件的请求体含它，重启并更换节点的 Provider 配置后，同一 Session 对 openai-compatible 的请求不含它；M13 再经 `enco profile` 切换 |
 | A39 | M13 | profile | 集成 | 两个 Session 用不同 profile：各自的 `AttemptStarted.settings.model` 不同；同一个 Session 的回复与压缩用不同 endpoint：两类 Attempt 的 `settings` 与 `max_output_tokens` 不同，压缩请求放进压缩模型的窗口；`enco profile` 之后下一个 Round 用新 profile，正在进行的 Round 不变；Session 的 profile 不在配置中：`RoundEnded(Failed profile.unknown)`，`RunEnded(Failed)`，改回之后下一条消息正常 |
 | A40 | M13 | 配置校验 | 端到端 | 缺少 `[profile.default]`、profile 引用不存在的 endpoint、输出上限不小于窗口、`api_key_env` 未设置，各自拒绝启动并指出位置；`enco init` 生成的模板能通过校验 |
-| A41 | M14 | probe 与试用 | 集成 | probe 失败的制品：`Rejected`，注册表不变；probe 通过：代际为 `trial` 并活跃；连续 `TRIAL_CALLS` 次 `Ok` 后变为 `healthy`；`provider.network` 失败不计数也不回退 |
-| A42 | M14 | 自动回退 | 集成 | 试用代际的 `ScriptedProvider` 返回 `plugin.trap`：`AttemptSettled(Failed plugin.trap)` 之后，同一 Round 的下一次 `AttemptStarted.provider` 是回退目标，Run 正常完成；该代际状态为 `failed`，不再活跃；下一个 Round 消费一条 `GenerationRolledBack` 事件，模型请求中含它的规范消息；`enco chat` 显示回退提示 |
+| A41 | M14 | probe 与试用 | 集成 | probe 失败的制品：`Rejected`，注册表不变；probe 通过：代际为 `trial` 并活跃；累计 `TRIAL_CALLS` 次 `Ok` 后变为 `healthy`；`provider.network` 失败不计数、不清零，也不回退 |
+| A42 | M14 | 自动回退 | 集成 | 试用代际的 `ScriptedProvider` 返回 `plugin.trap`：`AttemptSettled(Failed plugin.trap)` 之后，同一 Round 的下一次 `AttemptStarted.provider` 是回退目标，Run 正常完成；该代际状态为 `failed`，不再活跃，失败原因在 `plugin_status` 可查且重启后保留（embedding 触发也相同）；下一个 Round 消费一条 `GenerationRolledBack` 事件，模型请求中含它的规范消息；`enco chat` 显示回退提示 |
 | A43 | M14 | 迟到的回报 | 集成 | 对已经不是活跃代际的编号回报 `Failed(plugin.trap)`：注册表不变；对 `healthy` 代际回报同样不变 |
 | A44 | M14 | 安全模式 | 集成 | 部署新代际后开启安全模式：`AttemptStarted.provider` 是出厂代际；关闭后回到活跃代际 |
 | A45 | M14 | 真实插件 | 手动一次 | 复制出厂插件源码到 `~/.enco/plugins/`，改一处可观察的行为（例如请求头），构建、`enco plugin deploy`，在 `enco chat` 中确认生效；再改成一个会 panic 的版本部署：第一次对话自动回退并收到回退提示，`enco plugin status` 显示失败的代际与当前活跃代际；`enco plugin rollback` 回到出厂代际 |

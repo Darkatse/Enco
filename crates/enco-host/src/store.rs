@@ -15,6 +15,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// `PRAGMA user_version` of `schema.sql`. Until P4, each schema change bumps it and
+/// existing databases are migrated by hand.
+const SCHEMA_VERSION: u32 = 2;
 const SESSION_COLUMNS: &str = "id,name,created_at,binding_node,binding_epoch,profile";
 const SCHEDULE_COLUMNS: &str = "id,session_id,due_at,message,created_at,state,fired_event_id";
 
@@ -92,38 +95,29 @@ fn encode(value: &impl serde::Serialize) -> Result<String, StoreError> {
 
 fn open(path: &Path) -> Result<(Connection, NodeId), StoreError> {
     let mut connection = crate::sqlite::open(path).map_err(backend)?;
-    let exists: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(backend)?;
-    if !exists {
-        let tx = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+    match crate::sqlite::schema_version(&connection).map_err(backend)? {
+        None => {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(backend)?;
+            tx.execute_batch(include_str!("store/schema.sql"))
+                .map_err(backend)?;
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+                .map_err(backend)?;
+            tx.execute(
+                "INSERT INTO meta(key,value) VALUES ('node_id',?),('safe_mode','0')",
+                [NodeId::new().to_string()],
+            )
             .map_err(backend)?;
-        tx.execute_batch(include_str!("store/schema.sql"))
-            .map_err(backend)?;
-        tx.execute(
-            "INSERT INTO meta(key,value) VALUES ('schema_version','1'),('node_id',?),('safe_mode','0')",
-            [NodeId::new().to_string()],
-        ).map_err(backend)?;
-        tx.commit().map_err(backend)?;
-    }
-    let version: String = connection
-        .query_row(
-            "SELECT value FROM meta WHERE key='schema_version'",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(backend)?;
-    let version: u32 = version.parse().map_err(backend)?;
-    if version > 1 {
-        return Err(StoreError::NewerSchema(version));
-    }
-    if version != 1 {
-        return Err(backend(format!("unsupported schema version {version}")));
+            tx.commit().map_err(backend)?;
+        }
+        Some(SCHEMA_VERSION) => {}
+        Some(found) => {
+            return Err(StoreError::SchemaVersion {
+                found,
+                expected: SCHEMA_VERSION,
+            });
+        }
     }
     let node = connection
         .query_row("SELECT value FROM meta WHERE key='node_id'", [], |r| {
@@ -481,15 +475,24 @@ impl Store for SqliteStore {
             .await
     }
 
+    async fn promote(&self, generation: GenerationId) -> Result<(), StoreError> {
+        self.run(move |connection| registry::promote(connection, generation))
+            .await
+    }
+
     async fn activate(
         &self,
         plugin: PluginId,
         to: Option<GenerationId>,
-        failed: &[GenerationId],
+        failed: &[(GenerationId, Failure)],
+        event: Option<&Event>,
     ) -> Result<(), StoreError> {
         let failed = failed.to_vec();
-        self.run(move |connection| registry::activate(connection, plugin, to, &failed))
-            .await
+        let event = event.cloned();
+        self.run(move |connection| {
+            registry::activate(connection, plugin, to, &failed, event.as_ref())
+        })
+        .await
     }
 
     async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError> {

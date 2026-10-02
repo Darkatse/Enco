@@ -14,6 +14,21 @@ pub(crate) fn open(path: &Path) -> rusqlite::Result<Connection> {
     Ok(connection)
 }
 
+/// `PRAGMA user_version` of an existing schema, or `None` for a database with no schema yet.
+pub(crate) fn schema_version(connection: &Connection) -> rusqlite::Result<Option<u32>> {
+    let empty: bool = connection.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master)",
+        [],
+        |row| row.get(0),
+    )?;
+    if empty {
+        return Ok(None);
+    }
+    connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map(Some)
+}
+
 pub(crate) fn timestamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }

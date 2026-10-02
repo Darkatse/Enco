@@ -112,7 +112,7 @@ pub enum EventBody {
     UserMessage { text: String },
     Reminder { schedule: ScheduleId, due_at: DateTime<Utc>, text: String },
     /// 一个试用代际失败并被回退（11 §7）。`to` 为空表示该插件已没有活跃代际。
-    GenerationRolledBack { plugin: String, from: GenerationId, to: Option<GenerationId>, failure: Failure },
+    GenerationRolledBack(RolledBack),
 }
 
 impl Event {
@@ -240,6 +240,7 @@ impl Arguments { pub fn parse(raw: &str) -> Self; }
 | `provider.network` `provider.auth` `provider.rate_limited` `provider.server` `provider.bad_request` `provider.bad_response` | Provider 的失败分类（07 §4.4）；外部失败，不计入健康 | Provider |
 | `plugin.trap` | wasmtime 在实例化或调用中报错（07 §3.3）；计入健康 | enco-wasm |
 | `plugin.contract` | 插件的返回违反契约（07 §3.3）；计入健康 | enco-wasm |
+| `plugin.load` | 已登记代际的制品缺失、损坏或 Runtime 加载失败；原始原因在 message 中（11 §5） | 注册表 |
 | `plugin.unavailable` | 插件没有活跃代际，或活跃代际不导出所需接口（11 §4.2） | 注册表 |
 | `plugin.rejected` | 部署或回退被拒绝（11 §8） | 插件工具 |
 
@@ -270,11 +271,15 @@ pub struct GenerationRecord {
     pub config: serde_json::Value,   // 插件配置；P1 恒为 {}
     pub origin: Origin,
     pub status: GenerationStatus,
+    pub failure: Option<Failure>,   // failed 时必有，其余为空；与状态同事务写入
     pub created_at: DateTime<Utc>,
 }
 
 pub enum Origin { Factory, Deployed }
 pub enum GenerationStatus { Trial, Healthy, Failed }
+
+/// 一次自动回退：`Registry::report` 的返回值，也是回退事件的内容。事件序列化后，这些字段与 `kind` 同级。
+pub struct RolledBack { pub plugin: String, pub from: GenerationId, pub to: Option<GenerationId>, pub failure: Failure }
 ```
 
 ### 1.7b Provider 的调用参数（`provider.rs`）
@@ -427,8 +432,8 @@ pub trait Store: Send + Sync {
     async fn insert_generation(&self, generation: &NewGeneration, activate: bool) -> Result<GenerationId, StoreError>;
     /// trial → healthy。
     async fn promote(&self, generation: GenerationId) -> Result<(), StoreError>;
-    /// 在一个事务中把 `plugin` 的活跃代际改为 `to`（可以为空），并把 `failed` 中的代际标为 failed。回退与启动时切换出厂代际都用它。
-    async fn activate(&self, plugin: PluginId, to: Option<GenerationId>, failed: &[GenerationId]) -> Result<(), StoreError>;
+    /// 原子更新活跃代际、各代际的失败状态与原因，以及可选的回退事件。回退与启动时切换出厂代际都用它。
+    async fn activate(&self, plugin: PluginId, to: Option<GenerationId>, failed: &[(GenerationId, Failure)], event: Option<&Event>) -> Result<(), StoreError>;
 
     // ---- Blob 与制品（内容寻址，写入幂等）
     async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
@@ -445,7 +450,7 @@ pub struct NodeRecord { pub id: NodeId, pub safe_mode: bool }
 /// 注册表的全部持久状态（11 §3）。
 pub struct RegistryState { pub generations: Vec<GenerationRecord>, pub active: Vec<(PluginId, Option<GenerationId>)> }
 
-/// 待插入的代际：除编号之外的全部字段。
+/// 待插入的代际：状态为 trial 或 healthy；代际只经由 activate 标为 failed。
 pub struct NewGeneration { pub plugin: PluginId, pub artifact: ContentHash, pub config: serde_json::Value, pub origin: Origin, pub status: GenerationStatus, pub created_at: DateTime<Utc> }
 
 /// 一次原子提交：若干 Log 条目，以及它们消费的 Inbox 行。
@@ -486,8 +491,8 @@ pub enum StoreError {
     Lock(String),                            // 读写或解析失败，或重复登记
     #[error("unknown generation {0}")]
     UnknownGeneration(GenerationId),
-    #[error("database schema version {found} is not {expected}; delete .data/enco.db to start over, or migrate it by hand")]
-    SchemaVersion { found: u32, expected: u32 },
+    #[error("database schema version {found} does not match this Enco ({expected}); …")]
+    SchemaVersion { found: u32, expected: u32 },   // 库较新时提示升级 Enco，较旧时提示手动迁移或重建
     #[error("storage: {0}")]
     Backend(String),
     #[error("commit contains no entries")]
@@ -520,8 +525,10 @@ Inbox 是一个邮箱：任何人都可以投递（`accept`），只有归属者
 
 - `SqliteStore::open(paths: StorePaths)`，`StorePaths { db, blobs, artifacts, plugins_lock }`：Store 负责的全部文件都在这里给出。
 - 数据库文件：`$ENCO_HOME/.data/enco.db`。
-- 新库在一个事务中建立完整 schema，写入 `schema_version`、新生成的 `node_id` 和 `safe_mode = '0'`。当前版本号是 `2`（P1 的 schema；P0 的库是 `1`）。
-- 已有库的 `schema_version` 不等于当前版本时返回 `SchemaVersion`，拒绝启动。迁移只在主人有需要保留的数据时编写；没有迁移时，错误信息告诉主人删库重建或手动迁移。P1 期间开发库直接删除重建，不改版本号；P1 完成时版本号升到 2。
+- 版本记在 SQLite 自带的 `PRAGMA user_version`，`memory.db` 用同一条规则（06 §2）。当前版本是 `2`。
+- 空库在一个事务中建立完整 schema，设置版本号，写入新生成的 `node_id` 和 `safe_mode = '0'`。
+- 已有库的版本不等于当前版本时返回 `SchemaVersion`，拒绝启动，不改动库。
+- P4 之前不写迁移代码。每次改 schema 都把版本号加一；已有的库由 Agent 按 §3.2 手动迁移并设置版本号，或者删库重建。从 P4 起，升级不丢记录（路线图 P4）。
 - 一个 `rusqlite::Connection`，放在 `std::sync::Mutex` 中；每个方法在 `tokio::task::spawn_blocking` 中执行。不要引入连接池。
 - 打开时执行：`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;`
 - 写事务使用 `BEGIN IMMEDIATE`。
@@ -533,7 +540,7 @@ CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT;
--- Keys: schema_version = '2', node_id = <ULID>, safe_mode = '0' | '1'
+-- Keys: node_id = <ULID>, safe_mode = '0' | '1'
 
 CREATE TABLE sessions (
   id            TEXT PRIMARY KEY,
@@ -607,7 +614,9 @@ CREATE TABLE generations (
   config     TEXT NOT NULL,                       -- 插件配置的 JSON
   origin     TEXT NOT NULL CHECK (origin IN ('factory', 'deployed')),
   status     TEXT NOT NULL CHECK (status IN ('trial', 'healthy', 'failed')),
-  created_at TEXT NOT NULL
+  failure    TEXT,                               -- Failure 的 JSON；只在 failed 时存在
+  created_at TEXT NOT NULL,
+  CHECK ((status = 'failed') = (failure IS NOT NULL))
 ) STRICT;
 CREATE INDEX generations_by_plugin ON generations(plugin_id, id);
 ```

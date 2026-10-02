@@ -2,7 +2,7 @@ CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT;
--- Keys: schema_version = '1', node_id = <ULID>, safe_mode = '0' | '1'
+-- Keys: node_id = <ULID>, safe_mode = '0' | '1'
 
 CREATE TABLE sessions (
   id            TEXT PRIMARY KEY,
@@ -76,7 +76,9 @@ CREATE TABLE generations (
   artifact   TEXT NOT NULL,
   config     TEXT NOT NULL,
   origin     TEXT NOT NULL CHECK (origin IN ('factory', 'deployed')),
-  status     TEXT NOT NULL CHECK (status IN ('healthy', 'failed')),
-  created_at TEXT NOT NULL
+  status     TEXT NOT NULL CHECK (status IN ('trial', 'healthy', 'failed')),
+  failure    TEXT,                       -- Serialized Failure; present only when failed
+  created_at TEXT NOT NULL,
+  CHECK ((status = 'failed') = (failure IS NOT NULL))
 ) STRICT;
 CREATE INDEX generations_by_plugin ON generations(plugin_id, id);
