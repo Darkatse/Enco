@@ -76,7 +76,7 @@ P0 在 macOS 和 Linux 上以后台服务加命令行客户端的形式运行，
 | P2 | Agent 只读手册和插件源码，自己维护插件 | 计划中 |
 | 监督树 | 把任务委派给子 Session，它们可以使用其他模型、回报结果并继续往来 | 计划中 |
 | P3 | 渠道插件化：Telegram 改为 WebAssembly 插件，接入 QQ（OneBot） | 计划中 |
-| P4 | 多设备：控制平面、会话交接、复制 | 计划中 |
+| P4 | 多设备：控制平面、Session 漫游、复制 | 计划中 |
 | P5 | 手机作为节点 | 计划中 |
 
 每个阶段的验收标准见 [docs/Roadmap.md](docs/Roadmap.md)。
@@ -130,7 +130,7 @@ Enco 的设计借鉴了这些项目：
 - [SillyTavern](https://github.com/SillyTavern/SillyTavern)：因为它的 prompt manager，请求组装被设计成每段会话可以各自选择的插件。
 - [Zed](https://zed.dev/)：同时链接旧版本 world 来演进 WIT 契约。
 
-整体设计还借鉴了四个更早的系统。Erlang 提供了进程持有自身状态、在监督下替换代码的思路。Plan 9 的进程命名空间与 `import`、`cpu` 命令，对应到每个 Round 的能力快照、`invoke` 与 `handoff`。Smalltalk 展示了一个在运行中修改自身的系统。Lisp 把代码当作数据，Enco 也把日志和每一次模型请求当作数据。
+整体设计还借鉴了四个更早的系统。Erlang 提供了进程持有自身状态、在监督下替换代码的思路。Plan 9 的进程命名空间与 `import`、`cpu` 命令，对应到每个 Round 的能力快照、`invoke` 与 `roam`。Smalltalk 展示了一个在运行中修改自身的系统。Lisp 把代码当作数据，Enco 也把日志和每一次模型请求当作数据。
 
 Enco 基于 [Wasmtime](https://wasmtime.dev/)、[tokio](https://tokio.rs/) 与 [SQLite](https://sqlite.org/) 构建。记忆召回使用 [@YoKONCy](https://github.com/YoKONCy) 的 [TriviumDB](https://github.com/YoKONCy/TriviumDB)。
 

@@ -76,7 +76,7 @@ The whole system is described with ten concepts and two rules for mutable state.
 | P2 | The agent maintains its own plugins, reading only the manual and plugin source | Planned |
 | Supervision tree | Delegating work to child sessions that can use other models, report back and take further messages | Planned |
 | P3 | Channels as plugins: Telegram moves to WebAssembly, QQ (OneBot) | Planned |
-| P4 | Multiple devices: control plane, handoff, replication | Planned |
+| P4 | Multiple devices: control plane, roaming, replication | Planned |
 | P5 | Phones as nodes | Planned |
 
 Each phase has acceptance criteria, listed in [docs/Roadmap.md](docs/Roadmap.md).
@@ -130,7 +130,7 @@ Enco takes design ideas from these projects:
 - [SillyTavern](https://github.com/SillyTavern/SillyTavern): its prompt manager is why request assembly is a plugin chosen per conversation.
 - [Zed](https://zed.dev/): evolving a WIT contract by keeping older versions linked.
 
-The design also draws on four older systems. Erlang gave the idea of processes that own their state and swap code under supervision. Plan 9 gave per-process namespaces and the `import` and `cpu` commands, which became the capability snapshot of a round, `invoke` and `handoff`. Smalltalk showed a live system that changes itself while running. Lisp treats code as data, and Enco treats its log and every model request the same way.
+The design also draws on four older systems. Erlang gave the idea of processes that own their state and swap code under supervision. Plan 9 gave per-process namespaces and the `import` and `cpu` commands, which became the capability snapshot of a round, `invoke` and `roam`. Smalltalk showed a live system that changes itself while running. Lisp treats code as data, and Enco treats its log and every model request the same way.
 
 Enco is built on [Wasmtime](https://wasmtime.dev/), [tokio](https://tokio.rs/) and [SQLite](https://sqlite.org/). Memory recall uses [TriviumDB](https://github.com/YoKONCy/TriviumDB) by [@YoKONCy](https://github.com/YoKONCy).
 

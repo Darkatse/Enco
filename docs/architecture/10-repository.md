@@ -8,7 +8,7 @@ crates/
   enco-kernel/   # Session actor 与监督树、Round、ContextPlan 校验与记录、能力快照、代际、Binding、Approval；不依赖 wasmtime 与网络
   enco-host/     # Host 服务：SQLite、blob、fs、exec、检索索引与记忆、http/ws 连接管理、调度
   enco-wasm/     # wasmtime 嵌入、WIT 绑定、组件适配、构建与校验
-  enco-space/    # 节点身份与配对、Peer 连接、控制平面（openraft）、日志复制、invoke/handoff
+  enco-space/    # 节点身份与配对、Peer 连接、控制平面（openraft）、日志复制、invoke/roam
   enco-sdk/      # 插件 SDK：绑定封装、#[tool] 宏、host fake
 apps/
   enco/          # 单一二进制：serve / witness / chat / plugin * / space * / status；组合根；原生管理通道
