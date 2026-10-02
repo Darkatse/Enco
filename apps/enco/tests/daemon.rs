@@ -5,7 +5,7 @@ mod client;
 mod protocol;
 
 use enco_core::*;
-use enco_kernel::Provider;
+use enco_kernel::{Inspection, Provider};
 use enco_wasm::{ProviderSettings, WasmEngine, WasmProvider};
 use protocol::Command;
 use serde_json::json;
@@ -47,16 +47,17 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         EntryBody::AttemptSettled { result: AttemptResult::Completed { message, .. }, .. }
             if message.joined_text() == "hello"
     )));
-    let hash = entries
-        .iter()
-        .find_map(|e| match e.body {
-            EntryBody::AttemptStarted {
-                provider: CodeRef::Wasm { artifact },
-                ..
-            } => Some(artifact),
-            _ => None,
-        })
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+        .arg("inspect")
+        .env("ENCO_HOME", daemon.root.path())
+        .output()
+        .await
         .unwrap();
+    assert!(output.status.success());
+    let inspection: Inspection = serde_json::from_slice(&output.stdout).unwrap();
+    let CodeRef::Wasm { artifact: hash } = inspection.provider else {
+        panic!("provider must reference a Wasm artifact");
+    };
     let text = hash.to_string();
     let bytes = std::fs::read(
         daemon

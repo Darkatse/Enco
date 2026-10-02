@@ -1,7 +1,7 @@
 mod support;
 
 use enco_core::*;
-use enco_kernel::{ProviderRequest, Store};
+use enco_kernel::Store;
 use support::*;
 
 #[tokio::test]
@@ -9,7 +9,7 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
     let dir = tempfile::tempdir().unwrap();
     let write = call("fs_write", r#"{"path":"note.txt","content":"hello"}"#);
     let provider = ScriptedProvider::new(vec![calls(vec![write.clone()]), reply("done")]);
-    let (kernel, store) = kernel(dir.path(), provider.clone()).await;
+    let (kernel, _) = kernel(dir.path(), provider.clone()).await;
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
@@ -21,35 +21,19 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
     let starts: Vec<_> = entries
         .iter()
         .filter_map(|e| match e.body {
-            EntryBody::AttemptStarted { plan, .. } => Some(plan),
+            EntryBody::AttemptStarted { attempt, .. } => Some(attempt),
             _ => None,
         })
         .collect();
     assert_eq!(starts.len(), requests.len());
-    for (hash, request) in starts.iter().zip(&requests) {
-        let plan: ContextPlan =
-            serde_json::from_slice(&store.get_blob(hash).await.unwrap()).unwrap();
-        let messages = plan
-            .items
-            .iter()
-            .map(|item| match item {
-                PlanItem::Message { message } => message.clone(),
-                PlanItem::Log { pos } => entries
-                    .iter()
-                    .find(|entry| entry.pos == *pos)
-                    .unwrap()
-                    .body
-                    .canonical_message(Some(AttemptPurpose::Reply), Some(&write))
-                    .unwrap(),
-            })
-            .collect();
+    for (attempt, request) in starts.iter().zip(&requests) {
         assert_eq!(
-            request,
-            &ProviderRequest {
-                messages,
-                tools: plan.tools.into_iter().map(|(_, spec)| spec).collect(),
-                max_output_tokens: plan.max_output_tokens,
-            }
+            &kernel
+                .inspect(session.id, Some(*attempt))
+                .await
+                .unwrap()
+                .request,
+            request
         );
     }
     kernel.shutdown().await.unwrap();

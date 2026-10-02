@@ -13,7 +13,7 @@ pub trait Provider: Send + Sync {
 }
 
 /// Resolved request; all content comes from the frozen plan and its Log references.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderRequest {
     /// Canonical messages in request order.
     pub messages: Vec<Message>,

@@ -113,6 +113,17 @@ pub enum KernelError {
     /// The actor stopped after a storage failure.
     #[error("session {0} is stopped: {1}")]
     SessionStopped(SessionId, String),
+    /// The requested Session has no matching recorded Attempt.
+    #[error("session {0} has no attempt {1}")]
+    UnknownAttempt(SessionId, String),
+    /// A persisted plan cannot be decoded or resolved against its recorded history.
+    #[error("attempt {attempt}: invalid recorded plan: {reason}")]
+    InvalidPlan {
+        /// Attempt which references the invalid plan.
+        attempt: AttemptId,
+        /// Decoding or resolution failure.
+        reason: String,
+    },
     /// No such Session is registered.
     #[error("unknown session {0}")]
     UnknownSession(SessionId),

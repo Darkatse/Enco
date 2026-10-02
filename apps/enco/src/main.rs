@@ -8,7 +8,7 @@ mod protocol;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use enco_core::{EventId, MemoryId, ScheduleId};
+use enco_core::{AttemptId, EventId, MemoryId, ScheduleId};
 use paths::Paths;
 use protocol::Command;
 use tokio::io::AsyncWriteExt;
@@ -46,6 +46,12 @@ enum Action {
     Log {
         #[arg(long, default_value = "main", help = "Session name or ID")]
         session: String,
+    },
+    Inspect {
+        #[arg(long, default_value = "main", help = "Session name or ID")]
+        session: String,
+        #[arg(long)]
+        attempt: Option<AttemptId>,
     },
     SafeMode {
         state: Switch,
@@ -101,6 +107,10 @@ async fn main() -> Result<()> {
         Action::Log { session } => Command::Log {
             session,
             after: None,
+        },
+        Action::Inspect { session, attempt } => Command::Inspect {
+            session,
+            attempt_id: attempt,
         },
         Action::SafeMode { state } => Command::SafeMode {
             enabled: matches!(state, Switch::On),

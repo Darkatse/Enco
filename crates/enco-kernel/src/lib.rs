@@ -4,6 +4,7 @@
 mod attempt;
 mod builtin;
 mod dispatch;
+mod inspect;
 mod kernel;
 mod limits;
 mod plan;
@@ -15,6 +16,7 @@ mod session;
 mod snapshot;
 mod transcript;
 
+pub use inspect::Inspection;
 pub use kernel::*;
 pub use ports::*;
 pub use scheduler::{ScheduleError, Schedules};

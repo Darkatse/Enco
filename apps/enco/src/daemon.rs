@@ -298,6 +298,13 @@ async fn process(
             let session = existing_session(kernel, &name).await?;
             json!(kernel.log(session.id, after).await?)
         }
+        Command::Inspect {
+            session: name,
+            attempt_id,
+        } => {
+            let session = existing_session(kernel, &name).await?;
+            json!(kernel.inspect(session.id, attempt_id).await?)
+        }
         Command::SafeMode { enabled } => {
             kernel.set_safe_mode(enabled).await?;
             json!({ "enabled": enabled })

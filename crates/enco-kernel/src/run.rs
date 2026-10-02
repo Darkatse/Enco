@@ -153,7 +153,9 @@ impl SessionActor {
                     (plan, AttemptKind::Compaction(upto))
                 }
             };
-            let request = crate::plan::resolve(&plan, &input, kind.purpose(), &snapshot.lifeline)
+            crate::plan::validate(&plan, &input, kind.purpose(), &snapshot.lifeline)
+                .map_err(|e| failed(code::PLAN_INVALID, e.to_string()))?;
+            let request = crate::plan::resolve(&plan, &input.transcript)
                 .map_err(|e| failed(code::PLAN_INVALID, e.to_string()))?;
             if matches!(kind, AttemptKind::Reply) {
                 return Ok((plan, request));

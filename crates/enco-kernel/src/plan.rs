@@ -1,4 +1,4 @@
-use crate::{ComposeInput, ProviderRequest};
+use crate::{ComposeInput, ProviderRequest, Transcript};
 use enco_core::*;
 use std::collections::HashSet;
 
@@ -6,33 +6,16 @@ use std::collections::HashSet;
 #[error("invalid context plan: {0}")]
 pub(crate) struct PlanError(pub String);
 
-pub(crate) fn resolve(
+pub(crate) fn validate(
     plan: &ContextPlan,
     input: &ComposeInput,
     purpose: AttemptPurpose,
     lifeline: &[CapabilityId],
-) -> Result<ProviderRequest, PlanError> {
+) -> Result<(), PlanError> {
     if plan.items.is_empty() {
         return Err(PlanError("no messages".into()));
     }
-    let messages = plan
-        .items
-        .iter()
-        .map(|item| match item {
-            PlanItem::Message { message } => Ok(message.clone()),
-            PlanItem::Log { pos } => input
-                .transcript
-                .items
-                .binary_search_by_key(pos, |item| item.pos)
-                .map(|index| input.transcript.items[index].message.clone())
-                .map_err(|_| {
-                    PlanError(format!(
-                        "Log position {pos:?} is not in the current transcript"
-                    ))
-                }),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    validate_messages(&messages)?;
+    validate_messages(&messages(plan, &input.transcript)?)?;
     let mut names = HashSet::new();
     for (id, spec) in &plan.tools {
         if !names.insert(&spec.name)
@@ -57,14 +40,42 @@ pub(crate) fn resolve(
     {
         return Err(PlanError("reply omitted a required lifeline tool".into()));
     }
+    Ok(())
+}
+
+pub(crate) fn resolve(
+    plan: &ContextPlan,
+    transcript: &Transcript,
+) -> Result<ProviderRequest, PlanError> {
     Ok(ProviderRequest {
-        messages,
+        messages: messages(plan, transcript)?.into_iter().cloned().collect(),
         tools: plan.tools.iter().map(|(_, spec)| spec.clone()).collect(),
         max_output_tokens: plan.max_output_tokens,
     })
 }
 
-fn validate_messages(messages: &[Message]) -> Result<(), PlanError> {
+fn messages<'a>(
+    plan: &'a ContextPlan,
+    transcript: &'a Transcript,
+) -> Result<Vec<&'a Message>, PlanError> {
+    plan.items
+        .iter()
+        .map(|item| match item {
+            PlanItem::Message { message } => Ok(message),
+            PlanItem::Log { pos } => transcript
+                .items
+                .binary_search_by_key(pos, |item| item.pos)
+                .map(|index| &transcript.items[index].message)
+                .map_err(|_| {
+                    PlanError(format!(
+                        "Log position {pos:?} is not in the recorded transcript"
+                    ))
+                }),
+        })
+        .collect()
+}
+
+fn validate_messages(messages: &[&Message]) -> Result<(), PlanError> {
     let mut pending = std::collections::HashMap::new();
     for message in messages {
         if message.role == Role::Tool {

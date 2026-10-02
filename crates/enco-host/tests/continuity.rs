@@ -185,6 +185,25 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
         ));
     }
     let log = kernel.log(session.id, None).await.unwrap();
+    let requests = provider.requests.lock().unwrap().clone();
+    let attempts: Vec<_> = log
+        .iter()
+        .filter_map(|entry| match entry.body {
+            EntryBody::AttemptStarted { attempt, .. } => Some(attempt),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(attempts.len(), requests.len());
+    for (attempt, request) in attempts.into_iter().zip(requests) {
+        assert_eq!(
+            kernel
+                .inspect(session.id, Some(attempt))
+                .await
+                .unwrap()
+                .request,
+            request
+        );
+    }
     let (upto, summary) = log
         .iter()
         .rev()

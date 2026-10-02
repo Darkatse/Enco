@@ -37,6 +37,10 @@ pub(crate) enum Command {
         session: String,
         after: Option<LogPos>,
     },
+    Inspect {
+        session: String,
+        attempt_id: Option<AttemptId>,
+    },
     SafeMode {
         enabled: bool,
     },
