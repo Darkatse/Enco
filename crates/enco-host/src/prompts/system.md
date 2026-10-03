@@ -16,4 +16,3 @@ Standing instructions from the owner live in the AGENTS.md file listed under Env
 
 Tools
 - A tool result marked "outcome unknown" means the action may already have happened. Check the current state before trying again.
-- To set a reminder, call schedule_create with an RFC 3339 time that includes the UTC offset, written like the current time in the [context] message.

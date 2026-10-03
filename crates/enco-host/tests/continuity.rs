@@ -97,7 +97,8 @@ async fn requests_keep_a_stable_prefix_and_date_inputs_in_the_current_offset() {
         let requests = provider.requests.lock().unwrap();
         let request = requests.last().unwrap();
         let (context, prefix) = request.messages.split_last().unwrap();
-        assert!(context.joined_text().contains(at));
+        let current = now.format("%Y-%m-%d %H:%M, %A (UTC%:z)").to_string();
+        assert!(context.joined_text().contains(&current));
         let actual: Vec<_> = prefix
             .iter()
             .filter(|m| m.role == Role::User)

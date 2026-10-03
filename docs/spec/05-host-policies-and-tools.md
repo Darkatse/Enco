@@ -134,7 +134,7 @@ pub const LIFELINE: [&str; 8] = ["fs_read", "fs_write", "fs_edit", "fs_list", "s
 
 ```text
 [context]
-Current time: {now，RFC 3339，精确到秒，带偏移} ({英文星期})
+Current time: {YYYY-MM-DD HH:MM}, {英文星期} (UTC{±HH:MM})
 
 Your memories (authoritative; they override anything said earlier in the conversation):
 - {内容} (id: {候选 id 去掉 "memory:" 前缀})
@@ -174,7 +174,7 @@ max_output_tokens = profile.reply.budget.max_output_tokens
 
 - 相隔一小时以上的两条输入必然跨过整点，所以这一条规则既标出隔了很久才来的消息，也在持续的对话中大约每小时标一次。没有标记的输入与它前面最近的一条输入在同一个钟点。
 - 标记只取决于已记录的接收时间和当前的 UTC 偏移，每个 Round 渲染出的结果相同，不破坏前缀。偏移改变时（例如夏令时切换），所有标记按新偏移重新渲染一次。
-- 当前时间只出现在末尾的上下文消息中。
+- 当前时间只出现在末尾的上下文消息中，写法与标记相同，再加上 UTC 偏移。两者都只到分钟：Agent 读时间不需要秒。工具参数要求的格式（例如 `schedule_create` 的 RFC 3339）由工具描述说明，不靠模仿这里的写法。
 - 显示哪些时间、怎样显示是 composer 的策略，所以规范消息（03 §1.4）不含时间。例如角色扮演的 composer 可以改用故事中的时间。
 
 ### 4.4 何时压缩
@@ -242,7 +242,6 @@ Standing instructions from the owner live in the AGENTS.md file listed under Env
 
 Tools
 - A tool result marked "outcome unknown" means the action may already have happened. Check the current state before trying again.
-- To set a reminder, call schedule_create with an RFC 3339 time that includes the UTC offset, written like the current time in the [context] message.
 ```
 
 `safe_mode.md`：

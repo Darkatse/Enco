@@ -1,5 +1,5 @@
 use crate::limits::*;
-use chrono::{SecondsFormat, Timelike};
+use chrono::Timelike;
 use enco_core::*;
 use enco_kernel::*;
 use std::{collections::HashMap, path::PathBuf};
@@ -120,11 +120,14 @@ impl FactoryComposer {
     }
 }
 
+/// The one way the Agent reads a time: the current time and the arrival markers share it.
+const LOCAL_TIME: &str = "%Y-%m-%d %H:%M, %A";
+
 fn current_context(input: &ComposeInput, omitted: &mut Vec<Omission>) -> String {
     let mut text = format!(
-        "[context]\nCurrent time: {} ({})",
-        input.now.to_rfc3339_opts(SecondsFormat::Secs, false),
-        input.now.format("%A")
+        "[context]\nCurrent time: {} (UTC{})",
+        input.now.format(LOCAL_TIME),
+        input.now.format("%:z")
     );
     append_memories(&mut text, omitted, input);
     let ending = match &input.previous_run_end {
@@ -154,7 +157,7 @@ fn timed_history(input: &ComposeInput) -> Vec<(&TranscriptItem, Option<String>)>
                 let hour = Some((local.date_naive(), local.hour()));
                 let changed = hour != previous_hour;
                 previous_hour = hour;
-                changed.then(|| local.format("[%Y-%m-%d %H:%M, %A]").to_string())
+                changed.then(|| format!("[{}]", local.format(LOCAL_TIME)))
             });
             (item, marker)
         })
