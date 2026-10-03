@@ -13,6 +13,8 @@ targets = ["wasm32-wasip2"]
 
 Edition 2024，`resolver = "3"`。只使用 stable。
 
+宿主的 release 构建开启增量编译（`[profile.release] incremental = true`）：改一个文件后重新构建从约 20 秒降到 2–5 秒（实测）。Cargo 只对 workspace 成员增量编译，wasmtime、SQLite、tokio 等依赖仍完整优化，我们自己的 crate 以 IO 调度为主，损失的几个百分点性能无关紧要。插件 workspace 保持干净构建：出厂插件按内容寻址，字节随缓存状态变化会产生新的出厂代际（11 §3）。
+
 **关于 WASIp3。** WASIp3 的核心是组件模型的异步 ABI（`async func`、`stream`、`future`），我们的 WIT 从第一天起就使用它；在 `wasm32-wasip2` 目标上配合 wit-bindgen 0.62 与 wasmtime 49 已经实测可用。Rust 的 `wasm32-wasip3` 目标在 1.98.1 中仍是 Tier 3（rustup 没有预编译的 std，需要 nightly 与 `-Zbuild-std`），与"只使用 stable"冲突，而且插件几乎不经 std 使用系统接口，换目标没有功能收益。宿主一侧 wasmtime-wasi 49 的默认 feature 已包含 p3。该目标进入 Tier 2 之后再迁移，只涉及三处：本文件的 `targets`、`xtask build-factory` 的 `--target`（07 §5）、enco-wasm 中的 WASI linker（07 §3.3）。WIT 不依赖 WASI 版本，所以不变。
 
 ## 2. 目录结构

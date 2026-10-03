@@ -40,6 +40,11 @@ enco-kernel = { path = "crates/enco-kernel" }
 enco-host = { path = "crates/enco-host" }
 enco-wasm = { path = "crates/enco-wasm" }
 
+# Our crates orchestrate IO, and the hot paths live in dependencies, which Cargo never
+# builds incrementally. Plugins keep clean builds because their bytes are content-addressed.
+[profile.release]
+incremental = true
+
 # plugins/Cargo.toml keeps an identical copy; `cargo xtask check` rejects any difference.
 [workspace.lints.rust]
 unsafe_code = "forbid"
