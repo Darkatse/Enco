@@ -64,7 +64,8 @@ async fn wasm_memory_write_is_visible_to_native_admin_and_the_next_request() {
     assert!(output.status.success());
     let memory: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(memory["memories"][0]["text"], "Owner is River");
-    assert!(memory["unindexed"].as_array().unwrap().is_empty());
+    let id: MemoryId = serde_json::from_value(memory["memories"][0]["id"].clone()).unwrap();
+    assert_eq!(memory["unindexed"], json!([id]));
     let requests = server.received_requests().await.unwrap();
     let chat: Vec<_> = requests
         .iter()
@@ -72,10 +73,42 @@ async fn wasm_memory_write_is_visible_to_native_admin_and_the_next_request() {
         .collect();
     let body: serde_json::Value = serde_json::from_slice(&chat[1].body).unwrap();
     assert!(
-        body["messages"].as_array().unwrap().last().unwrap()["content"]
+        body["messages"][0]["content"]
             .as_str()
             .unwrap()
             .contains("Owner is River")
+    );
+    // Saving updates pinned context immediately, without embedding again in the tool loop.
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.url.path() == "/embeddings")
+            .count(),
+        1
+    );
+
+    client
+        .send(Command::Send {
+            session: "main".into(),
+            text: "What is my name?".into(),
+            event_id: EventId::new(),
+        })
+        .await
+        .unwrap();
+    finish(&mut client).await;
+    assert!(
+        client.request(Command::Memories {}).await.unwrap()["unindexed"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.url.path() == "/embeddings")
+            .count(),
+        2
     );
     assert!(
         requests
@@ -89,14 +122,10 @@ async fn wasm_memory_write_is_visible_to_native_admin_and_the_next_request() {
                     .any(|t| t == "Owner is River")
             )
     );
-    let id: MemoryId = serde_json::from_value(memory["memories"][0]["id"].clone()).unwrap();
-    assert_eq!(
-        client
-            .request(Command::ForgetMemory { memory_id: id })
-            .await
-            .unwrap()["forgotten"],
-        true
-    );
+    client
+        .request(Command::ForgetMemory { memory_id: id })
+        .await
+        .unwrap();
     assert!(
         client.request(Command::Memories {}).await.unwrap()["memories"]
             .as_array()

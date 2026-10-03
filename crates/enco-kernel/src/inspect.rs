@@ -16,8 +16,8 @@ pub struct Inspection {
     pub settings: ProviderSettings,
     /// Exact canonical request at this Attempt's Log position.
     pub request: ProviderRequest,
-    /// Context omissions already recorded in the plan.
-    pub omitted: Vec<Omission>,
+    /// Frozen plan, including each inline message's sources and all recorded omissions.
+    pub plan: ContextPlan,
     /// Recorded settlement, absent while the Attempt is unsettled.
     pub result: Option<AttemptResult>,
 }
@@ -86,7 +86,7 @@ impl Kernel {
             provider: provider.clone(),
             settings: settings.clone(),
             request,
-            omitted: plan.omitted,
+            plan,
             result,
         })
     }

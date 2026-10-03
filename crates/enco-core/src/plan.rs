@@ -1,4 +1,4 @@
-use crate::{CapabilityId, LogPos, Message, ToolSpec};
+use crate::{CapabilityId, ContentHash, LogPos, Message, ToolSpec};
 use serde::{Deserialize, Serialize};
 
 /// The composer’s complete request plan, recorded as a content-addressed blob before sending.
@@ -22,12 +22,23 @@ pub enum PlanItem {
     Message {
         /// Inline content created by the composer, recorded verbatim in the plan.
         message: Message,
+        /// Candidate contributions actually used in this message, in rendering order.
+        sources: Vec<Source>,
     },
     /// Reference to a canonical Log message.
     Log {
         /// Entry whose canonical message is resolved from this Session’s Log.
         pos: LogPos,
     },
+}
+
+/// The identity and exact content of a candidate used to compose an inline message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Source {
+    /// Source-qualified candidate ID.
+    pub id: String,
+    /// Content hash of the candidate's original text, before formatting.
+    pub hash: ContentHash,
 }
 
 /// A visible explanation of content excluded from this request.
@@ -57,6 +68,8 @@ pub struct Candidate {
     pub kind: CandidateKind,
     /// Current source content that the composer may include within its budget.
     pub text: String,
+    /// Supplied independently of the latest input, such as instructions or pinned memories.
+    pub standing: bool,
 }
 
 /// Semantic category interpreted by the composer.

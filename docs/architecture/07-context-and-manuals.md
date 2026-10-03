@@ -16,6 +16,8 @@ Agent 友好的核心是认知负担轻。这里有两个读者：运行中的�
 
 这与系统其他部分的分工是同一个模式：渠道那边，宿主持有传输并负责提交，插件负责协议语义；这里，内核持有记录与绑定，composer 负责内容策略，Provider 负责协议。
 
+对话输入、回复与工具结果由规范格式还原；输入的接收时间、Run 的结束结局等事实由 Transcript 提供。Agent 对这些事实的叙述属于 composer，逐字冻结在计划中，不进入 core 的规范消息转换。内核提供上一份回复计划，是否沿用也由 composer 决定。
+
 **协议差异留在 Provider。** Chat Completions、Responses、Claude Messages 等线上协议都导出同一个 `completion` 接口（§4.10）。多家协议共有的含义（例如图片输入、结构化输出）才进入规范类型，按 WIT semver 只增不改；只属于某一种协议的东西由 Provider 自行处理：
 - thinking 签名与 reasoning 内容放进 `extension`，只回放给同一身份的插件（§4.10）；
 - Responses 的 `previous_response_id` 作为 `extension` 返回，只当作缓存使用：Log 中始终有完整的请求，服务端状态失效时就发送完整请求；
@@ -24,13 +26,13 @@ Agent 友好的核心是认知负担轻。这里有两个读者：运行中的�
 内核只提供四个机制：
 
 1. **可用 ≠ 可见**：Round 快照钉住全部可用的能力，ContextPlan 中的披露集决定模型能看到哪些。**模型只能调用它被告知过的能力**：可调用 = 已披露（包括本 Round 内通过搜索展开并已记录的）∩ 快照。
-2. **ContextPlan 就是准备好的请求**：composer 输出一组有序的请求片段，每段要么是内联内容（由 composer 生成，例如 SillyTavern 格式化后的文本），要么是对不可变内容的引用（Log 条目、blob、候选块）；此外还有披露集（每项带完整的工具定义，即模型看到的名称、描述与 schema；名称必须与注册表一致，§4.10）、被省略的条目及原因，以及每段的稳定性标注。内核只负责解引用，不包含任何排版逻辑；校验通过后按内容寻址记录，再原样交给 Provider。
+2. **ContextPlan 就是准备好的请求**：composer 输出一组有序的请求片段，每段要么是内联内容（由 composer 生成，例如 SillyTavern 格式化后的文本），要么是对不可变内容的引用（Log 条目、blob、候选块）。内联消息记录实际使用的候选来源（id 与原始文本哈希），供 composer 沿用与事后查看。此外还有披露集（每项带完整的工具定义，即模型看到的名称、描述与 schema；名称必须与注册表一致，§4.10）、被省略的条目及原因，以及每段的稳定性标注。内核只负责解引用，不包含任何排版逻辑；校验通过后按内容寻址记录，再原样交给 Provider。
 3. **记录缓存事实**：每次 Attempt 记录 Provider 回报的用量，包括命中缓存的 token 数；上一份 ContextPlan 作为 composer 的输入。这样缓存优化可以测量、可以迭代，而内核本身不含任何缓存逻辑。
 4. **声明的要求与安全模式**：Session 的配置可以声明要求，例如默认的 Agent 配置要求救生集常驻（`fs_*`、`shell_exec`、`plugin_status/deploy/rollback`、`manual_read`、`capability_search`）。内核据此校验计划，不满足的计划按 composer 失败处理：回退代际或进入安全模式。安全模式下的出厂 composer 永远带有救生集。角色扮演一类的 Session 可以不声明这项要求。
 
 **缓存优化的分工。** composer 知道哪些内容是稳定的（这是语义），所以在片段上标注 `stable` 或 `volatile`。默认 composer 在一个请求系列内只追加披露，在压缩时开始新系列。Provider 知道怎样在线上利用稳定性（例如在稳定边界放置缓存断点、用原生的延迟加载保持工具列表不变）。内核记录命中率。换一个 composer 或 Provider，正确性都不受影响。
 
-**SillyTavern 式组装。** 它是一个 composer 实现（prompt manager 的顺序、深度注入、宏展开，都是它内部的插槽模型），再加上若干 Context 贡献（例如按关键词扫描最近消息的世界书、作者注释）。内核不定义任何插槽，插槽是 composer 自己的词汇。Context 贡献描述候选块时使用一小组共享的种类（instruction / knowledge / memory / reminder / example / state），再加上由具体 composer 自行解释的不透明元数据。这与系统其他地方使用的两层契约相同：控制信息有类型，业务内容是受 schema 约束的 JSON。`round.compose` 是"每个 Session 一个"，而不是全局单例：Agent 会话使用默认 composer，角色扮演会话使用 SillyTavern 式 composer，两者可以并存。文本补全（instruct 模板）格式化属于 composer 与 Provider 之间的约定，通过 Provider 的扩展字段表达，目前不需要。
+**SillyTavern 式组装。** 它是一个 composer 实现（prompt manager 的顺序、深度注入、宏展开，都是它内部的插槽模型），再加上若干 Context 贡献（例如按关键词扫描最近消息的世界书、作者注释）。内核不定义任何插槽，插槽是 composer 自己的词汇。Context 贡献描述候选块时使用一小组共享的种类（instruction / knowledge / memory / reminder / example / state），再加上由具体 composer 自行解释的不透明元数据。每个候选还说明它是常驻的（不看最新输入也会提供），还是因最新输入而召回的：前者可以留在请求开头，后者跟着它所回应的消息，这样请求可以只追加。这与系统其他地方使用的两层契约相同：控制信息有类型，业务内容是受 schema 约束的 JSON。`round.compose` 是"每个 Session 一个"，而不是全局单例：Agent 会话使用默认 composer，角色扮演会话使用 SillyTavern 式 composer，两者可以并存。文本补全（instruct 模板）格式化属于 composer 与 Provider 之间的约定，通过 Provider 的扩展字段表达，目前不需要。
 
 所有可披露的条目使用同一个三级模型：
 

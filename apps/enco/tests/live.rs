@@ -130,10 +130,6 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
         serde_json::from_value(admin.request(Command::Memories {}).await.unwrap()).unwrap();
     assert_eq!(state.memories.len(), 1);
     let id = state.memories[0].id;
-    assert!(
-        state.unindexed.is_empty(),
-        "Gemini must have indexed the memory"
-    );
     run(
         &mut main,
         "live-main",
@@ -164,6 +160,12 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
             .await
         )
         .contains("tea-green")
+    );
+    let state: enco_host::MemoryList =
+        serde_json::from_value(admin.request(Command::Memories {}).await.unwrap()).unwrap();
+    assert!(
+        state.unindexed.is_empty(),
+        "Gemini must have indexed the corrected memory on the next input"
     );
     drop(other);
     println!(

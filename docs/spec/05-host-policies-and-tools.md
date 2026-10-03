@@ -96,7 +96,7 @@ pub const LIFELINE: [&str; 8] = ["fs_read", "fs_write", "fs_edit", "fs_list", "s
 
 实现 `ContextSource`，不使用 `ContextQuery` 中的 Event。每次调用都重新读取文件，所以对常驻指令的修改在下一个 Round 立即生效。
 
-- `InstructionsContextSource::new(path)`，`path` 为 `$ENCO_HOME/AGENTS.md`。文件存在时 → `Candidate { id: "instructions:AGENTS.md", kind: Instruction, text }`；不存在不是错误，只是没有候选。
+- `InstructionsContextSource::new(path)`，`path` 为 `$ENCO_HOME/AGENTS.md`。文件存在时 → `Candidate { id: "instructions:AGENTS.md", kind: Instruction, text, standing: true }`；不存在不是错误，只是没有候选。
 - 文件不是合法 UTF-8 时返回 `ContextError`，message 指明文件。宁可让这一轮明确失败，也不要悄悄跳过主人的指令。
 
 ## 4. FactoryComposer（`composer.rs`）
@@ -105,13 +105,19 @@ pub const LIFELINE: [&str; 8] = ["fs_read", "fs_write", "fs_edit", "fs_list", "s
 
 它是纯函数：只读取 `ComposeInput` 和构造时传入的工作区、指令文件路径。
 
-### 4.1 请求的排列
+### 4.1 请求的形状
 
-请求按变化频率排列：越稳定的内容越靠前，只属于这个 Round 的内容放在最后。服务商的前缀缓存只命中与之前请求相同的开头部分。这样排列后，后一次请求以前一次请求去掉末尾上下文消息后的全部内容开头；前缀只在它包含的内容变化时改变：常驻指令、摘要、profile、可用工具、安全模式，以及时间标记所用的 UTC 偏移。实际命中多少记在 `AttemptSettled` 的 `usage.cached_input_tokens` 中。
+按 Agent 读到的顺序，一次回复请求是：
 
-回复请求由三部分组成：
+1. **System 消息**：Agent 是谁、怎样工作，以及它始终要知道的事：环境、主人的常驻指令、自己的置顶记忆、自己对更早对话的摘要。
+2. **对话**：Transcript 的条目按 Log 顺序排列。来自 Inbox 的输入前面可以有一条说明，写着这条消息何时到达、之前的工作为何停止、Agent 因它想起了哪些记忆（§4.3）。
+3. 请求在最新的条目处结束：主人的消息、通知或工具结果。Agent 最后读到的就是它要回应的内容。
 
-1. **System 消息**：由以下各节依次拼接，没有内容的节整节省略。
+**只追加。** 说明一经写入就留在原位：composer 沿用本 Session 上一份回复计划（`ComposeInput.previous_plan`，04 §2），只在末尾添加新条目和它们的说明。所以 Agent 以后看到的历史，就是它当时看到的样子；每次请求都以上一次请求的全部内容开头，前缀缓存一直延伸到上一次的末尾。实际命中多少记在 `AttemptSettled` 的 `usage.cached_input_tokens` 中。
+
+上一份计划存在、它的 System 消息及其来源与本次相同、它引用的 Log 条目都还在 Transcript 中时沿用；否则从头渲染，开始新的系列。System 消息只在常驻指令、置顶记忆、摘要、时区或安全模式改变时变化，压缩会让旧条目离开 Transcript。
+
+System 消息由以下各节依次拼接，没有内容的节整节省略：
 
 ```text
 {prompts/system.md；安全模式时改用 prompts/safe_mode.md}
@@ -120,68 +126,79 @@ pub const LIFELINE: [&str; 8] = ["fs_read", "fs_write", "fs_edit", "fs_list", "s
 - Workspace: {工作区绝对路径}
 - Standing instructions: {AGENTS.md 的绝对路径}
 - Session: {session.name}
+- Time zone: UTC{now 的偏移，±HH:MM}
 
 ## Standing instructions (AGENTS.md)
-{Instruction 候选的内容}
+{常驻的 Instruction 候选}
+
+## Your pinned memories
+- {内容} (id: {候选 id 去掉 "memory:" 前缀})
+…
 
 ## Your summary of the earlier conversation
 {transcript.summary}
 ```
 
-2. **历史**：Transcript 的条目，来自 Inbox 的输入在需要时带时间标记（§4.3）。
+候选放在哪里由 `standing` 决定（03 §1.8）：常驻候选不看最新输入也会提供，放进 System 消息；其余候选因最新输入而召回，放进这条输入的说明。出厂 composer 认识的有三种：常驻的 Instruction 进常驻指令一节，常驻的 Memory 进置顶记忆一节，召回的 Memory 进说明。
 
-3. **末尾的上下文消息**：一条 User 消息，各部分之间空一行，没有内容的部分省略。
+说明是一条 User 消息，放在它所属的输入之前，各部分之间空一行，没有内容的部分省略，整条都没有内容时不放：
 
 ```text
-[context]
-Current time: {YYYY-MM-DD HH:MM}, {英文星期} (UTC{±HH:MM})
+[{YYYY-MM-DD HH:MM}, {英文星期}]
 
-Your memories (authoritative; they override anything said earlier in the conversation):
+{上一次工作未正常完成的说明}
+
+Memories you recall for the next message:
 - {内容} (id: {候选 id 去掉 "memory:" 前缀})
 …
-
-{Your previous work was interrupted before it finished. | Your previous work was cancelled before it finished. | Your previous work stopped after an error: <message> | Your previous work reached the step limit before it finished.}
-The tool results above show what you did and which actions remain uncertain.
 ```
 
-最后一部分只在 `previous_run_end` 存在且不是 `Completed` 时出现，四种说法依次对应 `Interrupted`、`Cancelled`、`Failed`、`BudgetExhausted`。
-
-末尾的上下文消息不是主人说的话，所以和提醒、插件回退通知一样，是以方括号标签开头的 User 消息（03 §1.4）。采用 User 角色，让出厂策略不依赖服务商对会话中途 System 消息的支持，也避免上下文被聊天模板合并到开头而破坏前缀。它和时间标记都是计划中的内联消息，随 `AttemptStarted` 记录；它们不是 Transcript 条目，自动召回的记忆块不作为压缩输入；对话和工具结果仍可能包含记忆内容。
+说明是 Agent 对这条输入的处境感知，不是主人说的话。它和提醒、插件回退通知一样用 User 角色（03 §1.4），因为一些协议只在开头接受 system，一些聊天模板也会把所有 system 消息合并到开头。说明逐字记在计划中，不是规范消息；自动召回块不作为压缩原文，时间与工作结局则由同一条渲染路径用于回复和压缩。
 
 ### 4.2 预算
 
 所有估算都使用 `estimate_tokens`（03 §1.11）。回复的预算是 `profile.reply.budget`，压缩的预算是 `profile.compaction.budget`（12 §5）；本节与 §4.3、§4.4 中的 `context_tokens`、`max_output_tokens` 都指回复预算。
 
 - **常驻指令**：总估算不超过 `context_tokens` 的 10% 时全部纳入，否则整份省略，记录 `Omission { source: id, reason: "instructions exceed 10% of the context window" }`。
-- **记忆**：按候选的顺序（即来源给出的优先级，06 §5）逐条纳入，累计不超过 `context_tokens` 的 15%；超出的每一条都记录 `Omission { source: id, reason: "memory budget (15% of the context window) exceeded" }`。
+- **记忆**：本 Round 要显示的记忆，即置顶记忆和说明中新出现的召回记忆，按候选的顺序（即来源给出的优先级，06 §5）逐条纳入，累计不超过 `context_tokens` 的 15%；超出的每一条都记录 `Omission { source: id, reason: "memory budget (15% of the context window) exceeded" }`。
 - `plan.omitted` = `input.context.omitted`（来源报告的，原样放在最前）++ 上面两条规则产生的省略。
 
 ### 4.3 Reply 计划
 
 ```text
-items = [System 消息]
-     ++ 对 transcript.items 中的每一项依次放入：需要时间标记时先放 Message { User, 标记 }，再放 Log { pos }
-     ++ [末尾的上下文消息]
+head = System 消息（§4.1）
+if previous_plan 存在，它的第一项是与 head 相同的 System 消息（含来源），它引用的 Log 条目都在 transcript 中:
+    items = previous_plan.items                  // 沿用本系列
+    新条目 = transcript 中位置大于它最后一个 Log 引用的条目
+else:
+    items = [Message { System, head }]           // 开始新系列
+    新条目 = transcript 的全部条目
+for 新条目中的每一项:
+    说明不为空时放入 Message { User, 说明 }
+    放入 Log { pos }
 tools = input.tools 全部，原样复制（不做渐进式披露，那是 P2 默认 composer 的职责）
 max_output_tokens = profile.reply.budget.max_output_tokens
 ```
 
-**时间标记。** 带 `received_at` 的条目是来自 Inbox 的输入（04 §2），接收时间按 `now` 的 UTC 偏移换算为本地时间。一条输入如果是 Transcript 中的第一条输入，或者与上一条输入不在同一个钟点（日期与小时不全相同），前面就放一条标记：
+只有带 `received_at` 的条目（来自 Inbox 的输入，04 §2）有说明：
 
-```text
-[{YYYY-MM-DD HH:MM}, {英文星期}]
-```
+- **时间**：接收时间按 `now` 的 UTC 偏移换算为本地时间。这条输入是 Transcript 中的第一条输入，或者与上一条输入不在同一个钟点（日期与小时不全相同）时，说明以时间开头。相隔一小时以上的两条输入必然跨过整点，所以这条规则既标出隔了很久才来的消息，也在持续的对话中大约每小时标一次。时间只取决于已记录的接收时间和 UTC 偏移，从头渲染也得到同样的结果。
+- **工作结局**：按 Log 位置，将 `transcript.run_ends` 中的每个结局归到其后的第一条输入。两条输入之间最近的结局不是 `Completed` 时，说明写明原因。一次接纳多条输入时，只在第一条输入前写；同一输入的工具循环沿用已有说明。从头渲染时仍由相同事实确定，已压缩的结局随摘要保留。
+- **召回的记忆**：只出现在 Transcript 中最新一条输入的说明里，而且只在这条说明新渲染时出现。只与该 id 最近一次展示的内容比较：相同则不重复，更正后在后续新输入的说明中作为新的一行出现，改回更早的值也一样。Transcript 中没有输入（都已被压缩）时不显示。
 
-- 相隔一小时以上的两条输入必然跨过整点，所以这一条规则既标出隔了很久才来的消息，也在持续的对话中大约每小时标一次。没有标记的输入与它前面最近的一条输入在同一个钟点。
-- 标记只取决于已记录的接收时间和当前的 UTC 偏移，每个 Round 渲染出的结果相同，不破坏前缀。偏移改变时（例如夏令时切换），所有标记按新偏移重新渲染一次。
-- 当前时间只出现在末尾的上下文消息中，写法与标记相同，再加上 UTC 偏移。两者都只到分钟：Agent 读时间不需要秒。工具参数要求的格式（例如 `schedule_create` 的 RFC 3339）由工具描述说明，不靠模仿这里的写法。
-- 显示哪些时间、怎样显示是 composer 的策略，所以规范消息（03 §1.4）不含时间。例如角色扮演的 composer 可以改用故事中的时间。
+记忆源只在本 Round 接纳了新输入时召回（06 §5）。所以工具循环中途从头渲染时（压缩或 System 消息改变），最新输入的说明没有召回的记忆，直到下一条输入。
+
+每条内联消息的 `sources` 记录实际使用的候选 id 与原始文本哈希。去重从上一份计划的消息及来源倒序查找该 id 最近一次出现的哈希。System 消息同样记录纳入的常驻候选；只有时间、工作结局的说明与压缩消息的候选来源为空。
+
+请求中没有当前时间：Environment 给出时区，Agent 需要精确时间时自己查询（§4.6 的 `system.md`）。时间只到分钟、跨整点才标，是因为 Agent 读时间不需要更细；工具参数要求的格式（例如 `schedule_create` 的 RFC 3339）由工具描述说明。显示哪些时间、怎样显示是 composer 的策略，所以规范消息（03 §1.4）不含时间，例如角色扮演的 composer 可以改用故事中的时间。
+
+工作结局的文案由 composer 持有：`Your previous work {原因} before it finished. The tool results above show what you did and which actions remain uncertain.` 原因依次为 `was interrupted`（`Interrupted`）、`was cancelled`（`Cancelled`）、`reached the step limit`（`BudgetExhausted`）、`failed ({code}: {message})`（`Failed`）。
 
 ### 4.4 何时压缩
 
 ```text
-total = est(System 消息) + Σ est(历史条目) + est(末尾的上下文消息) + est(serde_json::to_string(tools 的 spec)) + max_output_tokens
-est(历史条目) = est(serde_json::to_string(item.message))，带时间标记时再加上 est(标记)
+total = est(System 消息) + Σ est(历史条目) + est(serde_json::to_string(tools 的 spec)) + max_output_tokens
+est(历史条目) = est(serde_json::to_string(item.message))，有说明时再加上 est(serde_json::to_string(说明消息))
 
 if total <= context_tokens * 80%:
     返回 Plan
@@ -195,6 +212,8 @@ else:
     返回 Err(ContextOverflow { needed: total, window: context_tokens })
 ```
 
+历史的预算按本次最终计划计算，包括沿用的旧说明；说明与它后面的 Log 引用一起计入该条目的大小。15% 只约束本轮新选择的记忆，不豁免旧说明对窗口的占用。
+
 压缩边界按 `round_ends` 从早到晚选：首选最早一个使 `Σ est(pos > b 的历史条目) <= keep` 的位置；如果摘要到那里放不进压缩窗口（§4.5），就选仍然放得下的最晚位置，先压缩一部分。每份摘要都带着上一份，所以部分压缩也是进展，同一个 Round 还有压缩次数时会接着压缩。连第一个 Round 都放不进压缩窗口时，没有边界。
 
 ### 4.5 压缩计划
@@ -206,7 +225,7 @@ items = [
   System: prompts/compaction.md,
   User:   "Previous summary:\n{transcript.summary}\n\n"（有旧摘要时）
           + "Conversation to summarize:\n" + 按顺序渲染 pos <= b 的条目：
-              时间标记        → "{标记}"，规则与 §4.3 相同，放在它标注的条目之前
+              输入说明        → 时间与工作结局，和回复共享 §4.3 的渲染，放在所属输入之前；不含自动召回记忆
               User 消息       → "Owner: {text}"
               Assistant 文本  → "You: {text}"
               工具调用        → "You called {name} with {arguments，最多 2000 字节}"
@@ -229,19 +248,20 @@ You are Enco, a personal assistant working for one owner. You run on the owner's
 Reply in the language the owner uses. Be concise.
 
 What you see
-- The final [context] message gives you the current time, some of your memories, and why your previous work stopped if it did not finish. Use it to continue the conversation and work above it; it is not a new request from the owner.
-- A bracketed time such as [2026-10-02 14:03, Friday] marks when the next incoming message arrived. The first incoming message shown has one, and so does each one that arrives in a new hour; an unmarked message arrived in the same hour as the one before it.
+- A short note may come just before an incoming message. When the message is the first one shown or arrives in a new hour, the note starts with its arrival time, such as [2026-10-02 14:03, Friday]; an unmarked message arrived in the same hour as the one before it. The note may also explain why your previous work stopped or list memories you recall for that message. These notes describe your own circumstances, not the owner's words.
+- The conversation ends with the newest message or tool result; continue from there.
 
 Memory
-- Your memories are durable facts about the owner. The [context] message shows pinned memories and memories that may be relevant to the latest message. They are authoritative: when they disagree with something said earlier in the conversation, the memories win.
+- Your memories are durable facts about the owner. Your pinned memories, listed below, are current; other memories appear in the note before the message they bear on and show what you recalled then. Memories override older things said in the conversation; when the owner tells you something newer, update the memory.
 - When you learn something worth keeping (a preference, a person, a commitment, an important event), save it with memory_save as one self-contained statement. Pin only facts that matter in almost every conversation.
 - To correct a memory, call memory_update with its id so that the old statement is replaced. To forget one, call memory_forget.
-- The [context] message shows only part of what you remember. Use memory_search when something may have been saved before.
+- You see only some of your memories. Use memory_search when something may have been saved before; it shows each memory as it is now.
 
 Standing instructions from the owner live in the AGENTS.md file listed under Environment. Edit it when the owner asks you to change how you work.
 
 Tools
 - A tool result marked "outcome unknown" means the action may already have happened. Check the current state before trying again.
+- For the exact current time, for example before setting a reminder relative to now, run date in the shell.
 ```
 
 `safe_mode.md`：
@@ -249,13 +269,13 @@ Tools
 ```text
 You are Enco, a personal assistant, working in safe mode. Use the available recovery tools to diagnose what failed and restore your usual capabilities. Your memories and standing instructions are not loaded. Reply in the language the owner uses.
 
-The final [context] message gives you the current time and why your previous work stopped if it did not finish. Use it to continue your work; it is not a new request from the owner. A bracketed time such as [2026-10-02 14:03, Friday] marks when the next incoming message arrived.
+A note just before a message may give its arrival time, such as [2026-10-02 14:03, Friday], or explain why your previous work stopped. It describes your own circumstances, not the owner's words. For the exact current time, run date in the shell.
 ```
 
 `compaction.md`：
 
 ```text
-Write a concise summary for yourself so you can continue this work with less context, possibly days later. Preserve what the owner wants, what you have decided and why, what you have learned and done, actions whose outcomes remain uncertain, and what remains to be done. A bracketed time such as [2026-10-02 14:03, Friday] shows when the following messages arrived; keep the dates of events and commitments, and write explicit dates rather than "today" or "tomorrow". Tagged notices, such as reminders and plugin rollbacks, also appear as Owner lines; they are context for you, not the owner's words. Do not copy saved memories into your summary; you can recall them separately. Write in the language of the conversation.
+Write a concise summary for yourself so you can continue this work with less context, possibly days later. Preserve what the owner wants, what you have decided and why, what you have learned and done, actions whose outcomes remain uncertain, and what remains to be done. A bracketed time such as [2026-10-02 14:03, Friday] shows when the following messages arrived; keep the dates of events and commitments, and write explicit dates rather than "today" or "tomorrow". A note before a message may say why your previous work stopped. Such notes, and tagged notices on Owner lines such as reminders and plugin rollbacks, are context for you, not the owner's words. Do not copy saved memories into your summary; you can recall them separately. Write in the language of the conversation.
 ```
 
 ## 5. SystemClock（`clock.rs`）

@@ -15,9 +15,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// `PRAGMA user_version` of `schema.sql`. Until P4, each schema change bumps it and
-/// existing databases are migrated by hand.
-const SCHEMA_VERSION: u32 = 2;
+/// `PRAGMA user_version` covers SQLite and its referenced plans. Until P4, persistent
+/// format changes bump it and existing databases are migrated by hand.
+const SCHEMA_VERSION: u32 = 3;
 const SESSION_COLUMNS: &str = "id,name,created_at,binding_node,binding_epoch,profile";
 const SCHEDULE_COLUMNS: &str = "id,session_id,due_at,message,created_at,state,fired_event_id";
 

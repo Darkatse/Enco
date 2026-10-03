@@ -9,7 +9,7 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
     let dir = tempfile::tempdir().unwrap();
     let write = call("fs_write", r#"{"path":"note.txt","content":"hello"}"#);
     let provider = ScriptedProvider::new(vec![calls(vec![write.clone()]), reply("done")]);
-    let (kernel, _) = kernel(dir.path(), provider.clone()).await;
+    let (kernel, store) = kernel(dir.path(), provider.clone()).await;
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
@@ -21,12 +21,12 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
     let starts: Vec<_> = entries
         .iter()
         .filter_map(|e| match e.body {
-            EntryBody::AttemptStarted { attempt, .. } => Some(attempt),
+            EntryBody::AttemptStarted { attempt, plan, .. } => Some((attempt, plan)),
             _ => None,
         })
         .collect();
     assert_eq!(starts.len(), requests.len());
-    for (attempt, request) in starts.iter().zip(&requests) {
+    for ((attempt, _), request) in starts.iter().zip(&requests) {
         assert_eq!(
             &kernel
                 .inspect(session.id, Some(*attempt))
@@ -36,6 +36,9 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
             request
         );
     }
+    // The next process must continue from the Log even if the last plan was removed.
+    let (_, hash) = starts.last().unwrap();
+    std::fs::remove_file(store.blob_path(hash)).unwrap();
     kernel.shutdown().await.unwrap();
     drop(kernel);
 
@@ -55,6 +58,15 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
         .find(|m| m.role == Role::Tool)
         .unwrap();
     assert!(restored.contains(tool_result));
+
+    let inspection = kernel.inspect(session.id, None).await.unwrap();
+    assert!(
+        inspection
+            .plan
+            .omitted
+            .iter()
+            .any(|o| o.source == format!("previous-plan:{hash}"))
+    );
     kernel.shutdown().await.unwrap();
 }
 

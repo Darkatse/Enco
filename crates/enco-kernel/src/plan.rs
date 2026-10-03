@@ -78,7 +78,7 @@ fn messages<'a>(
     plan.items
         .iter()
         .map(|item| match item {
-            PlanItem::Message { message } => Ok((message, None)),
+            PlanItem::Message { message, .. } => Ok((message, None)),
             PlanItem::Log { pos } => transcript
                 .items
                 .binary_search_by_key(pos, |item| item.pos)

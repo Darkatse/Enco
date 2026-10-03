@@ -24,6 +24,7 @@ impl ContextSource for InstructionsContextSource {
                     id: "instructions:AGENTS.md".into(),
                     kind: CandidateKind::Instruction,
                     text,
+                    standing: true,
                 }],
                 omitted: vec![],
             }),

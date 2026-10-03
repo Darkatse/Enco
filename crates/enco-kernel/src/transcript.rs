@@ -70,8 +70,10 @@ pub(crate) fn project(entries: &[Entry]) -> Transcript {
                 },
             });
         }
-        if matches!(entry.body, EntryBody::RoundEnded { .. }) {
-            transcript.round_ends.push(entry.pos);
+        match &entry.body {
+            EntryBody::RoundEnded { .. } => transcript.round_ends.push(entry.pos),
+            EntryBody::RunEnded { end, .. } => transcript.run_ends.push((entry.pos, end.clone())),
+            _ => {}
         }
     }
     transcript

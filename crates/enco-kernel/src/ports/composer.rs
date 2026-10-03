@@ -17,9 +17,10 @@ pub struct ComposeInput {
     pub session: SessionRecord,
     /// Canonical history after the latest compaction.
     pub transcript: Transcript,
-    /// Most recent activation's outcome, when one exists.
-    pub previous_run_end: Option<RunEnd>,
-    /// Candidate content from the configured sources, in priority order.
+    /// Most recent reply plan; the composer decides whether to reuse it.
+    pub previous_plan: Option<ContextPlan>,
+    /// Candidate content from the configured sources, in priority order, plus omissions the
+    /// kernel records itself, such as an unreadable previous plan.
     pub context: Contribution,
     /// All capabilities which may be disclosed this Round.
     pub tools: Vec<(CapabilityId, ToolSpec)>,
@@ -49,6 +50,8 @@ pub struct Transcript {
     pub items: Vec<TranscriptItem>,
     /// Complete Round boundaries eligible for compaction, in ascending Log position order.
     pub round_ends: Vec<LogPos>,
+    /// Run outcomes after the summary, in Log order; the composer decides how to describe them.
+    pub run_ends: Vec<(LogPos, RunEnd)>,
 }
 
 /// One canonical message and its immutable source.

@@ -15,6 +15,8 @@ pub struct ContextQuery {
     pub session: SessionRecord,
     /// Latest consumed input; does not imply source data is unchanged.
     pub latest_event: Option<Event>,
+    /// Whether this Round consumed any new Inbox input.
+    pub new_input: bool,
     /// Child of the current Run cancellation token.
     pub cancel: CancellationToken,
 }

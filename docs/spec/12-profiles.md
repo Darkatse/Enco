@@ -74,7 +74,7 @@ requires_lifeline = true
 ## 3. 什么时候解析
 
 - 配置在启动时读取一次，交给内核：`KernelDeps.profiles: BTreeMap<String, Profile>`。修改 `config.toml` 要重启守护进程。
-- **Round 开始时**按 `session.profile` 取 Profile。没有这个名字时，这个 Round 以 `Failed { code: "profile.unknown" }` 结束，Run 失败。主人下一条消息到来时，模型从 `previous_run_end` 看到这件事；主人改配置后重启，或者用 `enco profile` 换一个名字（§4）。
+- **Round 开始时**按 `session.profile` 取 Profile。没有这个名字时，这个 Round 以 `Failed { code: "profile.unknown" }` 结束，Run 失败。主人下一条消息到来时，composer 根据 `Transcript.run_ends` 在输入说明中呈现这件事（05 §4.3）；主人改配置后重启，或者用 `enco profile` 换一个名字（§4）。
 - **Attempt 开始时**取 `profile.endpoint(用途)`，再从导出表取 `exports.completion(endpoint.plugin, safe_mode)`（11 §4.2）。`AttemptStarted` 记录 `provider: CodeRef::Generation { id: export.generation }` 与 `settings: endpoint.settings`；调用 `export.adapter.complete(&endpoint.settings, endpoint.api_key.as_deref(), request)`（04 §6.4）。
 - 密钥的路径只有一条：配置读取时从环境变量取出，放在 `Endpoint.api_key` 里，调用时传给适配器。它不进入 Log、计划、`status` 输出和日志。
 

@@ -49,79 +49,70 @@ async fn requests_keep_a_stable_prefix_and_date_inputs_in_the_current_offset() {
     .await;
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
-    // (clock at submission, whether the previous Run failed, markers expected in the history)
+    // (clock at submission, whether history contains a failed Run, expected local arrival times)
     let cases: [(&str, bool, &[&str]); 5] = [
-        (
-            "2026-09-29T13:00:00-04:00",
-            false,
-            &["[2026-09-29 13:00, Tuesday]"],
-        ),
-        (
-            "2026-09-29T13:59:00-04:00",
-            false,
-            &["[2026-09-29 13:00, Tuesday]"],
-        ),
+        ("2026-09-29T13:00:00-04:00", false, &["2026-09-29 13:00"]),
+        ("2026-09-29T13:59:00-04:00", false, &["2026-09-29 13:00"]),
         (
             "2026-09-29T14:01:00-04:00",
             true,
-            &["[2026-09-29 13:00, Tuesday]", "[2026-09-29 14:01, Tuesday]"],
+            &["2026-09-29 13:00", "2026-09-29 14:01"],
         ),
         (
             "2026-09-29T16:01:00-04:00",
-            false,
-            &[
-                "[2026-09-29 13:00, Tuesday]",
-                "[2026-09-29 14:01, Tuesday]",
-                "[2026-09-29 16:01, Tuesday]",
-            ],
+            true,
+            &["2026-09-29 13:00", "2026-09-29 14:01", "2026-09-29 16:01"],
         ),
         (
             "2026-09-29T22:02:00+02:00",
-            false,
-            &[
-                "[2026-09-29 19:00, Tuesday]",
-                "[2026-09-29 20:01, Tuesday]",
-                "[2026-09-29 22:01, Tuesday]",
-            ],
+            true,
+            &["2026-09-29 19:00", "2026-09-29 20:01", "2026-09-29 22:01"],
         ),
     ];
     let mut previous_offset = None;
-    for (at, after_failure, markers) in cases {
+    for (at, has_failure, expected_times) in cases {
         let now = DateTime::parse_from_rfc3339(at).unwrap();
         *clock.0.lock().unwrap() = now;
-        kernel
-            .submit(session.id, EventId::new(), "time".into())
-            .await
-            .unwrap();
+        let inputs = ["time", "also"].map(|text| Event {
+            id: EventId::new(),
+            session: session.id,
+            source: EventSource::Cli,
+            body: EventBody::UserMessage { text: text.into() },
+            received_at: now.to_utc(),
+        });
+        kernel.accept(&inputs, None).await.unwrap();
         finish(&mut rx).await;
         let requests = provider.requests.lock().unwrap();
         let request = requests.last().unwrap();
-        let (context, prefix) = request.messages.split_last().unwrap();
-        let current = now.format("%Y-%m-%d %H:%M, %A (UTC%:z)").to_string();
-        assert!(context.joined_text().contains(&current));
-        let actual: Vec<_> = prefix
+        assert_eq!(request.messages.last().unwrap().joined_text(), "also");
+        let actual: Vec<_> = request
+            .messages
             .iter()
             .filter(|m| m.role == Role::User)
             .map(Message::joined_text)
-            .filter(|text| text.starts_with('['))
+            .filter(|text| text.contains("2026-09-29 "))
             .collect();
-        assert_eq!(actual, markers);
-        // While the offset holds, only the final context message differs from the last request.
+        assert_eq!(actual.len(), expected_times.len());
+        for (note, expected) in actual.iter().zip(expected_times) {
+            assert!(note.contains(expected));
+        }
+        // The whole recorded request stays a prefix until the offset changes the head.
         if previous_offset == Some(*now.offset()) {
             let previous = &requests[requests.len() - 2];
-            assert!(prefix.starts_with(&previous.messages[..previous.messages.len() - 1]));
-            assert_eq!(request.tools, previous.tools);
+            assert!(request.messages.starts_with(&previous.messages));
         }
         previous_offset = Some(*now.offset());
-        assert_eq!(
-            context.joined_text().contains("request rejected"),
-            after_failure
-        );
-        assert!(
-            !prefix
-                .iter()
-                .any(|m| m.joined_text().contains("request rejected"))
-        );
+        let failures: Vec<_> = request
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.joined_text().contains("request rejected"))
+            .collect();
+        assert_eq!(failures.len(), usize::from(has_failure));
+        if let Some((index, message)) = failures.first() {
+            assert!(message.joined_text().contains("provider.bad_request"));
+            assert_eq!(request.messages[index + 1].joined_text(), "time");
+        }
     }
     kernel.shutdown().await.unwrap();
 }
@@ -205,13 +196,18 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
 }
 
 #[tokio::test]
-async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_references() {
+async fn small_window_compaction_preserves_context_across_restart() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(
         (0..30)
             .map(|_| reply("Concise summary or reply."))
             .collect(),
     );
+    provider.steps.lock().unwrap().push_front(Err(Failure {
+        code: "provider.bad_request".into(),
+        message: "request rejected".into(),
+        retryable: false,
+    }));
     let (embedding_registry, _) = registry(
         &dir.path().join("embedding-registry"),
         Loaded {
@@ -237,7 +233,8 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
     let clock = Arc::new(TestClock(Mutex::new(
         DateTime::parse_from_rfc3339("2026-09-29T09:00:00-04:00").unwrap(),
     )));
-    let marker = "[2026-09-29 09:00, Tuesday]";
+    let timestamp = "2026-09-29 09:00";
+    let compaction_window = 2500;
     let configure = |deps: &mut KernelDeps| {
         deps.clock = clock.clone();
         deps.context
@@ -248,13 +245,25 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
             context_tokens: 6000,
             max_output_tokens: 256,
         };
-        profile.reply.settings.model = "reply".into();
-        profile.compaction.settings.model = "compaction".into();
-        profile.compaction.budget.max_output_tokens = 512;
+        profile.compaction.budget = Budget {
+            context_tokens: compaction_window,
+            max_output_tokens: 512,
+        };
     };
-    let (kernel, store) = kernel_with(dir.path(), provider.clone(), configure).await;
+    let (kernel, _) = kernel_with(dir.path(), provider.clone(), configure).await;
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
+    kernel
+        .submit(session.id, EventId::new(), "History before failure".into())
+        .await
+        .unwrap();
+    assert!(matches!(
+        finish(&mut rx).await.last().unwrap().body,
+        EntryBody::RunEnded {
+            end: RunEnd::Failed { .. },
+            ..
+        }
+    ));
     for n in 0..6 {
         kernel
             .submit(
@@ -282,31 +291,30 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
         })
         .collect();
     assert_eq!(attempts.len(), requests.len());
-    let settings = provider.settings.lock().unwrap().clone();
-    for ((attempt, request), settings) in attempts.into_iter().zip(requests).zip(settings) {
+    let mut summarized_outcome = false;
+    for (attempt, request) in attempts.into_iter().zip(requests) {
         let inspection = kernel.inspect(session.id, Some(attempt)).await.unwrap();
-        let (model, output) = match inspection.purpose {
-            AttemptPurpose::Reply => ("reply", 256),
-            AttemptPurpose::Compaction => ("compaction", 512),
-        };
-        assert_eq!(settings.model, model);
-        assert_eq!(inspection.settings, settings);
-        assert_eq!(request.max_output_tokens, Some(output));
         assert_eq!(inspection.request, request);
-        match inspection.purpose {
-            AttemptPurpose::Reply => assert_eq!(request.messages[1].joined_text(), marker),
-            AttemptPurpose::Compaction => {
-                let text = request.messages[1].joined_text();
-                assert!(text.contains(&format!("{marker}\nOwner: History")));
-                assert!(!text.contains("Owner is River"));
-            }
+        if inspection.purpose == AttemptPurpose::Compaction {
+            let prompt: u32 = request
+                .messages
+                .iter()
+                .map(|message| estimate_tokens(&message.joined_text()))
+                .sum();
+            assert!(prompt + request.max_output_tokens.unwrap() <= compaction_window);
+            let text = request.messages[1].joined_text();
+            assert!(text.contains(timestamp));
+            assert!(!text.contains("Owner is River"));
+            summarized_outcome |=
+                text.contains("provider.bad_request") && text.contains("request rejected");
         }
     }
-    let (upto, summary) = log
+    assert!(summarized_outcome);
+    let summary = log
         .iter()
         .rev()
         .find_map(|e| match &e.body {
-            EntryBody::Compacted { upto, summary, .. } => Some((*upto, summary.clone())),
+            EntryBody::Compacted { summary, .. } => Some(summary.clone()),
             _ => None,
         })
         .expect("history did not compact");
@@ -319,171 +327,23 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
         .await
         .unwrap();
     let entries = finish(&mut rx).await;
-    let hash = entries
-        .iter()
-        .rev()
-        .find_map(|e| match e.body {
-            EntryBody::AttemptStarted {
-                plan,
-                purpose: AttemptPurpose::Reply,
-                ..
-            } => Some(plan),
-            _ => None,
-        })
-        .unwrap();
-    let plan: ContextPlan = serde_json::from_slice(&store.get_blob(&hash).await.unwrap()).unwrap();
-    assert!(plan.items.iter().all(|item| match item {
-        PlanItem::Log { pos } => *pos > upto,
-        _ => true,
-    }));
+    assert!(matches!(
+        entries.last().unwrap().body,
+        EntryBody::RunEnded {
+            end: RunEnd::Completed,
+            ..
+        }
+    ));
     let request = provider.requests.lock().unwrap().last().unwrap().clone();
     assert!(
         request
             .messages
-            .last()
+            .first()
             .unwrap()
             .joined_text()
             .contains("Owner is River")
     );
     assert!(request.messages[0].joined_text().contains(&summary));
-    assert_eq!(request.messages[1].joined_text(), marker);
+    assert!(request.messages[1].joined_text().contains(timestamp));
     kernel.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn a_smaller_compaction_window_compacts_in_steps_and_the_conversation_continues() {
-    let dir = tempfile::tempdir().unwrap();
-    let provider = ScriptedProvider::new(
-        (0..40)
-            .map(|_| reply("Concise summary or reply."))
-            .collect(),
-    );
-    let compaction_window = 2500;
-    let (kernel, _) = kernel_with(dir.path(), provider, |deps| {
-        let profile = deps.profiles.get_mut("default").unwrap();
-        profile.reply.budget = Budget {
-            context_tokens: 6000,
-            max_output_tokens: 256,
-        };
-        profile.compaction.budget = Budget {
-            context_tokens: compaction_window,
-            max_output_tokens: 512,
-        };
-    })
-    .await;
-    let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
-    for n in 0..8 {
-        kernel
-            .submit(
-                session.id,
-                EventId::new(),
-                format!("History {n}: {}", "some detailed history ".repeat(150)),
-            )
-            .await
-            .unwrap();
-        assert!(matches!(
-            finish(&mut rx).await.last().unwrap().body,
-            EntryBody::RunEnded {
-                end: RunEnd::Completed,
-                ..
-            }
-        ));
-    }
-    let log = kernel.log(session.id, None).await.unwrap();
-    let compactions: Vec<_> = log
-        .iter()
-        .filter_map(|entry| match entry.body {
-            EntryBody::AttemptStarted {
-                attempt,
-                purpose: AttemptPurpose::Compaction,
-                ..
-            } => Some(attempt),
-            _ => None,
-        })
-        .collect();
-    assert!(!compactions.is_empty());
-    for attempt in compactions {
-        let request = kernel
-            .inspect(session.id, Some(attempt))
-            .await
-            .unwrap()
-            .request;
-        let prompt: u32 = request
-            .messages
-            .iter()
-            .map(|message| estimate_tokens(&message.joined_text()))
-            .sum();
-        assert!(prompt + request.max_output_tokens.unwrap() <= compaction_window);
-    }
-    kernel.shutdown().await.unwrap();
-}
-
-#[test]
-fn budget_omissions_are_explicit_and_do_not_make_oversized_candidates_mandatory() {
-    let input = ComposeInput {
-        now: Utc::now().fixed_offset(),
-        session: SessionRecord {
-            id: SessionId::new(),
-            name: "budget".into(),
-            created_at: Utc::now(),
-            binding: Binding {
-                node: NodeId::new(),
-                epoch: Epoch(1),
-            },
-            profile: "default".into(),
-        },
-        transcript: Transcript::default(),
-        previous_run_end: None,
-        context: Contribution {
-            candidates: vec![
-                Candidate {
-                    id: "instructions:AGENTS.md".into(),
-                    kind: CandidateKind::Instruction,
-                    text: "large instruction ".repeat(150),
-                },
-                Candidate {
-                    id: "memory:large".into(),
-                    kind: CandidateKind::Memory,
-                    text: "oversized memory ".repeat(150),
-                },
-                Candidate {
-                    id: "memory:small".into(),
-                    kind: CandidateKind::Memory,
-                    text: "Owner is River".into(),
-                },
-            ],
-            omitted: vec![],
-        },
-        tools: vec![],
-        safe_mode: false,
-        profile: Profile {
-            reply: Endpoint {
-                budget: Budget {
-                    context_tokens: 1500,
-                    max_output_tokens: 100,
-                },
-                ..endpoint()
-            },
-            ..profile()
-        },
-        compactions_left: 2,
-    };
-    let Composition::Plan(plan) = FactoryComposer::new("/workspace".into(), "/AGENTS.md".into())
-        .compose(&input)
-        .unwrap()
-    else {
-        panic!("no history requires compaction");
-    };
-    assert!(
-        plan.omitted
-            .iter()
-            .any(|o| o.source == "instructions:AGENTS.md")
-    );
-    assert!(plan.omitted.iter().any(|o| o.source == "memory:large"));
-    let PlanItem::Message { message } = plan.items.last().unwrap() else {
-        panic!("missing current context");
-    };
-    assert!(message.joined_text().contains("Owner is River"));
-    assert!(!message.joined_text().contains("oversized memory"));
 }

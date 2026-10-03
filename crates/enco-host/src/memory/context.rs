@@ -23,7 +23,9 @@ impl ContextSource for MemoryContextSource {
             .await
             .map_err(|e| ContextError(e.to_string()))?;
         let mut omitted = vec![];
-        if let Some(event) = &query.latest_event {
+        if query.new_input
+            && let Some(event) = &query.latest_event
+        {
             let recall = self
                 .memories
                 .recall(
@@ -58,6 +60,7 @@ impl ContextSource for MemoryContextSource {
                 id: format!("memory:{}", row.id),
                 kind: CandidateKind::Memory,
                 text: row.text,
+                standing: row.pinned,
             })
             .collect();
         Ok(Contribution {

@@ -195,10 +195,8 @@ async fn profile_changes_bind_at_round_boundaries_and_missing_profiles_remain_re
             .last()
             .unwrap()
             .messages
-            .last()
-            .unwrap()
-            .joined_text()
-            .contains("unknown profile alternate")
+            .iter()
+            .any(|m| m.joined_text().contains("unknown profile alternate"))
     );
     kernel.shutdown().await.unwrap();
 }

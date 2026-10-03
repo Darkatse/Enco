@@ -30,25 +30,34 @@ impl Composer for FactoryComposer {
     fn compose(&self, input: &ComposeInput) -> Result<Composition, ComposeError> {
         let budget = input.profile.reply.budget;
         let mut omitted = input.context.omitted.clone();
-        let system = self.system(input, &mut omitted);
-        let context = current_context(input, &mut omitted);
-        let history = timed_history(input);
-        let sizes = history
-            .iter()
-            .map(|(item, marker)| {
-                encoded_tokens(&item.message).map(|size| {
-                    (
-                        item.pos,
-                        size.saturating_add(marker.as_deref().map_or(0, estimate_tokens)),
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut memory_budget = budget.context_tokens.saturating_mul(MEMORY_PERCENT) / 100;
+        let pinned = select_memories(
+            input
+                .context
+                .candidates
+                .iter()
+                .filter(|c| c.kind == CandidateKind::Memory && c.standing),
+            &mut memory_budget,
+            &mut omitted,
+        );
+        let (system, sources) = self.system(input, &pinned, &mut omitted);
+        let system_tokens = estimate_tokens(&system);
+        let history = annotated_history(input);
+        let items = reply_items(
+            input,
+            PlanItem::Message {
+                message: Message::text(Role::System, system),
+                sources,
+            },
+            &history,
+            &mut memory_budget,
+            &mut omitted,
+        );
+        let sizes = history_sizes(&items[1..], &input.transcript)?;
         let definitions: Vec<_> = input.tools.iter().map(|(_, spec)| spec).collect();
         let history_tokens: u32 = sizes.iter().map(|(_, size)| size).sum();
-        let total = estimate_tokens(&system)
+        let total = system_tokens
             .saturating_add(history_tokens)
-            .saturating_add(estimate_tokens(&context))
             .saturating_add(encoded_tokens(&definitions)?)
             .saturating_add(budget.max_output_tokens);
         let window = budget.context_tokens;
@@ -70,20 +79,6 @@ impl Composer for FactoryComposer {
                 });
             }
         }
-        let mut items = vec![PlanItem::Message {
-            message: Message::text(Role::System, system),
-        }];
-        for (item, marker) in history {
-            if let Some(marker) = marker {
-                items.push(PlanItem::Message {
-                    message: Message::text(Role::User, marker),
-                });
-            }
-            items.push(PlanItem::Log { pos: item.pos });
-        }
-        items.push(PlanItem::Message {
-            message: Message::text(Role::User, context),
-        });
         Ok(Composition::Plan(ContextPlan {
             items,
             tools: input.tools.clone(),
@@ -94,7 +89,12 @@ impl Composer for FactoryComposer {
 }
 
 impl FactoryComposer {
-    fn system(&self, input: &ComposeInput, omitted: &mut Vec<Omission>) -> String {
+    fn system(
+        &self,
+        input: &ComposeInput,
+        pinned: &[&Candidate],
+        omitted: &mut Vec<Omission>,
+    ) -> (String, Vec<Source>) {
         let mut text = if input.safe_mode {
             include_str!("prompts/safe_mode.md")
         } else {
@@ -103,12 +103,13 @@ impl FactoryComposer {
         .trim()
         .to_string();
         text.push_str(&format!(
-            "\n\n## Environment\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}",
-            self.workspace.display(),
-            self.instructions.display(),
-            input.session.name
+            "\n\n## Environment\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}\n- Time zone: UTC{}",
+            self.workspace.display(), self.instructions.display(), input.session.name,
+            input.now.format("%:z")
         ));
-        append_instructions(&mut text, omitted, input);
+        let mut sources = Vec::new();
+        append_instructions(&mut text, &mut sources, omitted, input);
+        append_memories(&mut text, &mut sources, pinned, "## Your pinned memories");
         if let Some(summary) = &input.transcript.summary {
             section(
                 &mut text,
@@ -116,65 +117,189 @@ impl FactoryComposer {
                 summary,
             );
         }
-        text
+        (text, sources)
     }
 }
 
-/// The one way the Agent reads a time: the current time and the arrival markers share it.
-const LOCAL_TIME: &str = "%Y-%m-%d %H:%M, %A";
-
-fn current_context(input: &ComposeInput, omitted: &mut Vec<Omission>) -> String {
-    let mut text = format!(
-        "[context]\nCurrent time: {} (UTC{})",
-        input.now.format(LOCAL_TIME),
-        input.now.format("%:z")
-    );
-    append_memories(&mut text, omitted, input);
-    let ending = match &input.previous_run_end {
-        Some(RunEnd::Interrupted) => "was interrupted before it finished.".into(),
-        Some(RunEnd::Cancelled) => "was cancelled before it finished.".into(),
-        Some(RunEnd::BudgetExhausted) => "reached the step limit before it finished.".into(),
-        Some(RunEnd::Failed { failure }) => format!("stopped after an error: {}", failure.message),
-        None | Some(RunEnd::Completed) => return text,
-    };
-    text.push_str(&format!(
-        "\n\nYour previous work {ending}\nThe tool results above show what you did and which actions remain uncertain."
-    ));
-    text
+/// Keep the recorded presentation while its head and visible history still apply.
+fn reply_items(
+    input: &ComposeInput,
+    head: PlanItem,
+    history: &[(&TranscriptItem, String)],
+    memory_budget: &mut u32,
+    omitted: &mut Vec<Omission>,
+) -> Vec<PlanItem> {
+    let previous = input.previous_plan.as_ref().filter(|plan| {
+        plan.items.first() == Some(&head)
+            && plan.items.iter().all(|item| match item {
+                PlanItem::Log { pos } => input
+                    .transcript
+                    .items
+                    .binary_search_by_key(pos, |item| item.pos)
+                    .is_ok(),
+                PlanItem::Message { .. } => true,
+            })
+    });
+    let mut items = previous.map_or_else(|| vec![head], |plan| plan.items.clone());
+    let after = items.iter().rev().find_map(|item| match item {
+        PlanItem::Log { pos } => Some(*pos),
+        _ => None,
+    });
+    let latest_input = input
+        .transcript
+        .items
+        .iter()
+        .rev()
+        .find(|item| item.received_at.is_some())
+        .map(|item| item.pos);
+    for (item, annotation) in history
+        .iter()
+        .filter(|(item, _)| after.is_none_or(|pos| item.pos > pos))
+    {
+        let mut note = annotation.clone();
+        let mut sources = Vec::new();
+        if Some(item.pos) == latest_input {
+            let recalled = select_memories(
+                input
+                    .context
+                    .candidates
+                    .iter()
+                    .filter(|c| c.kind == CandidateKind::Memory && !c.standing)
+                    .filter(|c| {
+                        last_source(&items, &c.id) != Some(ContentHash::of(c.text.as_bytes()))
+                    }),
+                memory_budget,
+                omitted,
+            );
+            append_memories(
+                &mut note,
+                &mut sources,
+                &recalled,
+                "Memories you recall for the next message:",
+            );
+        }
+        if !note.is_empty() {
+            items.push(PlanItem::Message {
+                message: Message::text(Role::User, note),
+                sources,
+            });
+        }
+        items.push(PlanItem::Log { pos: item.pos });
+    }
+    items
 }
 
-/// Marks the first Inbox input and each one arriving in a new local clock hour. Rendered once
-/// and shared by reply assembly, budgeting and compaction.
-fn timed_history(input: &ComposeInput) -> Vec<(&TranscriptItem, Option<String>)> {
+fn last_source(items: &[PlanItem], id: &str) -> Option<ContentHash> {
+    items
+        .iter()
+        .rev()
+        .filter_map(|item| match item {
+            PlanItem::Message { sources, .. } => Some(sources),
+            PlanItem::Log { .. } => None,
+        })
+        .flat_map(|sources| sources.iter().rev())
+        .find(|source| source.id == id)
+        .map(|source| source.hash)
+}
+
+/// Each inline note belongs to the Log item immediately after it, including when reused.
+fn history_sizes(
+    items: &[PlanItem],
+    transcript: &Transcript,
+) -> Result<Vec<(LogPos, u32)>, ComposeError> {
+    let mut sizes = Vec::new();
+    let mut pending = 0u32;
+    for item in items {
+        match item {
+            PlanItem::Message { message, .. } => {
+                pending = pending.saturating_add(encoded_tokens(message)?)
+            }
+            PlanItem::Log { pos } => {
+                let index = transcript
+                    .items
+                    .binary_search_by_key(pos, |item| item.pos)
+                    .map_err(|_| {
+                        ComposeError::Invalid(format!("Log position {pos:?} is not visible"))
+                    })?;
+                let size =
+                    pending.saturating_add(encoded_tokens(&transcript.items[index].message)?);
+                sizes.push((*pos, size));
+                pending = 0;
+            }
+        }
+    }
+    Ok(sizes)
+}
+
+const LOCAL_TIME: &str = "%Y-%m-%d %H:%M, %A";
+
+/// Describe the recorded circumstances of each input once for both reply and compaction.
+fn annotated_history(input: &ComposeInput) -> Vec<(&TranscriptItem, String)> {
     let mut previous_hour = None;
+    let mut run_ends = input.transcript.run_ends.iter().peekable();
     input
         .transcript
         .items
         .iter()
         .map(|item| {
-            let marker = item.received_at.and_then(|at| {
+            let mut note = String::new();
+            if let Some(at) = item.received_at {
                 let local = at.with_timezone(input.now.offset());
                 let hour = Some((local.date_naive(), local.hour()));
-                let changed = hour != previous_hour;
+                if hour != previous_hour {
+                    note = format!("[{}]", local.format(LOCAL_TIME));
+                }
                 previous_hour = hour;
-                changed.then(|| format!("[{}]", local.format(LOCAL_TIME)))
-            });
-            (item, marker)
+                // Consume outcomes only at inputs, so each belongs to the first input after it.
+                let mut previous_end = None;
+                while let Some((_, end)) = run_ends.next_if(|(pos, _)| *pos < item.pos) {
+                    previous_end = Some(end);
+                }
+                if let Some(outcome) = previous_end.and_then(work_stopped) {
+                    if !note.is_empty() {
+                        note.push_str("\n\n");
+                    }
+                    note.push_str(&outcome);
+                }
+            }
+            (item, note)
         })
         .collect()
 }
 
-fn append_instructions(text: &mut String, omitted: &mut Vec<Omission>, input: &ComposeInput) {
+fn work_stopped(end: &RunEnd) -> Option<String> {
+    let reason = match end {
+        RunEnd::Completed => return None,
+        RunEnd::Interrupted => "was interrupted".into(),
+        RunEnd::Cancelled => "was cancelled".into(),
+        RunEnd::BudgetExhausted => "reached the step limit".into(),
+        RunEnd::Failed { failure } => format!("failed ({}: {})", failure.code, failure.message),
+    };
+    Some(format!(
+        "Your previous work {reason} before it finished. The tool results above show what you did and which actions remain uncertain."
+    ))
+}
+
+fn source(candidate: &Candidate) -> Source {
+    Source {
+        id: candidate.id.clone(),
+        hash: ContentHash::of(candidate.text.as_bytes()),
+    }
+}
+
+fn append_instructions(
+    text: &mut String,
+    sources: &mut Vec<Source>,
+    omitted: &mut Vec<Omission>,
+    input: &ComposeInput,
+) {
     let instructions: Vec<_> = input
         .context
         .candidates
         .iter()
-        .filter(|c| c.kind == CandidateKind::Instruction)
+        .filter(|c| c.kind == CandidateKind::Instruction && c.standing)
         .collect();
-    let size = instructions
-        .iter()
-        .map(|c| estimate_tokens(&c.text))
-        .sum::<u32>();
+    let size: u32 = instructions.iter().map(|c| estimate_tokens(&c.text)).sum();
     let budget = input
         .profile
         .reply
@@ -189,6 +314,7 @@ fn append_instructions(text: &mut String, omitted: &mut Vec<Omission>, input: &C
             .collect::<Vec<_>>()
             .join("\n");
         section(text, "Standing instructions (AGENTS.md)", &body);
+        sources.extend(instructions.into_iter().map(source));
     } else {
         omitted.extend(instructions.iter().map(|c| Omission {
             source: c.id.clone(),
@@ -197,33 +323,17 @@ fn append_instructions(text: &mut String, omitted: &mut Vec<Omission>, input: &C
     }
 }
 
-fn append_memories(text: &mut String, omitted: &mut Vec<Omission>, input: &ComposeInput) {
-    let budget = input
-        .profile
-        .reply
-        .budget
-        .context_tokens
-        .saturating_mul(MEMORY_PERCENT)
-        / 100;
-    let mut memory = String::new();
-    let mut used = 0;
-    for candidate in input
-        .context
-        .candidates
-        .iter()
-        .filter(|c| c.kind == CandidateKind::Memory)
-    {
+fn select_memories<'a>(
+    candidates: impl Iterator<Item = &'a Candidate>,
+    remaining: &mut u32,
+    omitted: &mut Vec<Omission>,
+) -> Vec<&'a Candidate> {
+    let mut selected = Vec::new();
+    for candidate in candidates {
         let size = estimate_tokens(&candidate.text);
-        if used + size <= budget {
-            used += size;
-            memory.push_str(&format!(
-                "- {} (id: {})\n",
-                candidate.text,
-                candidate
-                    .id
-                    .strip_prefix("memory:")
-                    .unwrap_or(&candidate.id)
-            ));
+        if size <= *remaining {
+            *remaining -= size;
+            selected.push(candidate);
         } else {
             omitted.push(Omission {
                 source: candidate.id.clone(),
@@ -231,9 +341,32 @@ fn append_memories(text: &mut String, omitted: &mut Vec<Omission>, input: &Compo
             });
         }
     }
-    if !memory.is_empty() {
-        text.push_str("\n\nYour memories (authoritative; they override anything said earlier in the conversation):\n");
-        text.push_str(memory.trim_end());
+    selected
+}
+
+fn append_memories(
+    text: &mut String,
+    sources: &mut Vec<Source>,
+    memories: &[&Candidate],
+    heading: &str,
+) {
+    if memories.is_empty() {
+        return;
+    }
+    if !text.is_empty() {
+        text.push_str("\n\n");
+    }
+    text.push_str(heading);
+    for candidate in memories {
+        text.push_str(&format!(
+            "\n- {} (id: {})",
+            candidate.text,
+            candidate
+                .id
+                .strip_prefix("memory:")
+                .unwrap_or(&candidate.id)
+        ));
+        sources.push(source(candidate));
     }
 }
 
@@ -258,7 +391,7 @@ struct Compaction {
 }
 
 impl Compaction {
-    fn new(input: &ComposeInput, history: &[(&TranscriptItem, Option<String>)]) -> Self {
+    fn new(input: &ComposeInput, history: &[(&TranscriptItem, String)]) -> Self {
         let mut header = String::new();
         if let Some(summary) = &input.transcript.summary {
             header.push_str(&format!("Previous summary:\n{summary}\n\n"));
@@ -267,10 +400,10 @@ impl Compaction {
         let mut names = HashMap::new();
         let chunks = history
             .iter()
-            .map(|(item, marker)| {
+            .map(|(item, annotation)| {
                 let mut chunk = String::new();
-                if let Some(marker) = marker {
-                    chunk.push_str(marker);
+                if !annotation.is_empty() {
+                    chunk.push_str(annotation);
                     chunk.push('\n');
                 }
                 for part in &item.message.parts {
@@ -365,9 +498,11 @@ impl Compaction {
             items: vec![
                 PlanItem::Message {
                     message: Message::text(Role::System, COMPACTION_PROMPT),
+                    sources: vec![],
                 },
                 PlanItem::Message {
                     message: Message::text(Role::User, text),
+                    sources: vec![],
                 },
             ],
             tools: vec![],

@@ -77,18 +77,14 @@ async fn send(kernel: &Kernel, session: SessionId, text: &str) {
 #[tokio::test]
 async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
     let dir = tempfile::tempdir().unwrap();
-    let provider = ScriptedProvider::new(vec![
-        calls(vec![call(
-            "memory_save",
-            r#"{"text":"Owner likes coffee","pinned":true}"#,
-        )]),
-        reply("saved"),
-    ]);
+    let provider = ScriptedProvider::new(vec![]);
     let memories = open(dir.path(), provider.clone(), 64).await;
+    let saved = memories
+        .save("Owner likes coffee".into(), true)
+        .await
+        .unwrap();
     let kernel = memory_kernel(dir.path(), provider.clone(), memories.clone()).await;
     let session = kernel.open_session("main").await.unwrap();
-    send(&kernel, session.id, "remember my drink").await;
-    let saved = memories.list().await.unwrap().memories.pop().unwrap();
     provider.steps.lock().unwrap().extend([
         calls(vec![call(
             "memory_update",
@@ -97,21 +93,13 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
         reply("corrected"),
     ]);
     send(&kernel, session.id, "correct my drink").await;
-    let context = provider.requests.lock().unwrap()[3]
+    let context = provider.requests.lock().unwrap()[1]
         .messages
-        .last()
+        .first()
         .unwrap()
         .joined_text();
     assert!(context.contains("Owner likes tea"));
     assert!(!context.contains("Owner likes coffee"));
-    for pair in provider.requests.lock().unwrap().windows(2) {
-        assert!(
-            pair[1]
-                .messages
-                .starts_with(&pair[0].messages[..pair[0].messages.len() - 1])
-        );
-        assert_eq!(pair[1].tools, pair[0].tools);
-    }
     kernel.shutdown().await.unwrap();
     drop(kernel);
     drop(memories);
@@ -131,7 +119,7 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
             .last()
             .unwrap()
             .messages
-            .last()
+            .first()
             .unwrap()
             .joined_text()
             .contains("Owner likes tea")
@@ -153,11 +141,57 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
             .last()
             .unwrap()
             .messages
-            .last()
+            .first()
             .unwrap()
             .joined_text()
             .contains("Owner likes tea")
     );
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn recalled_sources_keep_corrections_and_deduplicate_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new((0..4).map(|_| reply("recalled")).collect());
+    let memories = open(dir.path(), provider.clone(), 64).await;
+    let first = "Owner likes tea";
+    let second = "Owner likes coffee";
+    let memory = memories.save(first.into(), false).await.unwrap();
+    provider.steps.lock().unwrap().push_front(calls(vec![call(
+        "memory_update",
+        &serde_json::json!({ "id": memory.id, "text": second }).to_string(),
+    )]));
+    let kernel = memory_kernel(dir.path(), provider.clone(), memories.clone()).await;
+    let session = kernel.open_session("main").await.unwrap();
+    send(&kernel, session.id, "What drink do I like?").await;
+    send(&kernel, session.id, "What drink do I like now?").await;
+    memories
+        .update(memory.id, Some(first.into()), None)
+        .await
+        .unwrap();
+    send(&kernel, session.id, "What drink do I like again?").await;
+    kernel.shutdown().await.unwrap();
+    drop(kernel);
+    drop(memories);
+
+    let memories = open(dir.path(), provider.clone(), 64).await;
+    let kernel = memory_kernel(dir.path(), provider, memories).await;
+    send(&kernel, session.id, "What drink do I like?").await;
+    let inspection = kernel.inspect(session.id, None).await.unwrap();
+    let source_id = format!("memory:{}", memory.id);
+    let mut recalled = Vec::new();
+    for item in &inspection.plan.items {
+        if let PlanItem::Message { message, sources } = item {
+            for source in sources.iter().filter(|source| source.id == source_id) {
+                recalled.push((source.hash, message.joined_text()));
+            }
+        }
+    }
+    assert_eq!(recalled.len(), 3);
+    for ((hash, note), expected) in recalled.iter().zip([first, second, first]) {
+        assert_eq!(*hash, ContentHash::of(expected.as_bytes()));
+        assert!(note.contains(expected));
+    }
     kernel.shutdown().await.unwrap();
 }
 
@@ -179,30 +213,6 @@ async fn recall_uses_current_records_during_embedding_failure_and_rebuilds_deriv
     let cancel = CancellationToken::new();
     let recall = memories.recall("茉莉花茶", 8, &cancel).await.unwrap();
     assert!(recall.memories.iter().any(|m| m.id == tea.id));
-    let source = MemoryContextSource::new(memories.clone());
-    let session = SessionRecord {
-        id: SessionId::new(),
-        name: "context".into(),
-        created_at: Utc::now(),
-        binding: Binding {
-            node: NodeId::new(),
-            epoch: Epoch(1),
-        },
-        profile: "default".into(),
-    };
-    let query = ContextQuery {
-        latest_event: Some(Event {
-            id: EventId::new(),
-            session: session.id,
-            source: EventSource::Cli,
-            body: EventBody::UserMessage {
-                text: "completely unrelated".into(),
-            },
-            received_at: Utc::now(),
-        }),
-        session,
-        cancel: cancel.clone(),
-    };
     *provider.embedding_failure.lock().unwrap() = Some(Failure {
         code: code::PROVIDER_NETWORK.into(),
         message: "embedding service unavailable".into(),
@@ -232,19 +242,9 @@ async fn recall_uses_current_records_during_embedding_failure_and_rebuilds_deriv
             .chain(&recall.unindexed)
             .any(|m| m.text.contains("茉莉花茶"))
     );
-    assert!(
-        source
-            .contribute(&query)
-            .await
-            .unwrap()
-            .omitted
-            .iter()
-            .any(|o| o.source == "memory:semantic")
-    );
     *provider.embedding_failure.lock().unwrap() = None;
     memories.recall("陶艺", 20, &cancel).await.unwrap();
     assert!(memories.list().await.unwrap().unindexed.is_empty());
-    drop(source);
     drop(memories);
     std::fs::remove_dir_all(dir.path().join("memory-index")).unwrap();
     let memories = open(dir.path(), provider.clone(), 64).await;

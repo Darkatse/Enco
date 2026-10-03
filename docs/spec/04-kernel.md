@@ -96,8 +96,8 @@ pub struct ComposeInput {
     pub session: SessionRecord,
     pub profile: Profile,                  // 本 Round 解析出的 profile（12）：两个用途的预算与 requires_lifeline
     pub transcript: Transcript,
-    pub previous_run_end: Option<RunEnd>,  // 上一个 Run 的结束方式，用于提示中断等情况
-    pub context: Contribution,             // 各 ContextSource 的贡献按顺序合并；安全模式下为空
+    pub previous_plan: Option<ContextPlan>, // 本 Session 最近一次 Reply Attempt 的计划，由 composer 决定是否沿用（05 §4.1）
+    pub context: Contribution,             // 各 ContextSource 的贡献按顺序合并，安全模式下不调用来源；上一份计划读不到时，内核也在 omitted 中记一条
     pub tools: Vec<(CapabilityId, ToolSpec)>, // 本轮可披露的工具；安全模式下只有救生集
     pub safe_mode: bool,
     pub compactions_left: u32,             // 本 Round 还允许几次压缩；为 0 时只能返回 Plan 或失败
@@ -110,6 +110,7 @@ pub struct Transcript {
     pub summary: Option<String>,        // 最近一次 Compacted 的摘要
     pub items: Vec<TranscriptItem>,     // 该次压缩之后、具有规范消息形态的条目，按 Log 位置递增
     pub round_ends: Vec<LogPos>,        // 该次压缩之后的 RoundEnded 位置，按 Log 位置递增，也就是合法的压缩边界
+    pub run_ends: Vec<(LogPos, RunEnd)>, // 该次压缩之后的 RunEnded 事实，按 Log 位置递增；composer 决定如何叙述
 }
 
 /// `generation` 只有 Assistant 消息有：产生它的 Attempt 所用的 Provider 代际，扩展字段按它回放（§6.5）。
@@ -150,8 +151,8 @@ pub trait ContextSource: Send + Sync {
 pub struct ContextQuery {
     pub session: SessionRecord,
     /// 本 Session 最近一条 `EventConsumed` 中的 Event：主人最新的输入，或最新触发的提醒。
-    /// 没有新 Event 被消费时，召回的查询文本不变；来源读取的当前状态仍可能变化。
     pub latest_event: Option<Event>,
+    pub new_input: bool,               // 本 Round 接纳了新 Event：上一个 RoundEnded 之后有 EventConsumed
     /// 本 Run 取消令牌的子令牌。
     pub cancel: CancellationToken,
 }
@@ -323,6 +324,7 @@ loop:
 3. 对未被隐藏的条目，按 Log 顺序：
    - 具有规范消息形态的条目（03 §1.5 的表）生成 `TranscriptItem`；目的为 `Compaction` 的 Attempt 不生成。`AttemptSettled` 生成的项带上该 Attempt 的代际，`EventConsumed` 生成的项带上 Event 的 `received_at`，其余字段为空。
    - `RoundEnded` 的位置加入 `round_ends`。
+   - `RunEnded` 的位置与结局加入 `run_ends`，不生成规范消息。
 
 压缩边界总是 `RoundEnded`，所以工具调用与它的结果不会被拆开。
 
@@ -369,23 +371,23 @@ round(run, token, prefix) -> RoundEnd:
 
 `end_round(end)` 提交 `RoundEnded { round, end }` 并返回 `end`。
 
-profile 找不到是配置问题，不是模型问题，所以 Round 失败、Run 失败，模型下次从 `previous_run_end` 看到，主人从 `enco status` 或渠道的终止通知看到（12 §3）。
+profile 找不到是配置问题，不是模型问题，所以 Round 失败、Run 失败，composer 从 `Transcript.run_ends` 得到事实并在下一条输入的说明中呈现（05 §4.3），主人从 `enco status` 或渠道的终止通知看到（12 §3）。
 
 ### 6.3 组装与压缩
 
-组装分两个时刻。**组装时**读取当前状态：时间与上下文贡献每个 Round 读取一次，压缩只改变 Transcript，重新组装时复用它们。**记录后**只解析记录：Attempt 与重试使用冻结的计划（§6.4），不再调用 ContextSource 或读取 Snapshot 中的工具定义。
+组装分两个时刻。**组装时**读取当前状态：时间与上下文贡献每个 Round 读取一次，压缩只改变 Transcript，重新组装时复用它们。`new_input` 从已提交的 Log 得到：上一个 `RoundEnded` 之后存在 `EventConsumed` 时为真；内核始终提供 `latest_event`，由各来源决定是否利用新输入。**记录后**只解析记录：Attempt 与重试使用冻结的计划（§6.4），不再调用 ContextSource 或读取 Snapshot 中的工具定义。
 
 ```text
 compose(snapshot, profile, round, safe_mode, token):
     now = clock.now()                                          // 每个 Round 读取一次，偏移随宿主当前时区
     context = if safe_mode { Contribution::default() }
-              else { 以 ContextQuery { session, latest_event, cancel: token.child_token() } 依次调用每个 ContextSource，
+              else { 以 ContextQuery { session, latest_event, new_input, cancel: token.child_token() } 依次调用每个 ContextSource，
                      按顺序合并 candidates 与 omitted }
     if token.is_cancelled(): return Ended(Cancelled)          // 无论来源返回了什么（§9）
     任何一个来源出错 → Failed(context.failed)
     input = ComposeInput {
         now, session, profile, transcript: transcript::project(&entries),
-        previous_run_end: 当前 Run 之前最后一条 RunEnded 的 end,
+        previous_plan: 最近一条目的为 Reply 的 AttemptStarted 的计划（从 blob 读取）,
         context,
         tools: if safe_mode { 救生集 } else { 全部 },
         safe_mode,
@@ -405,6 +407,8 @@ compose(snapshot, profile, round, safe_mode, token):
                 input.compactions_left -= 1
                 input.transcript = transcript::project(&entries)                             // 用新的 Transcript 再次组装
 ```
+
+上一份回复计划的 blob 缺失或内容哈希不符时，`previous_plan = None`，在 `input.context.omitted` 中记录 `previous-plan:<hash>` 及不可读取的原因。composer 由此开始新的系列；其他存储错误与计划反序列化错误照常传播。
 
 `exports = registry.exports()`，`target(用途)` 是 `profile.endpoint(用途).plugin` 通过 `completion(插件, safe_mode)` 取得的身份（11 §4.2）；找不到 → Failed(plugin.unavailable)。一个 Round 内目标插件由 profile 固定，代际可以变（§6.4），所以解析一次的请求在重试中仍然有效。
 
@@ -539,7 +543,7 @@ dispatch(snapshot, round, plan, call, token):
    3. `RoundEnded { Interrupted }`。
 3. `RunEnded { Interrupted }`。
 
-恢复**不会自动继续**被中断的 Run。被中断的状态通过工具结果和 `previous_run_end` 对模型可见；主人的下一条消息（或 Inbox 中尚未消费的 Event）会开启新的 Run。
+恢复**不会自动继续**被中断的 Run。被中断的状态通过工具结果与 composer 根据 `Transcript.run_ends` 生成的说明（05 §4.3）对模型可见；主人的下一条消息（或 Inbox 中尚未消费的 Event）会开启新的 Run。
 
 这保证了：有副作用的工具不会被重新执行；已经被消费的 Event 不会被再次处理；尚未消费的 Event 在重启后照常处理。
 
@@ -672,7 +676,7 @@ pub struct Inspection {
     pub provider: CodeRef,
     pub settings: ProviderSettings,
     pub request: ProviderRequest,     // 解析后的消息、工具定义与输出上限
-    pub omitted: Vec<Omission>,       // 计划中记录的省略
+    pub plan: ContextPlan,            // 原始计划：内联消息的候选来源、Log 引用与省略
     pub result: Option<AttemptResult>,
 }
 ```
@@ -687,5 +691,7 @@ inspect(session, attempt):
     request = plan::resolve(&plan, &transcript, &exports, target)
     result = 对应的 AttemptSettled（如果有）
 ```
+
+`Inspection.plan` 原样返回已记录的计划，来源跟着它所属的内联消息一起呈现，只记在计划里，不发给 Provider。
 
 Transcript 只取 Attempt 之前的条目，所以同一 Round 里压缩前后的两次 Attempt 各自解析出当时的历史。计划引用的 blob 已被清理时返回 `StoreError::Blob`，不猜。

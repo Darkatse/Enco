@@ -226,9 +226,16 @@ impl SessionActor {
             EntryBody::EventConsumed { event } => Some(event.clone()),
             _ => None,
         });
+        let new_input = self
+            .entries
+            .iter()
+            .rev()
+            .take_while(|entry| !matches!(entry.body, EntryBody::RoundEnded { .. }))
+            .any(|entry| matches!(entry.body, EntryBody::EventConsumed { .. }));
         let query = ContextQuery {
             session: self.session.clone(),
             latest_event,
+            new_input,
             cancel: token.child_token(),
         };
         let mut context = Contribution::default();
@@ -249,20 +256,51 @@ impl SessionActor {
             .filter(|t| !safe_mode || snapshot.lifeline.contains(&t.id))
             .map(|t| (t.id.clone(), t.spec.clone()))
             .collect();
-        let previous_run_end = self.entries.iter().rev().find_map(|e| match &e.body {
-            EntryBody::RunEnded { end, .. } => Some(end.clone()),
-            _ => None,
-        });
+        let previous_plan = self.previous_plan(&mut context.omitted).await?;
         Ok(ComposeInput {
             now,
             session: self.session.clone(),
             transcript: crate::transcript::project(&self.entries),
-            previous_run_end,
+            previous_plan,
             context,
             tools,
             safe_mode,
             profile: profile.clone(),
             compactions_left: limits::MAX_COMPACTIONS_PER_ROUND,
         })
+    }
+
+    async fn previous_plan(
+        &self,
+        omitted: &mut Vec<Omission>,
+    ) -> Result<Option<ContextPlan>, RoundError> {
+        let Some(hash) = self
+            .entries
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.body {
+                EntryBody::AttemptStarted {
+                    purpose: AttemptPurpose::Reply,
+                    plan,
+                    ..
+                } => Some(plan),
+                _ => None,
+            })
+        else {
+            return Ok(None);
+        };
+        match self.deps.store.get_blob(hash).await {
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+                failed(code::PLAN_INVALID, format!("previous plan {hash}: {error}"))
+            }),
+            Err(StoreError::Blob(_)) => {
+                omitted.push(Omission {
+                    source: format!("previous-plan:{hash}"),
+                    reason: "previous plan is missing or corrupt".into(),
+                });
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 }

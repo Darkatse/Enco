@@ -5,7 +5,7 @@
 ## 1. 结构与三条规则
 
 ```text
-   memory_save / update / forget / search              召回（每个 Round，经 ContextSource）
+   memory_save / update / forget / search              召回（有新输入时，经 ContextSource）
                      │                                          │
                      ▼                                          ▼
    ┌───────────────────────── Memories（归属者）─────────────────────────┐
@@ -131,21 +131,23 @@ Memories::recall(query: &str, limit: usize, cancel) -> Result<Recall, MemoryErro
 
 - 向量不可用时，TriviumDB 仍可只按文本检索（中文按两字切分计算 BM25，已实测）。
 - 不设相关性阈值：阈值依赖具体的 embedding 模型，固定取前 `limit` 条，由提示词说明它们"可能相关"。
-- 没有新 Event 被消费时，查询文本不变（§5）；记忆写入与对账仍可能改变召回结果。记忆只出现在请求末尾的上下文消息中（05 §4.1），召回结果变化不改写前面的稳定内容与历史，实际缓存命中仍由服务商决定。
-- 每个 Round 贡献一次上下文（04 §6.3），也就是一次 embedding 请求。不缓存查询向量（01 §2），后续根据实际延迟与用量判断是否优化。
+- 置顶记忆在 System 消息中，每个 Round 都从权威读取；召回的记忆写在它所回应的输入之前，之后原样保留（05 §4.1）。
+- 自动召回只在有新输入的 Round 执行一次，以最新的已接纳 Event 为查询；一次接纳多条 Event 时也只召回一次。没有新输入时只提供置顶记忆，不请求 embedding。同一 Round 内的压缩重组沿用已取得的贡献（04 §6.3）。不缓存查询向量（01 §2），后续根据实际延迟与用量判断是否优化。
 - 取消只打断两种等待：索引锁与 embedding 响应。已经开始的 `spawn_blocking`（SQLite、TriviumDB）等它结束，然后返回 `MemoryError::Cancelled`。
 
 ## 5. 上下文源：MemoryContextSource（`memory/context.rs`）
 
-实现 `ContextSource`（04 §2）。查询文本是 `ContextQuery.latest_event` 的规范消息文本（`canonical_message().joined_text()`），取消令牌是 `ContextQuery.cancel`；没有 Event 时只提供置顶记忆。
+实现 `ContextSource`（04 §2）。每轮提供置顶记忆；仅当 `ContextQuery.new_input` 为真且 `latest_event` 存在时调用召回，查询文本是该 Event 的规范消息文本（`canonical_message().joined_text()`），取消令牌是 `ContextQuery.cancel`。
+
+循环中保存或更正的记忆立即进入权威，置顶内容下一 Round 即可见；索引在下一次自动召回、显式 `memory_search` 或启动对账时更新。同步未完成的记录仍按 §4 作为 `unindexed` 返回。
 
 贡献中的候选按下面的顺序排列。顺序就是优先级：composer 按顺序纳入，直到记忆预算用完（05 §4.2）。置顶保证优先级，不保证无条件纳入；超预算的置顶记忆也记录在 `ContextPlan.omitted` 中，不因此让 Round 失败。
 
-1. 全部置顶记忆，按 id 顺序。
-2. `recall(query, MEMORY_RECALL_DEFAULT)` 的 `memories`，去掉置顶的。
-3. `recall` 的 `unindexed`，去掉置顶的。
+1. 全部置顶记忆，按 id 顺序，`standing: true`。
+2. `recall(query, MEMORY_RECALL_DEFAULT)` 的 `memories`，去掉置顶的，`standing: false`。
+3. `recall` 的 `unindexed`，去掉置顶的，`standing: false`。
 
-每个候选为 `Candidate { id: "memory:<MemoryId>", kind: Memory, text }`。
+每个候选为 `Candidate { id: "memory:<MemoryId>", kind: Memory, text, standing }`。
 
 `lexical_only` 存在时，贡献中带一条省略：`Omission { source: "memory:semantic", reason: "embedding failed ({code}): {message}; memories were recalled by keywords only" }`。它随计划写入 Log，所以这次降级是可见的，而不是静默的。
 

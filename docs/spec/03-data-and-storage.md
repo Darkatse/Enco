@@ -186,7 +186,7 @@ pub enum RunEnd { Completed, BudgetExhausted, Interrupted, Cancelled, Failed { f
 | `AttemptSettled`（`Completed`，对应的 Attempt 目的为 `Reply`） | `result.message` |
 | `ToolCallSettled` | `Tool` 消息，含一个 `ToolResult { call, provider_id, content, is_error }`；`provider_id` 取自对应的 `ToolCall`，`is_error` 在结果不是 `Ok` 时为真 |
 
-规范消息形态属于持久格式：已记录的计划通过它解析 Log 引用（§1.8），改变它就等于改变 Log 的格式。
+规范消息形态属于持久格式：已记录的计划通过它解析 Log 引用（§1.8），改变它就等于改变 Log 的格式。它只覆盖对话本身的内容。`RunEnded` 等运行事实由 Transcript 提供（04 §2），如何向 Agent 叙述由 composer 决定，文字逐字记入计划。
 
 ### 1.6 工具（`tool.rs`）
 
@@ -307,9 +307,12 @@ pub struct ContextPlan {
 
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PlanItem {
-    Message { message: Message },      // composer 生成的内联内容
+    Message { message: Message, sources: Vec<Source> }, // 内联内容与实际使用的候选来源
     Log { pos: LogPos },               // 引用 Log 条目的规范消息，避免在每个计划中复制历史
 }
+
+/// 实际纳入内联消息的候选；哈希取自候选原始文本的 UTF-8 字节，不含排版。
+pub struct Source { pub id: String, pub hash: ContentHash }
 
 pub struct Omission { pub source: String, pub reason: String }
 
@@ -320,13 +323,14 @@ pub struct Contribution {                 // Default：两者皆空
 }
 
 /// 一段候选内容。`id` 带来源前缀，例如 "instructions:AGENTS.md"、"memory:<MemoryId>"。
-pub struct Candidate { pub id: String, pub kind: CandidateKind, pub text: String }
+/// `standing`：不看最新输入也会提供（常驻指令、置顶记忆）；否则是因最新输入而召回的。
+pub struct Candidate { pub id: String, pub kind: CandidateKind, pub text: String, pub standing: bool }
 pub enum CandidateKind { Instruction, Memory }
 ```
 
 **计划就是冻结的请求。** 模型看到的每一样东西，要么在计划中，要么在它引用的不可变 Log 条目中。Provider 请求只由计划、Log 与注册表解析得到，不再读取 Snapshot 或任何上下文源；重试与事后查看（`enco inspect`，04 §14）都解析同一份记录（04 §6.3）。
 
-架构文档 §7.1 中的稳定性标注与"上一份计划作为输入"目前不实现：现有的 Provider 不使用它们，以后可以增量加入。
+架构文档 §7.1 中的稳定性标注目前不实现：现有的 Provider 不使用它，以后可以增量加入。"上一份计划作为输入"见 04 §2。
 
 ### 1.9 Session 与 Schedule（`session.rs`）
 
@@ -525,9 +529,10 @@ Inbox 是一个邮箱：任何人都可以投递（`accept`），只有归属者
 
 - `SqliteStore::open(paths: StorePaths)`，`StorePaths { db, blobs, artifacts, plugins_lock }`：Store 负责的全部文件都在这里给出。
 - 数据库文件：`$ENCO_HOME/.data/enco.db`。
-- 版本记在 SQLite 自带的 `PRAGMA user_version`，`memory.db` 用同一条规则（06 §2）。当前版本是 `2`。
+- 版本记在 SQLite 自带的 `PRAGMA user_version`，`memory.db` 用同一条规则（06 §2）。当前版本是 `3`。
 - 空库在一个事务中建立完整 schema，设置版本号，写入新生成的 `node_id` 和 `safe_mode = '0'`。
 - 已有库的版本不等于当前版本时返回 `SchemaVersion`，拒绝启动，不改动库。
+- M16 的内联计划项必须显式记录 `sources`，没有候选来源时为空。旧库需手动迁移计划 blob、更新 `AttemptStarted.plan` 引用，再把版本设为 3；不在运行时补默认字段。
 - P4 之前不写迁移代码。每次改 schema 都把版本号加一；已有的库由 Agent 按 §3.2 手动迁移并设置版本号，或者删库重建。从 P4 起，升级不丢记录（路线图 P4）。
 - 一个 `rusqlite::Connection`，放在 `std::sync::Mutex` 中；每个方法在 `tokio::task::spawn_blocking` 中执行。不要引入连接池。
 - 打开时执行：`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;`

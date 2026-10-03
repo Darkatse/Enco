@@ -93,7 +93,7 @@ complete: async func(settings: settings, request: request) -> result<completion,
 
 ## 4. 验收场景
 
-每个阶段的完成以下列场景为准。里程碑按实施顺序排列。P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。P1（可恢复替换，路线图）：M10 请求查看、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。P1 之后：M15 缓存友好的请求与时间标记。"层"指主要在哪一层验证。
+每个阶段的完成以下列场景为准。里程碑按实施顺序排列。P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。P1（可恢复替换，路线图）：M10 请求查看、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。P1 之后：M15 缓存友好的请求与时间标记、M16 按消息锚定的上下文。"层"指主要在哪一层验证。
 
 P1 与之后各里程碑的范围：
 
@@ -104,11 +104,12 @@ P1 与之后各里程碑的范围：
 | M12 | 07：WIT 0.2，`completion` 与 `embedding` 拆开，`describe(config)` 不再自报名字，`probe` 定义，`extension` 去掉 `provider`；enco-wasm 按导出建立 `InstancePre`；扩展字段在 `plan::resolve` 中按代际的身份过滤；插件重建；出厂插件目录改名 | Rust 的 `Lifecycle` 端口、`Loaded.lifecycle` 及 `probe` 调用（M14） |
 | M13 | 12 与 08 §3：`[endpoint.*]`、`[profile.*]`、`sessions.profile`、`Kernel::set_profile`、`enco profile`、`ComposeInput.profile`、两个用途的预算；删除 `[provider]`、`[context]` 与 `SessionConfig`；同步更新 `enco init` 的模板、README 与 `examples/` 中的配置示例 | — |
 | M14 | 11 §7：部署时 `probe`、`trial` 状态、`TRIAL_CALLS` 晋升、可归因失败的自动回退、`GenerationRolledBack` 事件、Attempt 回退后立即重试、安全模式用出厂代际；schema 升到 2 | 健康代际的降级 |
-| M15 | 05 §4：请求按变化频率排列，System 消息只放稳定的内容，当前时间、记忆与上一个 Run 的结束说明移入末尾的上下文消息；来自 Inbox 的输入按钟点带时间标记；压缩渲染与三份提示词同步；`TranscriptItem.received_at`（04 §2、§5） | 按上一份计划冻结内容、按空闲时长刷新开头（架构文档 §7.1 的"上一份 ContextPlan 作为输入"）；候选区分常驻与召回 |
+| M15 | 引入按钟点的时间标记与 `TranscriptItem.received_at`（04 §2、§5）；当时的末尾上下文排列已由 M16 替换，当前规则统一见 05 §4 | — |
+| M16 | 05 §4：请求在最新条目处结束，不再追加末尾的上下文消息；输入前的说明（跨整点的时间、工作结局、召回的记忆）留在原位；composer 决定是否沿用上一份回复计划（`ComposeInput.previous_plan`）；`Candidate.standing`，内联消息记录 `sources`，inspect 返回原始计划；置顶记忆进 System 消息；Environment 给出时区；`Transcript.run_ends` 提供工作结局，文案由 composer 逐字记入计划（03 §1.8，04 §2） | 稳定性标注；按空闲时长开始新系列 |
 
 每个里程碑结束时系统都完整可用。M11 到 M13 之间的过渡形态（临时 profile）只存在于代码中，规格只描述最终形态。
 
-当前实现已到 M15，P1 与 M15 的代码已完成，待主人审核。schema 版本为 2，旧库由 Agent 手动迁移或重建（03 §3.1）。
+当前实现已到 M16，代码已完成，待主人从第一性原理审核。schema 版本为 3，旧库由 Agent 手动迁移或重建（03 §3.1）。
 
 A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP 服务代替模型服务，另外核对了晋升、probe 拒绝、安全模式和下一个 Round 的规范消息。旧 schema 的库被拒绝启动，库本身不变。
 
@@ -127,10 +128,10 @@ A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP �
 | A11 | M4 | 取消 | 集成 | `shell_exec` 执行 `sleep 60` 时取消：迅速返回 `Unknown cancelled`，子进程已不存在；`RoundEnded(Cancelled)`、`RunEnded(Cancelled)` |
 | A12 | M4 | 安全模式 | 集成 | 开启后，下一次 `AttemptStarted` 所引用的计划中 `tools` 恰好是救生集，计划中没有记忆，`RoundStarted.safe_mode` 为真；关闭后恢复 |
 | A13 | M4 | 优雅关闭 | 集成 | Run 进行中调用 `shutdown`：以 `RunEnded(Cancelled)` 结束，`shutdown` 在所有任务退出后才返回 |
-| A14 | M5 | 记忆的更正、遗忘与重启 | 集成 | 脚本：`memory_save`（"主人喜欢咖啡"）；下一次计划的记忆部分包含它；`memory_update` 改为"主人喜欢茶"；重启 Kernel 与 `Memories`；下一次计划包含"喜欢茶"、不包含"喜欢咖啡"；`memory_forget` 之后不再出现，`memory.db` 中没有这一行 |
-| A15 | M5 | 召回与"索引提名，权威裁决" | 集成 | 保存 20 条记忆，其中一条置顶：预算可容纳时，置顶的那条在无关的消息下也出现在计划中；与某条非置顶记忆字面相近的消息把它召回。随后让 `embed` 失败：更新一条记忆后，计划中只出现新内容；失败期间新保存的记忆以"尚未进入索引"出现；`plan.omitted` 含 `memory:semantic`。恢复 `embed` 后，下一次召回把它们写入索引。`embed` 阻塞时取消 Run：迅速以 `RoundEnded(Cancelled)` 结束，之后的召回照常把记忆写入索引 |
+| A14 | M5 | 记忆的更正、遗忘与重启 | 集成 | 脚本：`memory_save`（"主人喜欢咖啡"）；下一次计划的记忆部分包含它；`memory_update` 改为"主人喜欢茶"；重启 Kernel 与 `Memories`；下一次新生成的记忆内容为"喜欢茶"；旧说明作为历史保留；`memory_forget` 后不再新召回，`memory.db` 中没有这一行 |
+| A15 | M5 | 召回与"索引提名，权威裁决" | 集成 | 保存 20 条记忆，其中一条置顶：预算可容纳时，置顶的那条在无关的消息下也出现在计划中；与某条非置顶记忆字面相近的消息把它召回。随后让 `embed` 失败：更新一条记忆后，新召回的候选只含新内容，已记录的说明不改写；失败期间新保存的记忆以"尚未进入索引"出现；`plan.omitted` 含 `memory:semantic`。恢复 `embed` 后，下一次召回把它们写入索引。`embed` 阻塞时取消 Run：迅速以 `RoundEnded(Cancelled)` 结束，之后的召回照常把记忆写入索引 |
 | A16 | M5 | 索引重建 | 集成 | 删除 `memory-index/` 后重启：召回照常，索引的节点数等于记忆数；改变配置的 `dimensions` 后重启：索引自动重建；`embed` 失败时启动：照常启动，记忆以"尚未进入索引"出现在召回中 |
-| A17 | M5 | 端到端记忆 | 端到端 | wiremock 先返回 `memory_save` 调用、再返回文本，并模拟 `/embeddings`：`enco memory` 的输出列出该记忆；下一条消息的 `/chat/completions` 请求体中，最后一条消息包含它；`/embeddings` 请求体的 `input` 包含记忆文本 |
+| A17 | M5 | 端到端记忆 | 端到端 | wiremock 先返回 `memory_save` 调用保存置顶记忆、再返回文本，并模拟 `/embeddings`：工具循环没有新增自动 embedding 请求，第二次模型请求的 System 消息已包含置顶内容，`enco memory` 列出该记忆及其尚未索引的状态；再发一条输入，触发一次召回与索引同步，其请求仍包含记忆，`/embeddings` 的 `input` 包含记忆文本，`unindexed` 为空 |
 | A18 | M6 | 压缩与重启 | 集成 | 用较小但记忆预算仍可容纳置顶条目的 `context_tokens` 迫使压缩（出现 `Compacted`）；重启 Kernel；之后的计划仍包含该置顶记忆，并且不引用被压缩隐藏的位置；压缩模型的窗口小于回复窗口时分几次压缩，每个 Run 都正常完成，每次压缩请求都放得进压缩窗口 |
 | A19 | M6 | 提醒 | 集成 | `TestClock` 下，到期后恰好一次 `EventConsumed(Reminder)` 并触发一个 Run；在到期前"崩溃"并在到期后重启，提醒补发一次；创建一个已经过去的时间返回错误 |
 | A20 | M6 | 端到端提醒管理 | 端到端 | 模型通过 `schedule_create` 创建提醒，CLI 可以列出并取消同一条提醒，取消后不再列出；到期与重启补发由 A19 的可控时钟场景核对 |
@@ -139,7 +140,7 @@ A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP �
 | A23 | M8 | 单实例 | 端到端 | 守护进程运行时，第二次 `enco serve` 报错退出，不打开任何存储，第一个进程照常服务；第一个进程收到 SIGTERM 之后、退出之前，第二次启动同样被拒绝，既不打开存储，也不删除 socket 文件（用确定性协调拖住关闭，不依赖 sleep）；`kill -9` 之后重新启动成功（与 A8 共用） |
 | A24 | M8 | 分页读取 | 集成 | 每行与说明行合计都能放入预算、总量超过预算的文件：结果不超过预算，只含完整的行，说明行给出 `continue at offset`，按它再读得到其余内容，`ToolCallSettled.full` 为空；单行加说明行也放不下时：返回这一行，由内核截断，`full` 指向 blob，说明行位于预览开头，继续位置仍然可见 |
 | A25 | M8 | 工具结果持久化 | 集成（与 A2、A24 共用） | 执行工具并重启：结局与 `content/full` 保持不变，模型请求中的工具结果与重启前相同；大结果的全文从 blob 读取。原始返回值不进入 Log 由 `Settlement` 类型表达 |
-| A26 | M8 | 本地时间 | 集成 | `TestClock` 在两个 Round 之间改变 UTC 偏移：后一个计划中的当前时间使用新偏移 |
+| A26 | M8 | 本地时间 | 集成 | `TestClock` 在两个 Round 之间改变 UTC 偏移：后一个计划中 Environment 的时区与时间标记使用新偏移 |
 | A27 | M9 | 目录布局 | 端到端（与已有场景共用） | `enco init` 之后运行时文件只出现在 `.data/`，`.gitignore` 忽略 `.data/` 与 `workspace/`；根目录的 `AGENTS.md` 出现在计划的 Standing instructions 一节 |
 | A28 | M9 | Telegram 入站与命令 | 集成 | wiremock 模拟 Bot API：主人的私聊文本成为 `main` 中来源为 `Channel` 的 Event；其他用户、群聊与非文本更新只推进 offset；`/session work` 创建并切换，之后的消息进入 `work`；命令不产生 Provider 请求；`/cancel` 取消正在进行的 Run |
 | A29 | M9 | 入站不丢不重 | 集成 | 一条更新提交之后停止并重启：下一次 `getUpdates` 的 offset 为 `update_id + 1`，Inbox 中这条消息恰好一条；在提交之前停止：重启后同一条更新被再次取回，并恰好接纳一次 |
@@ -159,8 +160,10 @@ A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP �
 | A43 | M14 | 迟到的回报 | 集成 | 对已经不是活跃代际的编号回报 `Failed(plugin.trap)`：注册表不变；对 `healthy` 代际回报同样不变 |
 | A44 | M14 | 安全模式 | 集成 | 部署新代际后开启安全模式：`AttemptStarted.provider` 是出厂代际；关闭后回到活跃代际 |
 | A45 | M14 | 真实插件 | 手动一次 | 复制出厂插件源码到 `~/.enco/plugins/`，改一处可观察的行为（例如请求头），构建、`enco plugin deploy`，在 `enco chat` 中确认生效；再改成一个会 panic 的版本部署：第一次对话自动回退并收到回退提示，`enco plugin status` 显示失败的代际与当前活跃代际；`enco plugin rollback` 回到出厂代际 |
-| A46 | M15 | 前缀稳定 | 集成 | `TestClock` 在 Round 之间前进，相邻两次请求召回的记忆不同，上一个 Run 以失败结束：同一 Run 的工具循环中，以及下一个 Run 的第一次请求中，后一次请求都以前一次请求去掉最后一条消息后的全部消息开头；本轮当前时间、自动召回的记忆与上一个 Run 的结束说明只出现在最后一条消息中 |
+| A46 | M16 | 只追加 | 集成 | `TestClock` 在 Round 之间前进，相邻两次请求召回的记忆不同：同一 Run 的工具循环中、下一个 Run 中、重启 Kernel 之后，后一次回复请求都以前一次回复请求的全部消息开头，最后一条消息是最新的 Transcript 条目；上一份计划被清理后仍可继续，省略信息记录开始新系列的原因；修改常驻指令、置顶记忆变化、压缩或改变 UTC 偏移之后，System 消息随之改变，从头渲染 |
 | A47 | M15 | 时间标记 | 集成 | `TestClock`：第一条输入带标记；同一钟点内的下一条不带；13:59 与 14:01 的两条中后一条带；相隔两小时的带；压缩之后可见的第一条输入带；压缩请求中同一条输入前有同样的标记；改变 UTC 偏移后标记按新偏移渲染 |
+| A48 | M16 | 记忆的位置 | 集成 | 置顶记忆在 System 消息中；与某条消息字面相近的非置顶记忆出现在这条消息之前的说明里；之后的请求中这条说明原样保留，同一条记忆在本系列中不再重复；`memory_update` 更正后在下一条输入再次召回时作为新的一行出现，改回原值也再次出现；inspect 中该行所属消息的 sources 与实际使用的候选一致；压缩后从头渲染时，仅有新输入的 Round 纳入本轮召回候选 |
+| A49 | M16 | 工作中断 | 集成 | Run 以失败、取消、步数用尽或中断结束后，composer 在其后第一条输入的说明中写入结局，失败时含错误码与消息；一次接纳多条输入时不重复；旧计划原样保留说明，从头渲染时按 Log 位置还原归属；压缩与回复共享结局说明的渲染；inspect 直接读取已冻结的文字 |
 
 ## 5. 每个里程碑的完成条件
 
