@@ -64,6 +64,10 @@ pub(crate) fn project(entries: &[Entry]) -> Transcript {
                 pos: entry.pos,
                 message,
                 generation,
+                received_at: match &entry.body {
+                    EntryBody::EventConsumed { event } => Some(event.received_at),
+                    _ => None,
+                },
             });
         }
         if matches!(entry.body, EntryBody::RoundEnded { .. }) {

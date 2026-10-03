@@ -113,7 +113,13 @@ pub struct Transcript {
 }
 
 /// `generation` 只有 Assistant 消息有：产生它的 Attempt 所用的 Provider 代际，扩展字段按它回放（§6.5）。
-pub struct TranscriptItem { pub pos: LogPos, pub message: Message, pub generation: Option<GenerationId> }
+/// `received_at` 只有来自 Inbox 的输入有：Event 的接收时间，composer 用它标注时间（05 §4.3）。
+pub struct TranscriptItem {
+    pub pos: LogPos,
+    pub message: Message,
+    pub generation: Option<GenerationId>,
+    pub received_at: Option<DateTime<Utc>>,
+}
 
 pub enum Composition {
     Plan(ContextPlan),
@@ -315,7 +321,7 @@ loop:
 1. 找到最近一条 `Compacted`。位置不大于它的 `upto` 的条目被隐藏，`summary` 取它的摘要；没有则 `summary = None`、不隐藏任何条目。
 2. 遍历**全部**条目，记录每个 Attempt 的目的与 Provider 代际（来自 `AttemptStarted`）和每个 CallId 的 `provider_id`（来自已完成的 Reply 消息中的 `ToolCall`）。
 3. 对未被隐藏的条目，按 Log 顺序：
-   - 具有规范消息形态的条目（03 §1.5 的表）生成 `TranscriptItem`；目的为 `Compaction` 的 Attempt 不生成。`AttemptSettled` 生成的项带上该 Attempt 的代际，其余为空。
+   - 具有规范消息形态的条目（03 §1.5 的表）生成 `TranscriptItem`；目的为 `Compaction` 的 Attempt 不生成。`AttemptSettled` 生成的项带上该 Attempt 的代际，`EventConsumed` 生成的项带上 Event 的 `received_at`，其余字段为空。
    - `RoundEnded` 的位置加入 `round_ends`。
 
 压缩边界总是 `RoundEnded`，所以工具调用与它的结果不会被拆开。

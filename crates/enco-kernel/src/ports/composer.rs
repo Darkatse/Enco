@@ -60,6 +60,8 @@ pub struct TranscriptItem {
     pub message: Message,
     /// Provider generation of the producing Attempt, present only for Assistant messages.
     pub generation: Option<GenerationId>,
+    /// Recorded arrival time, present only for Inbox inputs; the composer decides how to show it.
+    pub received_at: Option<DateTime<Utc>>,
 }
 
 /// A ready reply request or a request to summarize earlier complete Rounds first.

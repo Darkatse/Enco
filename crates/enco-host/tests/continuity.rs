@@ -28,19 +28,66 @@ impl TestClock {
 }
 
 #[tokio::test]
-async fn model_requests_follow_the_current_clock_offset_across_rounds() {
+async fn requests_keep_a_stable_prefix_and_date_inputs_in_the_current_offset() {
     let dir = tempfile::tempdir().unwrap();
-    let first = DateTime::parse_from_rfc3339("2026-09-29T09:00:00-04:00").unwrap();
-    let second = DateTime::parse_from_rfc3339("2026-09-29T15:01:00+02:00").unwrap();
+    let first = DateTime::parse_from_rfc3339("2026-09-29T13:00:00-04:00").unwrap();
     let clock = Arc::new(TestClock(Mutex::new(first)));
-    let provider = ScriptedProvider::new(vec![reply("first"), reply("second")]);
+    let provider = ScriptedProvider::new(vec![
+        reply("first"),
+        Err(Failure {
+            code: "provider.bad_request".into(),
+            message: "request rejected".into(),
+            retryable: false,
+        }),
+        reply("recovered"),
+        reply("later"),
+        reply("new offset"),
+    ]);
     let (kernel, _) = kernel_with(dir.path(), provider.clone(), |deps| {
         deps.clock = clock.clone();
     })
     .await;
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
-    for now in [first, second] {
+    // (clock at submission, whether the previous Run failed, markers expected in the history)
+    let cases: [(&str, bool, &[&str]); 5] = [
+        (
+            "2026-09-29T13:00:00-04:00",
+            false,
+            &["[2026-09-29 13:00, Tuesday]"],
+        ),
+        (
+            "2026-09-29T13:59:00-04:00",
+            false,
+            &["[2026-09-29 13:00, Tuesday]"],
+        ),
+        (
+            "2026-09-29T14:01:00-04:00",
+            true,
+            &["[2026-09-29 13:00, Tuesday]", "[2026-09-29 14:01, Tuesday]"],
+        ),
+        (
+            "2026-09-29T16:01:00-04:00",
+            false,
+            &[
+                "[2026-09-29 13:00, Tuesday]",
+                "[2026-09-29 14:01, Tuesday]",
+                "[2026-09-29 16:01, Tuesday]",
+            ],
+        ),
+        (
+            "2026-09-29T22:02:00+02:00",
+            false,
+            &[
+                "[2026-09-29 19:00, Tuesday]",
+                "[2026-09-29 20:01, Tuesday]",
+                "[2026-09-29 22:01, Tuesday]",
+            ],
+        ),
+    ];
+    let mut previous_offset = None;
+    for (at, after_failure, markers) in cases {
+        let now = DateTime::parse_from_rfc3339(at).unwrap();
         *clock.0.lock().unwrap() = now;
         kernel
             .submit(session.id, EventId::new(), "time".into())
@@ -48,8 +95,32 @@ async fn model_requests_follow_the_current_clock_offset_across_rounds() {
             .unwrap();
         finish(&mut rx).await;
         let requests = provider.requests.lock().unwrap();
-        let system = requests.last().unwrap().messages[0].joined_text();
-        assert!(system.contains(&now.to_rfc3339()));
+        let request = requests.last().unwrap();
+        let (context, prefix) = request.messages.split_last().unwrap();
+        assert!(context.joined_text().contains(at));
+        let actual: Vec<_> = prefix
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .map(Message::joined_text)
+            .filter(|text| text.starts_with('['))
+            .collect();
+        assert_eq!(actual, markers);
+        // While the offset holds, only the final context message differs from the last request.
+        if previous_offset == Some(*now.offset()) {
+            let previous = &requests[requests.len() - 2];
+            assert!(prefix.starts_with(&previous.messages[..previous.messages.len() - 1]));
+            assert_eq!(request.tools, previous.tools);
+        }
+        previous_offset = Some(*now.offset());
+        assert_eq!(
+            context.joined_text().contains("request rejected"),
+            after_failure
+        );
+        assert!(
+            !prefix
+                .iter()
+                .any(|m| m.joined_text().contains("request rejected"))
+        );
     }
     kernel.shutdown().await.unwrap();
 }
@@ -162,7 +233,12 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
     .await
     .unwrap();
     memories.save("Owner is River".into(), true).await.unwrap();
+    let clock = Arc::new(TestClock(Mutex::new(
+        DateTime::parse_from_rfc3339("2026-09-29T09:00:00-04:00").unwrap(),
+    )));
+    let marker = "[2026-09-29 09:00, Tuesday]";
     let configure = |deps: &mut KernelDeps| {
+        deps.clock = clock.clone();
         deps.context
             .push(Arc::new(MemoryContextSource::new(memories.clone())));
         deps.tools.extend(memory_tools(memories.clone()));
@@ -216,6 +292,14 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
         assert_eq!(inspection.settings, settings);
         assert_eq!(request.max_output_tokens, Some(output));
         assert_eq!(inspection.request, request);
+        match inspection.purpose {
+            AttemptPurpose::Reply => assert_eq!(request.messages[1].joined_text(), marker),
+            AttemptPurpose::Compaction => {
+                let text = request.messages[1].joined_text();
+                assert!(text.contains(&format!("{marker}\nOwner: History")));
+                assert!(!text.contains("Owner is River"));
+            }
+        }
     }
     let (upto, summary) = log
         .iter()
@@ -251,9 +335,17 @@ async fn compaction_survives_restart_and_preserves_memory_without_hidden_log_ref
         PlanItem::Log { pos } => *pos > upto,
         _ => true,
     }));
-    let system = provider.requests.lock().unwrap().last().unwrap().messages[0].joined_text();
-    assert!(system.contains("Owner is River"));
-    assert!(system.contains(&summary));
+    let request = provider.requests.lock().unwrap().last().unwrap().clone();
+    assert!(
+        request
+            .messages
+            .last()
+            .unwrap()
+            .joined_text()
+            .contains("Owner is River")
+    );
+    assert!(request.messages[0].joined_text().contains(&summary));
+    assert_eq!(request.messages[1].joined_text(), marker);
     kernel.shutdown().await.unwrap();
 }
 
@@ -388,8 +480,8 @@ fn budget_omissions_are_explicit_and_do_not_make_oversized_candidates_mandatory(
             .any(|o| o.source == "instructions:AGENTS.md")
     );
     assert!(plan.omitted.iter().any(|o| o.source == "memory:large"));
-    let PlanItem::Message { message } = &plan.items[0] else {
-        panic!("missing system message");
+    let PlanItem::Message { message } = plan.items.last().unwrap() else {
+        panic!("missing current context");
     };
     assert!(message.joined_text().contains("Owner is River"));
     assert!(!message.joined_text().contains("oversized memory"));

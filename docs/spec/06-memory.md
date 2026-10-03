@@ -131,7 +131,7 @@ Memories::recall(query: &str, limit: usize, cancel) -> Result<Recall, MemoryErro
 
 - 向量不可用时，TriviumDB 仍可只按文本检索（中文按两字切分计算 BM25，已实测）。
 - 不设相关性阈值：阈值依赖具体的 embedding 模型，固定取前 `limit` 条，由提示词说明它们"可能相关"。
-- 没有新 Event 被消费时，查询文本不变（§5）；记忆写入与对账仍可能改变召回结果，不能据此保证前缀稳定。
+- 没有新 Event 被消费时，查询文本不变（§5）；记忆写入与对账仍可能改变召回结果。记忆只出现在请求末尾的上下文消息中（05 §4.1），召回结果变化不改写前面的稳定内容与历史，实际缓存命中仍由服务商决定。
 - 每个 Round 贡献一次上下文（04 §6.3），也就是一次 embedding 请求。不缓存查询向量（01 §2），后续根据实际延迟与用量判断是否优化。
 - 取消只打断两种等待：索引锁与 embedding 响应。已经开始的 `spawn_blocking`（SQLite、TriviumDB）等它结束，然后返回 `MemoryError::Cancelled`。
 

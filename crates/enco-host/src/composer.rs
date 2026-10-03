@@ -1,4 +1,5 @@
 use crate::limits::*;
+use chrono::{SecondsFormat, Timelike};
 use enco_core::*;
 use enco_kernel::*;
 use std::{collections::HashMap, path::PathBuf};
@@ -28,24 +29,33 @@ impl Composer for FactoryComposer {
 
     fn compose(&self, input: &ComposeInput) -> Result<Composition, ComposeError> {
         let budget = input.profile.reply.budget;
-        let (system, omitted) = self.system(input);
-        let sizes = input
-            .transcript
-            .items
+        let mut omitted = input.context.omitted.clone();
+        let system = self.system(input, &mut omitted);
+        let context = current_context(input, &mut omitted);
+        let history = timed_history(input);
+        let sizes = history
             .iter()
-            .map(|item| encoded_tokens(&item.message).map(|size| (item.pos, size)))
+            .map(|(item, marker)| {
+                encoded_tokens(&item.message).map(|size| {
+                    (
+                        item.pos,
+                        size.saturating_add(marker.as_deref().map_or(0, estimate_tokens)),
+                    )
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let definitions: Vec<_> = input.tools.iter().map(|(_, spec)| spec).collect();
         let history_tokens: u32 = sizes.iter().map(|(_, size)| size).sum();
         let total = estimate_tokens(&system)
             .saturating_add(history_tokens)
+            .saturating_add(estimate_tokens(&context))
             .saturating_add(encoded_tokens(&definitions)?)
             .saturating_add(budget.max_output_tokens);
         let window = budget.context_tokens;
         if total > window.saturating_mul(COMPACTION_TRIGGER_PERCENT) / 100 {
             if input.compactions_left > 0 {
                 let keep = window.saturating_mul(COMPACTION_TAIL_PERCENT) / 100;
-                let compaction = Compaction::new(input);
+                let compaction = Compaction::new(input, &history);
                 if let Some(upto) = compaction.boundary(input, &sizes, history_tokens, keep) {
                     return Ok(Composition::Compact {
                         upto,
@@ -63,13 +73,17 @@ impl Composer for FactoryComposer {
         let mut items = vec![PlanItem::Message {
             message: Message::text(Role::System, system),
         }];
-        items.extend(
-            input
-                .transcript
-                .items
-                .iter()
-                .map(|i| PlanItem::Log { pos: i.pos }),
-        );
+        for (item, marker) in history {
+            if let Some(marker) = marker {
+                items.push(PlanItem::Message {
+                    message: Message::text(Role::User, marker),
+                });
+            }
+            items.push(PlanItem::Log { pos: item.pos });
+        }
+        items.push(PlanItem::Message {
+            message: Message::text(Role::User, context),
+        });
         Ok(Composition::Plan(ContextPlan {
             items,
             tools: input.tools.clone(),
@@ -80,7 +94,7 @@ impl Composer for FactoryComposer {
 }
 
 impl FactoryComposer {
-    fn system(&self, input: &ComposeInput) -> (String, Vec<Omission>) {
+    fn system(&self, input: &ComposeInput, omitted: &mut Vec<Omission>) -> String {
         let mut text = if input.safe_mode {
             include_str!("prompts/safe_mode.md")
         } else {
@@ -89,39 +103,62 @@ impl FactoryComposer {
         .trim()
         .to_string();
         text.push_str(&format!(
-            "\n\n## Environment\n- Current time: {} ({})\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}",
-            input.now.to_rfc3339(),
-            input.now.format("%A"),
+            "\n\n## Environment\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}",
             self.workspace.display(),
             self.instructions.display(),
             input.session.name
         ));
-        let mut omitted = input.context.omitted.clone();
-        append_instructions(&mut text, &mut omitted, input);
-        append_memories(&mut text, &mut omitted, input);
+        append_instructions(&mut text, omitted, input);
         if let Some(summary) = &input.transcript.summary {
-            section(&mut text, "Summary of earlier conversation", summary);
-        }
-        if let Some(end) = &input.previous_run_end
-            && !matches!(end, RunEnd::Completed)
-        {
-            let reason = match end {
-                RunEnd::Interrupted => "interrupted".into(),
-                RunEnd::Cancelled => "cancelled".into(),
-                RunEnd::BudgetExhausted => "budget exhausted".into(),
-                RunEnd::Failed { failure } => format!("failed: {}", failure.message),
-                RunEnd::Completed => String::new(),
-            };
             section(
                 &mut text,
-                "Note",
-                &format!(
-                    "The previous run ended with: {reason}. Tool results in the history show what did and did not happen."
-                ),
+                "Your summary of the earlier conversation",
+                summary,
             );
         }
-        (text, omitted)
+        text
     }
+}
+
+fn current_context(input: &ComposeInput, omitted: &mut Vec<Omission>) -> String {
+    let mut text = format!(
+        "[context]\nCurrent time: {} ({})",
+        input.now.to_rfc3339_opts(SecondsFormat::Secs, false),
+        input.now.format("%A")
+    );
+    append_memories(&mut text, omitted, input);
+    let ending = match &input.previous_run_end {
+        Some(RunEnd::Interrupted) => "was interrupted before it finished.".into(),
+        Some(RunEnd::Cancelled) => "was cancelled before it finished.".into(),
+        Some(RunEnd::BudgetExhausted) => "reached the step limit before it finished.".into(),
+        Some(RunEnd::Failed { failure }) => format!("stopped after an error: {}", failure.message),
+        None | Some(RunEnd::Completed) => return text,
+    };
+    text.push_str(&format!(
+        "\n\nYour previous work {ending}\nThe tool results above show what you did and which actions remain uncertain."
+    ));
+    text
+}
+
+/// Marks the first Inbox input and each one arriving in a new local clock hour. Rendered once
+/// and shared by reply assembly, budgeting and compaction.
+fn timed_history(input: &ComposeInput) -> Vec<(&TranscriptItem, Option<String>)> {
+    let mut previous_hour = None;
+    input
+        .transcript
+        .items
+        .iter()
+        .map(|item| {
+            let marker = item.received_at.and_then(|at| {
+                let local = at.with_timezone(input.now.offset());
+                let hour = Some((local.date_naive(), local.hour()));
+                let changed = hour != previous_hour;
+                previous_hour = hour;
+                changed.then(|| local.format("[%Y-%m-%d %H:%M, %A]").to_string())
+            });
+            (item, marker)
+        })
+        .collect()
 }
 
 fn append_instructions(text: &mut String, omitted: &mut Vec<Omission>, input: &ComposeInput) {
@@ -191,11 +228,10 @@ fn append_memories(text: &mut String, omitted: &mut Vec<Omission>, input: &Compo
             });
         }
     }
-    section(
-        text,
-        "Memory (authoritative; overrides anything said earlier in the conversation)",
-        memory.trim(),
-    );
+    if !memory.is_empty() {
+        text.push_str("\n\nYour memories (authoritative; they override anything said earlier in the conversation):\n");
+        text.push_str(memory.trim_end());
+    }
 }
 
 fn section(text: &mut String, title: &str, body: &str) {
@@ -219,34 +255,35 @@ struct Compaction {
 }
 
 impl Compaction {
-    fn new(input: &ComposeInput) -> Self {
+    fn new(input: &ComposeInput, history: &[(&TranscriptItem, Option<String>)]) -> Self {
         let mut header = String::new();
         if let Some(summary) = &input.transcript.summary {
             header.push_str(&format!("Previous summary:\n{summary}\n\n"));
         }
         header.push_str("Conversation to summarize:\n");
         let mut names = HashMap::new();
-        let chunks = input
-            .transcript
-            .items
+        let chunks = history
             .iter()
-            .map(|item| {
+            .map(|(item, marker)| {
                 let mut chunk = String::new();
+                if let Some(marker) = marker {
+                    chunk.push_str(marker);
+                    chunk.push('\n');
+                }
                 for part in &item.message.parts {
                     match part {
                         Part::Text { text } => {
                             let speaker = if item.message.role == Role::User {
                                 "Owner"
                             } else {
-                                "Enco"
+                                "You"
                             };
                             chunk.push_str(&format!("{speaker}: {text}\n"));
                         }
                         Part::ToolCall(call) => {
                             names.insert(call.id, call.name.as_str());
                             let arguments = clip(&call.arguments);
-                            chunk
-                                .push_str(&format!("Enco called {} with {arguments}\n", call.name));
+                            chunk.push_str(&format!("You called {} with {arguments}\n", call.name));
                         }
                         Part::ToolResult(result) => {
                             let name = names.get(&result.call).copied().unwrap_or("tool");

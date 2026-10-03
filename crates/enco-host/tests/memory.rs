@@ -97,9 +97,21 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
         reply("corrected"),
     ]);
     send(&kernel, session.id, "correct my drink").await;
-    let system = provider.requests.lock().unwrap()[3].messages[0].joined_text();
-    assert!(system.contains("Owner likes tea"));
-    assert!(!system.contains("Owner likes coffee"));
+    let context = provider.requests.lock().unwrap()[3]
+        .messages
+        .last()
+        .unwrap()
+        .joined_text();
+    assert!(context.contains("Owner likes tea"));
+    assert!(!context.contains("Owner likes coffee"));
+    for pair in provider.requests.lock().unwrap().windows(2) {
+        assert!(
+            pair[1]
+                .messages
+                .starts_with(&pair[0].messages[..pair[0].messages.len() - 1])
+        );
+        assert_eq!(pair[1].tools, pair[0].tools);
+    }
     kernel.shutdown().await.unwrap();
     drop(kernel);
     drop(memories);
@@ -112,7 +124,15 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
     let kernel = memory_kernel(dir.path(), provider.clone(), memories.clone()).await;
     send(&kernel, session.id, "unrelated topic").await;
     assert!(
-        provider.requests.lock().unwrap().last().unwrap().messages[0]
+        provider
+            .requests
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
             .joined_text()
             .contains("Owner likes tea")
     );
@@ -126,7 +146,15 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
     send(&kernel, session.id, "forget it").await;
     assert!(memories.list().await.unwrap().memories.is_empty());
     assert!(
-        !provider.requests.lock().unwrap().last().unwrap().messages[0]
+        !provider
+            .requests
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
             .joined_text()
             .contains("Owner likes tea")
     );

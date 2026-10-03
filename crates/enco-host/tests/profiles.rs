@@ -188,7 +188,15 @@ async fn profile_changes_bind_at_round_boundaries_and_missing_profiles_remain_re
         }
     ));
     assert!(
-        scripted.requests.lock().unwrap().last().unwrap().messages[0]
+        scripted
+            .requests
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
             .joined_text()
             .contains("unknown profile alternate")
     );

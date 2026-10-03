@@ -72,7 +72,7 @@ async fn wasm_memory_write_is_visible_to_native_admin_and_the_next_request() {
         .collect();
     let body: serde_json::Value = serde_json::from_slice(&chat[1].body).unwrap();
     assert!(
-        body["messages"][0]["content"]
+        body["messages"].as_array().unwrap().last().unwrap()["content"]
             .as_str()
             .unwrap()
             .contains("Owner is River")
