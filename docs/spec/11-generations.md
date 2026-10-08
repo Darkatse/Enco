@@ -173,7 +173,7 @@ pub enum Interface { Completion, Embedding }
 - 部署时对新加载的制品检查。失败返回 `Rejected`，message 形如 `used by profile default.reply, embedding; the artifact does not export completion`。部署是有意的命令，不能拆掉在用的接线。
 - 回退时不检查。回退是机械恢复，可以拆掉接线；之后的调用在 `Exports` 处得到 `plugin.unavailable`，Round 明确失败。
 
-`completion` 只由内核导入（架构文档 §4.10）。P1 还没有插件之间的导入，所以这一条暂时不需要检查。
+`completion` 只由内核导入（架构文档 §4.10）。P1 还没有插件之间的导入，所以每个活跃代际都准入，这一条也暂时不需要检查。
 
 ## 7. 健康门控
 
