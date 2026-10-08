@@ -16,6 +16,7 @@ fn loaded(provider: Arc<ScriptedProvider>) -> Loaded {
         summary: "fixture".into(),
         completion: Some(provider.clone()),
         embedding: Some(provider),
+        decision: None,
     }
 }
 
@@ -117,6 +118,7 @@ async fn admission_keeps_configured_exports_connected() {
             summary: "completion".into(),
             completion: Some(provider),
             embedding: None,
+            decision: None,
         },
     );
     let wiring = vec![Use {

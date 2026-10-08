@@ -118,13 +118,14 @@ impl Exports {
     /// `safe_mode` 为真时，有出厂代际的插件返回当前二进制的出厂代际，其余返回活跃代际。
     pub fn completion(&self, plugin: &str, safe_mode: bool) -> Result<Export<dyn Provider>, Failure>;
     pub fn embedding(&self, plugin: &str) -> Result<Export<dyn Embedding>, Failure>;
+    pub fn decision(&self, plugin: &str) -> Result<Export<dyn Decision>, Failure>;
     /// 任何已登记的代际属于哪个插件；扩展字段的回放用它（04 §6.5）。
     pub fn plugin_of(&self, generation: GenerationId) -> Option<PluginId>;
 }
 ```
 
 - 找不到插件、没有活跃代际、活跃代际不导出所需接口，三种情况都返回 `Failure { code: "plugin.unavailable", retryable: false }`，message 说明是哪一种。
-- 每次提交后，在锁内重建一份新的 `Exports`，用 `ArcSwap` 发布。读者用 `load_full()` 取得一份不可变的快照，用完即弃。P1 有三个读者：Attempt（04 §6.4）、记忆的 `sync`（06 §3.3）和 `plan::resolve`（04 §6.5）。它们每次调用都重新解析，不在 Round 内钉住导出表；钉住要等 P2 有了工具插件才需要。
+- 每次提交后，在锁内重建一份新的 `Exports`，用 `ArcSwap` 发布。读者用 `load_full()` 取得一份不可变的快照，用完即弃。读者是 Attempt（04 §6.4）、记忆的插件调用（06 §3.3）和 `plan::resolve`（04 §6.5）。它们每次调用都重新解析，不在 Round 内钉住导出表；钉住要等 P2 有了工具插件才需要。
 
 ## 5. 部署与回退
 
@@ -155,23 +156,24 @@ impl Exports {
 
 ## 6. 准入：接线
 
-接线是"谁在用哪个插件的哪个接口"。P1 的使用者只有两种，都来自配置（12）：
+接线是"谁在用哪个插件的哪个接口"。使用者有三种，都来自配置（08 §3、12）：
 
 | 使用者 | 插件 | 接口 |
 |---|---|---|
 | `profile <名字>.reply`、`profile <名字>.compaction` | endpoint 的 `plugin` | `completion` |
 | `embedding` | `[embedding].plugin` | `embedding` |
+| `decision` | `[decision].plugin`（配置了时） | `decision` |
 
 ```rust
 pub struct Use { pub user: String, pub plugin: String, pub interface: Interface }
-pub enum Interface { Completion, Embedding }
+pub enum Interface { Completion, Embedding, Decision }
 ```
 
 检查只有一个函数：给定插件和一份 `Loaded`，确认这个插件的每个使用者需要的接口都在导出中。它在三处调用：
 
 - 启动时对每个插件的活跃代际检查。引用了未登记的插件、插件没有活跃代际、缺接口，都拒绝启动，错误分别说明原因并列出使用者。
 - 部署时对新加载的制品检查。失败返回 `Rejected`，message 形如 `used by profile default.reply, embedding; the artifact does not export completion`。部署是有意的命令，不能拆掉在用的接线。
-- 回退时不检查。回退是机械恢复，可以拆掉接线；之后的调用在 `Exports` 处得到 `plugin.unavailable`，Round 明确失败。
+- 回退时不检查。回退是机械恢复，可以拆掉接线；之后的调用在 `Exports` 处得到 `plugin.unavailable`，与其他失败一样由调用方处理。
 
 `completion` 只由内核导入（架构文档 §4.10）。P1 还没有插件之间的导入，所以每个活跃代际都准入，这一条也暂时不需要检查。
 
@@ -187,14 +189,14 @@ pub enum Interface { Completion, Embedding }
 
 `provider.*`、`timeout`、`cancelled` 是外部失败或主人的操作，在任何代际上都可能出现，不计入。
 
-- **回报**：凡是调用了插件导出的地方，都在结算之后调用一次 `report(代际编号, verdict, 来源 Session)`。P1 有两处：内核的 Attempt（04 §6.4）和记忆的 `sync`（06 §3.3）。Attempt 传入本 Session，记忆传入 `None`。回报带着代际编号，所以迟到的回报碰不到更新之后的代际。verdict 只看插件调用本身：空摘要、向量维度与索引配置不符，是调用方自己的判断，不算插件失败。
+- **回报**：凡是调用了插件导出的地方，都在结算之后调用一次 `report(代际编号, verdict, 来源 Session)`：内核的 Attempt（04 §6.4）与记忆的插件调用（06 §3.3）。Attempt 传入本 Session，记忆传入 `None`。回报带着代际编号，所以迟到的回报碰不到更新之后的代际。verdict 只看插件调用本身：空摘要、向量维度与索引配置不符，是调用方自己的判断，不算插件失败。
 - **处理**（持锁进行）：
   - 代际已经不是所属插件的活跃代际：忽略。
   - 代际是 `healthy`：忽略。P1 不降级健康代际。
   - 试用代际调用成功：成功次数加一，达到 `TRIAL_CALLS` 时晋升为 `healthy`。
   - 试用代际出现可以归因于它自身的失败：立即回退。以这个代际为 expected 激活回退目标，并以这次的 `Failure` 为原因把它标为失败（§5），成功则返回 `RolledBack`；没有回退目标时，插件不再有活跃代际。一次失败就回退，不设阈值。
   - 试用代际出现不能归因于它的失败：忽略。
-- 成功次数按代际累计，补全与嵌入、不同 Session 与 endpoint 共用计数。外部失败既不增加也不清零；计数只记在内存里，重启后从零开始。
+- 成功次数按代际累计，各接口、不同 Session 与 endpoint 共用计数。外部失败既不增加也不清零；计数只记在内存里，重启后从零开始。
 - **回退通知**：回报带有来源 Session 时，注册表在回退的同一事务里向它的 Inbox 投递 `EventBody::GenerationRolledBack`，来源是 `EventSource::Registry`（03 §1.4）。这就是架构文档 §4.6 所说的 `deploy.rolled_back`。模型在下一个 Round 看到它；回退后进程立即崩溃，事件也会在重启后消费。Attempt 收到 `RolledBack` 后按 04 §6.4 立即用新代际重试。通知只发给出故障的 Session；其他 Session，包括部署它的那个，从 `plugin_status` 查看失败原因。
 - **probe**：`lifecycle.probe()` 只做自检，不联网，也不依赖主人的配置。P1 的 Provider 插件直接返回成功。它的作用是让实例化之后就无法使用的制品在部署时被拦下，而不是等到主人下一句话时才暴露。
 - **安全模式**：`Exports::completion(插件, safe_mode = true)` 返回出厂代际的导出（§4.2）。没有出厂代际的插件在安全模式下仍用活跃代际，没有更好的选择。

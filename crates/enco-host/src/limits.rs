@@ -14,6 +14,7 @@ pub(crate) const COMPACTION_OUTPUT_TOKENS: u32 = 2_048;
 pub(crate) const MEMORY_TEXT_BYTES: usize = 2_000;
 pub(crate) const MEMORY_RECALL_DEFAULT: u64 = 8;
 pub(crate) const MEMORY_RECALL_MAX: u64 = 20;
+pub(crate) const MEMORY_RELEVANCE_THRESHOLD: f64 = 0.5;
 pub(crate) const EMBED_BATCH: usize = 64;
 
 // A destination that stays unavailable must not starve later logical deliveries.

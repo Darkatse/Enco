@@ -1,0 +1,16 @@
+[package]
+name = "typesafe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+provider-protocol.workspace = true
+wit-bindgen.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -35,6 +35,7 @@ xtask/                     # cargo xtask：build-factory、boundaries、docs、c
 plugins/                   # 独立的 Cargo 工作区，目标 wasm32-wasip2；插件目录名就是插件名（架构文档 §4.10）
   openai-compatible/
   deepseek/
+  typesafe/
   provider-protocol/      # 插件内部共享的类型绑定与线上协议；不是插件，不依赖宿主 crate
 wit/                       # enco:plugin 包；CONTRACT.md 为生成物
 docs/
@@ -148,6 +149,7 @@ ports/store.rs      Store、StoreError、Commit、NodeRecord、RegistryState、N
 ports/runtime.rs    Runtime、Loaded、Lifecycle、LoadError
 ports/provider.rs   Provider、ProviderRequest、Completion
 ports/embedding.rs  Embedding
+ports/decision.rs   Decision、Question、QuestionKind、Label、Answer
 ports/composer.rs   Composer、ComposeInput、Composition、Transcript、Budget、ComposeError
 ports/context.rs    ContextSource、ContextQuery、ContextError
 ports/tool.rs       Tool、CallContext
@@ -193,6 +195,7 @@ memory.rs        Memories（记忆的归属者）、MemoryError（06 §7）
 memory/authority.rs  memory.db
 memory/index.rs      TriviumDB 索引、reconcile、sync
 memory/context.rs    MemoryContextSource
+memory/relevance.rs  Relevance：自动召回的相关性过滤（06 §5）
 memory/tools.rs      memory_save / memory_update / memory_forget / memory_search
 composer.rs      出厂 composer
 prompts/         system.md、compaction.md、safe_mode.md（include_str!）
@@ -209,10 +212,11 @@ limits.rs
 **enco-wasm**
 
 ```text
-lib.rs           bindgen 的两个 world
+lib.rs           模块与对外导出
+bindings.rs      bindgen 的 world 视图：base、completion-plugin、embedding-plugin、decision-plugin
 engine.rs        Engine 配置与 epoch 计时器
 runtime.rs       WasmRuntime（实现 Runtime 端口）：编译、读取导出、describe、WasmError
-plugin.rs        WasmPlugin：每次调用一个 Store；实现 Lifecycle、Provider、Embedding；失败码的归类
+plugin.rs        WasmPlugin：每次调用一个 Store；实现 Lifecycle、Provider、Embedding、Decision；失败码的归类
 convert.rs       enco-core 类型 ↔ WIT 绑定类型
 host_imports.rs  宿主导入：log、http
 limits.rs

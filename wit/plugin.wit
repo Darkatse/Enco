@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.2.0;
+package enco:plugin@0.2.1;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -100,6 +100,32 @@ interface embedding {
     embed: async func(settings: settings, inputs: list<string>) -> result<list<list<f32>>, failure>;
 }
 
+/// Answers independent questions against shared evidence, without generating messages.
+interface decision {
+    use types.{failure, settings};
+
+    /// An option or score level. Names must be unique within a question.
+    record label { name: string, description: option<string> }
+
+    /// A yes/no predicate, an unordered choice, or score levels ordered from low to high.
+    variant question-kind { predicate, choice(list<label>), score(list<label>) }
+
+    /// Instructions and the allowed answer shape for one independent judgment.
+    record question { instructions: string, kind: question-kind }
+
+    /// Probability of yes, probabilities in label order, or a refusal for this question.
+    /// Probabilities are finite and in [0, 1]; choice and score distributions sum to one
+    /// within 0.01, allowing for rounding by the service.
+    variant answer { predicate(f64), choice(list<f64>), score(list<f64>), refused }
+
+    /// Evaluate each question against the same text state. Return one matching answer
+    /// per question in input order; any question may instead receive `refused`.
+    ///
+    /// # Errors
+    /// Uses `provider.*` failure codes and `timeout`, as in `completion.complete`.
+    decide: async func(settings: settings, state: string, questions: list<question>) -> result<list<answer>, failure>;
+}
+
 /// Describes and checks the component without assigning its registry identity.
 interface lifecycle {
     use types.{json, failure};
@@ -137,4 +163,10 @@ world completion-plugin {
 world embedding-plugin {
     include base;
     export embedding;
+}
+
+/// A plugin exposing typed decisions over shared evidence.
+world decision-plugin {
+    include base;
+    export decision;
 }

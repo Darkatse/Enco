@@ -1,6 +1,9 @@
-use crate::bindings::{enco::plugin::types as wit, exports::enco::plugin::completion as wire};
+use crate::{
+    bindings::{decisions, enco::plugin::types as wit, exports::enco::plugin::completion as wire},
+    limits::DECISION_SUM_TOLERANCE,
+};
 use enco_core::*;
-use enco_kernel::{Completion, ProviderRequest};
+use enco_kernel::{Answer, Completion, Label, ProviderRequest, Question, QuestionKind};
 
 pub(crate) fn request(request: ProviderRequest) -> wire::Request {
     wire::Request {
@@ -123,4 +126,70 @@ pub(crate) fn embeddings(vectors: Vec<Vec<f32>>, count: usize) -> Result<Vec<Vec
         ));
     }
     Ok(vectors)
+}
+
+pub(crate) fn question(question: &Question) -> decisions::Question {
+    decisions::Question {
+        instructions: question.instructions.clone(),
+        kind: match &question.kind {
+            QuestionKind::Predicate => decisions::QuestionKind::Predicate,
+            QuestionKind::Choice(labels) => {
+                decisions::QuestionKind::Choice(decision_labels(labels))
+            }
+            QuestionKind::Score(labels) => decisions::QuestionKind::Score(decision_labels(labels)),
+        },
+    }
+}
+
+fn decision_labels(labels: &[Label]) -> Vec<decisions::Label> {
+    labels
+        .iter()
+        .map(|label| decisions::Label {
+            name: label.name.clone(),
+            description: label.description.clone(),
+        })
+        .collect()
+}
+
+pub(crate) fn answers(
+    answers: Vec<decisions::Answer>,
+    questions: &[Question],
+) -> Result<Vec<Answer>, Failure> {
+    if answers.len() != questions.len() {
+        return Err(bad("decision answer count does not match question count"));
+    }
+    let mut converted = Vec::with_capacity(answers.len());
+    for (index, (answer, question)) in answers.into_iter().zip(questions).enumerate() {
+        let answer = match (answer, &question.kind) {
+            (decisions::Answer::Refused, _) => Answer::Refused,
+            (decisions::Answer::Predicate(p), QuestionKind::Predicate)
+                if (0.0..=1.0).contains(&p) =>
+            {
+                Answer::Predicate(p)
+            }
+            (decisions::Answer::Choice(p), QuestionKind::Choice(labels))
+                if distribution(&p, labels.len()) =>
+            {
+                Answer::Choice(p)
+            }
+            (decisions::Answer::Score(p), QuestionKind::Score(labels))
+                if distribution(&p, labels.len()) =>
+            {
+                Answer::Score(p)
+            }
+            _ => {
+                return Err(bad(format!(
+                    "decision answer {index}: invalid type or probabilities"
+                )));
+            }
+        };
+        converted.push(answer);
+    }
+    Ok(converted)
+}
+
+fn distribution(probabilities: &[f64], count: usize) -> bool {
+    probabilities.len() == count
+        && probabilities.iter().all(|p| (0.0..=1.0).contains(p))
+        && (probabilities.iter().sum::<f64>() - 1.0).abs() <= DECISION_SUM_TOLERANCE
 }

@@ -20,6 +20,13 @@ dimensions = 768
 api_key_env = "GEMINI_KEY"
 options = { dimensions = 768 }
 
+# Optional relevance filtering for automatically recalled memories.
+# [decision]
+# plugin = "typesafe"
+# base_url = "https://api.typesafe.ai/v1"
+# model = "jev-latest"
+# api_key_env = "TYPESAFE_API_KEY"
+
 [run]
 max_rounds = 24
 

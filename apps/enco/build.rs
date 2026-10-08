@@ -5,6 +5,7 @@ fn main() {
     for (name, key) in [
         ("openai-compatible", "ENCO_FACTORY_OPENAI"),
         ("deepseek", "ENCO_FACTORY_DEEPSEEK"),
+        ("typesafe", "ENCO_FACTORY_TYPESAFE"),
     ] {
         let path = root.join(format!("target/factory/{name}.wasm"));
         assert!(

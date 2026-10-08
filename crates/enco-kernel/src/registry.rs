@@ -3,7 +3,9 @@ mod activation;
 mod health;
 mod state;
 
-use crate::{Clock, Embedding, Loaded, NewGeneration, Provider, Runtime, Store, StoreError};
+use crate::{
+    Clock, Decision, Embedding, Loaded, NewGeneration, Provider, Runtime, Store, StoreError,
+};
 use activation::ActivationReason;
 use arc_swap::ArcSwap;
 use enco_core::*;
@@ -53,6 +55,8 @@ pub enum Interface {
     Completion,
     /// Memory embedding.
     Embedding,
+    /// Typed judgments for host policies.
+    Decision,
 }
 
 /// Routing is published only after the durable mutation commits.
@@ -118,31 +122,46 @@ impl Exports {
             routes.active.as_ref()
         }
         .ok_or_else(|| unavailable(plugin, "no active generation"))?;
-        let adapter =
-            selected.loaded.completion.clone().ok_or_else(|| {
-                unavailable(plugin, "selected generation does not export completion")
-            })?;
-        Ok(Export {
-            plugin: selected.plugin,
-            generation: selected.generation,
-            adapter,
-        })
+        selected.export(plugin, "completion", |loaded| loaded.completion.clone())
     }
 
     /// Resolve embedding at the start of one synchronization call.
     pub fn embedding(&self, plugin: &str) -> Result<Export<dyn Embedding>, Failure> {
-        let active = self
-            .routes(plugin)?
+        self.active(plugin)?
+            .export(plugin, "embedding", |loaded| loaded.embedding.clone())
+    }
+
+    /// Resolve decision at the start of one policy evaluation.
+    pub fn decision(&self, plugin: &str) -> Result<Export<dyn Decision>, Failure> {
+        self.active(plugin)?
+            .export(plugin, "decision", |loaded| loaded.decision.clone())
+    }
+
+    fn active(&self, plugin: &str) -> Result<&LoadedGeneration, Failure> {
+        self.routes(plugin)?
             .active
             .as_ref()
-            .ok_or_else(|| unavailable(plugin, "no active generation"))?;
-        let adapter =
-            active.loaded.embedding.clone().ok_or_else(|| {
-                unavailable(plugin, "active generation does not export embedding")
-            })?;
+            .ok_or_else(|| unavailable(plugin, "no active generation"))
+    }
+}
+
+impl LoadedGeneration {
+    /// Bind one interface of this activation to the invocation that will record it.
+    fn export<T: ?Sized>(
+        &self,
+        plugin: &str,
+        interface: &str,
+        adapter: impl FnOnce(&Loaded) -> Option<Arc<T>>,
+    ) -> Result<Export<T>, Failure> {
+        let adapter = adapter(&self.loaded).ok_or_else(|| {
+            unavailable(
+                plugin,
+                &format!("generation {} does not export {interface}", self.generation),
+            )
+        })?;
         Ok(Export {
-            plugin: active.plugin,
-            generation: active.generation,
+            plugin: self.plugin,
+            generation: self.generation,
             adapter,
         })
     }
@@ -373,6 +392,7 @@ impl Registry {
                 let interface = match usage.interface {
                     Interface::Completion if loaded.completion.is_none() => "completion",
                     Interface::Embedding if loaded.embedding.is_none() => "embedding",
+                    Interface::Decision if loaded.decision.is_none() => "decision",
                     _ => return None,
                 };
                 Some(format!("{} requires {interface}", usage.user))

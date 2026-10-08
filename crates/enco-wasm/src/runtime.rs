@@ -1,12 +1,14 @@
 use crate::{
-    bindings::{BasePre, CompletionPluginPre, EmbeddingPluginPre, enco::plugin::host},
+    bindings::{
+        BasePre, CompletionPluginPre, DecisionPluginPre, EmbeddingPluginPre, enco::plugin::host,
+    },
     engine::WasmEngine,
     host_imports::HostState,
     plugin::WasmPlugin,
 };
 use async_trait::async_trait;
 use enco_core::ContentHash;
-use enco_kernel::{Embedding, LoadError, Loaded, Provider, Runtime};
+use enco_kernel::{Decision, Embedding, LoadError, Loaded, Provider, Runtime};
 use std::sync::Arc;
 use wasmtime::component::{Component, HasSelf, Linker};
 
@@ -48,25 +50,34 @@ impl Runtime for WasmRuntime {
         host::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |s| s).map_err(load_error)?;
         let pre = linker.instantiate_pre(&component).map_err(load_error)?;
         let lifecycle = BasePre::new(pre.clone()).map_err(load_error)?;
-        let completion = component
-            .get_export_index(None, "enco:plugin/completion@0.2.0")
-            .map(|_| CompletionPluginPre::new(pre.clone()))
+        // Semver-compatible lookup also finds exports built against earlier 0.2 patches.
+        let exports = |interface: &str| {
+            component
+                .get_export_index(None, format!("enco:plugin/{interface}@0.2.1"))
+                .is_some()
+        };
+        let completion = exports("completion")
+            .then(|| CompletionPluginPre::new(pre.clone()))
             .transpose()
             .map_err(load_error)?;
-        let embedding = component
-            .get_export_index(None, "enco:plugin/embedding@0.2.0")
-            .map(|_| EmbeddingPluginPre::new(pre))
+        let embedding = exports("embedding")
+            .then(|| EmbeddingPluginPre::new(pre.clone()))
             .transpose()
             .map_err(load_error)?;
-        if completion.is_none() && embedding.is_none() {
+        let decision = exports("decision")
+            .then(|| DecisionPluginPre::new(pre))
+            .transpose()
+            .map_err(load_error)?;
+        if completion.is_none() && embedding.is_none() && decision.is_none() {
             return Err(LoadError(
-                "component exports neither completion nor embedding".into(),
+                "component exports none of completion, embedding or decision".into(),
             ));
         }
         let plugin = Arc::new(WasmPlugin {
             lifecycle,
             completion,
             embedding,
+            decision,
             engine: self.engine.clone(),
             http: self.http.clone(),
             name: hash.to_string()[..8].into(),
@@ -86,6 +97,10 @@ impl Runtime for WasmRuntime {
                 .embedding
                 .is_some()
                 .then(|| plugin.clone() as Arc<dyn Embedding>),
+            decision: plugin
+                .decision
+                .is_some()
+                .then(|| plugin.clone() as Arc<dyn Decision>),
         })
     }
 }

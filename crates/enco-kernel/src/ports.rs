@@ -1,6 +1,7 @@
 mod clock;
 mod composer;
 mod context;
+mod decision;
 mod embedding;
 mod provider;
 mod runtime;
@@ -10,6 +11,7 @@ mod tool;
 pub use clock::*;
 pub use composer::*;
 pub use context::*;
+pub use decision::*;
 pub use embedding::*;
 pub use provider::*;
 pub use runtime::*;

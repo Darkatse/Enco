@@ -233,6 +233,7 @@ pub async fn kernel_with(
             summary: "scripted".into(),
             completion: Some(provider),
             embedding: None,
+            decision: None,
         },
     )
     .await;

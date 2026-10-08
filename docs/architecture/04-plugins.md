@@ -49,10 +49,10 @@
 
 ## 4.4 契约（WIT 草图）
 
-`completion`、`embedding` 和 `lifecycle` 已在 P1 定稿为 0.2。`tools` 随 P2 的第一个工具插件定稿，`channel` 在 P3 定稿，`state-get` 等到第一个有状态的插件出现时再加入。
+`completion`、`embedding` 和 `lifecycle` 已在 P1 定稿为 0.2。`decision` 在 0.2.1 加入：同一主版本内只增不改，已部署的 0.2.0 制品照常加载（§4.10）。`tools` 随 P2 的第一个工具插件定稿，`channel` 在 P3 定稿，`state-get` 等到第一个有状态的插件出现时再加入。
 
 ```wit
-package enco:plugin@0.2.0;
+package enco:plugin@0.2.1;
 
 interface types {
   type json = string;
@@ -111,6 +111,14 @@ interface completion {
 interface embedding {
   use types.{failure};
   embed: async func(settings: settings, inputs: list<string>) -> result<list<list<f32>>, failure>;
+}
+
+/// 宿主与插件都可以导入，例如记忆的相关性过滤。每个问题对同一份 state 独立回答，结果是概率而不是文本
+interface decision {
+  use types.{failure};
+  variant question-kind { predicate, choice(list<label>), score(list<label>) }   // score 的等级由低到高
+  variant answer { predicate(f64), choice(list<f64>), score(list<f64>), refused }   // 后两者按 label 顺序，和为 1
+  decide: async func(settings: settings, state: string, questions: list<question>) -> result<list<answer>, failure>;
 }
 
 interface lifecycle {
@@ -261,9 +269,10 @@ ULID 不进入 Log 条目。代际记录里有身份，需要跨改名追溯时�
 | 策略点（`inbound.preprocess`、`tool.gate`） | 一个 | 节点配置 |
 | 工具、Context 贡献、Observer、渠道 | 全部 | — |
 | 宿主：`embedding`（记忆的检索索引） | 一个 | 节点配置 |
+| 宿主：`decision`（记忆的相关性过滤） | 一个 | 节点配置 |
 
 - 补全只由内核导入。只有内核能在请求发出之前把它记为 Attempt，并与 ContextPlan、钉住的代际绑定，所以插件导入 `completion` 会在准入时被拒绝，错误信息提示改用 `session_delegate`（§6）；`embedding` 等其他接口照常可由宿主与插件导入。这保证的是 Session 配置接上的模型只能经内核、以有记录的方式调用；插件经 `http` 自行调用外部模型，与调用其他外部服务相同，不在这条保证之内。
-- 接口按导入方、约束以及能否单独提供来划分，不按实现方或线上协议划分。`completion` 与 `embedding` 的导入方和约束不同，也可以单独提供（DeepSeek 只导出前者），所以是两个接口。Chat Completions、Responses、Claude Messages 等协议对内核而言是同一件事，都导出 `completion`，差异留在各自的 Provider 插件里（§7.1）。按协议划分接口会迫使内核按服务身份选择调用方式，违反双向不泄露。
+- 接口按导入方、约束以及能否单独提供来划分，不按实现方或线上协议划分。`completion` 与 `embedding` 的导入方和约束不同，也可以单独提供（DeepSeek 只导出前者），所以是两个接口；`decision` 也可以单独提供（TypeSafe 只导出它），所以是第三个。Chat Completions、Responses、Claude Messages 等协议对内核而言是同一件事，都导出 `completion`，差异留在各自的 Provider 插件里（§7.1）。按协议划分接口会迫使内核按服务身份选择调用方式，违反双向不泄露。
 - 顺序由消费者决定：Context 的顺序归 composer，其余"全部"类的导入彼此可交换。插件不声明优先级或先后，也不能覆盖其他插件；要改变另一个插件的行为，就修改它的源码并部署新代际。
 - 接线时做类型检查。同一个契约有多个实现是正常的；名字相同而类型不同的契约会被类型检查拦下，不需要另立规则。
 - 跨插件调用由宿主转发，内部走内核 `invoke`：被调用方每次调用使用一个新 Store，照常结算 `outcome`，也可以跨节点。

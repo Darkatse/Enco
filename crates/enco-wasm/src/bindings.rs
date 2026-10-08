@@ -31,6 +31,19 @@ mod embedding {
     });
 }
 
+mod decision {
+    wasmtime::component::bindgen!({
+        path: "../../wit",
+        world: "decision-plugin",
+        exports: { default: async },
+        with: {
+            "enco:plugin/types": super::completion::enco::plugin::types,
+            "enco:plugin/host": super::completion::enco::plugin::host,
+        },
+    });
+}
+
 pub(crate) use base::BasePre;
 pub(crate) use completion::{CompletionPluginPre, enco, exports};
+pub(crate) use decision::{DecisionPluginPre, exports::enco::plugin::decision as decisions};
 pub(crate) use embedding::EmbeddingPluginPre;

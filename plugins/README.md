@@ -6,7 +6,9 @@
 |---|---|
 | `openai-compatible/src/lib.rs` | OpenAI-Compatible 入口：Chat Completions 与 embeddings |
 | `deepseek/src/lib.rs` | DeepSeek 入口：只导出 completion |
-| `provider-protocol/src/lib.rs` | 共用的类型绑定、请求转换、响应解析与 HTTP 错误分类 |
+| `typesafe/src/lib.rs`、`protocol.rs` | TypeSafe 入口与 System One 协议：只导出 decision |
+| `provider-protocol/src/lib.rs` | 共用的类型绑定与 Chat Completions / Embeddings 转换 |
+| `provider-protocol/src/http.rs` | 共用的 JSON 传输、options 合并与 HTTP 错误分类 |
 
 改动协议先读对应入口和共享转换；宿主无需识别服务商。`settings.options` 表达线上协议的附加设置，不能覆盖已记录请求的消息、模型、工具、输出上限或开启流式响应。服务商返回的额外 Assistant 字段由内核按产生它的代际追溯身份，只回放给同一插件；插件不自报名字或身份。
 

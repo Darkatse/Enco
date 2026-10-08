@@ -1,4 +1,4 @@
-use crate::{Embedding, Provider};
+use crate::{Decision, Embedding, Provider};
 use async_trait::async_trait;
 use enco_core::Failure;
 use std::sync::Arc;
@@ -21,6 +21,8 @@ pub struct Loaded {
     pub completion: Option<Arc<dyn Provider>>,
     /// Embedding interface when supplied by the component.
     pub embedding: Option<Arc<dyn Embedding>>,
+    /// Decision interface when supplied by the component.
+    pub decision: Option<Arc<dyn Decision>>,
 }
 
 /// Compilation, import validation or component description failed.

@@ -1,14 +1,16 @@
 mod authority;
 mod context;
 mod index;
+mod relevance;
 mod tools;
 
 use crate::limits::EMBED_BATCH;
 use authority::Authority;
 pub use context::MemoryContextSource;
 use enco_core::*;
-use enco_kernel::{Clock, Registry, RegistryError, Verdict};
+use enco_kernel::{Clock, Export, Registry, RegistryError, Verdict};
 use index::MemoryIndex;
+pub use relevance::{DecisionEndpoint, Relevance};
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
@@ -242,27 +244,18 @@ impl Memories {
             ));
         }
 
-        let result = match self.registry.exports().embedding(&self.embedding.plugin) {
-            Ok(export) => {
-                let result = tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => Err(Failure {
-                        code: code::CANCELLED.into(), message: "embedding cancelled".into(), retryable: false,
-                    }),
-                    result = export.adapter.embed(&self.embedding.settings, self.embedding.api_key.as_deref(), inputs) => result,
-                };
-                let verdict = match &result {
-                    Ok(_) => Verdict::Ok,
-                    Err(failure) => Verdict::Failed(failure.clone()),
-                };
-                self.registry
-                    .report(export.generation, verdict, None)
-                    .await?;
-                result
-            }
-            Err(failure) => Err(failure),
-        };
-        check_cancel(cancel)?;
+        let endpoint = &self.embedding;
+        let result = reported_call(
+            &self.registry,
+            self.registry.exports().embedding(&endpoint.plugin),
+            cancel,
+            |adapter| async move {
+                adapter
+                    .embed(&endpoint.settings, endpoint.api_key.as_deref(), inputs)
+                    .await
+            },
+        )
+        .await?;
         let vectors = match result
             .and_then(|vectors| validate_dimensions(vectors, self.embedding.dimensions))
         {
@@ -303,6 +296,43 @@ impl Memories {
             },
         ))
     }
+}
+
+/// Invoke one resolved export until cancelled and report its verdict before returning the result.
+/// An export that cannot be resolved is an ordinary failure with no generation to report.
+async fn reported_call<T: ?Sized, R, F>(
+    registry: &Registry,
+    export: Result<Export<T>, Failure>,
+    cancel: &CancellationToken,
+    call: impl FnOnce(Arc<T>) -> F,
+) -> Result<Result<R, Failure>, MemoryError>
+where
+    F: Future<Output = Result<R, Failure>>,
+{
+    let result = match export {
+        Ok(Export {
+            generation,
+            adapter,
+            ..
+        }) => {
+            let result = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => Err(Failure {
+                    code: code::CANCELLED.into(), message: "plugin call cancelled".into(), retryable: false,
+                }),
+                result = call(adapter) => result,
+            };
+            let verdict = match &result {
+                Ok(_) => Verdict::Ok,
+                Err(failure) => Verdict::Failed(failure.clone()),
+            };
+            registry.report(generation, verdict, None).await?;
+            result
+        }
+        Err(failure) => Err(failure),
+    };
+    check_cancel(cancel)?;
+    Ok(result)
 }
 
 fn check_cancel(cancel: &CancellationToken) -> Result<(), MemoryError> {

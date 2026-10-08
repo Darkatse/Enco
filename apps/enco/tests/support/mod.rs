@@ -24,8 +24,12 @@ pub struct Daemon {
 
 impl Daemon {
     pub async fn start(server: &MockServer, plugin: &str) -> Self {
+        Self::start_config(&Self::config(server, plugin)).await
+    }
+
+    pub fn config(server: &MockServer, plugin: &str) -> String {
         let base_url = server.uri();
-        let config = format!(
+        format!(
             r#"[endpoint.chat]
 plugin = {plugin:?}
 base_url = {base_url:?}
@@ -43,8 +47,7 @@ base_url = {base_url:?}
 model = 'embed'
 dimensions = 4
 "#
-        );
-        Self::start_config(&config).await
+        )
     }
 
     pub async fn start_config(config: &str) -> Self {

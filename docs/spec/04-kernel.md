@@ -13,7 +13,7 @@
  CLI/守护进程 │  Kernel ── Session actor ── Run/Round ──┐            │
  ──submit──▶ │     │          (每 Session 一个)         │            │
              │  Scheduler actor      Registry（代际的归属者，11）   │
-             │     ports: Store · Runtime · Provider · Embedding · Composer · ContextSource · Tool · Clock
+             │     ports: Store · Runtime · Provider · Embedding · Decision · Composer · ContextSource · Tool · Clock
              └─────────┬──────────┬───────────┬──────────────┬────┘
                   enco-host    enco-wasm    enco-host     enco-host / 内核内置
                   (SQLite)   (插件运行时)  (composer、上下文、fs/shell、记忆)
@@ -40,6 +40,7 @@ pub struct Loaded {
     pub lifecycle: Arc<dyn Lifecycle>,
     pub completion: Option<Arc<dyn Provider>>,
     pub embedding: Option<Arc<dyn Embedding>>,
+    pub decision: Option<Arc<dyn Decision>>,
 }
 
 #[async_trait]
@@ -79,6 +80,22 @@ pub trait Embedding: Send + Sync {
     /// 把若干段文本转换为向量，结果与输入一一对应。内核自己不调用它，它供宿主使用（06 §3.3）。
     async fn embed(&self, settings: &ProviderSettings, api_key: Option<&str>, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure>;
 }
+```
+
+```rust
+// ports/decision.rs
+#[async_trait]
+pub trait Decision: Send + Sync {
+    /// 对同一份 state 独立回答每个问题，答案与问题一一对应。内核自己不调用它，它供宿主使用（06 §5.1）。
+    async fn decide(&self, settings: &ProviderSettings, api_key: Option<&str>, state: String, questions: Vec<Question>) -> Result<Vec<Answer>, Failure>;
+}
+
+pub struct Question { pub instructions: String, pub kind: QuestionKind }
+pub enum QuestionKind { Predicate, Choice(Vec<Label>), Score(Vec<Label>) }   // Score 的等级由低到高
+pub struct Label { pub name: String, pub description: Option<String> }
+
+/// Choice 与 Score 的概率按 label 顺序排列，和为 1（07 §3.3）。
+pub enum Answer { Predicate(f64), Choice(Vec<f64>), Score(Vec<f64>), Refused }
 ```
 
 代际由谁记录：适配器不再自报 `code()`。调用方从导出表拿到 `Export { generation, adapter }`（11 §4.2），把 `generation` 写进 Log。

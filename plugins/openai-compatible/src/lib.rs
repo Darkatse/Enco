@@ -11,12 +11,12 @@ mod bindings {
         path: "../../wit",
         world: "provider-plugin",
         with: {
-            "enco:plugin/host@0.2.0": provider_protocol::host,
-            "enco:plugin/types@0.2.0": provider_protocol::types,
-            "enco:plugin/completion@0.2.0/request": provider_protocol::Request,
-            "enco:plugin/completion@0.2.0/completion": provider_protocol::Completion,
-            "enco:plugin/completion@0.2.0/usage": provider_protocol::Usage,
-            "enco:plugin/completion@0.2.0/stop-reason": provider_protocol::StopReason,
+            "enco:plugin/host@0.2.1": provider_protocol::host,
+            "enco:plugin/types@0.2.1": provider_protocol::types,
+            "enco:plugin/completion@0.2.1/request": provider_protocol::Request,
+            "enco:plugin/completion@0.2.1/completion": provider_protocol::Completion,
+            "enco:plugin/completion@0.2.1/usage": provider_protocol::Usage,
+            "enco:plugin/completion@0.2.1/stop-reason": provider_protocol::StopReason,
         },
     });
     use super::Plugin;

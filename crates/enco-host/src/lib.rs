@@ -15,8 +15,8 @@ pub use clock::SystemClock;
 pub use composer::FactoryComposer;
 pub use context::InstructionsContextSource;
 pub use memory::{
-    EmbeddingEndpoint, Memories, MemoryContextSource, MemoryError, MemoryList, MemoryPaths, Recall,
-    memory_tools,
+    DecisionEndpoint, EmbeddingEndpoint, Memories, MemoryContextSource, MemoryError, MemoryList,
+    MemoryPaths, Recall, Relevance, memory_tools,
 };
 pub use store::{SqliteStore, StorePaths};
 pub use telegram::Telegram;

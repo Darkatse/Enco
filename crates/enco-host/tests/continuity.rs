@@ -215,6 +215,7 @@ async fn small_window_compaction_preserves_context_across_restart() {
             summary: "embedding".into(),
             completion: None,
             embedding: Some(provider.clone()),
+            decision: None,
         },
     )
     .await;
@@ -238,7 +239,7 @@ async fn small_window_compaction_preserves_context_across_restart() {
     let configure = |deps: &mut KernelDeps| {
         deps.clock = clock.clone();
         deps.context
-            .push(Arc::new(MemoryContextSource::new(memories.clone())));
+            .push(Arc::new(MemoryContextSource::new(memories.clone(), None)));
         deps.tools.extend(memory_tools(memories.clone()));
         let profile = deps.profiles.get_mut("default").unwrap();
         profile.reply.budget = Budget {

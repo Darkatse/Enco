@@ -188,7 +188,7 @@ fn build_factory() -> Result<()> {
         .no_deps()
         .exec()?;
     std::fs::create_dir_all("target/factory")?;
-    for name in ["openai-compatible", "deepseek"] {
+    for name in ["openai-compatible", "deepseek", "typesafe"] {
         let source = metadata
             .target_directory
             .join("wasm32-wasip2/release")

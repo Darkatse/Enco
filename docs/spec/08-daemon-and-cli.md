@@ -86,6 +86,13 @@ dimensions = 1536                 # 模型返回的向量维度；与现有索�
 api_key_env = "OPENAI_API_KEY"    # 可选
 options = {}                      # 可选；合并进请求体，例如支持缩短维度的模型可写 { dimensions = 512 }
 
+[decision]                        # 可选；存在时自动召回的记忆按相关性过滤（06 §5.1）
+plugin = "typesafe"               # 必填；须导出 decision
+base_url = "https://api.typesafe.ai/v1"
+model = "jev-latest"
+api_key_env = "TYPESAFE_API_KEY"  # 可选
+options = {}                      # 可选；合并进请求体
+
 [run]                             # 可选
 max_rounds = 24                   # 默认 24
 
@@ -105,7 +112,7 @@ api_base = "https://api.telegram.org"   # 可选
 
 ```text
 paths  = Paths::from_env()
-config = Config::load(paths.config())                               // profiles、embedding endpoint、run、telegram 都已校验（§3）
+config = Config::load(paths.config())                               // profiles、embedding 与 decision endpoint、run、telegram 都已校验（§3）
 kernel_config = KernelConfig::new(config.run.max_rounds)?           // 在打开任何资源之前失败
 确保 workspace/ 存在
 clock  = Arc::new(SystemClock)
@@ -114,7 +121,7 @@ runtime = Arc::new(WasmRuntime::new())                              // 07 §3
 registry = Registry::open(RegistryDeps {                            // 11 §4.1：登记出厂制品、加载活跃代际、检查接线
     store, runtime,
     factory: FACTORY 中每一项的 (name, id, 嵌入的字节),               // 07 §5
-    wiring: config.wiring(),                                        // 每个 profile 的两个用途 + embedding
+    wiring: config.wiring(),                                        // 每个 profile 的两个用途 + embedding + decision（配置了时）
     clock,
 })
 memories = Memories::open(MemoryPaths { db: paths.memory_db(), index: paths.memory_index() },
@@ -122,7 +129,8 @@ memories = Memories::open(MemoryPaths { db: paths.memory_db(), index: paths.memo
 deps = KernelDeps {
     store, registry, profiles: config.profiles,
     composer: FactoryComposer::new(paths.workspace(), paths.instructions()),
-    context:  vec![InstructionsContextSource::new(paths.instructions()), MemoryContextSource::new(memories.clone())],
+    context:  vec![InstructionsContextSource::new(paths.instructions()),
+                   MemoryContextSource::new(memories.clone(), config.decision.map(|e| Relevance::new(e, registry.clone())))],   // 06 §5
     tools:    enco_host::native_tools(paths.workspace()) ++ enco_host::memory_tools(memories.clone())
               ++ enco_host::plugin_tools(registry.clone(), paths.workspace()),
     lifeline: enco_host::LIFELINE 转为 Vec<String>,
@@ -136,13 +144,14 @@ channels = config.telegram.map(|c| Channel::start(kernel.clone(), Telegram::new(
 
 ```rust
 /// 出厂插件：名字由宿主保留，身份是固定的 ULID（11 §2），字节由 build.rs 嵌入（07 §5）。
-const FACTORY: [(&str, &str, &[u8]); 2] = [
+const FACTORY: [(&str, &str, &[u8]); 3] = [
     ("openai-compatible", "01M3X4HYHSE2M3523YK35VX60W", OPENAI),
     ("deepseek",          "01M3X4HYHSRXVVQYXVDK5WQ9D3", DEEPSEEK),
+    ("typesafe",          "01M4EQVYF70Z6WGYFDKD20QF8S", TYPESAFE),
 ];
 ```
 
-两个 ULID 在第一次写进规格时定下，此后永不改变：它们就是这两个插件在任何 Space 里的身份。
+每个 ULID 在第一次写进规格时定下，此后永不改变：它就是这个插件在任何 Space 里的身份。
 
 依赖在这里一次性构造成具体的结构体。`Registry` 是代际的归属者，不是服务定位器：它只回答"这个名字现在是哪个代际"，不构造其他依赖。注册表先于 Kernel 打开，因为记忆在 Kernel 之前就需要嵌入导出。
 

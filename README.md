@@ -46,6 +46,8 @@ Every model request and tool call is written to an append-only log before it run
 
 Long-term memories are stored as records in SQLite. Recall goes through a [TriviumDB](https://github.com/YoKONCy/TriviumDB) index that combines vector search with keyword search suited to Chinese text. The index can be deleted and rebuilt from the records at any time, and every search hit is re-read from the records, so a corrected or forgotten memory cannot come back from a stale index. Pinned memories go into the context first. When the embedding service is unavailable, recall falls back to keywords and the recorded request notes why.
 
+An optional TypeSafe decision plugin filters automatically recalled memories for relevance. Enable `[decision]` in the [config example](examples/deepseek-gemini.toml) to use it. Service failures keep the recalled memories and record the reason; pinned memories and explicit `memory_search` results are not filtered.
+
 ### Roaming across devices (P4)
 
 The idea is close to Ghost in the Shell. The assistant is the ghost, and each of your devices is a shell it can move into. Your phone, desktop and server form one Space. Between two rounds, a conversation can leave the phone and continue on the server with its full record, and from there it can still use the phone's camera or location through remote calls (P5). Like a ghost, it lives in one shell at a time: a conversation never runs on two devices at once.

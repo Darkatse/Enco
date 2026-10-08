@@ -1,5 +1,7 @@
 use crate::{
-    bindings::{BasePre, CompletionPluginPre, EmbeddingPluginPre, enco::plugin::types},
+    bindings::{
+        BasePre, CompletionPluginPre, DecisionPluginPre, EmbeddingPluginPre, enco::plugin::types,
+    },
     convert,
     engine::WasmEngine,
     host_imports::HostState,
@@ -7,7 +9,9 @@ use crate::{
 };
 use async_trait::async_trait;
 use enco_core::*;
-use enco_kernel::{Completion, Embedding, Lifecycle, Provider, ProviderRequest};
+use enco_kernel::{
+    Answer, Completion, Decision, Embedding, Lifecycle, Provider, ProviderRequest, Question,
+};
 use std::sync::Arc;
 use wasmtime::{Store, StoreLimitsBuilder, component::ResourceTable};
 use wasmtime_wasi::WasiCtx;
@@ -17,6 +21,7 @@ pub(super) struct WasmPlugin {
     pub lifecycle: BasePre<HostState>,
     pub completion: Option<CompletionPluginPre<HostState>>,
     pub embedding: Option<EmbeddingPluginPre<HostState>>,
+    pub decision: Option<DecisionPluginPre<HostState>>,
     pub engine: Arc<WasmEngine>,
     pub http: reqwest::Client,
     pub name: String,
@@ -156,5 +161,37 @@ impl Embedding for WasmPlugin {
             })
             .await?;
         convert::embeddings(vectors, count)
+    }
+}
+
+#[async_trait]
+impl Decision for WasmPlugin {
+    async fn decide(
+        &self,
+        params: &ProviderSettings,
+        api_key: Option<&str>,
+        state: String,
+        questions: Vec<Question>,
+    ) -> Result<Vec<Answer>, Failure> {
+        let pre = self
+            .decision
+            .as_ref()
+            .ok_or_else(|| trap("decision export is missing"))?;
+        let wire_questions = questions.iter().map(convert::question).collect();
+        let settings = settings(params, api_key);
+        let answers = self
+            .invoke(async move |mut store| {
+                let plugin = pre.instantiate_async(&mut store).await?;
+                store
+                    .run_concurrent(async move |accessor| {
+                        plugin
+                            .enco_plugin_decision()
+                            .call_decide(accessor, settings, state, wire_questions)
+                            .await
+                    })
+                    .await?
+            })
+            .await?;
+        convert::answers(answers, &questions)
     }
 }

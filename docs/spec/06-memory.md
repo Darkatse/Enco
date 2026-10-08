@@ -96,16 +96,15 @@ sync(query: Option<&str>, cancel) -> Result<Synced, MemoryError>
     rows = 权威中 batch 的当前内容（期间被遗忘的跳过）
     inputs = [query（如果有）] ++ rows 的文本
     if inputs 为空: return Synced { query_vector: None, unindexed: [], failure: None }
-    export = registry.exports().embedding(endpoint.plugin)          // 按调用解析（11 §4.2）；失败即 failure = plugin.unavailable
-    结果 = select { export.adapter.embed(&endpoint.settings, endpoint.api_key, inputs), cancel.cancelled() => Err(Failure(cancelled)) }
-    registry.report(export.generation, 结果, None)                     // 11 §7；仅 plugin.trap / plugin.contract 的失败计入健康
-    if cancel 已取消: return Err(Cancelled)
+    结果 = reported_call(exports.embedding(endpoint.plugin), embed(&endpoint.settings, endpoint.api_key, inputs))
     成功，且向量维度与索引配置相符:
         替换每个 row 的节点，节点的 rev 取自 row；build_text_index()
         return Synced { query_vector, unindexed: r.unindexed 去掉 rows, failure: None }
     否则（失败，或目标维度不符，后者为 provider.bad_response）:
         return Synced { query_vector: None, unindexed: r.unindexed, failure }
 ```
+
+`reported_call` 是记忆调用插件的唯一路径，相关性过滤（§5.1）也用它：导出按调用解析（11 §4.2），解析失败即 `plugin.unavailable`；调用可以被 cancel 打断，失败不重试；结束后向注册表回报（11 §7，只有 `plugin.trap` 与 `plugin.contract` 计入健康）；已取消就返回 `Cancelled`。
 
 嵌入插件部署了新代际，下一次 `sync` 就用新代际，与内核的 Attempt 按调用解析是同一条规则。回报触发回退时，注册表记下失败原因（11 §7）。记忆没有来源 Session，所以不投递通知，原因在 `plugin_status` 里查看。
 
@@ -130,7 +129,7 @@ Memories::recall(query: &str, limit: usize, cancel) -> Result<Recall, MemoryErro
 ```
 
 - 向量不可用时，TriviumDB 仍可只按文本检索（中文按两字切分计算 BM25，已实测）。
-- 不设相关性阈值：阈值依赖具体的 embedding 模型，固定取前 `limit` 条，由提示词说明它们"可能相关"。
+- 检索不设相似度阈值：相似度的尺度依赖具体的 embedding 模型，所以固定取前 `limit` 条；是否相关由可选的相关性过滤判断（§5.1）。
 - 置顶记忆在 System 消息中，每个 Round 都从权威读取；召回的记忆写在它所回应的输入之前，之后原样保留（05 §4.1）。
 - 自动召回只在有新输入的 Round 执行一次，以最新的已接纳 Event 为查询；一次接纳多条 Event 时也只召回一次。没有新输入时只提供置顶记忆，不请求 embedding。同一 Round 内的压缩重组沿用已取得的贡献（04 §6.3）。不缓存查询向量（01 §2），后续根据实际延迟与用量判断是否优化。
 - 取消只打断两种等待：索引锁与 embedding 响应。已经开始的 `spawn_blocking`（SQLite、TriviumDB）等它结束，然后返回 `MemoryError::Cancelled`。
@@ -147,11 +146,55 @@ Memories::recall(query: &str, limit: usize, cancel) -> Result<Recall, MemoryErro
 2. `recall(query, MEMORY_RECALL_DEFAULT)` 的 `memories`，去掉置顶的，`standing: false`。
 3. `recall` 的 `unindexed`，去掉置顶的，`standing: false`。
 
+配置了 `[decision]` 时，第 2、3 项先经过相关性过滤（§5.1）。
+
 每个候选为 `Candidate { id: "memory:<MemoryId>", kind: Memory, text, standing }`。
 
 `lexical_only` 存在时，贡献中带一条省略：`Omission { source: "memory:semantic", reason: "embedding failed ({code}): {message}; memories were recalled by keywords only" }`。它随计划写入 Log，所以这次降级是可见的，而不是静默的。
 
 读取权威失败时返回 `ContextError`：记忆的权威不可用，这一轮就明确失败。被取消时也返回 `ContextError`，内核按令牌状态把这一轮结算为 `Cancelled`（04 §9）。
+
+### 5.1 相关性过滤（`memory/relevance.rs`）
+
+检索按相似度取前 `limit` 条，其中可能有与输入无关的记忆。配置了 `[decision]`（08 §3）时，召回之后用一次 `decide` 判断每条记忆是否与输入相关。只过滤自动召回：`memory_search` 的结果由 Agent 自己判断，置顶记忆总是提供。
+
+```rust
+/// 来自配置的 [decision]（08 §3）。
+pub struct DecisionEndpoint { pub plugin: String, pub settings: ProviderSettings, pub api_key: Option<String> }
+
+pub struct Relevance { endpoint: DecisionEndpoint, registry: Arc<Registry> }
+pub struct Filtered { pub kept: Vec<Memory>, pub omitted: Vec<Omission> }
+
+impl Relevance {
+    pub fn new(endpoint: DecisionEndpoint, registry: Arc<Registry>) -> Self;
+    pub async fn filter(&self, query: &str, recalled: Vec<Memory>, cancel: &CancellationToken) -> Result<Filtered, MemoryError>;
+}
+```
+
+```text
+filter(query, recalled, cancel)
+    if recalled 为空: return Filtered { kept: [], omitted: [] }
+    questions = 每条记忆一个 Predicate，instructions 为 RELEVANCE_QUESTION 填入记忆内容
+    结果 = reported_call(exports.decision(endpoint.plugin), decide(&endpoint.settings, endpoint.api_key, query, questions))   // 与 §3.3 的 embed 同一条路径
+    成功: 概率低于 MEMORY_RELEVANCE_THRESHOLD 的记忆移出 kept，各记一条省略；Refused 的保留
+    失败: 全部保留，记一条省略
+```
+
+state 是召回用的同一段查询文本。`RELEVANCE_QUESTION` 是面向模型的常量：
+
+```text
+Would this memory help in responding to the message?
+
+Memory: {记忆内容}
+```
+
+省略随计划写入 Log，`enco inspect` 可以核对每条记忆为什么这次没有加入：
+
+- 判为无关：`Omission { source: "memory:<MemoryId>", reason: "judged irrelevant to the input (p={概率，两位小数})" }`。
+- 判断失败：`Omission { source: "memory:relevance", reason: "decision failed ({code}): {message}; recalled memories were not filtered" }`。
+- 有答案为 Refused：`Omission { source: "memory:relevance", reason: "decision refused {n} memories; they were kept" }`。
+
+判断失败只让召回变宽，与 `lexical_only` 相同，Round 照常进行。
 
 ## 6. 工具（`memory/tools.rs`）
 
@@ -223,10 +266,11 @@ pub enum MemoryError {
 ```rust
 pub const MEMORY_RECALL_DEFAULT: u64 = 8;
 pub const MEMORY_RECALL_MAX: u64 = 20;
+pub const MEMORY_RELEVANCE_THRESHOLD: f64 = 0.5;
 pub const EMBED_BATCH: usize = 64;
 pub const MEMORY_TEXT_BYTES: usize = 2_000;
 ```
 
 ## 9. 目前不做
 
-实体与关系图、图扩散式的联想召回、DPP 去重、疲劳（这些都是 TriviumDB 已有的能力，接入时不需要换引擎）；从 Session Log 派生的对话记忆（架构文档 §3.6 的 Observer）；自动抽取与整理记忆；本地 embedding 模型；相关性阈值。
+实体与关系图、图扩散式的联想召回、DPP 去重、疲劳（这些都是 TriviumDB 已有的能力，接入时不需要换引擎）；从 Session Log 派生的对话记忆（架构文档 §3.6 的 Observer）；自动抽取与整理记忆；本地 embedding 模型。

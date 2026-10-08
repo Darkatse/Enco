@@ -28,6 +28,7 @@ async fn open(root: &Path, provider: Arc<dyn Embedding>, dimensions: usize) -> A
             summary: "embedding".into(),
             completion: None,
             embedding: Some(provider),
+            decision: None,
         },
     )
     .await;
@@ -51,7 +52,7 @@ async fn memory_kernel(
 ) -> Kernel {
     kernel_with(root, provider, |deps| {
         deps.context
-            .push(Arc::new(MemoryContextSource::new(memories.clone())));
+            .push(Arc::new(MemoryContextSource::new(memories.clone(), None)));
         deps.tools.extend(memory_tools(memories));
     })
     .await

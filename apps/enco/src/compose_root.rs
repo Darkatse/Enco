@@ -2,7 +2,8 @@ use crate::{config::Config, paths::Paths};
 use anyhow::Result;
 use enco_host::{
     FactoryComposer, InstructionsContextSource, LIFELINE, Memories, MemoryContextSource,
-    MemoryPaths, SqliteStore, StorePaths, SystemClock, memory_tools, native_tools, plugin_tools,
+    MemoryPaths, Relevance, SqliteStore, StorePaths, SystemClock, memory_tools, native_tools,
+    plugin_tools,
 };
 use enco_kernel::{FactoryPlugin, Kernel, KernelConfig, KernelDeps, Registry, RegistryDeps};
 use enco_wasm::WasmRuntime;
@@ -10,10 +11,12 @@ use std::sync::Arc;
 
 static OPENAI: &[u8] = include_bytes!(env!("ENCO_FACTORY_OPENAI"));
 static DEEPSEEK: &[u8] = include_bytes!(env!("ENCO_FACTORY_DEEPSEEK"));
+static TYPESAFE: &[u8] = include_bytes!(env!("ENCO_FACTORY_TYPESAFE"));
 
-const FACTORY: [(&str, &str, &[u8]); 2] = [
+const FACTORY: [(&str, &str, &[u8]); 3] = [
     ("openai-compatible", "01M3X4HYHSE2M3523YK35VX60W", OPENAI),
     ("deepseek", "01M3X4HYHSRXVVQYXVDK5WQ9D3", DEEPSEEK),
+    ("typesafe", "01M4EQVYF70Z6WGYFDKD20QF8S", TYPESAFE),
 ];
 
 pub(crate) struct Application {
@@ -72,6 +75,9 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
     let mut tools = native_tools(paths.workspace());
     tools.extend(memory_tools(memories.clone()));
     tools.extend(plugin_tools(registry.clone(), paths.workspace()));
+    let relevance = config
+        .decision
+        .map(|endpoint| Relevance::new(endpoint, registry.clone()));
     let kernel = Kernel::start(
         KernelDeps {
             store,
@@ -83,7 +89,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
             )),
             context: vec![
                 Arc::new(InstructionsContextSource::new(paths.instructions())),
-                Arc::new(MemoryContextSource::new(memories.clone())),
+                Arc::new(MemoryContextSource::new(memories.clone(), relevance)),
             ],
             tools,
             lifeline: LIFELINE.iter().map(|s| s.to_string()).collect(),

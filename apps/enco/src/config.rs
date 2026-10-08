@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use enco_core::{DEFAULT_PROFILE, ProviderSettings};
-use enco_host::EmbeddingEndpoint;
+use enco_host::{DecisionEndpoint, EmbeddingEndpoint};
 use enco_kernel::{Budget, Endpoint, Interface, Profile, Use};
 use serde::Deserialize;
 use std::{collections::BTreeMap, path::Path};
@@ -9,6 +9,7 @@ use std::{collections::BTreeMap, path::Path};
 pub(crate) struct Config {
     pub profiles: BTreeMap<String, Profile>,
     pub embedding: EmbeddingEndpoint,
+    pub decision: Option<DecisionEndpoint>,
     pub run: RunConfig,
     pub telegram: Option<TelegramConfig>,
 }
@@ -19,6 +20,7 @@ struct RawConfig {
     endpoint: BTreeMap<String, EndpointConfig>,
     profile: BTreeMap<String, ProfileConfig>,
     embedding: EmbeddingConfig,
+    decision: Option<DecisionConfig>,
     #[serde(default)]
     run: RunConfig,
     telegram: Option<TelegramConfig>,
@@ -47,6 +49,17 @@ struct EmbeddingConfig {
     #[serde(default = "empty_options")]
     options: serde_json::Value,
     dimensions: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionConfig {
+    plugin: String,
+    base_url: String,
+    model: String,
+    api_key_env: Option<String>,
+    #[serde(default = "empty_options")]
+    options: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -116,6 +129,11 @@ impl Config {
         Ok(Self {
             profiles,
             embedding: raw.embedding.resolve().context("[embedding]")?,
+            decision: raw
+                .decision
+                .map(DecisionConfig::resolve)
+                .transpose()
+                .context("[decision]")?,
             run: raw.run,
             telegram: raw.telegram,
         })
@@ -140,6 +158,13 @@ impl Config {
             plugin: self.embedding.plugin.clone(),
             interface: Interface::Embedding,
         });
+        if let Some(endpoint) = &self.decision {
+            wiring.push(Use {
+                user: "decision".into(),
+                plugin: endpoint.plugin.clone(),
+                interface: Interface::Decision,
+            });
+        }
         wiring
     }
 }
@@ -188,6 +213,22 @@ impl EmbeddingConfig {
             settings,
             api_key,
             dimensions: self.dimensions,
+        })
+    }
+}
+
+impl DecisionConfig {
+    fn resolve(self) -> Result<DecisionEndpoint> {
+        let (settings, api_key) = resolve_settings(ProviderSettings {
+            base_url: self.base_url,
+            model: self.model,
+            api_key_env: self.api_key_env,
+            options: self.options,
+        })?;
+        Ok(DecisionEndpoint {
+            plugin: self.plugin,
+            settings,
+            api_key,
         })
     }
 }

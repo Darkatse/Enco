@@ -206,6 +206,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "typesafe"
+version = "0.1.0"
+dependencies = [
+ "provider-protocol",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"

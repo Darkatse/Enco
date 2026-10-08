@@ -237,7 +237,7 @@ impl Arguments { pub fn parse(raw: &str) -> Self; }
 | `context.failed` | ContextSource 返回错误 | 内核 |
 | `context.overflow` | 回复请求超出窗口，而这个 Round 已经无法再压缩：没有放得进压缩窗口的边界，或者压缩次数已经用完 | composer |
 | `profile.unknown` | Session 的 profile 不在配置中（12 §3） | 内核 |
-| `provider.network` `provider.auth` `provider.rate_limited` `provider.server` `provider.bad_request` `provider.bad_response` | Provider 的失败分类（07 §4.4）；外部失败，不计入健康 | Provider |
+| `provider.network` `provider.auth` `provider.rate_limited` `provider.server` `provider.bad_request` `provider.bad_response` | Provider 的失败分类（07 §4.5）；外部失败，不计入健康 | Provider |
 | `plugin.trap` | wasmtime 在实例化或调用中报错（07 §3.3）；计入健康 | enco-wasm |
 | `plugin.contract` | 插件的返回违反契约（07 §3.3）；计入健康 | enco-wasm |
 | `plugin.load` | 已登记代际的制品缺失、损坏或 Runtime 加载失败；原始原因在 message 中（11 §5） | 注册表 |
