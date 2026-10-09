@@ -5,7 +5,11 @@ use enco_kernel::{Answer, Question, QuestionKind, Registry};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-const RELEVANCE_QUESTION: &str = "Would this memory help in responding to the message?";
+/// Asks for relatedness rather than usefulness: dropping a needed memory costs more than keeping
+/// a marginal one, so only memories about something unrelated should fall below the threshold.
+const RELEVANCE_QUESTION: &str = "Does this stored memory about the user relate to the message?\n\
+    Yes if it concerns the message's topic, request, people or things; \
+    no if it is about something unrelated.";
 
 /// Configured decision caller; the adapter is resolved for each evaluation.
 #[derive(Clone)]

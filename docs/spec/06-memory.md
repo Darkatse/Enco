@@ -183,10 +183,13 @@ filter(query, recalled, cancel)
 state 是召回用的同一段查询文本。`RELEVANCE_QUESTION` 是面向模型的常量：
 
 ```text
-Would this memory help in responding to the message?
+Does this stored memory about the user relate to the message?
+Yes if it concerns the message's topic, request, people or things; no if it is about something unrelated.
 
 Memory: {记忆内容}
 ```
+
+问的是"是否有关"而不是"是否有帮助"：误删一条需要的记忆，代价比多带一条边缘记忆大，所以只有讲无关之事的记忆才应低于阈值。
 
 省略随计划写入 Log，`enco inspect` 可以核对每条记忆为什么这次没有加入：
 
