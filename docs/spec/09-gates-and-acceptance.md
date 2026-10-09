@@ -93,27 +93,9 @@ complete: async func(settings: settings, request: request) -> result<completion,
 
 ## 4. 验收场景
 
-每个阶段的完成以下列场景为准。里程碑按实施顺序排列。P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。P1（可恢复替换，路线图）：M10 请求查看、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。P1 之后：M15 缓存友好的请求与时间标记、M16 按消息锚定的上下文、M17 决策接口与记忆的相关性过滤、M18 周期定时与主人的时区。"层"指主要在哪一层验证。
+每个阶段的完成以下列场景为准，"层"指主要在哪一层验证。"里程碑"一栏标出场景的出处；已验收里程碑的范围与核对记录见[存档](../history/milestones.md)。
 
-P1 与之后各里程碑的范围：
-
-| 里程碑 | 实现 | 暂不实现 |
-|---|---|---|
-| M10 | `Kernel::inspect` 与 `enco inspect`（04 §14）；`plan::validate` 与 `plan::resolve` 分开；A2 改用 `inspect`；`Inspection.settings` 与 M11 的记录字段一起加入 | 扩展字段按身份过滤（M12 才有身份） |
-| M11 | 11 §1–§6、§8：`plugins.lock`、制品库、注册表、`Registry` 与导出表、`Runtime` 端口、Provider 与 Embedding 按调用传参、`CodeRef::Generation`、`AttemptStarted.settings`、出厂代际登记、部署与回退、准入、三个插件工具与 CLI；记忆经导出表取嵌入；schema 加 `plugins`、`generations` 表 | 试用与 probe：部署直接以 `healthy` 激活。调用参数仍来自 P0 形态的 `[provider]` 节点配置，经一个临时的 `default` profile 传入（M13 替换） |
-| M12 | 07：WIT 0.2，`completion` 与 `embedding` 拆开，`describe(config)` 不再自报名字，`probe` 定义，`extension` 去掉 `provider`；enco-wasm 按导出建立 `InstancePre`；扩展字段在 `plan::resolve` 中按代际的身份过滤；插件重建；出厂插件目录改名 | Rust 的 `Lifecycle` 端口、`Loaded.lifecycle` 及 `probe` 调用（M14） |
-| M13 | 12 与 08 §3：`[endpoint.*]`、`[profile.*]`、`sessions.profile`、`Kernel::set_profile`、`enco profile`、`ComposeInput.profile`、两个用途的预算；删除 `[provider]`、`[context]` 与 `SessionConfig`；同步更新 `enco init` 的模板、README 与 `examples/` 中的配置示例 | — |
-| M14 | 11 §7：部署时 `probe`、`trial` 状态、`TRIAL_CALLS` 晋升、可归因失败的自动回退、`GenerationRolledBack` 事件、Attempt 回退后立即重试、安全模式用出厂代际；schema 升到 2 | 健康代际的降级 |
-| M15 | 引入按钟点的时间标记与 `TranscriptItem.received_at`（04 §2、§5）；当时的末尾上下文排列已由 M16 替换，当前规则统一见 05 §4 | — |
-| M16 | 05 §4：请求在最新条目处结束，不再追加末尾的上下文消息；输入前的说明（跨整点的时间、工作结局、召回的记忆）留在原位；composer 决定是否沿用上一份回复计划（`ComposeInput.previous_plan`）；`Candidate.standing`，内联消息记录 `sources`，inspect 返回原始计划；置顶记忆进 System 消息；Environment 给出时区；`Transcript.run_ends` 提供工作结局，文案由 composer 逐字记入计划（03 §1.8，04 §2） | 稳定性标注；按空闲时长开始新系列 |
-| M17 | 07：契约 0.2.1 新增 `decision` 与 `decision-plugin`，enco-wasm 的 `Decision` 适配器与返回契约，出厂插件 `typesafe`（§4.4、§5）；04 §2 的 `Decision` 端口；11 §4.2、§6 的 `Exports::decision` 与 `Interface::Decision`；08 §3、§4 的可选 `[decision]` 与第三个出厂身份；06 §5.1 的相关性过滤；`plugins/README.md` 与 `examples/` 同步 | OpenAI 的 `/v1/decisions`；`tool.gate` |
-| M18 | 03 §1.4、§1.5、§1.9、§3：`ScheduleRule`、`last`、`ScheduleState` 改为 Active / Done / Cancelled 并去掉 `ScheduleStateKind`、`Reminder.skipped`、`AttemptStarted.provider` 收窄为 `GenerationId`、Event 的叙述移出规范形态（回退通知由注册表写下）、`fire_schedule` 的前置条件、schema 升到 4；04 §2、§3、§5、§6.3、§10–§12：`Clock` 只返回 UTC、`TranscriptItem.event`、`KernelConfig.timezone`、`ComposeInput.timezone`、Scheduler 在内存中推出下一次触发并只补最近一次、`schedule_*` 的新参数与结果、两个常量；05 §4、§5：Environment 与时间标记按主人的时区、输入来源的说明；08 §1、§3、§4：必填的 `timezone`、`enco init` 检测本机时区、`enco schedules` 的显示；02 §3、§4：croner、chrono-tz、iana-time-zone；同步更新 `enco init` 的模板与 `examples/` 中的配置示例 | 定时租约与按 `(schedule, due_at)` 的 Inbox 唯一约束（P4）；修改已有的定时（取消后重建）；`at` 接受不带偏移的当地时间 |
-
-每个里程碑结束时系统都完整可用。M11 到 M13 之间的过渡形态（临时 profile）只存在于代码中，规格只描述最终形态。
-
-当前实现已到 M18，代码已完成，待主人从第一性原理审核。schema 版本为 4，旧库由 Agent 按 03 §3.1 手动迁移或重建；A58 的真实早报留待 VPS 部署后验收。
-
-A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP 服务代替模型服务，另外核对了晋升、probe 拒绝、安全模式和下一个 Round 的规范消息。旧 schema 的库被拒绝启动，库本身不变。
+当前实现已到 M18，没有进行中的里程碑。schema 版本为 4，旧库由 Agent 按 03 §3.1 手动迁移或重建；A58 的真实早报留待 VPS 部署后验收。
 
 | # | 里程碑 | 场景 | 层 | 必须观察到 |
 |---|---|---|---|---|
@@ -148,13 +130,13 @@ A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP �
 | A29 | M9 | 入站不丢不重 | 集成 | 一条更新提交之后停止并重启：下一次 `getUpdates` 的 offset 为 `update_id + 1`，Inbox 中这条消息恰好一条；在提交之前停止：重启后同一条更新被再次取回，并恰好接纳一次 |
 | A30 | M9 | 出站投递 | 集成 | 最近交互输入的来源决定投递目标；Markdown 经原生富文本接口发送；超过 32768 字符的回复拆成多条，拼接后与原文相同；由 CLI 触发的回复不发往 Telegram；提醒触发的回复在重启后仍发往主人最近使用的聊天；聊天挂着别的 Session 时回复带独立成段的 `[<Session 名>]` 前缀；`sending` 已写入时重启不重发；每次逻辑投递都有最终结算，后续成功不覆盖此前 unknown / failed，`enco status.channels` 可读取其 Session 与 Log 位置；Run 失败或取消有终止通知 |
 | A31 | M9 | 真实 Telegram | 手动一次 | 配置真实的 bot，在手机上完成对话、`/session` 切换、`/cancel`，并收到一分钟后的提醒 |
-| A32 | M10 | 请求查看 | 集成（取代 A2 的自写解析） | 一个含工具调用与压缩的 Session：对每次 Attempt，`Kernel::inspect` 得到的 `request` 与 `ScriptedProvider` 当时收到的完全相同；压缩前后的两次 Attempt 各自解析出当时的历史；`enco inspect` 输出相同内容；计划的 blob 被删除后返回 `Blob` 错误而不是空请求 |
+| A32 | M10 | 请求查看 | 集成 | 一个含工具调用与压缩的 Session：对每次 Attempt，`Kernel::inspect` 得到的 `request` 与 `ScriptedProvider` 当时收到的完全相同；压缩前后的两次 Attempt 各自解析出当时的历史；`enco inspect` 输出相同内容；计划的 blob 被删除后返回 `Blob` 错误而不是空请求 |
 | A33 | M11 | 出厂代际与启动 | 集成 | 空库启动：每个出厂插件有一条 `healthy`、来源 `factory` 的代际并处于活跃，`plugins.lock` 含每个出厂插件的宿主固定身份；再次启动不新增代际；换一份出厂字节启动：新增一条出厂代际并成为活跃；主人部署过的插件在换出厂字节后活跃代际不变；`plugins.lock` 中出厂身份被改后拒绝启动 |
 | A34 | M11 | 部署、回退与记录 | 集成 | `deploy` 之后下一次 `AttemptStarted.provider` 是新编号，`settings` 等于 endpoint 的参数且不含密钥；`rollback` 之后回到上一个健康代际，被回退的代际状态不变；再次 `rollback` 回到出厂代际；没有目标时返回 `NoRollbackTarget`；`plugin_deploy` 与 `enco plugin deploy` 的结果一致；两个部署并发提交后两条代际都在 `status` 中，活跃的是后提交的那条 |
 | A35 | M11 | 准入 | 集成 | 把一份不导出 embedding 的制品部署到 `[embedding].plugin` 指向的插件：被拒绝，message 列出使用者 `embedding`，注册表不变；配置引用了没有登记的插件名：启动失败并指出 profile；不是组件的文件：`Rejected`，制品库中不留下记录以外的痕迹无妨 |
 | A36 | M11 | 崩溃恢复 | 集成 | 模拟 `insert_generation` 已提交、导出表未发布的持久状态：重启后活跃代际是新代际，导出表与注册表一致；活跃代际的制品文件被删除后启动：自动回退到回退目标，被回退的代际标为 `failed`，`plugin_status` 显示加载失败原因，重启后保留 |
 | A37 | M11 | 记忆经导出表 | 集成 | 部署嵌入插件的新代际后，下一次召回的 `embed` 由新代际的 `ScriptedProvider` 收到；回退后再次回到旧的 |
-| A38 | M12 | 契约 0.2 | 端到端 | 两个出厂插件以 0.2 契约重建通过 `cargo xtask check`；`[embedding].plugin = "deepseek"` 时启动失败，错误说明它不导出 `embedding`；wiremock 让 DeepSeek 返回 `reasoning_content`：下一次对同一插件的请求体含它，重启并更换节点的 Provider 配置后，同一 Session 对 openai-compatible 的请求不含它；M13 再经 `enco profile` 切换 |
+| A38 | M12 | 契约 0.2 | 端到端 | 两个出厂插件以 0.2 契约重建通过 `cargo xtask check`；`[embedding].plugin = "deepseek"` 时启动失败，错误说明它不导出 `embedding`；wiremock 让 DeepSeek 返回 `reasoning_content`：下一次对同一插件的请求体含它，经 `enco profile` 切换到 openai-compatible 后，同一 Session 的请求不含它 |
 | A39 | M13 | profile | 集成 | 两个 Session 用不同 profile：各自的 `AttemptStarted.settings.model` 不同；同一个 Session 的回复与压缩用不同 endpoint：两类 Attempt 的 `settings` 与 `max_output_tokens` 不同，压缩请求放进压缩模型的窗口；`enco profile` 之后下一个 Round 用新 profile，正在进行的 Round 不变；Session 的 profile 不在配置中：`RoundEnded(Failed profile.unknown)`，`RunEnded(Failed)`，改回之后下一条消息正常 |
 | A40 | M13 | 配置校验 | 端到端 | 缺少 `[profile.default]`、profile 引用不存在的 endpoint、输出上限不小于窗口、`api_key_env` 未设置，各自拒绝启动并指出位置；`enco init` 生成的模板能通过校验 |
 | A41 | M14 | probe 与试用 | 集成 | probe 失败的制品：`Rejected`，注册表不变；probe 通过：代际为 `trial` 并活跃；累计 `TRIAL_CALLS` 次 `Ok` 后变为 `healthy`；`provider.network` 失败不计数、不清零，也不回退 |
@@ -176,13 +158,13 @@ A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP �
 | A57 | M18 | 配置与旧库 | 手动一次 | 缺少 `timezone` 或名称无效：拒绝启动并指出该项；`enco init` 的模板含检测到的时区并通过校验；schema 为 3 的旧库被拒绝启动，库本身不变 |
 | A58 | M18 | 真实早报 | 手动一次 | 在 VPS 上配置 `timezone` 并手动迁移库；在 Telegram 的专用 Session 中让 Agent 创建每日早报（经命令行工具收邮件、读新闻），次日早上按时收到；停掉守护进程跨过触发时刻再启动，收到一次补发 |
 
-A51 于 2026-10-08 核对：M16 的 OpenAI-Compatible 与 DeepSeek 制品均经新宿主部署、probe 与实际调用通过，调用记录指向部署的旧制品代际。真实 Jev 经守护进程的聊天请求路径判断中文记忆：饮品偏好保留，编辑器偏好被省略（p=0.05），阈值保持 0.5。
-
 ## 5. 每个里程碑的完成条件
 
 - 逐路径审阅概念、职责、状态归属和数据链路；可读性、可维护性与认知一致性是硬性收尾门控。
 - 主人从第一性原理人工审核通过后才算验收；测试只核对行为，不代替审核。
 - 该里程碑的验收场景通过。
-- `cargo xtask check` 通过（M1 起）。
+- `cargo xtask check` 通过。
 - 自检清单（01 §6）逐项确认。
 - 偏离规格的决定已经说明理由并得到主人确认，规格已经同步为实际的实现。
+- 里程碑结束时系统完整可用；过渡形态只存在于代码中，规格只描述最终形态。
+- 验收通过后，把该里程碑的范围行与手动核对记录移入[存档](../history/milestones.md)，仍有效的"暂不实现"移入路线图；本节只保留进行中的里程碑。

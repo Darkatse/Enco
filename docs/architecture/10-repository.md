@@ -17,7 +17,7 @@ xtask/           # cargo xtask docs [--check]：WIT → CONTRACT、目录、API 
 plugins/
 evals/           # 评测任务集与黑盒运行器（§4.8）；runner/ 只调用 enco 的命令行，不依赖任何宿主 crate
 wit/             # *.wit + 生成的 CONTRACT.md / CONTRACT-CHANGES.md
-docs/{AGENTS.md, decisions/, cookbook/, generated/}
+docs/{AGENTS.md, decisions/, history/, cookbook/, generated/}
 scripts/check-crate-boundaries   # 依赖方向（§4.1）
 ```
 
