@@ -7,6 +7,7 @@
 | 原生 Telegram 渠道 | P0 |
 | P1 可恢复替换 | P0 |
 | P2 Agent 自主改进 | P1 |
+| 脚本调用 | P2 |
 | Session 监督树 | P1 |
 | P3 渠道 | P1 |
 | P4 Space v1 | P1 |
@@ -62,6 +63,9 @@ P1 之后的四个方向（P2、Session 监督树、P3、P4）互不依赖，先
 - 披露策略被改坏后，安全模式仍能调用文件、Shell 和部署管理。
 - `plugin_rename` 之后，插件的状态、代际历史与连接不变；只执行 `git mv` 时构建被拦下，并提示改用 `plugin_rename` 或 `plugin_remove`；复制出的目录在首次构建时得到新身份。
 - 插件导入 `completion` 在准入时被拒绝。
+
+**脚本调用（工具多到逐个调用的代价明显时实施）**：宿主的脚本沙箱（QuickJS 编译为 Wasm）、嵌套调用的分派与记录、脚本内的 `capability_search` 与 `manual_read`，以及 composer 的披露形态选择（§7.1）。
+验收：一段脚本并行调用多个工具，模型只看到脚本的输出；脚本内搜索返回的能力可以调用，既未披露也未被搜索返回的被拒绝；被 `tool.gate` 拦下的嵌套调用在脚本中表现为失败；脚本在一次副作用调用之后抛错或被 `kill -9`，结算内容列出该调用及其结局，脚本不重跑。
 
 **Session 监督树（需要多模型协作时实施）**：`session_delegate` / `session_send` / `session_read`、profile、Brief 作为 Attempt 用途、`ChildReturned` 回报、取消传播与限额（§6）。
 验收：父 Session 被取消后，所有子 Session 静止，未确认的副作用记为 `unknown`；子 Session 崩溃时父 Session 收到 `ChildReturned`，父 Session 被取消后不会被子 Session 的回报重新唤醒；父 Session 在子 Session 回报后可以继续给它发消息；发往树外的 `session_send` 返回 `failed`；崩溃恢复后委派不会重复创建子 Session；超过深度限制的委派返回 `failed`。
