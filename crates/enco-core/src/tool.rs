@@ -168,7 +168,7 @@ pub mod code {
     pub const PROVIDER_SERVER: &str = "provider.server";
     /// The adapter or service rejected the request.
     pub const PROVIDER_BAD_REQUEST: &str = "provider.bad_request";
-    /// The service response cannot represent a valid completion or embedding.
+    /// The service's answer is unusable: it violates the protocol or fails the caller's check.
     pub const PROVIDER_BAD_RESPONSE: &str = "provider.bad_response";
 }
 

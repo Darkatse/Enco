@@ -50,11 +50,7 @@ pub(super) fn project(
                 continue;
             }
             EntryBody::RoundEnded { end, .. } => {
-                if matches!(end, RoundEnd::Replied) && !reply.trim().is_empty() {
-                    Some(std::mem::take(&mut reply))
-                } else {
-                    None
-                }
+                matches!(end, RoundEnd::Replied).then(|| std::mem::take(&mut reply))
             }
             EntryBody::RunEnded { end, .. } => match end {
                 RunEnd::Completed => None,

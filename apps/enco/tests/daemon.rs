@@ -133,6 +133,80 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
 }
 
 #[tokio::test]
+async fn unusable_completions_fail_the_run_and_an_empty_reply_replays_as_empty_text() {
+    let server = MockServer::start().await;
+    embeddings(&server).await;
+    let responses = [
+        // A response cut off upstream may not say how it ended.
+        ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "message": { "role": "assistant", "content": "The sky is" },
+                "finish_reason": null,
+            }],
+            "usage": { "prompt_tokens": 0, "completion_tokens": 0 },
+        })),
+        // A reasoning model can spend the whole output limit before writing any text.
+        response(
+            json!({ "role": "assistant", "content": "", "reasoning_content": "unfinished thought" }),
+            "length",
+        ),
+        response(json!({ "role": "assistant", "content": "hello" }), "stop"),
+    ];
+    for template in responses {
+        Mock::given(path("/chat/completions"))
+            .respond_with(template)
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+    }
+    let mut daemon = Daemon::start(&server, "openai-compatible").await;
+    let mut client = daemon.connect().await;
+    client
+        .request(Command::Subscribe {
+            session: "main".into(),
+        })
+        .await
+        .unwrap();
+    let mut ends = vec![];
+    for text in ["first", "second", "third"] {
+        client
+            .send(Command::Send {
+                session: "main".into(),
+                text: text.into(),
+                event_id: EventId::new(),
+            })
+            .await
+            .unwrap();
+        ends.push(finish(&mut client).await.pop().unwrap().body);
+    }
+    for end in &ends[..2] {
+        assert!(matches!(
+            end,
+            EntryBody::RunEnded { end: RunEnd::Failed { failure }, .. }
+                if failure.code == code::PROVIDER_BAD_RESPONSE
+        ));
+    }
+    assert!(matches!(
+        ends[2],
+        EntryBody::RunEnded {
+            end: RunEnd::Completed,
+            ..
+        }
+    ));
+    let requests = server.received_requests().await.unwrap();
+    let chat: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/chat/completions")
+        .collect();
+    assert_eq!(chat.len(), 3);
+    let body: serde_json::Value = serde_json::from_slice(&chat[2].body).unwrap();
+    assert!(body["messages"].as_array().unwrap().iter().any(|m| {
+        m["role"] == "assistant" && m["content"] == "" && m.get("tool_calls").is_none()
+    }));
+    daemon.stop().await;
+}
+
+#[tokio::test]
 async fn both_plugins_preserve_tool_ids_and_provider_extensions_across_rounds() {
     for plugin in ["openai-compatible", "deepseek"] {
         let server = MockServer::start().await;

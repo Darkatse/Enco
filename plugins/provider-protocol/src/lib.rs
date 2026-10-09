@@ -157,12 +157,6 @@ fn message(message: &Message) -> Result<Value, Failure> {
             json!({ "role": "tool", "tool_call_id": result.call_id, "content": result.content })
         }
         Role::Assistant => {
-            let content = if text.is_empty() {
-                Value::Null
-            } else {
-                json!(text)
-            };
-            let mut wire = json!({ "role": "assistant", "content": content });
             let calls: Vec<_> = message
                 .parts
                 .iter()
@@ -177,6 +171,13 @@ fn message(message: &Message) -> Result<Value, Failure> {
                     }))
                 })
                 .collect();
+            // Chat Completions allows a null content only beside tool calls.
+            let content = if text.is_empty() && !calls.is_empty() {
+                Value::Null
+            } else {
+                json!(text)
+            };
+            let mut wire = json!({ "role": "assistant", "content": content });
             if !calls.is_empty() {
                 wire["tool_calls"] = json!(calls);
             }
@@ -211,7 +212,9 @@ fn parse_completion(response: Value) -> Result<Completion, Failure> {
         Some("stop") => StopReason::EndTurn,
         Some("tool_calls") => StopReason::ToolCalls,
         Some("length") => StopReason::MaxTokens,
-        _ => StopReason::Other,
+        Some(_) => StopReason::Other,
+        // A response cut off upstream, for example by moderation, may not say how it ended.
+        None => return Err(bad("finish_reason must be a string")),
     };
     Ok(Completion {
         message,

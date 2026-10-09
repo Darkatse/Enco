@@ -74,6 +74,16 @@ impl SessionActor {
             };
             match result {
                 Ok(completion) => {
+                    let text = completion.message.joined_text();
+                    let blank = text.trim().is_empty();
+                    // A completion is recorded as returned; its purpose decides whether it is usable.
+                    let unusable = match planned.kind {
+                        AttemptKind::Reply if completion.message.tool_calls().next().is_some() => {
+                            None
+                        }
+                        AttemptKind::Reply => blank.then_some("no text or tool calls"),
+                        AttemptKind::Compaction(_) => blank.then_some("an empty summary"),
+                    };
                     let mut bodies = vec![EntryBody::AttemptSettled {
                         attempt,
                         result: AttemptResult::Completed {
@@ -82,17 +92,14 @@ impl SessionActor {
                             stop: completion.stop,
                         },
                     }];
-                    let mut empty_summary = false;
-                    if let AttemptKind::Compaction(upto) = planned.kind {
-                        let summary = completion.message.joined_text();
-                        empty_summary = summary.trim().is_empty();
-                        if !empty_summary {
-                            bodies.push(EntryBody::Compacted {
-                                upto,
-                                summary,
-                                attempt,
-                            });
-                        }
+                    if unusable.is_none()
+                        && let AttemptKind::Compaction(upto) = planned.kind
+                    {
+                        bodies.push(EntryBody::Compacted {
+                            upto,
+                            summary: text,
+                            attempt,
+                        });
                     }
                     self.commit(bodies, vec![]).await?;
                     self.deps
@@ -100,10 +107,13 @@ impl SessionActor {
                         .report(export.generation, Verdict::Ok, Some(self.session.id))
                         .await?;
                     cancelled(token)?;
-                    if empty_summary {
+                    if let Some(unusable) = unusable {
                         return Err(failed(
-                            code::COMPOSE_FAILED,
-                            "provider returned an empty summary",
+                            code::PROVIDER_BAD_RESPONSE,
+                            format!(
+                                "provider returned {unusable}; stop: {}",
+                                serde_json::json!(completion.stop)
+                            ),
                         ));
                     }
                     return Ok(completion);

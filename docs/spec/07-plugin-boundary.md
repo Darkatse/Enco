@@ -170,7 +170,7 @@ pub const DECISION_SUM_TOLERANCE: f64 = 0.01;          // 契约（WIT `answer`�
 - `settings.options` 中的对象键逐一合并到请求体顶层（例如 `temperature`）。属于规范请求的保留键（model、messages、tools、输出上限、stream）不能通过 options 覆盖，即使这次请求省略了该字段；冲突返回 `provider.bad_request`。
 - 消息映射：
   - system / user → `{ "role", "content": <拼接的文本> }`
-  - assistant → `{ "role": "assistant", "content": <文本或 null>, "tool_calls": [ { "id", "type": "function", "function": { "name", "arguments" } } ] }`（没有工具调用时省略 `tool_calls`）；消息中每个 `extension` 的字段合并回这条消息对象。宿主保证这些扩展字段是本插件产生的，插件不再过滤。
+  - assistant → `{ "role": "assistant", "content": <文本>, "tool_calls": [ { "id", "type": "function", "function": { "name", "arguments" } } ] }`（没有工具调用时省略 `tool_calls`）。协议只允许 `content` 在带工具调用时为 null，所以只有这种情况下空文本写作 null，否则写空串。消息中每个 `extension` 的字段合并回这条消息对象。宿主保证这些扩展字段是本插件产生的，插件不再过滤。
   - tool → `{ "role": "tool", "tool_call_id": <call-id>, "content" }`
 
 ### 4.2 响应
@@ -180,7 +180,7 @@ pub const DECISION_SUM_TOLERANCE: f64 = 0.01;          // 契约（WIT `answer`�
 - `content`（字符串，可能为 null）→ `text` 部分。
 - `tool_calls` → `tool-call` 部分，`arguments` 原样保留为字符串。
 - 除 `role`、`content`、`tool_calls` 之外的字段（例如某些服务商的 `reasoning_content`）→ 一个 `extension { data: {这些字段} }`，下次请求时合并回去（§4.1）。
-- `finish_reason`：`stop` → `end-turn`，`tool_calls` → `tool-calls`，`length` → `max-tokens`，其他 → `other`。
+- `finish_reason`：`stop` → `end-turn`，`tool_calls` → `tool-calls`，`length` → `max-tokens`，其他字符串 → `other`。缺失或不是字符串时返回 `provider.bad_response`：被上游掐断的响应（例如被内容审核截断）可能不带它，插件不猜测结局。
 - `usage.prompt_tokens`、`usage.completion_tokens`、`usage.prompt_tokens_details.cached_tokens`（可能不存在）→ `usage`。
 
 ### 4.3 嵌入（`embed`，仅 openai-compatible）
@@ -227,7 +227,7 @@ pub const DECISION_SUM_TOLERANCE: f64 = 0.01;          // 契约（WIT `answer`�
 | 状态 429 | `provider.rate_limited` | true |
 | 状态 5xx | `provider.server` | true |
 | 其他非 2xx | `provider.bad_request` | false |
-| 响应不是合法 JSON，或缺少 `choices[0].message`（嵌入与决策见 §4.3、§4.4） | `provider.bad_response` | false |
+| 响应不是合法 JSON，或不符合 §4.2 的映射（嵌入与决策见 §4.3、§4.4） | `provider.bad_response` | false |
 
 非 2xx 时，`message` 包含状态码和响应体的前 500 字节。
 

@@ -454,16 +454,15 @@ attempt(endpoint, round, safe_mode, planned, token):
         }
         match result:
             Ok(c) =>
+                blank = c.message.joined_text().trim().is_empty()            // 扩展不算正文
+                unusable = Reply 时 blank 且没有工具调用；Compaction 时 blank  // 按 kind 穷举
                 bodies = [AttemptSettled { Completed { c.message, c.usage, c.stop } }]
-                empty_summary = false
-                if kind == Compaction { upto }:
-                    summary = c.message.joined_text()
-                    empty_summary = summary.trim().is_empty()
-                    if !empty_summary: bodies.push(Compacted { upto, summary, attempt: attempt_id })
+                if kind == Compaction { upto } 且 !unusable:
+                    bodies.push(Compacted { upto, summary: c.message.joined_text(), attempt: attempt_id })
                 commit(bodies)
-                registry.report(export.generation, Ok, Some(session))       // 11 §7；空摘要是压缩自己的判断，插件调用仍算成功
+                registry.report(export.generation, Ok, Some(session))       // 11 §7；结果能否使用由用途判断，插件调用仍算成功
                 if token.is_cancelled(): return Ended(Cancelled)
-                if empty_summary: return Ended(Failed(compose.failed，说明 Provider 返回了空摘要))
+                if unusable: return Ended(Failed(provider.bad_response，说明为何无法使用与 c.stop))
                 return Settled(c)
             Err(f) =>
                 commit([AttemptSettled { Failed(f) }])
@@ -477,6 +476,7 @@ attempt(endpoint, round, safe_mode, planned, token):
 ```
 
 - 重试复用同一份计划，不重新组装。目标插件由 profile 固定，所以解析过的请求对回退后的代际同样有效（§6.3）。
+- 结果能否使用只在这里判断一次，对所有协议相同。无法使用的结果照实记为 `Completed`（用量与扩展都留在 Log 中），Round 再以失败结束，所以 Run 不会在什么也没交付时记为完成；空回复留在 Transcript 中，由 Provider 按自己的协议写出（07 §4.1）。
 - 回退之后立即重试，是架构文档 §4.6 的"Provider 失败后改用健康代际，就是开始一次新的 Attempt"。回退事件与注册表状态同事务写入本 Session 的 Inbox，下一个 Round 消费，模型因此知道发生了什么（11 §7）。
 - 导出表找不到插件时不写 `AttemptStarted`：没有代际可记。Round 以 `plugin.unavailable` 失败。
 - 健康回报提交失败时 Session 停止（`KernelError::Registry`），与 Store 失败相同。
