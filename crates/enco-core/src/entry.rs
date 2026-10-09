@@ -1,6 +1,7 @@
 use crate::{
     AttemptId, CallId, CapabilityId, CodeRef, ContentHash, DateTime, Effect, Event, Failure,
-    LogPos, Message, Part, Role, RoundId, RunId, Settlement, ToolCall, ToolResult, Utc,
+    GenerationId, LogPos, Message, Part, Role, RoundId, RunId, Settlement, ToolCall, ToolResult,
+    Utc,
 };
 use serde::{Deserialize, Serialize};
 
@@ -50,8 +51,8 @@ pub enum EntryBody {
         plan: ContentHash,
         /// Code which constructed the frozen plan.
         composer: CodeRef,
-        /// Adapter code used by this Attempt.
-        provider: CodeRef,
+        /// Provider generation used by this Attempt.
+        provider: GenerationId,
         /// Exact per-call parameters; credentials are never recorded.
         settings: crate::ProviderSettings,
     },

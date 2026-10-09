@@ -15,6 +15,7 @@ mod session;
 mod tool;
 pub use capability::*;
 pub use chrono::{DateTime, FixedOffset, Utc};
+pub use chrono_tz::Tz;
 pub use delivery::*;
 pub use entry::*;
 pub use event::*;

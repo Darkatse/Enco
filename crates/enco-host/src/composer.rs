@@ -1,5 +1,5 @@
 use crate::limits::*;
-use chrono::Timelike;
+use chrono::{Offset, Timelike};
 use enco_core::*;
 use enco_kernel::*;
 use std::{collections::HashMap, path::PathBuf};
@@ -103,9 +103,9 @@ impl FactoryComposer {
         .trim()
         .to_string();
         text.push_str(&format!(
-            "\n\n## Environment\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}\n- Time zone: UTC{}",
+            "\n\n## Environment\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}\n- Time zone: {} (UTC{})",
             self.workspace.display(), self.instructions.display(), input.session.name,
-            input.now.format("%:z")
+            input.timezone, input.now.with_timezone(&input.timezone).format("%:z")
         ));
         let mut sources = Vec::new();
         append_instructions(&mut text, &mut sources, omitted, input);
@@ -150,7 +150,7 @@ fn reply_items(
         .items
         .iter()
         .rev()
-        .find(|item| item.received_at.is_some())
+        .find(|item| item.event.is_some())
         .map(|item| item.pos);
     for (item, annotation) in history
         .iter()
@@ -243,9 +243,10 @@ fn annotated_history(input: &ComposeInput) -> Vec<(&TranscriptItem, String)> {
         .iter()
         .map(|item| {
             let mut note = String::new();
-            if let Some(at) = item.received_at {
-                let local = at.with_timezone(input.now.offset());
-                let hour = Some((local.date_naive(), local.hour()));
+            if let Some(event) = &item.event {
+                let local = event.received_at.with_timezone(&input.timezone);
+                // The offset separates the hour repeated when daylight saving time ends.
+                let hour = Some((local.date_naive(), local.hour(), local.offset().fix()));
                 if hour != previous_hour {
                     note = format!("[{}]", local.format(LOCAL_TIME));
                 }
@@ -255,11 +256,17 @@ fn annotated_history(input: &ComposeInput) -> Vec<(&TranscriptItem, String)> {
                 while let Some((_, end)) = run_ends.next_if(|(pos, _)| *pos < item.pos) {
                     previous_end = Some(end);
                 }
-                if let Some(outcome) = previous_end.and_then(work_stopped) {
+                for part in [
+                    previous_end.and_then(work_stopped),
+                    producer(&event.body, input.timezone),
+                ]
+                .into_iter()
+                .flatten()
+                {
                     if !note.is_empty() {
                         note.push_str("\n\n");
                     }
-                    note.push_str(&outcome);
+                    note.push_str(&part);
                 }
             }
             (item, note)
@@ -278,6 +285,28 @@ fn work_stopped(end: &RunEnd) -> Option<String> {
     Some(format!(
         "Your previous work {reason} before it finished. The tool results above show what you did and which actions remain uncertain."
     ))
+}
+
+/// Name the producer of an input that did not come from the owner.
+fn producer(body: &EventBody, timezone: Tz) -> Option<String> {
+    match body {
+        EventBody::UserMessage { .. } => None,
+        EventBody::Reminder {
+            due_at, skipped, ..
+        } => {
+            let mut text = format!(
+                "The next message is a reminder you scheduled for {}.",
+                due_at.with_timezone(&timezone).format(LOCAL_TIME)
+            );
+            if *skipped > 0 {
+                text.push_str(&format!(" Missed earlier occurrences: {skipped}."));
+            }
+            Some(text)
+        }
+        EventBody::GenerationRolledBack { .. } => {
+            Some("The next message is a notice from the plugin registry.".into())
+        }
+    }
 }
 
 fn source(candidate: &Candidate) -> Source {
@@ -409,10 +438,11 @@ impl Compaction {
                 for part in &item.message.parts {
                     match part {
                         Part::Text { text } => {
-                            let speaker = if item.message.role == Role::User {
-                                "Owner"
-                            } else {
-                                "You"
+                            let speaker = match item.event.as_ref().map(|event| &event.body) {
+                                Some(EventBody::UserMessage { .. }) => "Owner",
+                                Some(EventBody::Reminder { .. }) => "Reminder",
+                                Some(EventBody::GenerationRolledBack { .. }) => "Notice",
+                                None => "You",
                             };
                             chunk.push_str(&format!("{speaker}: {text}\n"));
                         }

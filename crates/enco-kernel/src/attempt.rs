@@ -56,9 +56,7 @@ impl SessionActor {
                     purpose: planned.kind.purpose(),
                     plan: plan_hash,
                     composer: self.deps.snapshot.composer.code(),
-                    provider: CodeRef::Generation {
-                        id: export.generation,
-                    },
+                    provider: export.generation,
                     settings: endpoint.settings.clone(),
                 }],
                 vec![],

@@ -76,7 +76,7 @@ impl Registry {
 
 pub struct Deployed { pub generation: GenerationRecord, pub users: Vec<String> }
 pub enum Verdict { Ok, Failed(Failure) }
-// 定义在 enco-core，也是 EventBody::GenerationRolledBack 的内容。
+// 定义在 enco-core，也是 EventBody::GenerationRolledBack 的 `rollback`。
 pub struct RolledBack { pub plugin: String, pub from: GenerationId, pub to: Option<GenerationId>, pub failure: Failure }
 
 pub struct PluginStatus {
@@ -197,7 +197,7 @@ pub enum Interface { Completion, Embedding, Decision }
   - 试用代际出现可以归因于它自身的失败：立即回退。以这个代际为 expected 激活回退目标，并以这次的 `Failure` 为原因把它标为失败（§5），成功则返回 `RolledBack`；没有回退目标时，插件不再有活跃代际。一次失败就回退，不设阈值。
   - 试用代际出现不能归因于它的失败：忽略。
 - 成功次数按代际累计，各接口、不同 Session 与 endpoint 共用计数。外部失败既不增加也不清零；计数只记在内存里，重启后从零开始。
-- **回退通知**：回报带有来源 Session 时，注册表在回退的同一事务里向它的 Inbox 投递 `EventBody::GenerationRolledBack`，来源是 `EventSource::Registry`（03 §1.4）。这就是架构文档 §4.6 所说的 `deploy.rolled_back`。模型在下一个 Round 看到它；回退后进程立即崩溃，事件也会在重启后消费。Attempt 收到 `RolledBack` 后按 04 §6.4 立即用新代际重试。通知只发给出故障的 Session；其他 Session，包括部署它的那个，从 `plugin_status` 查看失败原因。
+- **回退通知**：回报带有来源 Session 时，注册表在回退的同一事务里向它的 Inbox 投递 `EventBody::GenerationRolledBack`，来源是 `EventSource::Registry`（03 §1.4），通知文字由注册表此时写入 Event 的 `text`。这就是架构文档 §4.6 所说的 `deploy.rolled_back`。模型在下一个 Round 看到它；回退后进程立即崩溃，事件也会在重启后消费。Attempt 收到 `RolledBack` 后按 04 §6.4 立即用新代际重试。通知只发给出故障的 Session；其他 Session，包括部署它的那个，从 `plugin_status` 查看失败原因。
 - **probe**：`lifecycle.probe()` 只做自检，不联网，也不依赖主人的配置。P1 的 Provider 插件直接返回成功。它的作用是让实例化之后就无法使用的制品在部署时被拦下，而不是等到主人下一句话时才暴露。
 - **安全模式**：`Exports::completion(插件, safe_mode = true)` 返回出厂代际的导出（§4.2）。没有出厂代际的插件在安全模式下仍用活跃代际，没有更好的选择。
 

@@ -109,7 +109,8 @@ pub trait Composer: Send + Sync {
 }
 
 pub struct ComposeInput {
-    pub now: DateTime<FixedOffset>,        // 本 Round 读取的时刻与宿主当时的 UTC 偏移（Clock）
+    pub now: DateTime<Utc>,                // 本 Round 读取的时刻（Clock）
+    pub timezone: Tz,                      // 主人的时区（KernelConfig），用于把时刻换算为当地时间
     pub session: SessionRecord,
     pub profile: Profile,                  // 本 Round 解析出的 profile（12）：两个用途的预算与 requires_lifeline
     pub transcript: Transcript,
@@ -131,12 +132,12 @@ pub struct Transcript {
 }
 
 /// `generation` 只有 Assistant 消息有：产生它的 Attempt 所用的 Provider 代际，扩展字段按它回放（§6.5）。
-/// `received_at` 只有来自 Inbox 的输入有：Event 的接收时间，composer 用它标注时间（05 §4.3）。
+/// `event` 只有来自 Inbox 的输入有：所消费的 Event，composer 据它叙述到达时间与来源等处境（05 §4.3）。
 pub struct TranscriptItem {
     pub pos: LogPos,
     pub message: Message,
     pub generation: Option<GenerationId>,
-    pub received_at: Option<DateTime<Utc>>,
+    pub event: Option<Event>,
 }
 
 pub enum Composition {
@@ -196,9 +197,8 @@ pub struct CallContext { pub session: SessionId, pub call: CallId, pub cancel: C
 ```rust
 // ports/clock.rs
 pub trait Clock: Send + Sync {
-    /// 当前时刻，带宿主此刻的 UTC 偏移。时刻与偏移在同一次调用中取得，内核不读取系统时区。
-    /// 调用方存储的时间（Log、Inbox、Schedule、记忆）一律转为 UTC（`to_utc()`）。
-    fn now(&self) -> DateTime<FixedOffset>;
+    /// 当前 UTC 时刻；不读取系统时区，当地时间按主人的时区换算（架构文档 §3.7）。
+    fn now(&self) -> DateTime<Utc>;
 }
 ```
 
@@ -220,11 +220,12 @@ pub struct KernelDeps {
 /// 字段不公开，只能经 `KernelConfig::new` 构造。
 pub struct KernelConfig {
     max_rounds_per_run: u32,
+    timezone: Tz,                 // 主人的时区（08 §3）：composer 的时间显示与跟随型周期定时都用它
 }
 
 impl KernelConfig {
     /// Round 数必须为正，否则返回 `KernelError::Config`。预算随 profile 走，由配置读取时检查（12 §2）。
-    pub fn new(max_rounds_per_run: u32) -> Result<Self, KernelError>;
+    pub fn new(max_rounds_per_run: u32, timezone: Tz) -> Result<Self, KernelError>;
 }
 
 impl Kernel {
@@ -241,7 +242,7 @@ impl Kernel {
     /// 外部输入的唯一入口：经 `store.accept` 在一个事务中投递 `events` 并写入连接状态，然后唤醒这些 Event 的 Session。
     /// Event 的 Session 必须已经存在（`open_session`）。`events` 可以为空，此时只写连接状态。
     pub async fn accept(&self, events: &[Event], connection: Option<&ConnectionWrite>) -> Result<Vec<Accepted>, KernelError>;
-    /// CLI 的便捷形式：构造 `Event { source: Cli, body: UserMessage, received_at: clock.now().to_utc() }` 后调用 `accept`。
+    /// CLI 的便捷形式：构造 `Event { source: Cli, body: UserMessage, received_at: clock.now() }` 后调用 `accept`。
     /// 重复的 `event_id` 返回 Duplicate。
     pub async fn submit(&self, session: SessionId, event_id: EventId, text: String) -> Result<Accepted, KernelError>;
     /// 读取一个连接的状态（10 §2）。
@@ -266,6 +267,7 @@ pub struct Status {
     pub composer: CodeRef,
     pub profiles: Vec<String>,            // 配置中的 profile 名字
     pub sessions: Vec<SessionStatus>,
+    pub scheduler_stopped: Option<String>, // Scheduler 因错误停止的原因，与 Session 的 stopped 同义
 }
 
 pub struct SessionStatus { pub session: SessionRecord, pub running: bool, pub stopped: Option<String> }
@@ -328,9 +330,9 @@ loop:
 
 `SessionRecord` 中只有 `profile` 会在运行中改变（`Kernel::set_profile`）。actor 在每个 Round 开始时用 `store.session(id)` 重读一次记录，所以改动在下一个 Round 生效，不需要给 actor 发消息。
 
-**提交辅助函数** `commit(bodies, consumed)`：从 `next` 开始依次分配位置，`at = clock.now().to_utc()`，调用 `store.commit`；成功后追加到内存副本，并把每个条目发送到 broadcast（没有订阅者时忽略发送错误）。
+**提交辅助函数** `commit(bodies, consumed)`：从 `next` 开始依次分配位置，`at = clock.now()`，调用 `store.commit`；成功后追加到内存副本，并把每个条目发送到 broadcast（没有订阅者时忽略发送错误）。
 
-**错误处理**：`store.commit` 返回的任何错误都说明前提已被破坏（被 fence、位置错乱或存储故障）。actor 记录错误、写入 `stopped`，然后退出。不要尝试继续或修补；重启后恢复流程会处理。
+**错误处理**：`store.commit` 返回的任何错误都说明前提已被破坏（被 fence、位置错乱或存储故障）。actor 记录错误、写入 `stopped`，然后退出，任务返回 `()`。后续命令返回带原因的停止错误；shutdown 只等待静止并报告任务异常退出，不重复报告已记录的业务故障。Scheduler 遵守同一规则（§10）。
 
 ## 5. Transcript 投影（`transcript.rs`）
 
@@ -339,7 +341,7 @@ loop:
 1. 找到最近一条 `Compacted`。位置不大于它的 `upto` 的条目被隐藏，`summary` 取它的摘要；没有则 `summary = None`、不隐藏任何条目。
 2. 遍历**全部**条目，记录每个 Attempt 的目的与 Provider 代际（来自 `AttemptStarted`）和每个 CallId 的 `provider_id`（来自已完成的 Reply 消息中的 `ToolCall`）。
 3. 对未被隐藏的条目，按 Log 顺序：
-   - 具有规范消息形态的条目（03 §1.5 的表）生成 `TranscriptItem`；目的为 `Compaction` 的 Attempt 不生成。`AttemptSettled` 生成的项带上该 Attempt 的代际，`EventConsumed` 生成的项带上 Event 的 `received_at`，其余字段为空。
+   - 具有规范消息形态的条目（03 §1.5 的表）生成 `TranscriptItem`；目的为 `Compaction` 的 Attempt 不生成。`AttemptSettled` 生成的项带上该 Attempt 的代际，`EventConsumed` 生成的项带上该 Event，其余字段为空。
    - `RoundEnded` 的位置加入 `round_ends`。
    - `RunEnded` 的位置与结局加入 `run_ends`，不生成规范消息。
 
@@ -396,14 +398,14 @@ profile 找不到是配置问题，不是模型问题，所以 Round 失败、Ru
 
 ```text
 compose(snapshot, profile, round, safe_mode, token):
-    now = clock.now()                                          // 每个 Round 读取一次，偏移随宿主当前时区
+    now = clock.now()                                          // 每个 Round 读取一次；当地时间由 composer 按主人的时区换算
     context = if safe_mode { Contribution::default() }
               else { 以 ContextQuery { session, latest_event, new_input, cancel: token.child_token() } 依次调用每个 ContextSource，
                      按顺序合并 candidates 与 omitted }
     if token.is_cancelled(): return Ended(Cancelled)          // 无论来源返回了什么（§9）
     任何一个来源出错 → Failed(context.failed)
     input = ComposeInput {
-        now, session, profile, transcript: transcript::project(&entries),
+        now, timezone: config.timezone, session, profile, transcript: transcript::project(&entries),
         previous_plan: 最近一条目的为 Reply 的 AttemptStarted 的计划（从 blob 读取）,
         context,
         tools: if safe_mode { 救生集 } else { 全部 },
@@ -442,7 +444,7 @@ attempt(profile, round, safe_mode, kind, plan, request, token):
         attempt_id = AttemptId::new()
         commit([AttemptStarted { round, attempt_id, purpose: kind 的目的, plan: plan_hash,
                                  composer: snapshot.composer.code(),
-                                 provider: Generation { id: export.generation }, settings: endpoint.settings }])
+                                 provider: export.generation, settings: endpoint.settings }])
         result = select {
             r = export.adapter.complete(&endpoint.settings, endpoint.api_key, request.clone()) => r,
             _ = token.cancelled() => Err(Failure(cancelled))
@@ -574,54 +576,107 @@ dispatch(snapshot, round, plan, call, token):
 
 ## 10. Scheduler（`scheduler.rs`）
 
-Scheduler 是一个 actor，是 schedules 表的唯一写者。
+Scheduler 是一个 actor，是 schedules 表的唯一写者（架构文档 §3.6）。一次性提醒与周期定时是同一种东西：一条 Schedule 是一串触发时刻，`Once` 只有一个（03 §1.9）。
 
 ```rust
 #[derive(Clone)]
-pub struct Schedules { tx: mpsc::Sender<SchedulerCmd> }   // 容量 SCHEDULER_CHANNEL_CAPACITY
+pub struct Schedules {
+    tx: mpsc::Sender<Command>,             // 私有命令枚举；容量 SCHEDULER_CHANNEL_CAPACITY
+    stopped: Arc<Mutex<Option<String>>>,  // actor 报告，status 直接读取
+}
 
 impl Schedules {
-    pub async fn create(&self, session: SessionId, due_at: DateTime<Utc>, message: String) -> Result<Schedule, ScheduleError>;
-    pub async fn list(&self, session: Option<SessionId>) -> Result<Vec<Schedule>, ScheduleError>;   // 只列 Pending
+    pub async fn create(&self, session: SessionId, rule: ScheduleRule, message: String) -> Result<Scheduled, ScheduleError>;
+    pub async fn list(&self, session: Option<SessionId>) -> Result<Vec<Scheduled>, ScheduleError>;   // 只列 Active
+    /// 停止之后的全部触发；已进入 Inbox 的照常处理。false 表示它已经不是 Active 或不存在。
     pub async fn cancel(&self, id: ScheduleId) -> Result<bool, ScheduleError>;
+}
+
+/// 给工具与 CLI 显示用：下一次触发是推出来的，不存储。
+pub struct Scheduled {
+    pub schedule: Schedule,
+    pub next_due: DateTime<Utc>,
+    pub timezone: Tz,                     // 本次查询时生效的时区，不存储
+}
+
+impl Scheduled {
+    /// 定时工具与 CLI 共用的结果：`rule` 原样回显创建参数，时刻按生效时区写成带偏移的 RFC 3339。
+    pub fn into_json(self) -> serde_json::Value;
 }
 ```
 
-每个命令都带一个 oneshot 回复通道。actor 循环：
+### 10.1 下一次触发
 
 ```text
-tick = interval(SCHEDULER_TICK)，MissedTickBehavior::Delay     // 第一次 tick 立即触发，因此启动时会补发过期的提醒
+next_after(rule, after) -> Option<DateTime<Utc>>
+    Once { at }               => at > after 时为 at，否则没有
+    Cron { expr, timezone }   => 在 timezone（为空时用 KernelConfig.timezone）中，求 after 之后的第一个触发，转为 UTC
+
+after = last.due_at；还没有触发过时为 created_at
+```
+
+- cron 的解析与求值用 croner，时区数据来自编译进二进制的 chrono-tz。使用 5 段规则（解析器的秒与年都设为 `Disallowed`），也接受解析器支持的别名，例如 `@daily`。
+- 夏令时的空档与重叠按 croner 的规则处理：固定时刻的规则每天触发一次，间隔型规则按当地时间逐个匹配。
+- 从 `last.due_at` 原样往后推，而不是从当前时刻，重复的那一小时才不会被算两遍。
+- 主人的时区随配置改变后（重启生效），跟随型的定时从 `last` 起按新时区推算，指定了 `timezone` 的不受影响。所以向西改时区时，新时区当天已经过去的那次会立即补发（例如纽约 08:00 已投递后改为洛杉矶，会补发洛杉矶的 08:00），与宕机后的补发是同一条规则。
+
+### 10.2 actor 循环
+
+每个命令都带一个 oneshot 回复通道。actor 在内存中按 `(next_due, id)` 排列 Active 的 Schedule，解析后的规则也只由它持有，创建与启动时各解析一次；库中只有权威。
+
+```text
+启动：读出全部 Active 的 Schedule，按 10.1 算出各自的 next_due
+tick = interval(SCHEDULER_TICK)，MissedTickBehavior::Delay     // 第一次 tick 立即执行，因此启动时补发错过的触发
 loop select:
-    cmd = rx.recv()        => 处理 create / list / cancel
-    _ = tick.tick()        => fire_due(clock.now().to_utc())
+    cmd = rx.recv()          => create / list / cancel，同时更新内存
+    _ = tick.tick()          => fire_due(clock.now())
     _ = shutdown.cancelled() => break
 
 fire_due(now):
-    for s in store.schedules(Pending)，按 due_at 升序，且 s.due_at <= now:
-        event = Event { id: EventId::new(), session: s.session, source: Scheduler,
-                        body: Reminder { schedule: s.id, due_at: s.due_at, text: s.message }, received_at: now }
-        store.fire_schedule(s.id, &event)      // 一个事务：Pending → Fired，并投递进 Inbox
+    for s in next_due <= now 的 Schedule，按 next_due 升序:
+        due     = (after, now] 中最后一个触发时刻          // 宕机期间错过的触发只补最近一次
+        skipped = (after, now] 中其余触发的个数
+        next    = next_after(s.rule, due)
+        event   = Event { id: EventId::new(), session: s.session, source: Scheduler,
+                          body: Reminder { schedule: s.id, due_at: due, skipped, text: s.message },
+                          received_at: now }
+        store.fire_schedule(s.last.due_at, next 为空, &event)   // 一个事务：前移 last，必要时 Done，投递进 Inbox
+        更新内存：last = (due, event.id)，next_due = next；next 为空时移出
         唤醒 s.session 的 actor
 ```
 
-- `create` 的校验：`due_at` 必须晚于 `clock.now()`，`message` 非空，Session 存在；否则返回 `ScheduleError`。
+- "恰好触发一次"来自 `fire_schedule` 的单一事务，而不是来自时间判断：在提交之前崩溃，等于这次触发没有发生；提交之后，`last` 已经前移，重启后不会再投递同一次触发。
+- `fire_schedule` 的前置条件不满足（`ScheduleNotActive`）说明内存与库不一致，只能是缺陷。它与其他 Store 错误一样按 §4.2 的规则停止 Scheduler；启动时无法还原的规则在错误中带上定时 ID。创建命令的参数错误只回复调用者。
+- 时钟回拨时只是等待。休眠唤醒或时钟前跳之后，错过的触发落进"只补最近一次"。不设"太晚就不投递"的上限：模型从说明中看到触发时刻与到达时间，自己判断这次触发还有没有用。
+
+### 10.3 创建的校验
+
+- `message` 非空，Session 存在。
+- 解析规则，从 `clock.now()` 起至少还有一次触发，否则返回 `NoOccurrenceAfter` 并带上该时刻。接下来 `RECURRENCE_CHECK` 次触发中，相邻两次的间隔不小于 `MIN_RECURRENCE_INTERVAL`；没有后续触发就结束检查。间隔下限拦住误写的规则，例如把每天八点写成 `* 8 * * *`，在八点那一小时每分钟唤醒一次 Agent。Once 与 Cron 走同一条路径。
 
 ```rust
 #[derive(thiserror::Error)]
 pub enum ScheduleError {
-    #[error("due time {0} is not in the future")]
-    InPast(DateTime<Utc>),
     #[error("reminder message is empty")]
     EmptyMessage,
     #[error("unknown session {0}")]
     UnknownSession(SessionId),
+    #[error("invalid cron expression: {0}")]
+    InvalidCron(String),
+    #[error("the rule has no occurrence after {}", .0.to_rfc3339())]
+    NoOccurrenceAfter(DateTime<FixedOffset>),
+    #[error("occurrences must be at least {} minutes apart", MIN_RECURRENCE_INTERVAL.as_secs() / 60)]
+    TooFrequent,
+    #[error("schedule {id}: {source}")]
+    Restore { id: ScheduleId, source: Box<ScheduleError> },
     #[error(transparent)]
     Store(#[from] StoreError),
-    #[error("scheduler has stopped")]
-    Stopped,
+    #[error("scheduler has stopped{}", .0.as_ref().map_or(String::new(), |reason| format!(": {reason}")))]
+    Stopped(Option<String>),
 }
 ```
-- "恰好触发一次"来自 `fire_schedule` 的单一事务，而不是来自时间判断。
+
+文本在进入的地方解析：工具把 `at` 解析为 `DateTime<Utc>`、把 `timezone` 解析为 `Tz`，失败时直接返回 `tool.invalid_arguments`。cron 表达式由 Scheduler 在创建时校验：永不触发与间隔过短都要对照当前时刻判断，而创建校验是归属者的事。
 
 ## 11. 内置工具（`builtin.rs`）
 
@@ -629,11 +684,15 @@ pub enum ScheduleError {
 
 | 名称 | 参数 | 结果 | Effect |
 |---|---|---|---|
-| `schedule_create` | `at`：带时区偏移的 RFC 3339 时间；`message`：提醒内容 | `Ok { id, due_at }`；时间无法解析或已经过去 → `Failed { tool.invalid_arguments }` | SideEffect |
-| `schedule_list` | 无 | `Ok { [ { id, due_at, message } ] }`，仅当前 Session 的 Pending 提醒 | ReadOnly |
-| `schedule_cancel` | `id` | `Ok { cancelled: bool }`；ID 无法解析 → `Failed { tool.invalid_arguments }` | SideEffect |
+| `schedule_create` | `message`：提醒内容；`at`：带时区偏移的 RFC 3339 时间（一次性），或 `cron`：5 段 cron 表达式（周期），可加 `timezone`：IANA 名称，省略时跟随主人的时区；`at` 与 `cron` 恰好给一个 | `Ok`：创建的定时，与 `schedule_list` 中的一项相同；参数不合法、时间已经过去、规则永不触发或过于频繁 → `Failed { tool.invalid_arguments }`，message 说明原因 | SideEffect |
+| `schedule_list` | 无 | `Ok { [ { id, session, rule, message, timezone, next_due, last_due } ] }`，仅当前 Session 的 Active 定时；`rule` 原样回显创建参数：`{ at }`、`{ cron }` 或 `{ cron, timezone }`；外层 `timezone` 是生效时区 | ReadOnly |
+| `schedule_cancel` | `id` | `Ok { cancelled: bool }`，停止之后的全部触发；ID 无法解析 → `Failed { tool.invalid_arguments }` | SideEffect |
 
-`description` 是模型看到的文字，写清用途与参数格式即可，例如 `schedule_create`：`Create a reminder. It will be delivered to this session at the given time, even if Enco restarts. "at" must be an RFC 3339 timestamp with a UTC offset.`
+`at` 与 `cron` 二选一由工具检查，不写进 JSON Schema：并非所有服务商都支持 `oneOf`。
+
+查询结果中的 `at`、`next_due`、`last_due` 按生效时区写成带偏移的 RFC 3339（05 §4.3）；`enco schedules` 共用这份查询视图。
+
+`description` 以 `builtin.rs` 的源码为准，其中的间隔下限由常量生成。
 
 ## 12. 常量（`limits.rs`）
 
@@ -646,6 +705,8 @@ pub const TOOL_RESULT_PREVIEW_BYTES: usize = 4 * 1024;
 pub const SCHEDULER_TICK: Duration = Duration::from_secs(1);
 pub const SESSION_BROADCAST_CAPACITY: usize = 256;
 pub const SCHEDULER_CHANNEL_CAPACITY: usize = 64;
+pub const MIN_RECURRENCE_INTERVAL: Duration = Duration::from_secs(15 * 60);
+pub const RECURRENCE_CHECK: usize = 100;             // 创建时检查接下来这么多次触发的间隔（10.3）
 pub const TRIAL_CALLS: u32 = 5;                      // 11 §7
 ```
 
@@ -690,7 +751,7 @@ pub struct Inspection {
     pub attempt: AttemptId,
     pub purpose: AttemptPurpose,
     pub composer: CodeRef,
-    pub provider: CodeRef,
+    pub provider: GenerationId,
     pub settings: ProviderSettings,
     pub request: ProviderRequest,     // 解析后的消息、工具定义与输出上限
     pub plan: ContextPlan,            // 原始计划：内联消息的候选来源、Log 引用与省略
@@ -704,7 +765,7 @@ inspect(session, attempt):
     started = attempt 指定时找那条 AttemptStarted，否则取最后一条；没有 → UnknownAttempt
     plan = store.get_blob(started.plan)
     transcript = transcript::project(位置小于 started.pos 的条目)    // 组装时看到的历史
-    target = registry.exports().plugin_of(started.provider 的代际)      // 当时用的插件
+    target = registry.exports().plugin_of(started.provider)            // 当时用的插件
     request = plan::resolve(&plan, &transcript, &exports, target)
     result = 对应的 AttemptSettled（如果有）
 ```

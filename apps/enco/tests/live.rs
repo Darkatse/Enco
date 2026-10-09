@@ -177,10 +177,10 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
         "请使用 schedule_create 在一分钟后提醒我：检查 P0 验收结果。不要保存为长期记忆。简短回复。",
     )
     .await;
-    let schedules: Vec<Schedule> =
+    let schedules: Vec<serde_json::Value> =
         serde_json::from_value(admin.request(Command::Schedules {}).await.unwrap()).unwrap();
     assert_eq!(schedules.len(), 1);
-    let reminder = schedules[0].clone();
+    let reminder: ScheduleId = serde_json::from_value(schedules[0]["id"].clone()).unwrap();
     drop(main);
     drop(admin);
     graceful_stop(&mut daemon).await;
@@ -223,9 +223,7 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
             .unwrap(),
     )
     .unwrap();
-    let reminder_pos = prior
-        .iter()
-        .position(|entry| is_reminder(entry, reminder.id));
+    let reminder_pos = prior.iter().position(|entry| is_reminder(entry, reminder));
     if !reminder_pos.is_some_and(|pos| {
         prior[pos..]
             .iter()
@@ -245,7 +243,7 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
     .unwrap();
     assert_eq!(
         log.iter()
-            .filter(|entry| is_reminder(entry, reminder.id))
+            .filter(|entry| is_reminder(entry, reminder))
             .count(),
         1
     );

@@ -26,27 +26,19 @@ pub(super) fn entry(row: &Row<'_>) -> rusqlite::Result<Entry> {
 }
 
 pub(super) fn schedule(row: &Row<'_>) -> rusqlite::Result<Schedule> {
-    let state: String = row.get(5)?;
-    let state = match state.as_str() {
-        "pending" => ScheduleState::Pending,
-        "cancelled" => ScheduleState::Cancelled,
-        "fired" => ScheduleState::Fired {
-            event: text(row, 6)?,
-        },
-        _ => {
-            return Err(rusqlite::Error::FromSqlConversionFailure(
-                5,
-                rusqlite::types::Type::Text,
-                format!("unknown schedule state: {state:?}").into(),
-            ));
-        }
-    };
     Ok(Schedule {
         id: text(row, 0)?,
         session: text(row, 1)?,
-        due_at: text(row, 2)?,
+        rule: document(row, 2)?,
         message: row.get(3)?,
         created_at: text(row, 4)?,
-        state,
+        state: text(row, 5)?,
+        last: match row.get_ref(6)? {
+            rusqlite::types::ValueRef::Null => None,
+            _ => Some(Occurrence {
+                due_at: text(row, 6)?,
+                event: text(row, 7)?,
+            }),
+        },
     })
 }

@@ -54,9 +54,7 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         .unwrap();
     assert!(output.status.success());
     let inspection: Inspection = serde_json::from_slice(&output.stdout).unwrap();
-    let CodeRef::Generation { id: generation } = inspection.provider else {
-        panic!("provider must reference a generation");
-    };
+    let generation = inspection.provider;
     let plugins = client.request(Command::PluginStatus {}).await.unwrap();
     let active = plugins
         .as_array()

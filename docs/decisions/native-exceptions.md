@@ -10,6 +10,6 @@
 | 文件与 Shell 工具 | `crates/enco-host/src/tools.rs` 与 `tools/` | WIT 还没有工具接口，也没有访问系统资源的导入 | P2 通过工具接口接入。原生救生工具继续保留，读写文件和启动进程仍由宿主完成 |
 | 记忆工具与上下文源 | `crates/enco-host/src/memory.rs` 与 `memory/` | WIT 还没有工具和上下文接口；SQLite 与 TriviumDB 都需要读写本地文件 | P2 有了工具、上下文接口和宿主的记忆接口后，召回与写入的策略可以改为插件。记忆记录和索引仍由宿主管理 |
 | Telegram 渠道 | `crates/enco-host/src/telegram.rs`（协议），`channel.rs`（共同机制） | WIT 还没有渠道接口，而日常使用需要先有一个渠道 | P3 渠道接口就绪后，协议适配改为 Wasm 插件，原生适配器随之删除。连接、游标、映射与投递的结算仍由宿主完成 |
-| 提醒工具 | `crates/enco-kernel/src/builtin.rs` | WIT 还没有工具接口；这三个工具只是把命令转给 Scheduler | 工具接口能够调用内核命令后迁移。Scheduler 本身和提醒的持久化留在内核 |
+| 定时工具 | `crates/enco-kernel/src/builtin.rs` | WIT 还没有工具接口；这三个工具只是把命令转给 Scheduler | 工具接口能够调用内核命令后迁移。Scheduler 本身和定时的持久化留在内核 |
 
 Store、Clock、HTTP 传输、Wasm 运行时、Session actor、Scheduler 和原生管理入口本来就属于宿主或内核，不需要登记。两个 Provider 已经以 Wasm 插件运行，没有原生的替代实现。

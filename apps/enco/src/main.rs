@@ -6,12 +6,12 @@ mod daemon;
 mod paths;
 mod protocol;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
 use enco_core::{AttemptId, EventId, MemoryId, ScheduleId};
 use paths::Paths;
 use protocol::Command;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 #[derive(Parser)]
@@ -157,23 +157,25 @@ async fn main() -> Result<()> {
 async fn init(paths: &Paths) -> Result<()> {
     tokio::fs::create_dir_all(paths.workspace()).await?;
     tokio::fs::create_dir_all(paths.data()).await?;
-    for (path, bytes) in [
-        (
-            paths.config(),
-            include_bytes!("../../../examples/deepseek-gemini.toml").as_slice(),
-        ),
-        (paths.gitignore(), b"/.data/\n/workspace/\n".as_slice()),
-    ] {
-        match tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .await
-        {
-            Ok(mut file) => file.write_all(bytes).await?,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e).with_context(|| format!("create {}", path.display())),
-        }
+    create_new(&paths.gitignore(), b"/.data/\n/workspace/\n").await?;
+    let template = include_str!("../../../examples/deepseek-gemini.toml");
+    ensure!(
+        template.matches(EXAMPLE_TIMEZONE).count() == 1,
+        "the configuration template must contain `{EXAMPLE_TIMEZONE}` exactly once"
+    );
+    let timezone = iana_time_zone::get_timezone()
+        .ok()
+        .and_then(|name| name.parse::<enco_core::Tz>().ok());
+    let line = timezone.map_or_else(
+        || format!("# {EXAMPLE_TIMEZONE}  # Set your IANA time zone before starting Enco."),
+        |zone| format!("timezone = \"{zone}\""),
+    );
+    let config = template.replacen(EXAMPLE_TIMEZONE, &line, 1);
+    if create_new(&paths.config(), config.as_bytes()).await? && timezone.is_none() {
+        println!(
+            "Could not detect an IANA time zone. Set timezone in {} before starting Enco.",
+            paths.config().display()
+        );
     }
     println!(
         "Enco home: {}\nEdit {}, set its API key environment variables, then run `enco serve` and `enco chat`.",
@@ -181,4 +183,24 @@ async fn init(paths: &Paths) -> Result<()> {
         paths.config().display()
     );
     Ok(())
+}
+
+/// The template's timezone line, replaced by the detected zone.
+const EXAMPLE_TIMEZONE: &str = "timezone = \"America/New_York\"";
+
+/// Create a file unless it exists; return whether it was created.
+async fn create_new(path: &Path, bytes: &[u8]) -> Result<bool> {
+    match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .await
+    {
+        Ok(mut file) => {
+            file.write_all(bytes).await?;
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("create {}", path.display())),
+    }
 }

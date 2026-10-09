@@ -52,17 +52,20 @@ pub trait Store: Send + Sync {
     async fn pending(&self, session: SessionId) -> Result<Vec<Event>, StoreError>;
 
     // ---- Schedules (writer: Scheduler actor)
-    /// Scheduler-owned insertion of a pending reminder.
+    /// Scheduler-owned insertion of a new schedule, stored as given.
     async fn insert_schedule(&self, schedule: &Schedule) -> Result<(), StoreError>;
-    /// Scheduler-owned cancellation; return whether a pending reminder changed.
+    /// Scheduler-owned cancellation; return whether an active schedule changed.
     async fn cancel_schedule(&self, id: ScheduleId) -> Result<bool, StoreError>;
-    /// Read reminders, optionally filtered by state.
-    async fn schedules(
+    /// Read schedules, optionally filtered by state.
+    async fn schedules(&self, state: Option<ScheduleState>) -> Result<Vec<Schedule>, StoreError>;
+    /// Advance an active Schedule from expected_last and accept its Event atomically.
+    /// Mark it done when no occurrence remains.
+    async fn fire_schedule(
         &self,
-        state: Option<ScheduleStateKind>,
-    ) -> Result<Vec<Schedule>, StoreError>;
-    /// Mark a pending Schedule fired and accept its Event into the Inbox in one transaction.
-    async fn fire_schedule(&self, id: ScheduleId, event: &Event) -> Result<(), StoreError>;
+        expected_last: Option<DateTime<Utc>>,
+        done: bool,
+        event: &Event,
+    ) -> Result<(), StoreError>;
 
     // ---- Plugin identity and generations (writer: Registry)
     /// Read the authoritative name-to-identity mapping from plugins.lock.
@@ -179,17 +182,6 @@ pub enum Accepted {
     Duplicate,
 }
 
-/// Filter for durable reminder state.
-#[derive(Debug, Clone, Copy)]
-pub enum ScheduleStateKind {
-    /// Waiting for its due time.
-    Pending,
-    /// Already accepted into an Inbox.
-    Fired,
-    /// Cancelled before firing.
-    Cancelled,
-}
-
 /// A failed storage operation or commit precondition.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -219,9 +211,9 @@ pub enum StoreError {
     /// Input consumption does not match accepted facts.
     #[error("inbox: {0}")]
     Inbox(String),
-    /// This reminder has already fired or been cancelled.
-    #[error("schedule {0} is not pending")]
-    ScheduleNotPending(ScheduleId),
+    /// The scheduler's expected state no longer matches the authority.
+    #[error("schedule {0} is not active at the expected occurrence")]
+    ScheduleNotActive(ScheduleId),
     /// The target Session does not exist.
     #[error("unknown session {0}")]
     UnknownSession(SessionId),

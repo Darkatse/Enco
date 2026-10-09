@@ -11,8 +11,10 @@ pub trait Composer: Send + Sync {
 /// Current state sampled once for this Round; only Transcript changes after compaction.
 #[derive(Clone)]
 pub struct ComposeInput {
-    /// Owner-local time supplied by the kernel.
-    pub now: DateTime<FixedOffset>,
+    /// UTC instant sampled once for this Round.
+    pub now: DateTime<Utc>,
+    /// Owner's time zone, shared with recurring schedules.
+    pub timezone: Tz,
     /// Session metadata sampled for this Round.
     pub session: SessionRecord,
     /// Canonical history after the latest compaction.
@@ -63,8 +65,8 @@ pub struct TranscriptItem {
     pub message: Message,
     /// Provider generation of the producing Attempt, present only for Assistant messages.
     pub generation: Option<GenerationId>,
-    /// Recorded arrival time, present only for Inbox inputs; the composer decides how to show it.
-    pub received_at: Option<DateTime<Utc>>,
+    /// Consumed Inbox Event, present only for inputs; the composer narrates its circumstances.
+    pub event: Option<Event>,
 }
 
 /// A ready reply request or a request to summarize earlier complete Rounds first.

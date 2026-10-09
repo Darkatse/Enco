@@ -54,7 +54,7 @@
 | Outcome（`Ok` / `Failed` / `Unknown`）、Failure | Result（指工具结果时）、Status |
 | Provider、Completion、embed | LLM client、Backend、Model service；vectorize、encode（指 embed 时） |
 | CodeRef | Version、Implementation id |
-| Schedule（提醒的持久记录） | Timer、Cron、Task |
+| Schedule（定时：一串触发时刻）、ScheduleRule（`Once` / `Cron`） | Timer、Task、Job |
 | SafeMode、Lifeline | Recovery mode、Core tools |
 | Commit（一次原子提交） | Transaction（指领域对象时）、Batch |
 | Store（持久化端口） | Repository、DAO、Database（指端口时） |

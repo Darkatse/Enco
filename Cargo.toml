@@ -20,6 +20,9 @@ anyhow = "1.0.104"
 ulid = { version = "3.0.0", features = ["serde"] }
 blake3 = "1.8.7"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
+chrono-tz = { version = "0.10.4", features = ["serde"] }
+croner = "4.0.1"
+iana-time-zone = "0.1.65"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 triviumdb = "=0.8.8"                     # 0.x，精确锁定；只作记忆的派生索引（06 §3）
 reqwest = "0.13.5"                       # 默认使用 rustls

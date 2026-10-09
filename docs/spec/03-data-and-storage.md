@@ -110,9 +110,12 @@ pub enum EventSource {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventBody {
     UserMessage { text: String },
-    Reminder { schedule: ScheduleId, due_at: DateTime<Utc>, text: String },
-    /// 一个试用代际失败并被回退（11 §7）。`to` 为空表示该插件已没有活跃代际。
-    GenerationRolledBack(RolledBack),
+    /// 一次定时触发。`(schedule, due_at)` 是触发 ID（架构文档 §5.5）；
+    /// `skipped` 是宕机期间只补最近一次时跳过的触发数（04 §10）。
+    Reminder { schedule: ScheduleId, due_at: DateTime<Utc>, skipped: u32, text: String },
+    /// 一个试用代际失败并被回退（11 §7）。`rollback.to` 为空表示该插件已没有活跃代际；
+    /// `text` 是注册表在回退提交时写下的通知。
+    GenerationRolledBack { rollback: RolledBack, text: String },
 }
 
 impl Event {
@@ -121,7 +124,7 @@ impl Event {
 }
 ```
 
-规范形态：`UserMessage` → `User` 消息，内容即 `text`；`Reminder` → `User` 消息，内容为 `"[reminder scheduled for {due_at}] {text}"`，其中 `due_at` 为 RFC 3339 UTC；`GenerationRolledBack` → `User` 消息，内容为 `"[plugin rolled back] {plugin}: generation {from} failed ({code}: {message}); now using generation {to}"`，没有目标时最后一句为 `no generation is active`。
+规范形态：三种 Event 都是 `User` 消息，内容即 `text`，也就是生产者在事件发生时写下的文字：主人的消息、Agent 创建定时时写的提醒内容、注册表写下的回退通知。到达时间、来源、触发时刻、跳过次数等处境由 composer 叙述（05 §4.3），core 不含叙述文字；改措辞只影响新事件或新计划，不改变持久格式。
 
 ### 1.5 Log 条目（`entry.rs`）
 
@@ -144,7 +147,7 @@ pub enum EntryBody {
         purpose: AttemptPurpose,
         plan: ContentHash,
         composer: CodeRef,
-        provider: CodeRef,
+        provider: GenerationId,
         settings: ProviderSettings,
     },
     AttemptSettled { attempt: AttemptId, result: AttemptResult },
@@ -346,18 +349,32 @@ pub struct SessionRecord {
 /// 单节点时恒为 (本节点, Epoch(1))。
 pub struct Binding { pub node: NodeId, pub epoch: Epoch }
 
+/// 一串触发时刻：一次性提醒只有一个，周期定时有无数个。
+/// 权威是 `rule` 与 `last`；下一次触发由它们推出，不存储（04 §10）。
 pub struct Schedule {
     pub id: ScheduleId,
     pub session: SessionId,
-    pub due_at: DateTime<Utc>,
+    pub rule: ScheduleRule,
     pub message: String,
     pub created_at: DateTime<Utc>,
     pub state: ScheduleState,
+    pub last: Option<Occurrence>,   // 最近一次已投递的触发；还没有触发过时为空
 }
 
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ScheduleState { Pending, Fired { event: EventId }, Cancelled }
+pub enum ScheduleRule {
+    Once { at: DateTime<Utc> },
+    /// 5 段 cron（分 时 日 月 周），按当地时间解释。`timezone` 为空时跟随主人的时区（08 §3）。
+    Cron { expr: String, timezone: Option<Tz> },   // Tz 为 chrono_tz::Tz，序列化为 IANA 名称
+}
+
+pub struct Occurrence { pub due_at: DateTime<Utc>, pub event: EventId }
+
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleState { Active, Done, Cancelled }
 ```
+
+一次性提醒投递后变为 `Done`；周期定时一直是 `Active`，直到取消。
 
 ### 1.10 记忆（`memory.rs`）
 
@@ -421,9 +438,10 @@ pub trait Store: Send + Sync {
     // ---- Schedule（写者：Scheduler actor）
     async fn insert_schedule(&self, schedule: &Schedule) -> Result<(), StoreError>;
     async fn cancel_schedule(&self, id: ScheduleId) -> Result<bool, StoreError>;
-    async fn schedules(&self, state: Option<ScheduleStateKind>) -> Result<Vec<Schedule>, StoreError>;
-    /// 在一个事务中把 Schedule 从 Pending 改为 Fired，并把 `event` 投递进 Inbox。
-    async fn fire_schedule(&self, id: ScheduleId, event: &Event) -> Result<(), StoreError>;
+    async fn schedules(&self, state: Option<ScheduleState>) -> Result<Vec<Schedule>, StoreError>;
+    /// 在一个事务中投递一次触发：前置条件是该 Schedule 仍为 Active，且 `last` 的触发时刻等于 `expected_last`；
+    /// 从 Reminder 取得定时 ID 与触发时刻，把 `last` 改为这次触发（转为 UTC），`done` 为真时状态改为 Done，并把 `event` 投递进 Inbox。
+    async fn fire_schedule(&self, expected_last: Option<DateTime<Utc>>, done: bool, event: &Event) -> Result<(), StoreError>;
 
     // ---- 插件的名字与身份（写者：Registry 的提交者；存于 plugins.lock，§3.5）
     async fn plugin_names(&self) -> Result<BTreeMap<String, PluginId>, StoreError>;
@@ -473,8 +491,6 @@ pub struct DeliverySettlement { pub delivery: Delivery, pub outcome: Settlement,
 
 pub enum Accepted { New, Duplicate }
 
-pub enum ScheduleStateKind { Pending, Fired, Cancelled }
-
 #[derive(thiserror::Error)]
 pub enum StoreError {
     #[error("session {session} is fenced: binding is {binding:?}, commit epoch is {epoch:?}")]
@@ -483,8 +499,8 @@ pub enum StoreError {
     OutOfOrder { session: SessionId, expected: LogPos, got: LogPos },
     #[error("inbox: {0}")]
     Inbox(String),
-    #[error("schedule {0} is not pending")]
-    ScheduleNotPending(ScheduleId),
+    #[error("schedule {0} is not active at the expected occurrence")]
+    ScheduleNotActive(ScheduleId),
     #[error("unknown session {0}")]
     UnknownSession(SessionId),
     #[error("blob {0} is corrupt or missing")]
@@ -529,11 +545,16 @@ Inbox 是一个邮箱：任何人都可以投递（`accept`），只有归属者
 
 - `SqliteStore::open(paths: StorePaths)`，`StorePaths { db, blobs, artifacts, plugins_lock }`：Store 负责的全部文件都在这里给出。
 - 数据库文件：`$ENCO_HOME/.data/enco.db`。
-- 版本记在 SQLite 自带的 `PRAGMA user_version`，`memory.db` 用同一条规则（06 §2）。当前版本是 `3`。
+- 版本记在 SQLite 自带的 `PRAGMA user_version`，`memory.db` 用同一条规则（06 §2）。当前版本是 `4`。
 - 空库在一个事务中建立完整 schema，设置版本号，写入新生成的 `node_id` 和 `safe_mode = '0'`。
 - 已有库的版本不等于当前版本时返回 `SchemaVersion`，拒绝启动，不改动库。
-- M16 的内联计划项必须显式记录 `sources`，没有候选来源时为空。旧库需手动迁移计划 blob、更新 `AttemptStarted.plan` 引用，再把版本设为 3；不在运行时补默认字段。
-- P4 之前不写迁移代码。每次改 schema 都把版本号加一；已有的库由 Agent 按 §3.2 手动迁移并设置版本号，或者删库重建。从 P4 起，升级不丢记录（路线图 P4）。
+- P4 之前不写迁移代码。每次改 schema 都把版本号加一；已有的库由 Agent 按 §3.2 手动迁移并设置版本号，或者删库重建。本节只保留从上一版本迁移的步骤，更早的步骤见引入它们的提交。从 P4 起，升级不丢记录（路线图 P4）。
+- M18 改写 schedules 表，给 `Reminder` 加上 `skipped`，把 Event 的叙述移出规范形态，并把 `AttemptStarted.provider` 收紧为代际编号。旧库的手动迁移：
+  - schedules 表按 §3.2 重建：`pending` 改为 `active`，`rule` 为 `Once { at = due_at }`；`fired` 改为 `done`，`last` 取 `(due_at, fired_event_id)`；`cancelled` 不变，`rule` 同样取自 `due_at`。
+  - Inbox 与 Log 中的 `Reminder` 补上 `skipped = 0`。只有 Log 中的 `text` 改写为旧的规范消息 `[reminder scheduled for {due_at}] {text}`，其中 `due_at` 按旧值的 `to_rfc3339()` 写出（以 `+00:00` 结尾，有小数秒时保留），旧计划回放因此逐字不变；Inbox 中尚未消费的提醒还没有计划引用，保留原文，由 composer 的说明叙述。
+  - Inbox 与 Log 中的 `GenerationRolledBack` 把回退事实移入 `rollback`，`text` 写为 `[plugin rolled back] {plugin}: generation {from} failed ({code}: {message}); now using generation {to}`，没有 `to` 时分号后为 `no generation is active`，与 `registry/activation.rs` 的 `notice` 相同。
+  - Log 中 `AttemptStarted.provider` 从 `{ "kind": "generation", "id": 编号 }` 改为该编号。
+  - 再把版本设为 4。
 - 一个 `rusqlite::Connection`，放在 `std::sync::Mutex` 中；每个方法在 `tokio::task::spawn_blocking` 中执行。不要引入连接池。
 - 打开时执行：`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;`
 - 写事务使用 `BEGIN IMMEDIATE`。
@@ -577,15 +598,16 @@ CREATE TABLE inbox (
 CREATE INDEX inbox_pending ON inbox(session_id, order_no) WHERE consumed_seq IS NULL;
 
 CREATE TABLE schedules (
-  id             TEXT PRIMARY KEY,
-  session_id     TEXT NOT NULL REFERENCES sessions(id),
-  due_at         TEXT NOT NULL,
-  message        TEXT NOT NULL,
-  created_at     TEXT NOT NULL,
-  state          TEXT NOT NULL CHECK (state IN ('pending', 'fired', 'cancelled')),
-  fired_event_id TEXT
+  id            TEXT PRIMARY KEY,
+  session_id    TEXT NOT NULL REFERENCES sessions(id),
+  rule          TEXT NOT NULL,           -- ScheduleRule 的 JSON
+  message       TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  state         TEXT NOT NULL CHECK (state IN ('active', 'done', 'cancelled')),
+  last_due      TEXT,                    -- 最近一次已投递的触发时刻
+  last_event_id TEXT,                    -- 该次触发的 Event
+  CHECK ((last_due IS NULL) = (last_event_id IS NULL))
 ) STRICT;
-CREATE INDEX schedules_pending ON schedules(due_at) WHERE state = 'pending';
 
 CREATE TABLE connections (
   key   TEXT PRIMARY KEY,               -- 例如 telegram:<bot id>

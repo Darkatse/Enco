@@ -126,7 +126,7 @@ System 消息由以下各节依次拼接，没有内容的节整节省略：
 - Workspace: {工作区绝对路径}
 - Standing instructions: {AGENTS.md 的绝对路径}
 - Session: {session.name}
-- Time zone: UTC{now 的偏移，±HH:MM}
+- Time zone: {主人的时区，IANA 名称} (UTC{该时区在 now 时的偏移，±HH:MM})
 
 ## Standing instructions (AGENTS.md)
 {常驻的 Instruction 候选}
@@ -148,12 +148,14 @@ System 消息由以下各节依次拼接，没有内容的节整节省略：
 
 {上一次工作未正常完成的说明}
 
+{输入来源的说明}
+
 Memories you recall for the next message:
 - {内容} (id: {候选 id 去掉 "memory:" 前缀})
 …
 ```
 
-说明是 Agent 对这条输入的处境感知，不是主人说的话。它和提醒、插件回退通知一样用 User 角色（03 §1.4），因为一些协议只在开头接受 system，一些聊天模板也会把所有 system 消息合并到开头。说明逐字记在计划中，不是规范消息；自动召回块不作为压缩原文，时间与工作结局则由同一条渲染路径用于回复和压缩。
+说明是 Agent 对这条输入的处境感知，不是主人说的话。它和提醒、插件回退通知一样用 User 角色（03 §1.4），因为一些协议只在开头接受 system，一些聊天模板也会把所有 system 消息合并到开头。说明逐字记在计划中，不是规范消息；自动召回块不作为压缩原文，时间、工作结局与输入来源则由同一条渲染路径用于回复和压缩。
 
 ### 4.2 预算
 
@@ -180,17 +182,18 @@ tools = input.tools 全部，原样复制（不做渐进式披露，那是 P2 �
 max_output_tokens = profile.reply.budget.max_output_tokens
 ```
 
-只有带 `received_at` 的条目（来自 Inbox 的输入，04 §2）有说明：
+只有来自 Inbox 的输入（带 `event` 的条目，04 §2）有说明：
 
-- **时间**：接收时间按 `now` 的 UTC 偏移换算为本地时间。这条输入是 Transcript 中的第一条输入，或者与上一条输入不在同一个钟点（日期与小时不全相同）时，说明以时间开头。相隔一小时以上的两条输入必然跨过整点，所以这条规则既标出隔了很久才来的消息，也在持续的对话中大约每小时标一次。时间只取决于已记录的接收时间和 UTC 偏移，从头渲染也得到同样的结果。
+- **时间**：接收时间按主人的时区（`ComposeInput.timezone`）换算为当地时间，每个时刻用它自己当时的偏移，所以夏令时切换前后的输入各自显示正确的当地时间。这条输入是 Transcript 中的第一条输入，或者与上一条输入不在同一个钟点（当地日期、小时与 UTC 偏移不全相同）时，说明以时间开头。相隔一小时以上的两条输入必然落在不同的钟点，所以这条规则既标出隔了很久才来的消息，也在持续的对话中大约每小时标一次。时间只取决于已记录的接收时间和主人的时区，从头渲染也得到同样的结果。
 - **工作结局**：按 Log 位置，将 `transcript.run_ends` 中的每个结局归到其后的第一条输入。两条输入之间最近的结局不是 `Completed` 时，说明写明原因。一次接纳多条输入时，只在第一条输入前写；同一输入的工具循环沿用已有说明。从头渲染时仍由相同事实确定，已压缩的结局随摘要保留。
+- **输入来源**：输入不是主人发来的时，说明写明它的来源，判据是 Event 的类型。`Reminder` 写 `The next message is a reminder you scheduled for {YYYY-MM-DD HH:MM, 英文星期}.`，触发时刻按主人的时区、与时间标记同一格式，`skipped` 大于 0 时接着写 ` Missed earlier occurrences: {skipped}.`；`GenerationRolledBack` 写 `The next message is a notice from the plugin registry.`。
 - **召回的记忆**：只出现在 Transcript 中最新一条输入的说明里，而且只在这条说明新渲染时出现。只与该 id 最近一次展示的内容比较：相同则不重复，更正后在后续新输入的说明中作为新的一行出现，改回更早的值也一样。Transcript 中没有输入（都已被压缩）时不显示。
 
 记忆源只在本 Round 接纳了新输入时召回（06 §5）。所以工具循环中途从头渲染时（压缩或 System 消息改变），最新输入的说明没有召回的记忆，直到下一条输入。
 
-每条内联消息的 `sources` 记录实际使用的候选 id 与原始文本哈希。去重从上一份计划的消息及来源倒序查找该 id 最近一次出现的哈希。System 消息同样记录纳入的常驻候选；只有时间、工作结局的说明与压缩消息的候选来源为空。
+每条内联消息的 `sources` 记录实际使用的候选 id 与原始文本哈希。去重从上一份计划的消息及来源倒序查找该 id 最近一次出现的哈希。System 消息同样记录纳入的常驻候选；只有时间、工作结局、输入来源的说明与压缩消息的候选来源为空。
 
-请求中没有当前时间：Environment 给出时区，Agent 需要精确时间时自己查询（§4.6 的 `system.md`）。时间只到分钟、跨整点才标，是因为 Agent 读时间不需要更细；工具参数要求的格式（例如 `schedule_create` 的 RFC 3339）由工具描述说明。显示哪些时间、怎样显示是 composer 的策略，所以规范消息（03 §1.4）不含时间，例如角色扮演的 composer 可以改用故事中的时间。
+请求中没有当前时间：Environment 给出时区，Agent 需要精确时间时自己查询（§4.6 的 `system.md`）。时间只到分钟、跨整点才标，是因为 Agent 读时间不需要更细。标记不带偏移：参照系就是 Environment 中的时区，时区或偏移改变时 System 消息随之改变，全部标记从头渲染。显示哪些接收时间、怎样显示是 composer 的策略，例如角色扮演的 composer 可以改用故事中的时间。写下后原样回放的时刻不随 Environment 重新渲染，所以保留偏移，并使用工具参数的 RFC 3339 格式，例如定时工具的结果（04 §11）。
 
 工作结局的文案由 composer 持有：`Your previous work {原因} before it finished. The tool results above show what you did and which actions remain uncertain.` 原因依次为 `was interrupted`（`Interrupted`）、`was cancelled`（`Cancelled`）、`reached the step limit`（`BudgetExhausted`）、`failed ({code}: {message})`（`Failed`）。
 
@@ -225,8 +228,8 @@ items = [
   System: prompts/compaction.md,
   User:   "Previous summary:\n{transcript.summary}\n\n"（有旧摘要时）
           + "Conversation to summarize:\n" + 按顺序渲染 pos <= b 的条目：
-              输入说明        → 时间与工作结局，和回复共享 §4.3 的渲染，放在所属输入之前；不含自动召回记忆
-              User 消息       → "Owner: {text}"
+              输入说明        → 时间、工作结局与输入来源，和回复共享 §4.3 的渲染，放在所属输入之前；不含自动召回记忆
+              输入            → "{说话人}: {text}"，说话人与输入来源同一判据：`UserMessage` 为 Owner，`Reminder` 为 Reminder，`GenerationRolledBack` 为 Notice
               Assistant 文本  → "You: {text}"
               工具调用        → "You called {name} with {arguments，最多 2000 字节}"
               Tool 消息       → "Result of {name}: {content，最多 2000 字节}"
@@ -248,7 +251,7 @@ You are Enco, a personal assistant working for one owner. You run on the owner's
 Reply in the language the owner uses. Be concise.
 
 What you see
-- A short note may come just before an incoming message. When the message is the first one shown or arrives in a new hour, the note starts with its arrival time, such as [2026-10-02 14:03, Friday]; an unmarked message arrived in the same hour as the one before it. The note may also explain why your previous work stopped or list memories you recall for that message. These notes describe your own circumstances, not the owner's words.
+- A short note may come just before an incoming message. When the message is the first one shown or arrives in a new hour, the note starts with its arrival time, such as [2026-10-02 14:03, Friday]; an unmarked message arrived in the same hour as the one before it. The note may also explain why your previous work stopped, say that the message is a reminder you scheduled or a notice from the plugin registry, or list memories you recall for that message. These notes describe your own circumstances, not the owner's words.
 - The conversation ends with the newest message or tool result; continue from there.
 
 Memory
@@ -269,18 +272,18 @@ Tools
 ```text
 You are Enco, a personal assistant, working in safe mode. Use the available recovery tools to diagnose what failed and restore your usual capabilities. Your memories and standing instructions are not loaded. Reply in the language the owner uses.
 
-A note just before a message may give its arrival time, such as [2026-10-02 14:03, Friday], or explain why your previous work stopped. It describes your own circumstances, not the owner's words. For the exact current time, run date in the shell.
+A note just before a message may give its arrival time, such as [2026-10-02 14:03, Friday], explain why your previous work stopped, or say that the message is a reminder you scheduled or a notice from the plugin registry. It describes your own circumstances, not the owner's words. For the exact current time, run date in the shell.
 ```
 
 `compaction.md`：
 
 ```text
-Write a concise summary for yourself so you can continue this work with less context, possibly days later. Preserve what the owner wants, what you have decided and why, what you have learned and done, actions whose outcomes remain uncertain, and what remains to be done. A bracketed time such as [2026-10-02 14:03, Friday] shows when the following messages arrived; keep the dates of events and commitments, and write explicit dates rather than "today" or "tomorrow". A note before a message may say why your previous work stopped. Such notes, and tagged notices on Owner lines such as reminders and plugin rollbacks, are context for you, not the owner's words. Do not copy saved memories into your summary; you can recall them separately. Write in the language of the conversation.
+Write a concise summary for yourself so you can continue this work with less context, possibly days later. Preserve what the owner wants, what you have decided and why, what you have learned and done, actions whose outcomes remain uncertain, and what remains to be done. A bracketed time such as [2026-10-02 14:03, Friday] shows when the following messages arrived; keep the dates of events and commitments, and write explicit dates rather than "today" or "tomorrow". A note before a message may say why your previous work stopped or that the message is a reminder you scheduled or a notice from the plugin registry. Notes, Reminder lines and Notice lines are context for you, not the owner's words. Do not copy saved memories into your summary; you can recall them separately. Write in the language of the conversation.
 ```
 
 ## 5. SystemClock（`clock.rs`）
 
-`SystemClock` 实现 `Clock`，返回 `Local::now().fixed_offset()`：当前时刻与本机此刻的 UTC 偏移。
+`SystemClock` 实现 `Clock`，返回 `Utc::now()`（截到毫秒），不读取系统时区（架构文档 §3.7）。
 
 ## 6. 常量（`limits.rs`）
 

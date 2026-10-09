@@ -20,6 +20,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dirs = { workspace = true }
 ulid = { workspace = true }
+iana-time-zone.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

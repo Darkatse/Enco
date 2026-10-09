@@ -15,6 +15,7 @@ serde_json = { workspace = true }
 ulid = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+croner.workspace = true
 
 [lints]
 workspace = true

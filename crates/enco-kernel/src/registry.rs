@@ -298,7 +298,7 @@ impl Registry {
             config,
             origin: Origin::Deployed,
             status: GenerationStatus::Trial,
-            created_at: self.clock.now().to_utc(),
+            created_at: self.clock.now(),
         };
         let id = self.store.insert_generation(&generation, true).await?;
         let record = generation.numbered(id);

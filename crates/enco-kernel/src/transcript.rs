@@ -22,11 +22,7 @@ pub(crate) fn project(entries: &[Entry]) -> Transcript {
                 provider,
                 ..
             } => {
-                let generation = match provider {
-                    CodeRef::Generation { id } => Some(*id),
-                    CodeRef::Native { .. } => None,
-                };
-                attempts.insert(*attempt, (*purpose, generation));
+                attempts.insert(*attempt, (*purpose, *provider));
             }
             EntryBody::AttemptSettled {
                 attempt,
@@ -52,7 +48,7 @@ pub(crate) fn project(entries: &[Entry]) -> Transcript {
                 let info = attempts.get(attempt);
                 (
                     info.map(|(purpose, _)| *purpose),
-                    info.and_then(|(_, generation)| *generation),
+                    info.map(|(_, generation)| *generation),
                     None,
                 )
             }
@@ -64,8 +60,8 @@ pub(crate) fn project(entries: &[Entry]) -> Transcript {
                 pos: entry.pos,
                 message,
                 generation,
-                received_at: match &entry.body {
-                    EntryBody::EventConsumed { event } => Some(event.received_at),
+                event: match &entry.body {
+                    EntryBody::EventConsumed { event } => Some(event.clone()),
                     _ => None,
                 },
             });

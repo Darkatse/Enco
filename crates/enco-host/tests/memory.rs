@@ -50,7 +50,7 @@ async fn memory_kernel(
     provider: Arc<ScriptedProvider>,
     memories: Arc<Memories>,
 ) -> Kernel {
-    kernel_with(root, provider, |deps| {
+    kernel_with(root, provider, Tz::UTC, |deps| {
         deps.context
             .push(Arc::new(MemoryContextSource::new(memories.clone(), None)));
         deps.tools.extend(memory_tools(memories));

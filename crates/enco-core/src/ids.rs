@@ -51,7 +51,7 @@ id!(
     CallId,
     "Host-assigned identity of one proposed tool invocation."
 );
-id!(ScheduleId, "Identity of a durable reminder.");
+id!(ScheduleId, "Identity of a durable schedule.");
 id!(MemoryId, "Identity of an editable memory.");
 id!(NodeId, "Persistent identity of an Enco installation.");
 id!(

@@ -17,9 +17,17 @@ use std::{
 
 /// `PRAGMA user_version` covers SQLite and its referenced plans. Until P4, persistent
 /// format changes bump it and existing databases are migrated by hand.
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 const SESSION_COLUMNS: &str = "id,name,created_at,binding_node,binding_epoch,profile";
-const SCHEDULE_COLUMNS: &str = "id,session_id,due_at,message,created_at,state,fired_event_id";
+const SCHEDULE_COLUMNS: &str = "id,session_id,rule,message,created_at,state,last_due,last_event_id";
+
+fn schedule_state(state: ScheduleState) -> &'static str {
+    match state {
+        ScheduleState::Active => "active",
+        ScheduleState::Done => "done",
+        ScheduleState::Cancelled => "cancelled",
+    }
+}
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -359,13 +367,16 @@ impl Store for SqliteStore {
         self.run(move |connection| {
             connection
                 .execute(
-                    "INSERT INTO schedules VALUES (?,?,?,?,?,'pending',NULL)",
+                    "INSERT INTO schedules VALUES (?,?,?,?,?,?,?,?)",
                     params![
                         schedule.id.to_string(),
                         schedule.session.to_string(),
-                        timestamp(schedule.due_at),
+                        encode(&schedule.rule)?,
                         schedule.message,
-                        timestamp(schedule.created_at)
+                        timestamp(schedule.created_at),
+                        schedule_state(schedule.state),
+                        schedule.last.map(|last| timestamp(last.due_at)),
+                        schedule.last.map(|last| last.event.to_string()),
                     ],
                 )
                 .map_err(backend)?;
@@ -378,7 +389,7 @@ impl Store for SqliteStore {
         self.run(move |connection| {
             connection
                 .execute(
-                    "UPDATE schedules SET state='cancelled' WHERE id=? AND state='pending'",
+                    "UPDATE schedules SET state='cancelled' WHERE id=? AND state='active'",
                     [id.to_string()],
                 )
                 .map(|n| n > 0)
@@ -387,22 +398,15 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn schedules(
-        &self,
-        state: Option<ScheduleStateKind>,
-    ) -> Result<Vec<Schedule>, StoreError> {
+    async fn schedules(&self, state: Option<ScheduleState>) -> Result<Vec<Schedule>, StoreError> {
         self.run(move |connection| {
-            let filter = state.map(|schedule| match schedule {
-                ScheduleStateKind::Pending => "pending",
-                ScheduleStateKind::Fired => "fired",
-                ScheduleStateKind::Cancelled => "cancelled",
-            });
+            let filter = state.map(schedule_state);
             let mut query = connection
                 .prepare(&format!(
                     "SELECT {SCHEDULE_COLUMNS}
                      FROM schedules
                      WHERE (? IS NULL OR state=?)
-                     ORDER BY due_at,id"
+                     ORDER BY created_at,id"
                 ))
                 .map_err(backend)?;
             query
@@ -414,25 +418,44 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn fire_schedule(&self, id: ScheduleId, event: &Event) -> Result<(), StoreError> {
+    async fn fire_schedule(
+        &self,
+        expected_last: Option<DateTime<Utc>>,
+        done: bool,
+        event: &Event,
+    ) -> Result<(), StoreError> {
         let event = event.clone();
         self.run(move |connection| {
+            let (id, due_at) = match &event.body {
+                EventBody::Reminder {
+                    schedule, due_at, ..
+                } => (*schedule, *due_at),
+                _ => {
+                    return Err(StoreError::Inbox("event is not a Reminder".into()));
+                }
+            };
             let tx = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(backend)?;
             let inserted = tx
                 .execute(
-                    "UPDATE schedules SET state='fired',fired_event_id=?
-                     WHERE id=? AND session_id=? AND state='pending'",
+                    "UPDATE schedules SET last_due=?,last_event_id=?,state=?
+                     WHERE id=? AND state='active' AND last_due IS ?",
                     params![
+                        timestamp(due_at),
                         event.id.to_string(),
+                        schedule_state(if done {
+                            ScheduleState::Done
+                        } else {
+                            ScheduleState::Active
+                        }),
                         id.to_string(),
-                        event.session.to_string()
+                        expected_last.map(timestamp),
                     ],
                 )
                 .map_err(backend)?;
             if inserted == 0 {
-                return Err(StoreError::ScheduleNotPending(id));
+                return Err(StoreError::ScheduleNotActive(id));
             }
             tx.execute(
                 "INSERT INTO inbox(event_id,session_id,event) VALUES (?,?,?)",

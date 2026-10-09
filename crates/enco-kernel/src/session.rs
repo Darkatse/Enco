@@ -120,7 +120,7 @@ impl SessionActor {
                     epoch: self.session.binding.epoch,
                     seq: Seq(self.next + i as u64),
                 },
-                at: self.deps.clock.now().to_utc(),
+                at: self.deps.clock.now(),
                 body,
             })
             .collect();

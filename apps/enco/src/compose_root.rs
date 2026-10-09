@@ -32,7 +32,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
         .as_ref()
         .map(|config| Ok::<_, anyhow::Error>((config.adapter()?, config.owner_user_id.to_string())))
         .transpose()?;
-    let kernel_config = KernelConfig::new(config.run.max_rounds)?;
+    let kernel_config = KernelConfig::new(config.run.max_rounds, config.timezone)?;
     tokio::fs::create_dir_all(paths.workspace()).await?;
     let store = Arc::new(
         SqliteStore::open(StorePaths {

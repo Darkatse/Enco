@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum Role {
     /// Instructions supplied by the composer.
     System,
-    /// An input from the owner or scheduler.
+    /// Owner input and contextual messages from event producers or the composer.
     User,
     /// Model output, including proposed calls.
     Assistant,

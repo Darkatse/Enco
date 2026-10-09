@@ -10,8 +10,8 @@ pub struct Inspection {
     pub purpose: AttemptPurpose,
     /// Code which produced the frozen plan.
     pub composer: CodeRef,
-    /// Code to which the recorded request was bound.
-    pub provider: CodeRef,
+    /// Provider generation to which the recorded request was bound.
+    pub provider: GenerationId,
     /// Recorded invocation parameters, excluding the credential itself.
     pub settings: ProviderSettings,
     /// Exact canonical request at this Attempt's Log position.
@@ -58,11 +58,9 @@ impl Kernel {
         let plan: ContextPlan =
             serde_json::from_slice(&bytes).map_err(|error| invalid(error.to_string()))?;
         let exports = self.deps.registry.exports();
-        let target = match provider {
-            CodeRef::Generation { id } => exports.plugin_of(*id),
-            CodeRef::Native { .. } => None,
-        }
-        .ok_or_else(|| invalid("recorded provider has no registered plugin identity".into()))?;
+        let target = exports
+            .plugin_of(*provider)
+            .ok_or_else(|| invalid("recorded provider has no registered plugin identity".into()))?;
         let request = plan::resolve(
             &plan,
             &transcript::project(&entries[..index]),
@@ -83,7 +81,7 @@ impl Kernel {
             attempt: *attempt,
             purpose: *purpose,
             composer: composer.clone(),
-            provider: provider.clone(),
+            provider: *provider,
             settings: settings.clone(),
             request,
             plan,

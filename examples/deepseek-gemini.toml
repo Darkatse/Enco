@@ -1,3 +1,5 @@
+timezone = "America/New_York"
+
 [endpoint.chat]
 plugin = "deepseek"
 base_url = "https://api.deepseek.com"

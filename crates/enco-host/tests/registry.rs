@@ -169,7 +169,7 @@ async fn recovery_uses_committed_activation_and_skips_missing_artifacts() {
         config: serde_json::json!({}),
         origin: Origin::Deployed,
         status: GenerationStatus::Healthy,
-        created_at: SystemClock.now().to_utc(),
+        created_at: SystemClock.now(),
     };
     let latest = store.insert_generation(&pending, true).await.unwrap();
     drop(registry);
@@ -408,7 +408,7 @@ async fn deployment_tool_changes_the_next_attempt_and_memory_call() {
             lifeline: LIFELINE.iter().map(|name| (*name).into()).collect(),
             clock: Arc::new(SystemClock),
         },
-        KernelConfig::new(24).unwrap(),
+        KernelConfig::new(24, Tz::UTC).unwrap(),
     )
     .await
     .unwrap();
@@ -441,16 +441,14 @@ async fn deployment_tool_changes_the_next_attempt_and_memory_call() {
         })
         .collect();
     assert_eq!(starts.len(), 2);
-    assert_eq!(starts[0].0, &CodeRef::Generation { id: factory });
+    assert_eq!(starts[0].0, &factory);
     assert_eq!(
         starts[1].0,
-        &CodeRef::Generation {
-            id: registry
-                .exports()
-                .completion("fixture", false)
-                .unwrap()
-                .generation
-        }
+        &registry
+            .exports()
+            .completion("fixture", false)
+            .unwrap()
+            .generation
     );
     assert!(
         starts
@@ -659,7 +657,9 @@ async fn trial_health_and_notices_follow_durable_registry_commits() {
     assert_eq!(failed.failure.as_ref(), Some(&rollback.failure));
     let pending = store.pending(session.id).await.unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].body, EventBody::GenerationRolledBack(rollback));
+    assert!(
+        matches!(&pending[0].body, EventBody::GenerationRolledBack { rollback: recorded, .. } if *recorded == rollback)
+    );
 
     let alone = registry
         .deploy("alone", FACTORY_BYTES.to_vec())
@@ -809,7 +809,7 @@ async fn callers_share_trial_health_and_recovery_keeps_the_recorded_request() {
             lifeline: vec![],
             clock: Arc::new(SystemClock),
         },
-        KernelConfig::new(24).unwrap(),
+        KernelConfig::new(24, Tz::UTC).unwrap(),
     )
     .await
     .unwrap();
@@ -837,11 +837,9 @@ async fn callers_share_trial_health_and_recovery_keeps_the_recorded_request() {
             .iter()
             .find_map(|entry| match entry.body {
                 EntryBody::AttemptStarted {
-                    attempt,
-                    provider: CodeRef::Generation { id },
-                    ..
+                    attempt, provider, ..
                 } => {
-                    assert_eq!(id, expected);
+                    assert_eq!(provider, expected);
                     Some(attempt)
                 }
                 _ => None,
@@ -938,9 +936,9 @@ async fn callers_share_trial_health_and_recovery_keeps_the_recorded_request() {
                 attempt,
                 round,
                 plan,
-                provider: CodeRef::Generation { id },
+                provider,
                 ..
-            } => Some((attempt, round, plan, id)),
+            } => Some((attempt, round, plan, provider)),
             _ => None,
         })
         .collect();
@@ -961,7 +959,7 @@ async fn callers_share_trial_health_and_recovery_keeps_the_recorded_request() {
         .iter()
         .filter_map(|entry| match &entry.body {
             EntryBody::EventConsumed { event }
-                if matches!(event.body, EventBody::GenerationRolledBack(_)) =>
+                if matches!(event.body, EventBody::GenerationRolledBack { .. }) =>
             {
                 Some(event)
             }

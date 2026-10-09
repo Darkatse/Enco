@@ -1,4 +1,4 @@
-use crate::{CallContext, ScheduleError, Schedules, Tool};
+use crate::{CallContext, ScheduleError, Scheduled, Schedules, Tool, limits};
 use async_trait::async_trait;
 use enco_core::*;
 use serde_json::{Map, Value, json};
@@ -39,26 +39,31 @@ impl Tool for ScheduleTool {
         let (name, description, effect, properties, required) = match self.kind {
             Kind::Create => (
                 "schedule_create",
-                "Create a reminder delivered to this Session at the given time, even if Enco restarts. at \
-                 must be a future RFC 3339 timestamp including a UTC offset.",
+                format!("Create a reminder delivered to this Session, even if Enco restarts. Give either \
+                    at (a future RFC 3339 timestamp with a UTC offset) or cron (minute hour day month weekday). \
+                    A cron rule follows the owner's time zone unless timezone names another IANA zone; \
+                    occurrences must be at least {} minutes apart. If Enco was not running, only the latest \
+                    missed occurrence is delivered.", limits::MIN_RECURRENCE_INTERVAL.as_secs() / 60),
                 Effect::SideEffect,
                 json!({
                     "at": { "type": "string" },
+                    "cron": { "type": "string" },
+                    "timezone": { "type": "string" },
                     "message": { "type": "string" },
                 }),
-                vec!["at", "message"],
+                vec!["message"],
             ),
             Kind::List => (
                 "schedule_list",
-                "List pending reminders addressed to this Session.",
+                "List active schedules addressed to this Session, including their rules and next occurrences.".into(),
                 Effect::ReadOnly,
                 json!({}),
                 vec![],
             ),
             Kind::Cancel => (
                 "schedule_cancel",
-                "Cancel a pending reminder by id. Returns false when it has already fired, was cancelled, \
-                 or does not exist.",
+                "Stop future occurrences of a schedule by id. Already delivered reminders are unaffected. \
+                 Returns false when it is done, cancelled, or absent.".into(),
                 Effect::SideEffect,
                 json!({ "id": { "type": "string" } }),
                 vec!["id"],
@@ -66,7 +71,7 @@ impl Tool for ScheduleTool {
         };
         ToolSpec {
             name: name.into(),
-            description: description.into(),
+            description,
             effect,
             input_schema: closed_object_schema(properties, &required),
         }
@@ -88,29 +93,47 @@ impl ScheduleTool {
     ) -> Result<Value, Failure> {
         match self.kind {
             Kind::Create => {
-                let due = DateTime::parse_from_rfc3339(text(&args, "at")?)
-                    .map_err(|e| invalid(format!("at must include a UTC offset: {e}")))?
-                    .to_utc();
-                let schedule = self
+                let rule = match (args.contains_key("at"), args.contains_key("cron")) {
+                    (true, false) => {
+                        if args.contains_key("timezone") {
+                            return Err(invalid("timezone only applies to cron"));
+                        }
+                        let at = DateTime::parse_from_rfc3339(text(&args, "at")?)
+                            .map_err(|e| invalid(format!("at must include a UTC offset: {e}")))?
+                            .to_utc();
+                        ScheduleRule::Once { at }
+                    }
+                    (false, true) => {
+                        let timezone = args
+                            .get("timezone")
+                            .map(|_| {
+                                text(&args, "timezone")?.parse::<Tz>().map_err(|e| {
+                                    invalid(format!("timezone must be an IANA name: {e}"))
+                                })
+                            })
+                            .transpose()?;
+                        ScheduleRule::Cron {
+                            expr: text(&args, "cron")?.into(),
+                            timezone,
+                        }
+                    }
+                    _ => return Err(invalid("give exactly one of at or cron")),
+                };
+                let scheduled = self
                     .schedules
-                    .create(session, due, text(&args, "message")?.into())
+                    .create(session, rule, text(&args, "message")?.into())
                     .await
                     .map_err(error)?;
-                Ok(json!({ "id": schedule.id, "due_at": schedule.due_at }))
+                Ok(scheduled.into_json())
             }
             Kind::List => {
                 let schedules = self.schedules.list(Some(session)).await.map_err(error)?;
-                let reminders: Vec<_> = schedules
-                    .into_iter()
-                    .map(|schedule| {
-                        json!({
-                            "id": schedule.id,
-                            "due_at": schedule.due_at,
-                            "message": schedule.message,
-                        })
-                    })
-                    .collect();
-                Ok(json!(reminders))
+                Ok(json!(
+                    schedules
+                        .into_iter()
+                        .map(Scheduled::into_json)
+                        .collect::<Vec<_>>()
+                ))
             }
             Kind::Cancel => {
                 let id = text(&args, "id")?
@@ -139,9 +162,11 @@ fn invalid(message: impl Into<String>) -> Failure {
 
 fn error(error: ScheduleError) -> Failure {
     let code = match error {
-        ScheduleError::InPast(_)
-        | ScheduleError::EmptyMessage
-        | ScheduleError::UnknownSession(_) => code::TOOL_INVALID_ARGUMENTS,
+        ScheduleError::EmptyMessage
+        | ScheduleError::UnknownSession(_)
+        | ScheduleError::InvalidCron(_)
+        | ScheduleError::NoOccurrenceAfter(_)
+        | ScheduleError::TooFrequent => code::TOOL_INVALID_ARGUMENTS,
         _ => code::TOOL_FAILED,
     };
     Failure {

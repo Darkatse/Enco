@@ -125,9 +125,7 @@ impl Memories {
     }
 
     pub async fn save(&self, text: String, pinned: bool) -> Result<Memory, MemoryError> {
-        self.authority
-            .save(text, pinned, self.clock.now().to_utc())
-            .await
+        self.authority.save(text, pinned, self.clock.now()).await
     }
 
     pub async fn update(
@@ -137,7 +135,7 @@ impl Memories {
         pinned: Option<bool>,
     ) -> Result<Option<Memory>, MemoryError> {
         self.authority
-            .update(id, text, pinned, self.clock.now().to_utc())
+            .update(id, text, pinned, self.clock.now())
             .await
     }
 

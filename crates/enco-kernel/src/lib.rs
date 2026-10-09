@@ -24,4 +24,4 @@ pub use limits::TRIAL_CALLS;
 pub use ports::*;
 pub use profile::*;
 pub use registry::*;
-pub use scheduler::{ScheduleError, Schedules};
+pub use scheduler::{ScheduleError, Scheduled, Schedules};

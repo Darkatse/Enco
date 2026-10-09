@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use enco_core::{DEFAULT_PROFILE, ProviderSettings};
+use enco_core::{DEFAULT_PROFILE, ProviderSettings, Tz};
 use enco_host::{DecisionEndpoint, EmbeddingEndpoint};
 use enco_kernel::{Budget, Endpoint, Interface, Profile, Use};
 use serde::Deserialize;
@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, path::Path};
 
 /// Resolved once at startup; routing and invocation share these same values.
 pub(crate) struct Config {
+    pub timezone: Tz,
     pub profiles: BTreeMap<String, Profile>,
     pub embedding: EmbeddingEndpoint,
     pub decision: Option<DecisionEndpoint>,
@@ -17,6 +18,7 @@ pub(crate) struct Config {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
+    timezone: Tz,
     endpoint: BTreeMap<String, EndpointConfig>,
     profile: BTreeMap<String, ProfileConfig>,
     embedding: EmbeddingConfig,
@@ -127,6 +129,7 @@ impl Config {
             );
         }
         Ok(Self {
+            timezone: raw.timezone,
             profiles,
             embedding: raw.embedding.resolve().context("[embedding]")?,
             decision: raw

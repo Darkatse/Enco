@@ -36,13 +36,14 @@ CREATE INDEX inbox_pending ON inbox(session_id, order_no) WHERE consumed_seq IS 
 CREATE TABLE schedules (
   id             TEXT PRIMARY KEY,
   session_id     TEXT NOT NULL REFERENCES sessions(id),
-  due_at         TEXT NOT NULL,
+  rule           TEXT NOT NULL,
   message        TEXT NOT NULL,
   created_at     TEXT NOT NULL,
-  state          TEXT NOT NULL CHECK (state IN ('pending', 'fired', 'cancelled')),
-  fired_event_id TEXT
+  state          TEXT NOT NULL CHECK (state IN ('active', 'done', 'cancelled')),
+  last_due       TEXT,
+  last_event_id  TEXT,
+  CHECK ((last_due IS NULL) = (last_event_id IS NULL))
 ) STRICT;
-CREATE INDEX schedules_pending ON schedules(due_at) WHERE state = 'pending';
 
 CREATE TABLE connections (
   key   TEXT PRIMARY KEY,

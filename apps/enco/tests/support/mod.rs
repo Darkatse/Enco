@@ -30,7 +30,9 @@ impl Daemon {
     pub fn config(server: &MockServer, plugin: &str) -> String {
         let base_url = server.uri();
         format!(
-            r#"[endpoint.chat]
+            r#"timezone = "UTC"
+
+[endpoint.chat]
 plugin = {plugin:?}
 base_url = {base_url:?}
 model = 'mock'

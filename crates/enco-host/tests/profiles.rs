@@ -62,7 +62,7 @@ async fn profile_changes_bind_at_round_boundaries_and_missing_profiles_remain_re
         entered: Notify::new(),
         resume: Notify::new(),
     });
-    let (kernel, _) = kernel_with(dir.path(), provider.clone(), configure).await;
+    let (kernel, _) = kernel_with(dir.path(), provider.clone(), Tz::UTC, configure).await;
     let main = kernel.open_session("main").await.unwrap();
     let other = kernel.open_session("other").await.unwrap();
     let mut rx = kernel.subscribe(main.id).unwrap();
@@ -205,7 +205,7 @@ async fn profile_changes_bind_at_round_boundaries_and_missing_profiles_remain_re
 async fn history_too_large_for_the_compaction_window_fails_only_when_the_reply_no_longer_fits() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new((0..10).map(|_| reply("reply")).collect());
-    let (kernel, _) = kernel_with(dir.path(), provider.clone(), |deps| {
+    let (kernel, _) = kernel_with(dir.path(), provider.clone(), Tz::UTC, |deps| {
         configure(deps);
         deps.profiles.get_mut("default").unwrap().compaction.budget = Budget {
             context_tokens: 100,

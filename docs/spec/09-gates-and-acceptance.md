@@ -85,7 +85,7 @@ complete: async func(settings: settings, request: request) -> result<completion,
 
 - `ScriptedProvider`：实现 `Provider` 与 `Embedding`。按队列返回预设的 `Completion` 或 `Failure`，并记录收到的每个 `ProviderRequest` 与 `ProviderSettings`；可以在某次调用处阻塞在 barrier 上，用于模拟崩溃。`embed` 是确定性的：把文本的字符二元组做特征哈希（feature hashing）得到固定维度的向量并归一化，因此字面相近的文本向量相近；可以切换为返回 `provider.network` 失败。
 - `ScriptedRuntime`：实现 `Runtime`。按制品的字节内容决定 `load` 的结果：预先登记的字节返回带 `ScriptedProvider` 的 `Loaded`（可以设定 probe 的结果、是否导出 embedding），其余返回 `LoadError`。健康门控的故障注入就是让某个代际的 `ScriptedProvider` 返回 `plugin.trap`，不需要真的构造会 trap 的组件。
-- `TestClock`：`Clock` 的实现，时刻与 UTC 偏移都可以设置。
+- `TestClock`：`Clock` 的实现，时刻可以设置。主人的时区由 `KernelConfig.timezone` 给出。
 - **端到端测试中的等待**：测试辅助中写一个最小的本地协议客户端，订阅 Session 并等待期望的条目（例如 `RunEnded`），外加总超时；不要用固定时长的 sleep 或轮询代替。
 - **进程内模拟 `kill -9`**：Kernel 和 Session actor 都在独立的 tokio runtime 内创建；在注入点阻塞后调用 `runtime.shutdown_background()`，用 Drop 通知确认执行中的 future 已被丢弃，之后才释放 Kernel 句柄，避免误走正常取消结算；然后在同一个数据库上启动新的 Kernel，检查恢复写入的条目。
 
@@ -93,7 +93,7 @@ complete: async func(settings: settings, request: request) -> result<completion,
 
 ## 4. 验收场景
 
-每个阶段的完成以下列场景为准。里程碑按实施顺序排列。P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。P1（可恢复替换，路线图）：M10 请求查看、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。P1 之后：M15 缓存友好的请求与时间标记、M16 按消息锚定的上下文、M17 决策接口与记忆的相关性过滤。"层"指主要在哪一层验证。
+每个阶段的完成以下列场景为准。里程碑按实施顺序排列。P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。P1（可恢复替换，路线图）：M10 请求查看、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。P1 之后：M15 缓存友好的请求与时间标记、M16 按消息锚定的上下文、M17 决策接口与记忆的相关性过滤、M18 周期定时与主人的时区。"层"指主要在哪一层验证。
 
 P1 与之后各里程碑的范围：
 
@@ -107,10 +107,11 @@ P1 与之后各里程碑的范围：
 | M15 | 引入按钟点的时间标记与 `TranscriptItem.received_at`（04 §2、§5）；当时的末尾上下文排列已由 M16 替换，当前规则统一见 05 §4 | — |
 | M16 | 05 §4：请求在最新条目处结束，不再追加末尾的上下文消息；输入前的说明（跨整点的时间、工作结局、召回的记忆）留在原位；composer 决定是否沿用上一份回复计划（`ComposeInput.previous_plan`）；`Candidate.standing`，内联消息记录 `sources`，inspect 返回原始计划；置顶记忆进 System 消息；Environment 给出时区；`Transcript.run_ends` 提供工作结局，文案由 composer 逐字记入计划（03 §1.8，04 §2） | 稳定性标注；按空闲时长开始新系列 |
 | M17 | 07：契约 0.2.1 新增 `decision` 与 `decision-plugin`，enco-wasm 的 `Decision` 适配器与返回契约，出厂插件 `typesafe`（§4.4、§5）；04 §2 的 `Decision` 端口；11 §4.2、§6 的 `Exports::decision` 与 `Interface::Decision`；08 §3、§4 的可选 `[decision]` 与第三个出厂身份；06 §5.1 的相关性过滤；`plugins/README.md` 与 `examples/` 同步 | OpenAI 的 `/v1/decisions`；`tool.gate` |
+| M18 | 03 §1.4、§1.5、§1.9、§3：`ScheduleRule`、`last`、`ScheduleState` 改为 Active / Done / Cancelled 并去掉 `ScheduleStateKind`、`Reminder.skipped`、`AttemptStarted.provider` 收窄为 `GenerationId`、Event 的叙述移出规范形态（回退通知由注册表写下）、`fire_schedule` 的前置条件、schema 升到 4；04 §2、§3、§5、§6.3、§10–§12：`Clock` 只返回 UTC、`TranscriptItem.event`、`KernelConfig.timezone`、`ComposeInput.timezone`、Scheduler 在内存中推出下一次触发并只补最近一次、`schedule_*` 的新参数与结果、两个常量；05 §4、§5：Environment 与时间标记按主人的时区、输入来源的说明；08 §1、§3、§4：必填的 `timezone`、`enco init` 检测本机时区、`enco schedules` 的显示；02 §3、§4：croner、chrono-tz、iana-time-zone；同步更新 `enco init` 的模板与 `examples/` 中的配置示例 | 定时租约与按 `(schedule, due_at)` 的 Inbox 唯一约束（P4）；修改已有的定时（取消后重建）；`at` 接受不带偏移的当地时间 |
 
 每个里程碑结束时系统都完整可用。M11 到 M13 之间的过渡形态（临时 profile）只存在于代码中，规格只描述最终形态。
 
-当前实现已到 M17，代码已完成，待主人从第一性原理审核。schema 版本为 3，旧库由 Agent 手动迁移或重建（03 §3.1）。
+当前实现已到 M18，代码已完成，待主人从第一性原理审核。schema 版本为 4，旧库由 Agent 按 03 §3.1 手动迁移或重建；A58 的真实早报留待 VPS 部署后验收。
 
 A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP 服务代替模型服务，另外核对了晋升、probe 拒绝、安全模式和下一个 Round 的规范消息。旧 schema 的库被拒绝启动，库本身不变。
 
@@ -121,7 +122,7 @@ A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP �
 | A3 | M2 | 一次工具调用后回复 | 端到端（与 A7 共用） | `fs_write` 真的写出文件；第二次 Provider 请求中包含对应的 Tool 消息；执行前预写由 A8 的崩溃恢复场景核对 |
 | A4 | M2 | 未披露的工具与非法参数 | 集成 | 调用不存在的工具 → `ToolCallSettled(Failed tool.unavailable)`，没有 `ToolCallStarted`；参数不是对象 → `tool.invalid_arguments`；随后的 Round 正常进行 |
 | A5 | M2 | Provider 重试 | 集成 | 一次可重试失败后成功：两对 Attempt，同一个 `plan` 哈希；不可重试失败：`RunEnded(Failed)` |
-| A6 | M3 | 端到端对话 | 端到端 | `enco send` 得到预设回复；订阅收到的条目与 `enco log` 一致；`AttemptStarted.provider` 是 `CodeRef::Generation`，其编号在 `enco plugin status` 中是该插件的出厂代际（M11 起；之前为 `CodeRef::Wasm` 加 blob 中的制品） |
+| A6 | M3 | 端到端对话 | 端到端 | `enco send` 得到预设回复；订阅收到的条目与 `enco log` 一致；`AttemptStarted.provider` 是 `GenerationId`，其编号在 `enco plugin status` 中是该插件的出厂代际 |
 | A7 | M3 | 端到端工具调用 | 端到端 | wiremock 先返回 `fs_write` 调用、再返回文本：文件被写出；第二次 HTTP 请求体中的 `tool_call_id` 与第一次响应中的 id 一致 |
 | A8 | M4 | 工具执行中 `kill -9` | 端到端 | wiremock 返回 `shell_exec`，命令为 `echo run >> marker.txt; sleep 60`；等 `marker.txt` 出现一行后 SIGKILL 守护进程并重启：`ToolCallSettled(Unknown interrupted)`、`RoundEnded(Interrupted)`、`RunEnded(Interrupted)`；`marker.txt` 仍然只有一行；再发一条消息，新的 Run 正常完成 |
 | A9 | M4 | 模型请求中 `kill -9` | 集成 | Provider 阻塞时模拟崩溃；重启后出现 `AttemptSettled(Failed interrupted)`，没有任何 `ToolCallStarted` |
@@ -141,7 +142,7 @@ A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP �
 | A23 | M8 | 单实例 | 端到端 | 守护进程运行时，第二次 `enco serve` 报错退出，不打开任何存储，第一个进程照常服务；第一个进程收到 SIGTERM 之后、退出之前，第二次启动同样被拒绝，既不打开存储，也不删除 socket 文件（用确定性协调拖住关闭，不依赖 sleep）；`kill -9` 之后重新启动成功（与 A8 共用） |
 | A24 | M8 | 分页读取 | 集成 | 每行与说明行合计都能放入预算、总量超过预算的文件：结果不超过预算，只含完整的行，说明行给出 `continue at offset`，按它再读得到其余内容，`ToolCallSettled.full` 为空；单行加说明行也放不下时：返回这一行，由内核截断，`full` 指向 blob，说明行位于预览开头，继续位置仍然可见 |
 | A25 | M8 | 工具结果持久化 | 集成（与 A2、A24 共用） | 执行工具并重启：结局与 `content/full` 保持不变，模型请求中的工具结果与重启前相同；大结果的全文从 blob 读取。原始返回值不进入 Log 由 `Settlement` 类型表达 |
-| A26 | M8 | 本地时间 | 集成 | `TestClock` 在两个 Round 之间改变 UTC 偏移：后一个计划中 Environment 的时区与时间标记使用新偏移 |
+| A26 | M8 | 本地时间 | 集成 | 主人的时区为 `America/New_York`，`TestClock` 在两个 Round 之间跨过夏令时切换：后一个计划中 Environment 显示切换后的偏移；切换前后的两条输入，时间标记各自按接收时的偏移渲染 |
 | A27 | M9 | 目录布局 | 端到端（与已有场景共用） | `enco init` 之后运行时文件只出现在 `.data/`，`.gitignore` 忽略 `.data/` 与 `workspace/`；根目录的 `AGENTS.md` 出现在计划的 Standing instructions 一节 |
 | A28 | M9 | Telegram 入站与命令 | 集成 | wiremock 模拟 Bot API：主人的私聊文本成为 `main` 中来源为 `Channel` 的 Event；其他用户、群聊与非文本更新只推进 offset；`/session work` 创建并切换，之后的消息进入 `work`；命令不产生 Provider 请求；`/cancel` 取消正在进行的 Run |
 | A29 | M9 | 入站不丢不重 | 集成 | 一条更新提交之后停止并重启：下一次 `getUpdates` 的 offset 为 `update_id + 1`，Inbox 中这条消息恰好一条；在提交之前停止：重启后同一条更新被再次取回，并恰好接纳一次 |
@@ -161,12 +162,19 @@ A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP �
 | A43 | M14 | 迟到的回报 | 集成 | 对已经不是活跃代际的编号回报 `Failed(plugin.trap)`：注册表不变；对 `healthy` 代际回报同样不变 |
 | A44 | M14 | 安全模式 | 集成 | 部署新代际后开启安全模式：`AttemptStarted.provider` 是出厂代际；关闭后回到活跃代际 |
 | A45 | M14 | 真实插件 | 手动一次 | 复制出厂插件源码到 `~/.enco/plugins/`，改一处可观察的行为（例如请求头），构建、`enco plugin deploy`，在 `enco chat` 中确认生效；再改成一个会 panic 的版本部署：第一次对话自动回退并收到回退提示，`enco plugin status` 显示失败的代际与当前活跃代际；`enco plugin rollback` 回到出厂代际 |
-| A46 | M16 | 只追加 | 集成 | `TestClock` 在 Round 之间前进，相邻两次请求召回的记忆不同：同一 Run 的工具循环中、下一个 Run 中、重启 Kernel 之后，后一次回复请求都以前一次回复请求的全部消息开头，最后一条消息是最新的 Transcript 条目；上一份计划被清理后仍可继续，省略信息记录开始新系列的原因；修改常驻指令、置顶记忆变化、压缩或改变 UTC 偏移之后，System 消息随之改变，从头渲染 |
-| A47 | M15 | 时间标记 | 集成 | `TestClock`：第一条输入带标记；同一钟点内的下一条不带；13:59 与 14:01 的两条中后一条带；相隔两小时的带；压缩之后可见的第一条输入带；压缩请求中同一条输入前有同样的标记；改变 UTC 偏移后标记按新偏移渲染 |
+| A46 | M16 | 只追加 | 集成 | `TestClock` 在 Round 之间前进，相邻两次请求召回的记忆不同：同一 Run 的工具循环中、下一个 Run 中、重启 Kernel 之后，后一次回复请求都以前一次回复请求的全部消息开头，最后一条消息是最新的 Transcript 条目；上一份计划被清理后仍可继续，省略信息记录开始新系列的原因；修改常驻指令、置顶记忆变化、压缩或主人时区的偏移改变（夏令时切换）之后，System 消息随之改变，从头渲染 |
+| A47 | M15 | 时间标记 | 集成 | `TestClock`：第一条输入带标记；同一钟点内的下一条不带；13:59 与 14:01 的两条中后一条带；相隔两小时的带；压缩之后可见的第一条输入带；压缩请求中同一条输入前有同样的标记；跨过夏令时切换后，每条输入的标记按它接收时的偏移渲染 |
 | A48 | M16 | 记忆的位置 | 集成 | 置顶记忆在 System 消息中；与某条消息字面相近的非置顶记忆出现在这条消息之前的说明里；之后的请求中这条说明原样保留，同一条记忆在本系列中不再重复；`memory_update` 更正后在下一条输入再次召回时作为新的一行出现，改回原值也再次出现；inspect 中该行所属消息的 sources 与实际使用的候选一致；压缩后从头渲染时，仅有新输入的 Round 纳入本轮召回候选 |
 | A49 | M16 | 工作中断 | 集成 | Run 以失败、取消、步数用尽或中断结束后，composer 在其后第一条输入的说明中写入结局，失败时含错误码与消息；一次接纳多条输入时不重复；旧计划原样保留说明，从头渲染时按 Log 位置还原归属；压缩与回复共享结局说明的渲染；inspect 直接读取已冻结的文字 |
 | A50 | M17 | 相关性过滤 | 端到端 | wiremock 模拟 `/embeddings` 与 `/systemone`，召回两条非置顶记忆，`/systemone` 判其中一条无关：模型请求中只有另一条，`enco inspect` 的计划中有被滤掉那条的省略原因；`/systemone` 返回 500：两条都在请求中，计划中有一条 `memory:relevance` 省略 |
 | A51 | M17 | 兼容与真实服务 | 手动一次 | 把 M16 构建的 0.2.0 出厂制品部署到新宿主：加载、probe 与调用照常；配置真实的 TypeSafe 服务，在 `enco chat` 中对比过滤前后的召回，据此确认 `MEMORY_RELEVANCE_THRESHOLD` |
+| A52 | M18 | 周期定时 | 集成 | 主人的时区为 `America/New_York`，`TestClock` 前进：`0 8 * * *` 在当地 08:00 恰好投递一次 `Reminder`，`due_at` 是触发时刻，`skipped` 为 0，`schedule_list` 的 `next_due` 是次日当地 08:00；重启 Kernel 后不重复投递，并按时投递下一次；一次性提醒投递后状态为 `done`，不再列出 |
+| A53 | M18 | 只补最近一次 | 集成、store | 停机跨过三次触发后启动：恰好一条 `Reminder`，`due_at` 是最近一次的触发时刻，`skipped` 为 2；`fire_schedule` 前移游标与投递进 Inbox 在同一事务中，任一写入失败时两者都不提交，所以提交前崩溃等于这次触发没有发生 |
+| A54 | M18 | 夏令时 | 集成（与 A52、A26 共用） | `0 8 * * *` 跨过夏令时切换仍按当地 08:00 调度；重复小时内的输入按各自偏移显示。空档与重叠的 cron 求值规则沿用 croner（04 §10.1） |
+| A55 | M18 | 跟随与固定 | 集成 | 主人的时区从 `America/New_York` 改为 `America/Los_Angeles` 后重启：未指定 `timezone` 的定时按洛杉矶时间触发，指定了 `America/New_York` 的不变；Environment 显示新时区，新计划中此前输入的接收时间与提醒的触发时刻按新时区叙述；旧计划原样回放 |
+| A56 | M18 | 创建校验与取消 | 集成 | 无法解析的 cron、未知的时区名、永不触发的规则（`0 0 30 2 *`）、间隔小于 `MIN_RECURRENCE_INTERVAL` 的规则（`* 8 * * *`）、同时给出或都不给 `at` 与 `cron`：各自返回 `tool.invalid_arguments` 并说明原因，schedules 中没有新行，之后仍能成功创建；`schedule_cancel` 之后不再触发，`schedule_list` 与 `enco schedules` 不再列出，已进入 Inbox 的那次照常处理 |
+| A57 | M18 | 配置与旧库 | 手动一次 | 缺少 `timezone` 或名称无效：拒绝启动并指出该项；`enco init` 的模板含检测到的时区并通过校验；schema 为 3 的旧库被拒绝启动，库本身不变 |
+| A58 | M18 | 真实早报 | 手动一次 | 在 VPS 上配置 `timezone` 并手动迁移库；在 Telegram 的专用 Session 中让 Agent 创建每日早报（经命令行工具收邮件、读新闻），次日早上按时收到；停掉守护进程跨过触发时刻再启动，收到一次补发 |
 
 A51 于 2026-10-08 核对：M16 的 OpenAI-Compatible 与 DeepSeek 制品均经新宿主部署、probe 与实际调用通过，调用记录指向部署的旧制品代际。真实 Jev 经守护进程的聊天请求路径判断中文记忆：饮品偏好保留，编辑器偏好被省略（p=0.05），阈值保持 0.5。
 

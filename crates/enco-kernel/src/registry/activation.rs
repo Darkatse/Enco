@@ -168,8 +168,11 @@ impl Registry {
                     id: EventId::new(),
                     session,
                     source: EventSource::Registry,
-                    body: EventBody::GenerationRolledBack(rollback.clone()),
-                    received_at: self.clock.now().to_utc(),
+                    body: EventBody::GenerationRolledBack {
+                        rollback: rollback.clone(),
+                        text: notice(&rollback),
+                    },
+                    received_at: self.clock.now(),
                 });
                 (Some(rollback), event)
             }
@@ -208,4 +211,16 @@ fn load_failure(error: RegistryError) -> Result<Failure, RegistryError> {
         }
         _ => Err(error),
     }
+}
+
+/// Written once when the rollback commits; replay reads the recorded text.
+fn notice(rollback: &RolledBack) -> String {
+    let target = match rollback.to {
+        Some(to) => format!("now using generation {to}"),
+        None => "no generation is active".into(),
+    };
+    format!(
+        "[plugin rolled back] {}: generation {} failed ({}: {}); {target}",
+        rollback.plugin, rollback.from, rollback.failure.code, rollback.failure.message,
+    )
 }

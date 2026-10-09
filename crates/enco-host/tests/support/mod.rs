@@ -218,12 +218,13 @@ pub fn calls(calls: Vec<ToolCall>) -> Result<Completion, Failure> {
 }
 
 pub async fn kernel(root: &Path, provider: Arc<dyn Provider>) -> (Kernel, Arc<SqliteStore>) {
-    kernel_with(root, provider, |_| {}).await
+    kernel_with(root, provider, Tz::UTC, |_| {}).await
 }
 
 pub async fn kernel_with(
     root: &Path,
     provider: Arc<dyn Provider>,
+    timezone: Tz,
     configure: impl FnOnce(&mut KernelDeps),
 ) -> (Kernel, Arc<SqliteStore>) {
     let (registry, store) = registry(
@@ -256,7 +257,7 @@ pub async fn kernel_with(
     };
     deps.tools.extend(plugin_tools(registry, workspace));
     configure(&mut deps);
-    let config = KernelConfig::new(24).unwrap();
+    let config = KernelConfig::new(24, timezone).unwrap();
     (Kernel::start(deps, config).await.unwrap(), store)
 }
 

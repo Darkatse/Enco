@@ -185,3 +185,58 @@ async fn blob_reads_reject_content_that_no_longer_matches_its_address() {
         Err(StoreError::Blob(_))
     ));
 }
+
+#[tokio::test]
+async fn schedule_cursor_and_inbox_delivery_commit_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(support::store_paths(dir.path()))
+        .await
+        .unwrap();
+    let now: DateTime<Utc> = "2026-10-09T00:00:00Z".parse().unwrap();
+    let session = store.ensure_session("main", now).await.unwrap();
+    let schedule = Schedule {
+        id: ScheduleId::new(),
+        session: session.id,
+        rule: ScheduleRule::Cron {
+            expr: "0 8 * * *".into(),
+            timezone: None,
+        },
+        message: "briefing".into(),
+        created_at: now,
+        state: ScheduleState::Active,
+        last: None,
+    };
+    store.insert_schedule(&schedule).await.unwrap();
+    let mut event = Event {
+        id: EventId::new(),
+        session: session.id,
+        source: EventSource::Scheduler,
+        body: EventBody::Reminder {
+            schedule: schedule.id,
+            due_at: "2026-10-09T08:00:00Z".parse().unwrap(),
+            skipped: 0,
+            text: schedule.message.clone(),
+        },
+        received_at: now,
+    };
+    store
+        .accept(std::slice::from_ref(&event), None)
+        .await
+        .unwrap();
+    // A duplicate Inbox ID fails after the cursor update; neither write may commit alone.
+    assert!(store.fire_schedule(None, false, &event).await.is_err());
+    assert_eq!(store.schedules(None).await.unwrap(), vec![schedule.clone()]);
+    event.id = EventId::new();
+    store.fire_schedule(None, false, &event).await.unwrap();
+    let last = store.schedules(None).await.unwrap()[0].last.unwrap();
+    assert_eq!(last.event, event.id);
+    let stale = Event {
+        id: EventId::new(),
+        ..event.clone()
+    };
+    assert!(matches!(
+        store.fire_schedule(None, false, &stale).await,
+        Err(StoreError::ScheduleNotActive(_))
+    ));
+    assert_eq!(store.pending(session.id).await.unwrap().len(), 2);
+}

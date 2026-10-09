@@ -259,6 +259,7 @@ impl SessionActor {
         let previous_plan = self.previous_plan(&mut context.omitted).await?;
         Ok(ComposeInput {
             now,
+            timezone: self.deps.config.timezone,
             session: self.session.clone(),
             transcript: crate::transcript::project(&self.entries),
             previous_plan,

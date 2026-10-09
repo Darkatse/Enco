@@ -88,7 +88,7 @@ impl State {
                     config: serde_json::json!({}),
                     origin: Origin::Factory,
                     status: GenerationStatus::Healthy,
-                    created_at: deps.clock.now().to_utc(),
+                    created_at: deps.clock.now(),
                 };
                 let id = deps.store.insert_generation(&record, activate).await?;
                 self.generations.insert(id, record.numbered(id));

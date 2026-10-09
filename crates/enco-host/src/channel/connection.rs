@@ -269,7 +269,7 @@ impl Connection {
                     sender,
                 },
                 body: EventBody::UserMessage { text: text.clone() },
-                received_at: self.clock.now().to_utc(),
+                received_at: self.clock.now(),
             }]
         } else {
             Vec::new()
@@ -408,7 +408,7 @@ impl Connection {
             Some(DeliverySettlement {
                 delivery,
                 outcome,
-                at: self.clock.now().to_utc(),
+                at: self.clock.now(),
             }),
         )
         .await

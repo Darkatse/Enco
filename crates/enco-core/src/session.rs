@@ -1,4 +1,4 @@
-use crate::{DateTime, Epoch, EventId, NodeId, ScheduleId, SessionId, Utc};
+use crate::{DateTime, Epoch, EventId, NodeId, ScheduleId, SessionId, Tz, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Profile selected when a Session is created; every node configuration must define it.
@@ -28,34 +28,60 @@ pub struct Binding {
     pub epoch: Epoch,
 }
 
-/// A durable one-shot reminder delivered to a Session Inbox.
+/// A durable sequence of reminders delivered to a Session Inbox.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Schedule {
-    /// Identity used to cancel this reminder and link its delivered Event.
+    /// Identity used to cancel this schedule and link its delivered Events.
     pub id: ScheduleId,
     /// Destination Session for the reminder Event.
     pub session: SessionId,
-    /// Scheduled delivery time in UTC.
-    pub due_at: DateTime<Utc>,
+    /// Rule from which future occurrences are derived.
+    pub rule: ScheduleRule,
     /// Reminder text delivered when due.
     pub message: String,
     /// Creation time in UTC.
     pub created_at: DateTime<Utc>,
-    /// Current reminder delivery state.
+    /// Current schedule lifetime state.
     pub state: ScheduleState,
+    /// Most recent occurrence atomically accepted into the Inbox.
+    pub last: Option<Occurrence>,
 }
 
-/// Reminder delivery state; firing and Inbox acceptance are atomic.
+/// One instant or a recurring pattern interpreted in local time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ScheduleState {
-    /// Not fired or cancelled.
-    Pending,
-    /// Accepted into the target Inbox.
-    Fired {
-        /// ID of the reminder Event atomically accepted into the destination Inbox.
-        event: EventId,
+pub enum ScheduleRule {
+    /// A single future instant.
+    Once {
+        /// Planned delivery time in UTC.
+        at: DateTime<Utc>,
     },
-    /// Cancelled before delivery.
+    /// A five-field cron expression (minute, hour, day, month, weekday).
+    Cron {
+        /// Pattern as provided by the caller.
+        expr: String,
+        /// IANA time zone; absent means follow the owner's configured zone.
+        timezone: Option<Tz>,
+    },
+}
+
+/// Last delivered occurrence; the next one is derived rather than stored.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Occurrence {
+    /// Planned time, independent of when the scheduler actually delivered it.
+    pub due_at: DateTime<Utc>,
+    /// Event accepted into the destination Inbox.
+    pub event: EventId,
+}
+
+/// Schedule lifetime; firing and Inbox acceptance are atomic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleState {
+    /// Future occurrences may be delivered.
+    Active,
+    /// The last occurrence has been delivered.
+    Done,
+    /// Future occurrences have been cancelled.
     Cancelled,
 }

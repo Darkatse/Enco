@@ -55,11 +55,11 @@ enco-core  ←  enco-kernel  ←  enco-host
 
 | crate | 允许依赖的工作区 crate | 允许的外部依赖 |
 |---|---|---|
-| enco-core | 无 | serde、serde_json、ulid、blake3、chrono、thiserror |
-| enco-kernel | enco-core | tokio（rt、sync、time、macros）、tokio-util、async-trait、serde、serde_json、ulid、thiserror、tracing、arc-swap |
+| enco-core | 无 | serde、serde_json、ulid、blake3、chrono、chrono-tz（`ScheduleRule` 与主人的时区，03 §1.9）、thiserror |
+| enco-kernel | enco-core | tokio（rt、sync、time、macros）、tokio-util、async-trait、serde、serde_json、ulid、thiserror、tracing、arc-swap、croner（周期定时，04 §10） |
 | enco-host | enco-core、enco-kernel | rusqlite（bundled）、triviumdb、reqwest（Telegram，10）、tokio（rt、fs、process、io-util、time、sync）、tokio-util、async-trait、serde、serde_json、toml（plugins.lock，03 §3.5）、chrono、ulid、blake3、thiserror、tracing |
 | enco-wasm | enco-core、enco-kernel | wasmtime、wasmtime-wasi、reqwest、tokio、async-trait、serde_json、ulid、thiserror、tracing |
-| apps/enco | 以上全部 | clap、anyhow、tokio（full）、tokio-util、serde、serde_json、toml、tracing、tracing-subscriber、dirs、ulid；dev：wiremock、tempfile |
+| apps/enco | 以上全部 | clap、anyhow、tokio（full）、tokio-util、serde、serde_json、toml、tracing、tracing-subscriber、dirs、ulid、iana-time-zone（`enco init` 检测本机时区，08 §1）；dev：wiremock、tempfile |
 | xtask | 无 | anyhow、cargo_metadata、wit-parser、serde_json |
 
 enco-host 与 enco-wasm 互不依赖。`xtask boundaries` 按这张表检查（09 §1）。
@@ -80,6 +80,9 @@ anyhow = "1.0.104"
 ulid = { version = "3.0.0", features = ["serde"] }
 blake3 = "1.8.7"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
+chrono-tz = { version = "0.10.4", features = ["serde"] }   # IANA 时区数据编译进二进制
+croner = "4.0.1"                         # 默认 feature 即 chrono；夏令时规则见 04 §10.1
+iana-time-zone = "0.1.65"                # 已是 chrono 的间接依赖
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 triviumdb = "=0.8.8"                     # 0.x，精确锁定；只作记忆的派生索引（06 §3）
 reqwest = "0.13.5"                       # 默认使用 rustls
@@ -136,7 +139,7 @@ capability.rs  CapabilityId、CodeRef
 generation.rs  GenerationRecord、Origin、GenerationStatus
 provider.rs    ProviderSettings
 plan.rs        ContextPlan、PlanItem、Omission、Contribution、Candidate、CandidateKind
-session.rs     SessionRecord、Binding、Schedule、ScheduleState
+session.rs     SessionRecord、Binding、Schedule、ScheduleRule、ScheduleState、Occurrence
 memory.rs      Memory
 ```
 
@@ -168,7 +171,7 @@ transcript.rs  Log → Transcript 的投影
 plan.rs        ContextPlan 的校验（validate）与解析（resolve）
 inspect.rs     Kernel::inspect（04 §14）
 recovery.rs    启动恢复（纯函数）
-scheduler.rs   Scheduler actor、Schedules 句柄与 ScheduleError
+scheduler.rs   Scheduler actor、Schedules 句柄、Scheduled 视图与 ScheduleError
 builtin.rs     内核内置工具：schedule_create / schedule_list / schedule_cancel
 limits.rs      常量
 ```
@@ -244,6 +247,6 @@ chat.rs          enco chat：交互与渲染
 - **日志**：使用 `tracing`。span 为 `session{id}` → `run{id}` → `round{id}`。生命周期事件用 info，细节用 debug。不在任何级别记录 API key；完整的提示词只在 trace 级别记录。
 - **文档注释**：enco-core 与 enco-kernel 的公开条目必须有文档。写含义、不变式和单位，不要复述名字（"Returns the id" 这样的注释没有价值）。
 - **Serde**：枚举使用 `#[serde(rename_all = "snake_case")]`；带数据的枚举使用内部标签 `#[serde(tag = "kind")]`。配置与协议输入使用 `deny_unknown_fields`；Log 条目不使用（新增的可选字段对旧的读取者无害）。
-- **时间**：存储与传输一律使用 `DateTime<Utc>`，序列化为带毫秒的 RFC 3339。
+- **时间**：通用时间戳、调度计算与存储游标使用 `DateTime<Utc>`，SQLite 时刻列序列化为带毫秒的 RFC 3339 UTC。面向模型的时间写法见 05 §4.3。
 - **ID**：newtype + `#[serde(transparent)]`，`Display` 输出 ULID 字符串。
 - **测试位置**：纯函数的单元测试写在模块内；内核与宿主的集成测试放在 `crates/enco-host/tests/`；端到端测试放在 `apps/enco/tests/`（09 §3）。

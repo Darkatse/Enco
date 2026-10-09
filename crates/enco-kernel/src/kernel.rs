@@ -31,27 +31,32 @@ pub struct KernelDeps {
     pub clock: Arc<dyn Clock>,
 }
 
-/// Execution limits validated before starting any owner.
+/// Run limit and owner time zone, validated before starting any owner.
 #[derive(Clone)]
 pub struct KernelConfig {
     /// Maximum Rounds in one activation.
     pub(crate) max_rounds_per_run: u32,
+    /// Owner's local-time interpretation, independent of the node's system zone.
+    pub(crate) timezone: Tz,
 }
 
 impl KernelConfig {
     /// Validate the Run limit before any owner or persistent resource is started.
-    pub fn new(max_rounds_per_run: u32) -> Result<Self, KernelError> {
+    pub fn new(max_rounds_per_run: u32, timezone: Tz) -> Result<Self, KernelError> {
         if max_rounds_per_run == 0 {
             return Err(KernelError::Config("max_rounds must be positive".into()));
         }
-        Ok(Self { max_rounds_per_run })
+        Ok(Self {
+            max_rounds_per_run,
+            timezone,
+        })
     }
 }
 
 /// Single-node execution owner. Sessions serialize their own Log writes.
 pub struct Kernel {
     schedules: Schedules,
-    scheduler: Mutex<Option<tokio::task::JoinHandle<Result<(), ScheduleError>>>>,
+    scheduler: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) deps: Arc<SessionDeps>,
     pub(crate) sessions: Arc<Mutex<HashMap<SessionId, Arc<SessionHandle>>>>,
 }
@@ -69,6 +74,8 @@ pub struct Status {
     pub profiles: Vec<String>,
     /// State of every registered Session actor.
     pub sessions: Vec<SessionStatus>,
+    /// Failure that stopped the Scheduler, if any.
+    pub scheduler_stopped: Option<String>,
 }
 
 /// Live execution status, separate from durable Session facts.
@@ -88,7 +95,7 @@ pub enum KernelError {
     /// A durable operation failed.
     #[error(transparent)]
     Store(#[from] StoreError),
-    /// The reminder owner failed.
+    /// A schedule command failed.
     #[error(transparent)]
     Schedule(#[from] ScheduleError),
     /// A registry operation failed.
@@ -155,6 +162,7 @@ impl Kernel {
         *lock(&kernel.scheduler) = Some(scheduler.start(
             kernel.deps.store.clone(),
             kernel.deps.clock.clone(),
+            kernel.deps.config.timezone,
             kernel.sessions.clone(),
             kernel.deps.shutdown.clone(),
         ));
@@ -188,7 +196,7 @@ impl Kernel {
         let session = self
             .deps
             .store
-            .ensure_session(name, self.deps.clock.now().to_utc())
+            .ensure_session(name, self.deps.clock.now())
             .await?;
         self.ensure_actor(session.clone())?;
         Ok(session)
@@ -208,7 +216,7 @@ impl Kernel {
                     session,
                     source: EventSource::Cli,
                     body: EventBody::UserMessage { text },
-                    received_at: self.deps.clock.now().to_utc(),
+                    received_at: self.deps.clock.now(),
                 }],
                 None,
             )
@@ -302,6 +310,7 @@ impl Kernel {
             composer: self.deps.snapshot.composer.code(),
             profiles: self.deps.profiles.keys().cloned().collect(),
             sessions,
+            scheduler_stopped: self.schedules.stopped(),
         })
     }
 
@@ -324,7 +333,7 @@ impl Kernel {
         &self.deps.registry
     }
 
-    /// Commands to the single reminder owner, shared by CLI and model tools.
+    /// Commands to the Scheduler, shared by CLI and model tools.
     pub fn schedules(&self) -> Schedules {
         self.schedules.clone()
     }
@@ -347,14 +356,10 @@ impl Kernel {
             }
         }
         let scheduler = lock(&self.scheduler).take();
-        if let Some(task) = scheduler {
-            match task.await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => failure = Some(error.into()),
-                Err(error) => {
-                    failure = Some(KernelError::TaskFailed(format!("Scheduler: {error}")))
-                }
-            }
+        if let Some(task) = scheduler
+            && let Err(error) = task.await
+        {
+            failure = Some(KernelError::TaskFailed(format!("Scheduler: {error}")));
         }
         match failure {
             Some(error) => Err(error),

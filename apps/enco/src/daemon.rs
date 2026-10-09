@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use enco_core::*;
-use enco_kernel::{Accepted, Kernel, KernelError};
+use enco_kernel::{Accepted, Kernel, KernelError, Scheduled};
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
 use tokio::{
@@ -263,6 +263,9 @@ async fn process(
                 .list(None)
                 .await
                 .map_err(KernelError::from)?
+                .into_iter()
+                .map(Scheduled::into_json)
+                .collect::<Vec<_>>()
         ),
         Command::CancelSchedule { schedule_id } => {
             let cancelled = kernel

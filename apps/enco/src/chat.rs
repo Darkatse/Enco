@@ -60,11 +60,13 @@ fn render(entry: Entry, purposes: &mut HashMap<AttemptId, AttemptPurpose>, safe_
                     ..
                 },
         } => println!("⏰ {text}"),
-        EntryBody::EventConsumed { event }
-            if matches!(event.body, EventBody::GenerationRolledBack(_)) =>
-        {
-            eprintln!("! {}", event.canonical_message().joined_text());
-        }
+        EntryBody::EventConsumed {
+            event:
+                Event {
+                    body: EventBody::GenerationRolledBack { text, .. },
+                    ..
+                },
+        } => eprintln!("! {text}"),
         EntryBody::RoundStarted {
             safe_mode: true, ..
         } if !*safe_noted => {

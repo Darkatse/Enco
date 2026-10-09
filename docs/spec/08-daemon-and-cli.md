@@ -6,15 +6,15 @@
 
 | 命令 | 作用 |
 |---|---|
-| `enco init` | 创建 `ENCO_HOME`、`.data/`、工作区目录、`.gitignore` 与配置模板（已存在的文件不覆盖），打印下一步 |
+| `enco init` | 创建 `ENCO_HOME`、`.data/`、工作区目录、`.gitignore` 与配置模板（已存在的文件不覆盖），打印下一步。模板的 `timezone` 填入检测到的本机 IANA 时区；检测不到时这一行写成注释，下一步提示中要求填写 |
 | `enco serve` | 在前台运行守护进程 |
 | `enco chat [--session <name>]` | 交互式对话，默认 Session 为 `main` |
 | `enco send [--session <name>] <text>` | 发送一条消息后退出，不等待回复 |
-| `enco status` | 节点、安全模式、代码版本、各 Session 状态 |
+| `enco status` | 节点、安全模式、代码版本、各 Session 状态，以及 Scheduler 停止的原因（`scheduler_stopped`） |
 | `enco sessions` | 列出 Session |
 | `enco log [--session <name>]` | 输出 Session 的全部条目 |
 | `enco safe-mode <on\|off>` | 切换安全模式（下一个 Round 生效） |
-| `enco schedules [--cancel <id>]` | 列出待触发的提醒，或取消一个 |
+| `enco schedules [--cancel <id>]` | 列出 Active 的定时（规则、下一次触发与最近一次触发），或取消一个 |
 | `enco memory [--forget <id>]` | 列出全部记忆（标出置顶与尚未进入索引的），或遗忘一条 |
 | `enco cancel [--session <name>]` | 取消正在进行的 Run |
 | `enco inspect [--session <name>] [--attempt <id>]` | 输出一次 Attempt 实际发出的请求（04 §14），默认最近一次 |
@@ -56,6 +56,8 @@ $ENCO_HOME/            主人的意图；P2 起是一个 git 仓库（架构文�
 `$ENCO_HOME/config.toml`，结构体全部 `#[serde(deny_unknown_fields)]`：
 
 ```toml
+timezone = "America/New_York"     # 必填；主人的时区（IANA 名称）。时间显示与跟随型周期定时都用它（04 §10、05 §4）
+
 [endpoint.chat]                   # 至少一个；名字任取（12 §2）
 plugin = "deepseek"               # 插件名，须有活跃代际并导出 completion（11 §6）
 base_url = "https://api.deepseek.com"
@@ -103,6 +105,7 @@ api_base = "https://api.telegram.org"   # 可选
 ```
 
 - 配置文件不存在：报错并提示运行 `enco init`。
+- 缺少 `timezone` 或它不是有效的 IANA 名称：报错并拒绝启动，提示补上这一行，不回退到节点的系统时区（架构文档 §3.7）。
 - 缺少 `[profile.default]` 或 `[embedding]`，profile 引用了不存在的 endpoint，endpoint 的窗口或输出上限不合法：报错并拒绝启动。插件名是否存在、是否导出所需接口，由注册表启动时检查（11 §6）。
 - 给出了 `api_key_env` 但该环境变量未设置：报错并拒绝启动。API key 只从环境变量读取，不写进配置文件，读出后放在内存中的 `Endpoint.api_key`（12 §3）。`[telegram]` 的 `token_env` 同理。
 - 修改配置要重启守护进程。
@@ -113,7 +116,7 @@ api_base = "https://api.telegram.org"   # 可选
 ```text
 paths  = Paths::from_env()
 config = Config::load(paths.config())                               // profiles、embedding 与 decision endpoint、run、telegram 都已校验（§3）
-kernel_config = KernelConfig::new(config.run.max_rounds)?           // 在打开任何资源之前失败
+kernel_config = KernelConfig::new(config.run.max_rounds, config.timezone)?   // 在打开任何资源之前失败
 确保 workspace/ 存在
 clock  = Arc::new(SystemClock)
 store  = SqliteStore::open(StorePaths { db: paths.db(), blobs: paths.blobs(), artifacts: paths.artifacts(), plugins_lock: paths.plugins_lock() })
@@ -235,7 +238,7 @@ pub enum ServerMessage {
 | `sessions` | `[SessionRecord]` |
 | `log` | `[Entry]` |
 | `safe_mode` | `{ "enabled": bool }` |
-| `schedules` | `[Schedule]`（仅 Pending） |
+| `schedules` | 与 `schedule_list` 共用的查询视图（04 §10–§11），列出所有 Session 的 Active 定时；时刻按各定时的生效时区显示 |
 | `cancel_schedule` | `{ "cancelled": bool }` |
 | `memories` | `MemoryList`（06 §7） |
 | `forget_memory` | `{ "forgotten": bool }` |

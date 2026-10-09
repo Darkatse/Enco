@@ -12,7 +12,7 @@ use support::*;
 use wiremock::{Mock, MockServer, matchers::path};
 
 #[tokio::test]
-async fn model_created_reminders_are_listed_and_cancelled_through_the_cli() {
+async fn model_created_schedules_can_be_listed_and_cancelled_through_the_cli() {
     let server = MockServer::start().await;
     embeddings(&server).await;
     Mock::given(path("/chat/completions"))
@@ -25,11 +25,10 @@ async fn model_created_reminders_are_listed_and_cancelled_through_the_cli() {
                     "stop",
                 );
             }
-            let at = (Utc::now() + std::time::Duration::from_secs(3600)).to_rfc3339();
             let message = tool_message(
-                "remind-once",
+                "remind",
                 "schedule_create",
-                json!({ "at": at, "message": "check the kettle" }),
+                json!({ "cron": "0 8 * * *", "timezone": "America/New_York", "message": "check the kettle" }),
             );
             response(message, "tool_calls")
         })
@@ -59,12 +58,13 @@ async fn model_created_reminders_are_listed_and_cancelled_through_the_cli() {
         .await
         .unwrap();
     assert!(output.status.success());
-    let schedules: Vec<Schedule> = serde_json::from_slice(&output.stdout).unwrap();
+    let schedules: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(schedules.len(), 1);
     let reminder = &schedules[0];
-    assert_eq!(reminder.message, "check the kettle");
+    let next: DateTime<FixedOffset> = reminder["next_due"].as_str().unwrap().parse().unwrap();
+    assert_eq!(next.format("%H:%M").to_string(), "08:00");
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
-        .args(["schedules", "--cancel", &reminder.id.to_string()])
+        .args(["schedules", "--cancel", reminder["id"].as_str().unwrap()])
         .env("ENCO_HOME", daemon.root.path())
         .output()
         .await
