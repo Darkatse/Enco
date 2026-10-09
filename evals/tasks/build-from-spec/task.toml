@@ -1,0 +1,39 @@
+# The agent turns an API document into a tool plugin and uses it in the same task.
+#
+# home/workspace/todo-api.md  The HTTP API document of a to-do service.
+# hidden/                     The mock to-do service, contract tests for the new plugin
+#                             (create, list, complete), and the expected items.
+
+category = "programming"
+mechanism = "Build a new tool plugin from an API document with plugin_scaffold, plugin_build and plugin_deploy, then call its tools in a later round of the same run."
+
+[[input]]
+text = "我想用 workspace/todo-api.md 里的待办服务。帮我把它做成一个工具，然后把明天的三件事记进去：交房租、给妈妈打电话、把周报发给老板。"
+
+[budget]
+max_rounds = 40
+timeout_secs = 1800
+
+[[criteria]]
+id = "items"
+grader = "command"
+run = "hidden/items"
+check = "The mock service holds exactly the three items, with no duplicates."
+
+[[criteria]]
+id = "contract"
+grader = "command"
+run = "hidden/contract"
+check = "The new plugin's contract tests pass against its deployed generation."
+
+[[criteria]]
+id = "through-plugin"
+grader = "command"
+run = "hidden/through-plugin"
+check = "The plugin is recorded in plugins.lock and was deployed with plugin_deploy, and the items were written by calls to its tools rather than by shell commands."
+
+[[criteria]]
+id = "manual"
+grader = "command"
+run = "hidden/manual"
+check = "The runtime manual of the deployed generation lists the new tools."

@@ -54,7 +54,8 @@ P1 之后的四个方向（P2、Session 监督树、P3、P4）互不依赖，先
 - 构建与部署：`plugin_build`（含仓库的 lint 表与结构化诊断，§7.6）、`scaffold` / `rename` / `remove`、`enco-sdk`（含宏）、git 集成。
 - 手册：内核与 SDK 的 API.md（§7.4，二者同时启用 `missing_docs`）、运行时手册与 README 生成区（§7.5）、`manual_read` / `capability_search`。
 - 插件之间：跨插件接口导入与宿主转发（§4.10）。
-- 原生实现改为插件：默认 composer 改为 Wasm 插件（包括缓存友好的披露策略），由 Agent 自己迭代，以 Attempt 记录的缓存命中率作为观测指标；fs/shell 工具经宿主的 fs 与 exec 导入改为 Wasm 插件，原生版本保留为安全模式的救生集；记忆的召回与写入策略按需改为插件（`docs/decisions/native-exceptions.md`）。
+- 原生实现改为插件：默认 composer 改为 Wasm 插件（包括缓存友好的披露策略），由 Agent 自己迭代，以 `evals/` 的任务成功率为目标、Attempt 记录的用量（含缓存命中）为成本约束；fs/shell 工具经宿主的 fs 与 exec 导入改为 Wasm 插件，原生版本保留为安全模式的救生集；记忆的召回与写入策略按需改为插件（`docs/decisions/native-exceptions.md`）。
+- 评测：`evals/` 的五道题各验证一个 P2 机制；运行器 `evals/runner/` 是黑盒客户端，只经 `enco` 的命令行驱动被测系统（§4.8）。题目格式见 [evals/README.md](../evals/README.md)。
 
 验收：
 - Agent 独立修复一个真实缺陷，并且**全程只读手册和插件源码，不需要读宿主源码**。这同时检验手册是否够用，以及双向不泄露是否成立。**验证第一个原始动机。**
@@ -63,6 +64,7 @@ P1 之后的四个方向（P2、Session 监督树、P3、P4）互不依赖，先
 - 披露策略被改坏后，安全模式仍能调用文件、Shell 和部署管理。
 - `plugin_rename` 之后，插件的状态、代际历史与连接不变；只执行 `git mv` 时构建被拦下，并提示改用 `plugin_rename` 或 `plugin_remove`；复制出的目录在首次构建时得到新身份。
 - 插件导入 `completion` 在准入时被拒绝。
+- `evals/` 的五道题都能端到端运行，基线写入运行结果；`adapter-drift` 经正式路径通过，让第一条验收可以重复检验。
 
 **脚本调用（工具多到逐个调用的代价明显时实施）**：宿主的脚本沙箱（QuickJS 编译为 Wasm）、嵌套调用的分派与记录、脚本内的 `capability_search` 与 `manual_read`，以及 composer 的披露形态选择（§7.1）。
 验收：一段脚本并行调用多个工具，模型只看到脚本的输出；脚本内搜索返回的能力可以调用，既未披露也未被搜索返回的被拒绝；被 `tool.gate` 拦下的嵌套调用在脚本中表现为失败；脚本在一次副作用调用之后抛错或被 `kill -9`，结算内容列出该调用及其结局，脚本不重跑。
@@ -87,4 +89,4 @@ P1 之后的四个方向（P2、Session 监督树、P3、P4）互不依赖，先
 **Windows 节点（需要时实施，Unix 环境优先）**：本地端点在 Windows 上改用命名管道（tokio 不在 Windows 上提供 Unix domain socket），访问限定为当前用户；Shell 工具使用 PowerShell 7，工具描述按平台写明所用的 shell，输出按 UTF-8 解码；守护进程响应控制台关闭与系统关机；Unix 专用的测试按平台编译；CI 增加 Windows runner。参与 Space 之前补上计入休眠时间的时钟（§5.5）。这些都是宿主的平台适配（§4.1），不改变架构。
 验收：`cargo xtask check` 在 Windows 上通过；CLI 经命名管道与守护进程完成对话，其他用户无法连接；`shell_exec` 正确返回中文输出。
 
-**之后**：Android 本机构建（Root/Shizuku + Ubuntu 中本机编译插件）、宿主自更新（主人确认；自主权限以后显式开通）、覆盖网络路由、Edge 节点（ESP32）、系统代际的整体回滚。
+**之后**：Android 本机构建（Root/Shizuku + Ubuntu 中本机编译插件）、宿主自更新（主人确认；自主权限以后显式开通）、覆盖网络路由、Edge 节点（ESP32）、系统代际的整体回滚；MCP 接入（某个需要的服务只提供 MCP 时实施，需要先回答：外部进程提供的工具定义怎样钉进代际，stdio 服务作为宿主持有的资源，工具标注怎样映射到 effect 与 `outcome`；采纳 MCP 服务等于完全信任，§4.10）。

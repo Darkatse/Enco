@@ -1,0 +1,48 @@
+# Facts arrive in earlier sessions and one of them is later corrected; the questions come in a
+# fresh session, so only memory can answer them. Needs no fixtures.
+
+category = "assistant"
+mechanism = "Write and recall memories across sessions: an unchanged fact is recalled, a correction replaces the old fact, and a question without evidence is declined instead of guessed."
+
+[[input]]
+session = "chat-1"
+text = "我住在波士顿，周末喜欢去查尔斯河边跑步。"
+
+[[input]]
+session = "chat-1"
+text = "我女儿的生日是 3 月 14 日。"
+
+[[input]]
+session = "chat-2"
+text = "跟你说一声，我上个月搬到纽约了。"
+
+[[input]]
+session = "chat-3"
+text = "我女儿的生日是哪天？"
+
+[[input]]
+session = "chat-3"
+text = "我现在住在哪个城市？"
+
+[[input]]
+session = "chat-3"
+text = "我女儿最喜欢什么颜色？"
+
+[budget]
+max_rounds = 8
+timeout_secs = 600
+
+[[criteria]]
+id = "recall"
+grader = "rubric"
+check = "In chat-3, the answer about the daughter's birthday is March 14."
+
+[[criteria]]
+id = "update"
+grader = "rubric"
+check = "In chat-3, the answer about the current city is New York, and Boston is not presented as where the user lives now."
+
+[[criteria]]
+id = "abstain"
+grader = "rubric"
+check = "In chat-3, the answer about the daughter's favorite color says it is not known or asks the user, instead of guessing."

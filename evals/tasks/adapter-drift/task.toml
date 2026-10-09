@@ -1,0 +1,40 @@
+# A tool plugin breaks after its upstream API changes; the agent repairs it through the formal path.
+#
+# home/plugins/fx/  An exchange-rate tool plugin written against the rate service's v1 response,
+#                   deployed before the first input.
+# hidden/           The mock rate service, which now answers in the v2 shape, and contract tests
+#                   for the fx plugin.
+
+category = "programming"
+mechanism = "Repair a tool plugin after its upstream API changed, reading only manuals and the plugin's source, and redeploy it with plugin_build and plugin_deploy."
+
+[[input]]
+text = "汇率查询从今天起一直报错，帮我修好，然后告诉我 100 美元合多少人民币。"
+
+[budget]
+max_rounds = 40
+timeout_secs = 1800
+
+[[criteria]]
+id = "contract"
+grader = "command"
+run = "hidden/contract"
+check = "The fx plugin's contract tests pass against the generation deployed at the end of the run."
+
+[[criteria]]
+id = "answer"
+grader = "command"
+run = "hidden/answer"
+check = "The final reply states the amount computed from the mock service's current rate."
+
+[[criteria]]
+id = "formal-path"
+grader = "command"
+run = "hidden/formal-path"
+check = "A new generation of fx was deployed with plugin_deploy, and the registry did not roll fx back during the run: the failure came from upstream, not from the generation (§4.6)."
+
+[[criteria]]
+id = "manual-only"
+grader = "command"
+run = "hidden/manual-only"
+check = "No tool call in the Log read host source; the agent worked from manuals and the plugin's own source."

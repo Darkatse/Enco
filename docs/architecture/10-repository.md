@@ -15,6 +15,7 @@ apps/
   mobile/        # 之后再做
 xtask/           # cargo xtask docs [--check]：WIT → CONTRACT、目录、API 索引、出厂插件的 README 生成区（与 plugin_build 共用生成器）、lint（§7）
 plugins/
+evals/           # 评测任务集与黑盒运行器（§4.8）；runner/ 只调用 enco 的命令行，不依赖任何宿主 crate
 wit/             # *.wit + 生成的 CONTRACT.md / CONTRACT-CHANGES.md
 docs/{AGENTS.md, decisions/, cookbook/, generated/}
 scripts/check-crate-boundaries   # 依赖方向（§4.1）

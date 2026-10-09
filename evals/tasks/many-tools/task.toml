@@ -1,0 +1,27 @@
+# Four mock apps expose about fifty tools; the request needs one or two from each of them.
+#
+# home/plugins/apps/  A fixture tool plugin offering notes, todo, calendar and messages tools
+#                     (about fifty in total), backed by mock state.
+# hidden/             The initial mock state and the expected final state.
+
+category = "assistant"
+mechanism = "Disclose a large tool catalog progressively, through the catalog and capability_search, so the agent finds the few tools a cross-app request needs without touching unrelated state."
+
+[[input]]
+text = "下周和 Alice 的会面定在哪天？把那次会议纪要笔记里的待办加进我的待办清单，再给 Alice 发条消息确认时间。"
+
+[budget]
+max_rounds = 24
+timeout_secs = 900
+
+[[criteria]]
+id = "outcome"
+grader = "command"
+run = "hidden/outcome"
+check = "The to-do list contains the action items from the meeting's notes, and Alice received one message that names the meeting time."
+
+[[criteria]]
+id = "no-collateral"
+grader = "command"
+run = "hidden/no-collateral"
+check = "Nothing else in the mock state changed."
