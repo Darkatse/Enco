@@ -38,7 +38,7 @@ pub const LIFELINE: [&str; 8] = ["fs_read", "fs_write", "fs_edit", "fs_list", "s
 | `offset` | integer ≥ 1 | 起始行号，默认 1 |
 | `limit` | integer ≥ 1 | 最多读取的行数，默认 2000，上限 10000 |
 
-结果：`Ok { value: "<内容>" }`，内容前加一行说明。按行读取，最多 `limit` 行；再加一行就会让结果（含说明行）超过 `ctx.result_budget` 时，停在这一行之前，但至少返回一行，单行超过预算时由内核截断兜底（04 §6.6）。读到文件末尾时说明行为 `[lines {a}-{b} of {total}]`，否则为 `[lines {a}-{b} of {total}; continue at offset {b+1}]`。工具描述写明结果可能在 `limit` 之前结束，说明行给出继续读取的 offset。文件不是合法 UTF-8 时返回 `tool.failed`。起始行超出文件末尾时返回空内容和同样的说明行。
+结果：`Ok { value: "<内容>" }`，内容前加一行说明。按行读取，最多 `limit` 行；再加一行就会让结果（含说明行）超过 `ctx.result_budget` 时，停在这一行之前，但至少返回一行，单行超过预算时由内核截断兜底（04 §6.6）。读到文件末尾时说明行为 `[lines {a}-{b} of {total}]`，否则为 `[lines {a}-{b} of {total}; continue at offset {b+1}]`。工具描述写明结果可能在 `limit` 之前结束，说明行给出继续读取的 offset；超过预算的单行会被截断，应在 shell 中按字节范围读取（例如 `tail -c` 与 `head -c`）。文件不是合法 UTF-8 时返回 `tool.failed`。起始行超出文件末尾时返回空内容和同样的说明行。
 
 ### 2.2 fs_write（Idempotent）
 
@@ -159,7 +159,9 @@ Memories you recall for the next message:
 
 ### 4.2 预算
 
-所有估算都使用 `estimate_tokens`（03 §1.11）。回复的预算是 `profile.reply.budget`，压缩的预算是 `profile.compaction.budget`（12 §5）；本节与 §4.3、§4.4 中的 `context_tokens`、`max_output_tokens` 都指回复预算。
+出厂 composer 用自己的私有函数 `estimate_tokens` 估算：UTF-8 字节数除以 3 向上取整，中文约为一字一 token，英文会偏高；实际用量以 Provider 回报的 `Usage` 为准。估算方法属于 composer 的预算策略。
+
+回复的预算是 `profile.reply.budget`，压缩的预算是 `profile.compaction.budget`（12 §5）；本节与 §4.3、§4.4 中的 `context_tokens`、`max_output_tokens` 都指回复预算。
 
 - **常驻指令**：总估算不超过 `context_tokens` 的 10% 时全部纳入，否则整份省略，记录 `Omission { source: id, reason: "instructions exceed 10% of the context window" }`。
 - **记忆**：本 Round 要显示的记忆，即置顶记忆和说明中新出现的召回记忆，按候选的顺序（即来源给出的优先级，06 §5）逐条纳入，累计不超过 `context_tokens` 的 15%；超出的每一条都记录 `Omission { source: id, reason: "memory budget (15% of the context window) exceeded" }`。

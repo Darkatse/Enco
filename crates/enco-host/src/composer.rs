@@ -4,6 +4,11 @@ use enco_core::*;
 use enco_kernel::*;
 use std::{collections::HashMap, path::PathBuf};
 
+// Budgeting uses a conservative estimate; the Provider reports actual usage.
+fn estimate_tokens(text: &str) -> u32 {
+    u32::try_from(text.len().div_ceil(3)).unwrap_or(u32::MAX)
+}
+
 /// Factory policy shared by ordinary operation and safe mode. No IO occurs here.
 pub struct FactoryComposer {
     workspace: PathBuf,

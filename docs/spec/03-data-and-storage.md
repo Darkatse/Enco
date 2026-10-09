@@ -393,16 +393,6 @@ pub struct Memory {
 
 内核不使用这个类型；它放在 enco-core，是因为宿主与 CLI 协议共用它，并且 `MemoryId` 与其他 ID 使用同一个生成机制。
 
-### 1.11 Token 估算（`lib.rs`）
-
-```rust
-/// 保守估算：UTF-8 字节数除以 3 向上取整。中文约为一字一 token，英文会偏高。
-/// 实际用量以 Provider 回报的 Usage 为准。
-pub fn estimate_tokens(text: &str) -> u32;
-```
-
-全系统只有这一个估算函数。
-
 ## 2. Store 端口（enco-kernel `ports/store.rs`）
 
 Store 是内核唯一的持久化端口。每组方法都注明了它的**唯一写者**，这是架构文档 §3.6 规则一在存储层的体现。
@@ -459,7 +449,7 @@ pub trait Store: Send + Sync {
     // ---- Blob 与制品（内容寻址，写入幂等）
     async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
     async fn get_blob(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError>;
-    /// blob 在磁盘上的路径。长结果的完整内容由此交给模型用 fs_read 读取。
+    /// blob 在磁盘上的路径，随截断事实一并记录在工具结果中。
     fn blob_path(&self, hash: &ContentHash) -> PathBuf;
     /// 制品库（§3.4）。与 blob 同一套实现、不同的目录；制品不受清理策略影响。
     async fn put_artifact(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
@@ -657,7 +647,7 @@ CREATE INDEX generations_by_plugin ON generations(plugin_id, id);
 - 写入：已有文件与本次字节相同则直接返回；缺失或内容不同则写到同目录的 `<哈希>.tmp.<ULID>`，`sync_all` 之后 `rename`。写入成功保证地址下是本次内容，因此重新部署同一制品可以修复损坏的文件。
 - 读取：读出后重新计算哈希，不一致则返回 `Blob` 错误。
 - 孤立的 blob（写入了但对应的 Commit 没有成功）是无害的。
-- 保留：Log 条目永不删除；任何 blob 都可以被删除，例如主人的清理策略（架构文档 §6）。读取缺失的 blob 返回 `Blob` 错误；超长结果的全文由模型用 `fs_read` 按路径读取，文件不在时由 `fs_read` 报告。目前不做回收。
+- 保留：Log 条目永不删除；任何 blob 都可以被删除，例如主人的清理策略（架构文档 §6）。读取缺失的 blob 返回 `Blob` 错误；超长结果记录全文路径，如何读取由已披露的工具决定。目前不做回收。
 
 ### 3.4 制品库
 

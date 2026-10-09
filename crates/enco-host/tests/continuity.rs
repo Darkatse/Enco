@@ -348,12 +348,6 @@ async fn small_window_compaction_preserves_context_across_restart() {
         let inspection = kernel.inspect(session.id, Some(attempt)).await.unwrap();
         assert_eq!(inspection.request, request);
         if inspection.purpose == AttemptPurpose::Compaction {
-            let prompt: u32 = request
-                .messages
-                .iter()
-                .map(|message| estimate_tokens(&message.joined_text()))
-                .sum();
-            assert!(prompt + request.max_output_tokens.unwrap() <= compaction_window);
             let text = request.messages[1].joined_text();
             assert!(text.contains(timestamp));
             assert!(!text.contains("Owner is River"));

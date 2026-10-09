@@ -34,9 +34,7 @@ impl SessionActor {
             content.truncate(content.floor_char_boundary(limits::TOOL_RESULT_PREVIEW_BYTES));
             let path = self.deps.store.blob_path(&hash);
             content.push_str(&format!(
-                "\n[truncated: {size} bytes. Full result: {}; it may be cleaned up later. \
-                 Read it with fs_read using offset and limit; if a single line is too long, \
-                 read byte ranges with shell, for example head -c.]",
+                "\n[truncated: {size} bytes; full result: {}; it may be cleaned up later]",
                 path.display(),
             ));
             full = Some(hash);

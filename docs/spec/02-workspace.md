@@ -128,7 +128,7 @@ allow-expect-in-tests = true
 **enco-core**
 
 ```text
-lib.rs         重新导出；estimate_tokens
+lib.rs         重新导出
 ids.rs         SessionId、EventId、RunId、RoundId、AttemptId、CallId、ScheduleId、MemoryId、NodeId、PluginId、GenerationId、Epoch、Seq、LogPos
 hash.rs        ContentHash
 message.rs     Role、Message、Part、ToolCall、ToolResult、Extension

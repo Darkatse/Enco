@@ -100,7 +100,7 @@ pub trait Store: Send + Sync {
     async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
     /// Read bytes and verify they match their recorded address.
     async fn get_blob(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError>;
-    /// Local path of immutable content, allowing the model to inspect a long result with fs_read.
+    /// Local path of a blob, recorded with the truncation fact of a long tool result.
     fn blob_path(&self, hash: &ContentHash) -> PathBuf;
 }
 

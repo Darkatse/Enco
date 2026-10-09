@@ -37,7 +37,8 @@ impl Tool for FileTool {
                     "Read a UTF-8 file by line range. Relative paths use the workspace; absolute paths \
                      are allowed. offset starts at 1 and limit defaults to {FILE_READ_DEFAULT_LINES}. \
                      Results may end before limit to fit the result budget; the header gives the \
-                     offset to continue reading."
+                     offset to continue reading. A single line longer than the budget comes back \
+                     truncated; read it by byte range in the shell, for example with tail -c and head -c."
                 ),
                 Effect::ReadOnly,
                 json!({
@@ -145,7 +146,7 @@ async fn read(path: &Path, args: &Map<String, Value>, budget: usize) -> Result<V
             line_header(offset, offset - 1, total)
         )));
     };
-    // Always return one whole line; the kernel handles a single oversized line.
+    // Always return one whole line; the kernel truncates a single oversized line.
     let mut content = first.to_owned();
     let mut header = line_header(offset, offset, total);
     for (last, line) in (offset + 1..).zip(lines) {

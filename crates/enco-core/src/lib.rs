@@ -28,8 +28,3 @@ pub use plan::*;
 pub use provider::*;
 pub use session::*;
 pub use tool::*;
-
-/// Conservative shared estimate; the provider's Usage remains authoritative.
-pub fn estimate_tokens(text: &str) -> u32 {
-    u32::try_from(text.len().div_ceil(3)).unwrap_or(u32::MAX)
-}

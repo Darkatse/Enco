@@ -539,7 +539,7 @@ dispatch(snapshot, round, plan, call, token):
 
 **结果预算**：内核在 `CallContext.result_budget` 中给出结果可以内联的字节数（`TOOL_RESULT_INLINE_BYTES`）。能分页的工具在预算内按自己的单位停下，并说明如何继续（`fs_read` 见 05 §2.1）；内核不按工具身份区分，下面的截断对所有工具一样，是兜底。
 
-文本超过 `TOOL_RESULT_INLINE_BYTES` 时：完整文本写入 blob，`full = Some(hash)`；`content` 为前 `TOOL_RESULT_PREVIEW_BYTES`（在字符边界截断）加上一行说明：`[truncated: {总字节数} bytes. Full result: {store.blob_path(hash)}; it may be cleaned up later. Read it with fs_read using offset and limit; if a single line is too long, read byte ranges with shell, for example head -c.]`。Log 只记录 `Settlement`、`content` 与 `full`，工具返回的原始值不另存（03 §1.6）。
+文本超过 `TOOL_RESULT_INLINE_BYTES` 时：完整文本写入 blob，`full = Some(hash)`；`content` 为前 `TOOL_RESULT_PREVIEW_BYTES`（在字符边界截断）加上事实标记：`[truncated: {总字节数} bytes; full result: {store.blob_path(hash)}; it may be cleaned up later]`。如何读取由已披露工具的契约说明（例如 05 §2.1 的 `fs_read`）。Log 只记录 `Settlement`、`content` 与 `full`，工具返回的原始值不另存（03 §1.6）。
 
 生成文本的部分（不含 blob 写入）是一个纯函数 `render_text(&Outcome) -> String`，恢复流程复用它。
 
