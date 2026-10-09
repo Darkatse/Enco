@@ -25,14 +25,14 @@ pub enum EntryBody {
         /// The complete Event accepted from this Session’s Inbox.
         event: Event,
     },
-    /// A new activation was accepted.
+    /// A new Run was accepted.
     RunStarted {
-        /// Activation containing this fact.
+        /// Run containing this fact.
         run: RunId,
     },
     /// A new execution boundary was accepted.
     RoundStarted {
-        /// Activation containing this fact.
+        /// Run containing this fact.
         run: RunId,
         /// Round containing this fact.
         round: RoundId,
@@ -94,9 +94,9 @@ pub enum EntryBody {
         /// Reason execution stopped.
         end: RoundEnd,
     },
-    /// This activation will perform no more work.
+    /// This Run will perform no more work.
     RunEnded {
-        /// Activation containing this fact.
+        /// Run containing this fact.
         run: RunId,
         /// Reason execution stopped.
         end: RunEnd,
@@ -186,13 +186,13 @@ pub enum RoundEnd {
     },
 }
 
-/// Why this activation stopped.
+/// Why this Run stopped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunEnd {
     /// The operation completed normally.
     Completed,
-    /// The activation exhausted its Round allowance.
+    /// The Run exhausted its Round allowance.
     BudgetExhausted,
     /// The previous process ended before settlement.
     Interrupted,

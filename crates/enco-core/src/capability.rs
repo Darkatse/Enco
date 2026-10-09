@@ -1,4 +1,4 @@
-use crate::{GenerationId, NodeId};
+use crate::NodeId;
 use serde::{Deserialize, Serialize};
 
 /// A node-qualified capability, displayed as `name@node`; the model sees only `name`.
@@ -10,7 +10,8 @@ pub struct CapabilityId {
     pub name: String,
 }
 
-/// Identifies the exact native code or immutable component used by an invocation.
+/// Identifies the exact code used by an invocation. Tagged so that plugin composers and tools
+/// can add a generation variant without changing recorded entries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CodeRef {
@@ -20,11 +21,6 @@ pub enum CodeRef {
         name: String,
         /// Version of the linked native crate.
         version: String,
-    },
-    /// A registered activation whose artifact and plugin identity can be inspected.
-    Generation {
-        /// Immutable registry record for this invocation.
-        id: GenerationId,
     },
 }
 

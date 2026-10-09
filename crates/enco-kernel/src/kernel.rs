@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 pub struct KernelDeps {
     /// Durable authority.
     pub store: Arc<dyn Store>,
-    /// Sole owner of code activations and published exports.
+    /// Sole owner of plugin generations and published exports.
     pub registry: Arc<Registry>,
     /// Named Session policies resolved once by the composition root.
     pub profiles: BTreeMap<String, Profile>,
@@ -34,7 +34,7 @@ pub struct KernelDeps {
 /// Run limit and owner time zone, validated before starting any owner.
 #[derive(Clone)]
 pub struct KernelConfig {
-    /// Maximum Rounds in one activation.
+    /// Maximum Rounds in one Run.
     pub(crate) max_rounds_per_run: u32,
     /// Owner's local-time interpretation, independent of the node's system zone.
     pub(crate) timezone: Tz,
@@ -83,7 +83,7 @@ pub struct Status {
 pub struct SessionStatus {
     /// Durable Session metadata.
     pub session: SessionRecord,
-    /// Whether an activation is currently running.
+    /// Whether a Run is currently executing.
     pub running: bool,
     /// Storage failure that stopped this actor, if any.
     pub stopped: Option<String>,
@@ -262,7 +262,7 @@ impl Kernel {
         Ok(self.handle(session)?.entries.subscribe())
     }
 
-    /// Signal the current activation; its actor settles work before ending.
+    /// Signal the current Run; its actor settles work before ending.
     pub fn cancel(&self, session: SessionId) -> Result<bool, KernelError> {
         let handle = self.handle(session)?;
         let current = lock(&handle.run_cancel);

@@ -1,4 +1,4 @@
-use crate::{Kernel, KernelError, ProviderRequest, plan, transcript};
+use crate::{Kernel, KernelError, ProviderRequest, StoreError, plan, transcript};
 use enco_core::*;
 
 /// An Attempt reconstructed exclusively from its recorded plan and Log prefix.
@@ -60,7 +60,7 @@ impl Kernel {
         let exports = self.deps.registry.exports();
         let target = exports
             .plugin_of(*provider)
-            .ok_or_else(|| invalid("recorded provider has no registered plugin identity".into()))?;
+            .ok_or(StoreError::UnknownGeneration(*provider))?;
         let request = plan::resolve(
             &plan,
             &transcript::project(&entries[..index]),

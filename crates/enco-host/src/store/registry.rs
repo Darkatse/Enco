@@ -23,16 +23,11 @@ pub(super) fn read(connection: &Connection) -> Result<RegistryState, StoreError>
         .collect::<Result<Vec<_>, _>>()
         .map_err(backend)?;
     let mut active = connection
-        .prepare("SELECT id,active FROM plugins ORDER BY id")
+        .prepare("SELECT id,active FROM plugins WHERE active IS NOT NULL ORDER BY id")
         .map_err(backend)?;
     let active = active
         .query_map([], |row| {
-            let id: Option<i64> = row.get(1)?;
-            Ok((
-                rows::text(row, 0)?,
-                id.map(|_| rows::unsigned(row, 1).map(GenerationId))
-                    .transpose()?,
-            ))
+            Ok((rows::text(row, 0)?, GenerationId(rows::unsigned(row, 1)?)))
         })
         .map_err(backend)?
         .collect::<Result<_, _>>()

@@ -230,7 +230,7 @@ impl KernelConfig {
 
 impl Kernel {
     /// 构造 Snapshot，启动 Scheduler，为每个已有 Session 启动 actor（actor 启动时自行恢复）。
-    /// `profiles` 中没有 "default" 时返回 `KernelError::Config`。
+    /// `profiles` 中没有 "default" 时返回 `KernelError::UnknownProfile`。
     pub async fn start(deps: KernelDeps, config: KernelConfig) -> Result<Kernel, KernelError>;
     /// 不存在则创建（profile 为 "default"），并确保它的 actor 已经启动。
     pub async fn open_session(&self, name: &str) -> Result<SessionRecord, KernelError>;
@@ -304,15 +304,16 @@ pub(crate) struct SnapshotTool { pub id: CapabilityId, pub spec: ToolSpec, pub c
 
 ```rust
 pub(crate) struct SessionHandle {
-    pub wake: Arc<Notify>,                          // notify_one 会保留许可，不会丢失唤醒
+    pub id: SessionId,
+    pub wake: Notify,                              // notify_one 会保留许可，不会丢失唤醒
     pub entries: broadcast::Sender<Entry>,
     pub run_cancel: Mutex<Option<CancellationToken>>, // 正在进行的 Run 的取消令牌
     pub stopped: Mutex<Option<String>>,             // actor 因错误退出时的原因
-    pub task: JoinHandle<()>,
+    pub task: Mutex<Option<JoinHandle<()>>>,
 }
 ```
 
-Kernel 持有 `Mutex<HashMap<SessionId, SessionHandle>>`。actor 的状态包括 `SessionRecord`、该 Session 全部条目的内存副本（启动时加载，提交后追加）、下一个位置 `next: LogPos`。
+Kernel 持有 `Arc<Mutex<HashMap<SessionId, Arc<SessionHandle>>>>`。actor 的状态包括 `SessionRecord`、该 Session 全部条目的内存副本（启动时加载，提交后追加）、下一个序号 `next: u64`；位置由 Session 的 binding epoch 与该序号组成。
 
 actor 生命周期：
 
@@ -372,19 +373,19 @@ run():
 ```text
 round(run, token, prefix) -> RoundEnd:
     round_id = RoundId::new()
-    snapshot = self.snapshot.clone()               // 本轮钉住
-    safe_mode = store.node().safe_mode             // 安全模式在 Round 边界生效
     session = store.session(id)                    // 重读，profile 可能已改（§4.2）
+    snapshot = self.deps.snapshot.clone()          // 本轮钉住
+    safe_mode = store.node().safe_mode             // 安全模式在 Round 边界生效
     pending = store.pending(session)
     commit(prefix ++ [EventConsumed { e } for e in pending] ++ [RoundStarted { run, round_id, safe_mode }],
            consumed = pending 的 id)
-    profile = profiles[session.profile]，没有 → end_round(Failed(profile.unknown, "profile `{name}` is not configured"))
+    profile = profiles[session.profile]，没有 → end_round(Failed(profile.unknown，错误中带 profile 名称))
 
-    (plan, request) = compose(snapshot, profile, round_id, safe_mode, token)?      // §6.3；取消或失败则 end_round
-    completion = attempt(profile, round_id, safe_mode, Reply, plan, request, token)?         // §6.4；取消或失败则 end_round
+    planned = compose(snapshot, profile, round_id, safe_mode, token)?            // §6.3；计划携带本轮 composer 的 CodeRef
+    completion = attempt(profile.reply, round_id, safe_mode, planned, token)?   // §6.4；取消或失败则 end_round
     calls = completion.message.tool_calls()
     if calls.is_empty(): return end_round(Replied)
-    for call in calls: dispatch(snapshot, round_id, plan, call, token)   // §6.6：是否开始由 dispatch 决定
+    for call in calls: dispatch(snapshot, round_id, planned.plan, call, token)   // §6.6：是否开始由 dispatch 决定
     return end_round(if token.is_cancelled() { Cancelled } else { ToolsSettled })
 ```
 
@@ -394,7 +395,7 @@ profile 找不到是配置问题，不是模型问题，所以 Round 失败、Ru
 
 ### 6.3 组装与压缩
 
-组装分两个时刻。**组装时**读取当前状态：时间与上下文贡献每个 Round 读取一次，压缩只改变 Transcript，重新组装时复用它们。`new_input` 从已提交的 Log 得到：上一个 `RoundEnded` 之后存在 `EventConsumed` 时为真；内核始终提供 `latest_event`，由各来源决定是否利用新输入。**记录后**只解析记录：Attempt 与重试使用冻结的计划（§6.4），不再调用 ContextSource 或读取 Snapshot 中的工具定义。
+组装分两个时刻。**组装时**读取当前状态：时间与上下文贡献每个 Round 读取一次，压缩只改变 Transcript，重新组装时复用它们。`new_input` 从已提交的 Log 得到：上一个 `RoundEnded` 之后存在 `EventConsumed` 时为真；内核始终提供 `latest_event`，由各来源决定是否利用新输入。计划、解析后的请求、用途与实际生成计划的 composer 标识共同构成 `PlannedAttempt`。**记录后**只解析记录：Attempt 与重试使用这份结果（§6.4），不再重新读取 composer 或 Snapshot 中的工具定义。
 
 ```text
 compose(snapshot, profile, round, safe_mode, token):
@@ -416,13 +417,15 @@ compose(snapshot, profile, round, safe_mode, token):
         match composer.compose(&input):
             Err(e)                    => Failed(e 转为 Failure：ContextOverflow → context.overflow，其余 → compose.failed)
             Ok(Plan(plan))            => plan::validate(&plan, &input, Reply, &snapshot.lifeline)?            // 失败 → Failed(plan.invalid)
-                                         return (plan, plan::resolve(&plan, &input.transcript, exports, target(Reply))?)
+                                         return PlannedAttempt { kind: Reply, composer: snapshot.composer.code(), plan,
+                                                  request: plan::resolve(&plan, &input.transcript, exports, target(Reply))? }
             Ok(Compact { upto, plan }) =>
-                compactions_left 为 0 时 Failed(compose.failed, "too many compactions in one round")
+                compactions_left 为 0 时 Failed(compose.failed，说明本 Round 压缩次数已用尽)
                 upto 必须属于 input.transcript.round_ends，否则 Failed(plan.invalid)
                 plan::validate(&plan, &input, Compaction, &snapshot.lifeline)?
                 request = plan::resolve(&plan, &input.transcript, exports, target(Compaction))?
-                attempt(profile, round, safe_mode, Compaction { upto }, plan, request, token)?   // 成功时同时提交 Compacted
+                planned = PlannedAttempt { kind: Compaction(upto), composer: snapshot.composer.code(), plan, request }
+                attempt(profile.compaction, round, safe_mode, planned, token)?   // 成功时同时提交 Compacted
                 input.compactions_left -= 1
                 input.transcript = transcript::project(&entries)                             // 用新的 Transcript 再次组装
 ```
@@ -436,17 +439,17 @@ compose(snapshot, profile, round, safe_mode, token):
 模型请求与适配器以 Attempt 为单位固定（架构文档 §4.6）：每次 Attempt 开始时从导出表取当前代际，不从 Round 钉住的东西里取。
 
 ```text
-attempt(profile, round, safe_mode, kind, plan, request, token):
-    plan_hash = store.put_blob(serde_json::to_vec(plan))      // 先写 blob，再提交引用它的条目
-    endpoint = profile.endpoint(kind 的目的)
+attempt(endpoint, round, safe_mode, planned, token):
+    plan_hash = store.put_blob(serde_json::to_vec(planned.plan))      // 先写 blob，再提交引用它的条目
+    kind = planned.kind
     for n in 1..=MAX_ATTEMPTS:
         export = registry.exports().completion(endpoint.plugin, safe_mode)?   // 失败 → Ended(Failed(plugin.unavailable))，不写 AttemptStarted
         attempt_id = AttemptId::new()
         commit([AttemptStarted { round, attempt_id, purpose: kind 的目的, plan: plan_hash,
-                                 composer: snapshot.composer.code(),
+                                 composer: planned.composer,
                                  provider: export.generation, settings: endpoint.settings }])
         result = select {
-            r = export.adapter.complete(&endpoint.settings, endpoint.api_key, request.clone()) => r,
+            r = export.adapter.complete(&endpoint.settings, endpoint.api_key, planned.request.clone()) => r,
             _ = token.cancelled() => Err(Failure(cancelled))
         }
         match result:
@@ -460,7 +463,7 @@ attempt(profile, round, safe_mode, kind, plan, request, token):
                 commit(bodies)
                 registry.report(export.generation, Ok, Some(session))       // 11 §7；空摘要是压缩自己的判断，插件调用仍算成功
                 if token.is_cancelled(): return Ended(Cancelled)
-                if empty_summary: return Ended(Failed(compose.failed, "empty summary"))
+                if empty_summary: return Ended(Failed(compose.failed，说明 Provider 返回了空摘要))
                 return Settled(c)
             Err(f) =>
                 commit([AttemptSettled { Failed(f) }])
@@ -698,7 +701,7 @@ pub enum ScheduleError {
 
 ```rust
 pub const MAX_ATTEMPTS: u32 = 3;
-pub const BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(4)];
+pub const BACKOFF: [Duration; MAX_ATTEMPTS as usize - 1] = [Duration::from_secs(1), Duration::from_secs(4)];
 pub const MAX_COMPACTIONS_PER_ROUND: u32 = 2;
 pub const TOOL_RESULT_INLINE_BYTES: usize = 16 * 1024;
 pub const TOOL_RESULT_PREVIEW_BYTES: usize = 4 * 1024;
@@ -765,7 +768,7 @@ inspect(session, attempt):
     started = attempt 指定时找那条 AttemptStarted，否则取最后一条；没有 → UnknownAttempt
     plan = store.get_blob(started.plan)
     transcript = transcript::project(位置小于 started.pos 的条目)    // 组装时看到的历史
-    target = registry.exports().plugin_of(started.provider)            // 当时用的插件
+    target = registry.exports().plugin_of(started.provider)            // 当时用的插件；注册表没有这个代际 → StoreError::UnknownGeneration
     request = plan::resolve(&plan, &transcript, &exports, target)
     result = 对应的 AttemptSettled（如果有）
 ```

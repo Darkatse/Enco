@@ -38,7 +38,7 @@ macro_rules! id {
 }
 id!(SessionId, "Durable identity of a conversation and its Log.");
 id!(EventId, "Input identity used for delivery deduplication.");
-id!(RunId, "Identity of one activation of a Session.");
+id!(RunId, "Identity of one Run of a Session.");
 id!(
     RoundId,
     "Identity of a model request and its tool settlements."
@@ -59,7 +59,7 @@ id!(
     "Persistent identity assigned when a plugin name is registered."
 );
 
-/// Registry-global activation number, ordered by commit rather than time.
+/// Registry-global generation number, ordered by commit rather than time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct GenerationId(pub u64);

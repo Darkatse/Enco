@@ -10,7 +10,7 @@ pub trait Runtime: Send + Sync {
     async fn load(&self, artifact: &[u8], config: &serde_json::Value) -> Result<Loaded, LoadError>;
 }
 
-/// Exports held by an activated generation. Each invocation owns its own runtime state.
+/// Exports returned by loading a component. Each invocation owns its own runtime state.
 #[derive(Clone)]
 pub struct Loaded {
     /// Adapter-provided description, not a plugin identity.

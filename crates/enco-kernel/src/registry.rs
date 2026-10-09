@@ -1,4 +1,4 @@
-//! The single committer of plugin identities, activation history and published exports.
+//! The single committer of plugin identities, generation history and published exports.
 mod activation;
 mod health;
 mod state;
@@ -23,7 +23,7 @@ pub struct RegistryDeps {
     pub factory: Vec<FactoryPlugin>,
     /// Interfaces required by configured callers.
     pub wiring: Vec<Use>,
-    /// Observation time, never activation ordering.
+    /// Observation time, never generation ordering.
     pub clock: Arc<dyn Clock>,
 }
 
@@ -71,9 +71,9 @@ pub struct Registry {
 
 /// An invocation's immutable association between code and registry identity.
 pub struct Export<T: ?Sized> {
-    /// Plugin owning the activation.
+    /// Plugin owning the generation.
     pub plugin: PluginId,
-    /// Exact activation used for this invocation.
+    /// Exact generation used for this invocation.
     pub generation: GenerationId,
     /// Compiled adapter retained until this invocation ends.
     pub adapter: Arc<T>,
@@ -146,7 +146,7 @@ impl Exports {
 }
 
 impl LoadedGeneration {
-    /// Bind one interface of this activation to the invocation that will record it.
+    /// Bind one interface of this generation to the invocation that will record it.
     fn export<T: ?Sized>(
         &self,
         plugin: &str,
@@ -183,10 +183,10 @@ pub enum Verdict {
     Failed(Failure),
 }
 
-/// Result of accepting a component as a new activation.
+/// Result of accepting a component as a new generation.
 #[derive(serde::Serialize)]
 pub struct Deployed {
-    /// Newly committed activation.
+    /// Newly committed generation.
     pub generation: GenerationRecord,
     /// Configured callers affected by the change.
     pub users: Vec<String>,
@@ -199,11 +199,11 @@ pub struct PluginStatus {
     pub name: String,
     /// Stable identity from plugins.lock.
     pub id: PluginId,
-    /// Current activation, if available.
+    /// Current generation, if available.
     pub active: Option<GenerationRecord>,
     /// Description of the active component, if loaded.
     pub summary: Option<String>,
-    /// Nearest earlier healthy activation.
+    /// Nearest earlier healthy generation.
     pub rollback_target: Option<GenerationId>,
     /// Configured users of this plugin.
     pub users: Vec<String>,
@@ -231,10 +231,10 @@ pub enum RegistryError {
         /// Loading or admission failure.
         reason: String,
     },
-    /// No earlier usable activation exists.
+    /// No earlier usable generation exists.
     #[error("plugin {0} has no generation to roll back to")]
     NoRollbackTarget(String),
-    /// The expected activation or target health changed while the target was prepared.
+    /// The active generation or target health changed while the target was prepared.
     #[error("plugin {0}: the registry changed while preparing; retry")]
     Conflict(String),
 }
@@ -242,7 +242,7 @@ pub enum RegistryError {
 impl Registry {
     /// Restore persisted routing, register embedded artifacts and validate configured uses.
     pub async fn open(deps: RegistryDeps) -> Result<Arc<Self>, RegistryError> {
-        let state = State::read(&deps).await?;
+        let state = State::initialize(&deps).await?;
         let registry = Arc::new(Self {
             store: deps.store,
             runtime: deps.runtime,
@@ -303,7 +303,7 @@ impl Registry {
         let id = self.store.insert_generation(&generation, true).await?;
         let record = generation.numbered(id);
         state.generations.insert(id, record.clone());
-        state.active.insert(plugin, Some(id));
+        state.active.insert(plugin, id);
         state.loaded.insert(id, loaded);
         self.publish(&mut state);
         Ok(Deployed {
@@ -324,7 +324,6 @@ impl Registry {
                 .active
                 .get(&plugin)
                 .copied()
-                .flatten()
                 .ok_or_else(|| RegistryError::NoRollbackTarget(name.into()))?;
             (plugin, expected, state.candidates(plugin, expected))
         };
@@ -348,7 +347,6 @@ impl Registry {
                     .active
                     .get(id)
                     .copied()
-                    .flatten()
                     .and_then(|id| state.generations.get(&id));
                 PluginStatus {
                     name: name.clone(),
@@ -410,11 +408,11 @@ impl Registry {
 
     fn publish(&self, state: &mut State) {
         state.loaded.retain(|id, _| {
-            state.active.values().any(|active| active == &Some(*id))
+            state.active.values().any(|active| active == id)
                 || state.factory.values().any(|factory| factory == id)
         });
         state.trial_successes.retain(|id, _| {
-            state.active.values().any(|active| active == &Some(*id))
+            state.active.values().any(|active| active == id)
                 && state
                     .generations
                     .get(id)

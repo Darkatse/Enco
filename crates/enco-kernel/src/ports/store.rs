@@ -117,8 +117,8 @@ pub struct NodeRecord {
 pub struct RegistryState {
     /// All generation records in commit order.
     pub generations: Vec<GenerationRecord>,
-    /// The active generation, if any, for each registered plugin row.
-    pub active: BTreeMap<PluginId, Option<GenerationId>>,
+    /// Active generations; a missing plugin has no active generation.
+    pub active: BTreeMap<PluginId, GenerationId>,
 }
 
 /// A generation awaiting its registry-assigned sequence number.
@@ -128,7 +128,7 @@ pub struct NewGeneration {
     pub plugin: PluginId,
     /// Component content address.
     pub artifact: ContentHash,
-    /// Configuration of this activation, not model invocation settings.
+    /// Configuration of this generation, not model invocation settings.
     pub config: serde_json::Value,
     /// Factory registration or explicit deployment.
     pub origin: Origin,

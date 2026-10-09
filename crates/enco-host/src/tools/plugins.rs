@@ -53,7 +53,7 @@ impl Tool for PluginTool {
             ),
             Kind::Rollback => (
                 "plugin_rollback",
-                "Activate the nearest earlier usable healthy generation of a registered plugin. The current generation is preserved if no usable target exists. A conflict means another activation won; inspect status before retrying.".into(),
+                "Activate the nearest earlier usable healthy generation of a registered plugin. The current generation is preserved if no usable target exists. A conflict means the registry changed while the rollback was prepared; inspect status before retrying.".into(),
                 Effect::SideEffect,
                 json!({"name": {"type": "string"}}),
                 vec!["name"],

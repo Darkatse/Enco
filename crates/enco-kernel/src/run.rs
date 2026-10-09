@@ -195,6 +195,7 @@ impl SessionActor {
                 .map_err(|e| failed(code::PLAN_INVALID, e.to_string()))?;
             let planned = PlannedAttempt {
                 kind,
+                composer: snapshot.composer.code(),
                 plan,
                 request,
             };

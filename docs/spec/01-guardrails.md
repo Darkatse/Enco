@@ -60,7 +60,7 @@
 | Store（持久化端口） | Repository、DAO、Database（指端口时） |
 | Kernel | Engine、Core |
 | Artifact（制品，内容寻址的组件文件） | Binary、Bundle、Package |
-| Generation（代际，一次激活）、GenerationId（编号） | Version、Deployment、Release、Revision（指代际时） |
+| Generation（代际：编号的一份制品与配置）、GenerationId（编号） | Version、Deployment、Release、Revision（指代际时） |
 | Registry（注册表，代际的归属者）、Exports（导出表） | Catalog、PluginManager、Loader |
 | Runtime（插件运行时端口）、Loaded（已加载的代际） | Instance、Component（指端口时） |
 | Trial / Healthy / Failed（代际状态）、Factory / Deployed（来源） | Staging、Stable、Active（指状态时） |

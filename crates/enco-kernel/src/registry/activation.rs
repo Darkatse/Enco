@@ -27,9 +27,6 @@ impl Registry {
             self.state.lock().await.loaded.insert(generation, loaded);
         }
         for (plugin, generation) in active {
-            let Some(generation) = generation else {
-                continue;
-            };
             if self.state.lock().await.loaded.contains_key(&generation) {
                 continue;
             }
@@ -65,7 +62,6 @@ impl Registry {
                 .active
                 .get(plugin)
                 .copied()
-                .flatten()
                 .and_then(|generation| state.loaded.get(&generation))
                 .ok_or_else(|| RegistryError::Rejected {
                     name: usage.plugin.clone(),
@@ -135,7 +131,7 @@ impl Registry {
             }
         }
         let mut state = self.state.lock().await;
-        if state.active.get(&plugin) != Some(&Some(expected))
+        if state.active.get(&plugin) != Some(&expected)
             || (matches!(reason, ActivationReason::TrialFailure { .. })
                 && state
                     .generations
@@ -188,7 +184,14 @@ impl Registry {
                 record.failure = Some(failure);
             }
         }
-        state.active.insert(plugin, to);
+        match to {
+            Some(generation) => {
+                state.active.insert(plugin, generation);
+            }
+            None => {
+                state.active.remove(&plugin);
+            }
+        }
         let target = prepared.map(|(record, loaded)| {
             state.loaded.insert(record.id, loaded);
             record

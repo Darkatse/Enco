@@ -257,11 +257,10 @@ pub struct CapabilityId { pub node: NodeId, pub name: String }
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CodeRef {
     Native { name: String, version: String },  // 编进宿主的代码；version 为 crate 版本
-    Generation { id: GenerationId },           // 一个插件代际（11 §1）；制品哈希与插件身份从注册表查
 }
 ```
 
-Log 里只写代际编号，不写插件身份，所以 Log 可读，改名也不影响它（架构文档 §4.10）。
+目前 composer 与工具都是原生代码。插件 composer 或插件工具出现时再加入 `Generation { id: GenerationId }`；枚举带标签，加变体不影响已记录的条目。Log 引用代际时只写编号（例如 `AttemptStarted.provider`），不写插件身份，所以 Log 可读，改名也不影响它（架构文档 §4.10）。
 
 ### 1.7a 代际（`generation.rs`）
 
@@ -470,7 +469,7 @@ pub trait Store: Send + Sync {
 pub struct NodeRecord { pub id: NodeId, pub safe_mode: bool }
 
 /// 注册表的全部持久状态（11 §3）。
-pub struct RegistryState { pub generations: Vec<GenerationRecord>, pub active: Vec<(PluginId, Option<GenerationId>)> }
+pub struct RegistryState { pub generations: Vec<GenerationRecord>, pub active: BTreeMap<PluginId, GenerationId> }
 
 /// 待插入的代际：状态为 trial 或 healthy；代际只经由 activate 标为 failed。
 pub struct NewGeneration { pub plugin: PluginId, pub artifact: ContentHash, pub config: serde_json::Value, pub origin: Origin, pub status: GenerationStatus, pub created_at: DateTime<Utc> }

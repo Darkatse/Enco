@@ -1,20 +1,20 @@
 use crate::{ContentHash, DateTime, Failure, GenerationId, PluginId, Utc};
 use serde::{Deserialize, Serialize};
 
-/// One immutable activation identity, with a mutable availability status.
+/// One immutable generation identity, with a mutable availability status.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenerationRecord {
     /// Registry-assigned structural sequence number.
     pub id: GenerationId,
-    /// Plugin whose history contains this activation.
+    /// Plugin whose history contains this generation.
     pub plugin: PluginId,
     /// Content-addressed component bytes.
     pub artifact: ContentHash,
     /// Plugin configuration, separate from per-call model settings.
     pub config: serde_json::Value,
-    /// How this activation entered the registry.
+    /// How this generation entered the registry.
     pub origin: Origin,
-    /// Whether this activation remains eligible for use.
+    /// Whether this generation remains eligible for use.
     pub status: GenerationStatus,
     /// The reason this generation was marked failed; absent for trial and healthy records.
     pub failure: Option<Failure>,
@@ -22,7 +22,7 @@ pub struct GenerationRecord {
     pub created_at: DateTime<Utc>,
 }
 
-/// Source of a registered activation.
+/// Source of a registered generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
@@ -32,13 +32,13 @@ pub enum Origin {
     Deployed,
 }
 
-/// Eligibility for activation and automatic recovery.
+/// Eligibility for use and automatic recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GenerationStatus {
     /// Active under observation; not yet eligible as a rollback target.
     Trial,
-    /// Eligible for activation and rollback.
+    /// Eligible to become active or serve as a rollback target.
     Healthy,
     /// Unavailable; redeploying its bytes creates a new identity.
     Failed,

@@ -23,6 +23,7 @@ impl AttemptKind {
 /// The immutable request and its recorded plan, reused across retries.
 pub(crate) struct PlannedAttempt {
     pub kind: AttemptKind,
+    pub composer: CodeRef,
     pub plan: ContextPlan,
     pub request: ProviderRequest,
 }
@@ -55,7 +56,7 @@ impl SessionActor {
                     attempt,
                     purpose: planned.kind.purpose(),
                     plan: plan_hash,
-                    composer: self.deps.snapshot.composer.code(),
+                    composer: planned.composer.clone(),
                     provider: export.generation,
                     settings: endpoint.settings.clone(),
                 }],

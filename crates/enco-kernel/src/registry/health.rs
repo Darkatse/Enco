@@ -17,7 +17,7 @@ impl Registry {
                 .ok_or(StoreError::UnknownGeneration(generation))?;
             let plugin = record.plugin;
             if record.status != GenerationStatus::Trial
-                || state.active.get(&plugin) != Some(&Some(generation))
+                || state.active.get(&plugin) != Some(&generation)
             {
                 return Ok(None);
             }

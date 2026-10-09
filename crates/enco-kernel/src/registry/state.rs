@@ -3,14 +3,14 @@ use super::*;
 pub(super) struct State {
     pub names: BTreeMap<String, PluginId>,
     pub generations: BTreeMap<GenerationId, GenerationRecord>,
-    pub active: BTreeMap<PluginId, Option<GenerationId>>,
+    pub active: BTreeMap<PluginId, GenerationId>,
     pub factory: BTreeMap<PluginId, GenerationId>,
     pub loaded: BTreeMap<GenerationId, Loaded>,
     pub trial_successes: BTreeMap<GenerationId, u32>,
 }
 
 impl State {
-    pub async fn read(deps: &RegistryDeps) -> Result<Self, RegistryError> {
+    pub async fn initialize(deps: &RegistryDeps) -> Result<Self, RegistryError> {
         let names = deps.store.plugin_names().await?;
         for name in names.keys() {
             validate_name(name)?;
@@ -60,7 +60,6 @@ impl State {
             .active
             .get(&factory.id)
             .copied()
-            .flatten()
             .and_then(|id| self.generations.get(&id));
         let activate = active.is_none_or(|record| record.origin == Origin::Factory);
         let existing = self
@@ -76,7 +75,7 @@ impl State {
             .map(|record| record.id);
         let id = match existing {
             Some(id) => {
-                if activate && self.active.get(&factory.id) != Some(&Some(id)) {
+                if activate && self.active.get(&factory.id) != Some(&id) {
                     deps.store.activate(factory.id, Some(id), &[], None).await?;
                 }
                 id
@@ -96,7 +95,7 @@ impl State {
             }
         };
         if activate {
-            self.active.insert(factory.id, Some(id));
+            self.active.insert(factory.id, id);
         }
         self.factory.insert(factory.id, id);
         Ok(())
@@ -143,7 +142,7 @@ impl State {
                     (
                         name.clone(),
                         Routes {
-                            active: self.active.get(plugin).copied().flatten().and_then(export),
+                            active: self.active.get(plugin).copied().and_then(export),
                             factory: self.factory.get(plugin).copied().and_then(export),
                         },
                     )
