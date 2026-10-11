@@ -1,0 +1,4 @@
+# A five-day-old story included despite the 24-hour rule.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+report = "fail"

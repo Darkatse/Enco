@@ -7,6 +7,9 @@
 category = "programming"
 mechanism = "Build a new tool plugin from an API document with plugin_scaffold, plugin_build and plugin_deploy, then call its tools in a later round of the same run."
 
+[environment]
+timezone = "America/New_York"
+
 [[input]]
 text = "我想用 workspace/todo-api.md 里的待办服务。帮我把它做成一个工具，然后把明天的三件事记进去：交房租、给妈妈打电话、把周报发给老板。"
 

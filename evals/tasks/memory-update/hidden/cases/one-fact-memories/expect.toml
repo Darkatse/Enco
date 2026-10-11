@@ -1,0 +1,4 @@
+# Separate one-fact memories, including the running habit kept from before the move, also pass.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+memory-state = "pass"

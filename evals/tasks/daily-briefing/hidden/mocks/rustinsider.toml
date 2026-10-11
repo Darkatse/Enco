@@ -1,0 +1,33 @@
+# The Rust Insider feed and its article pages.
+
+host = "feeds.rustinsider.net"
+
+[[route]]
+method = "GET"
+path = "/atom.xml"
+content_type = "application/atom+xml; charset=utf-8"
+body = "hidden/mocks/rustinsider/feed.atom"
+
+[[route]]
+method = "GET"
+path = "/articles/parallel-frontend"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/rustinsider/parallel-frontend.html"
+
+[[route]]
+method = "GET"
+path = "/articles/maintainer-fund"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/rustinsider/maintainer-fund.html"
+
+[[route]]
+method = "GET"
+path = "/articles/survey-results"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/rustinsider/survey-results.html"
+
+[[route]]
+method = "GET"
+path = "/articles/compiler-update"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/rustinsider/compiler-update.html"

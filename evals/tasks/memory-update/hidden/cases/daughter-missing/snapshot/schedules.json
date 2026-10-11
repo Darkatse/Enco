@@ -1,0 +1,13 @@
+[
+  {
+    "id": "01K7A5C1D2E3F4G5H6J7K8M9N1",
+    "session": "home",
+    "rule": {
+      "at": "2027-09-05T09:00:00-04:00"
+    },
+    "message": "订儿子的生日蛋糕（9 月 12 日）",
+    "timezone": "America/New_York",
+    "next_due": "2027-09-05T09:00:00-04:00",
+    "last_due": null
+  }
+]

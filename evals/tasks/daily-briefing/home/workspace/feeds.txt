@@ -1,0 +1,3 @@
+{{mock:rustinsider}}/atom.xml
+{{mock:techdaily}}/feed/atom
+{{mock:worldwire}}/feeds/top.atom

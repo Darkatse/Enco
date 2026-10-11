@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Tech Daily</title>
+  <link rel="self" href="http://techdaily.io/feed/atom"/>
+  <link rel="alternate" href="http://techdaily.io/"/>
+  <id>urn:uuid:585b7d1c-d7de-5223-a169-017466d3dfb1</id>
+  <updated>{{time:-1h12m40s}}</updated>
+  <entry>
+    <title>Larkspur AI releases an open-weight reasoning model</title>
+    <link rel="alternate" href="http://techdaily.io/articles/larkspur-reasoning"/>
+    <id>urn:uuid:50c0a8d2-8e83-5345-8301-b69e9325229d</id>
+    <author><name>Priya Raman</name></author>
+    <updated>{{time:-1h12m40s}}</updated>
+    <summary>The 70-billion-parameter model matches proprietary systems on coding benchmarks and ships under the Apache 2.0 license.</summary>
+  </entry>
+  <entry>
+    <title>Rust nightly turns on parallel compilation by default</title>
+    <link rel="alternate" href="http://techdaily.io/articles/rust-parallel"/>
+    <id>urn:uuid:13d98370-fc15-58c5-8b13-548a49640cd6</id>
+    <author><name>Dan Okafor</name></author>
+    <updated>{{time:-2h31m07s}}</updated>
+    <summary>The change makes the compiler's long-awaited parallel front end the default for nightly users.</summary>
+  </entry>
+  <entry>
+    <title>EU begins enforcing transparency rules for AI chatbots</title>
+    <link rel="alternate" href="http://techdaily.io/articles/eu-chatbot-rules"/>
+    <id>urn:uuid:ae194a18-6347-56e7-9616-45569184dd66</id>
+    <author><name>Priya Raman</name></author>
+    <updated>{{time:-6h04m55s}}</updated>
+    <summary>Chatbots offered in the EU must now tell users they are talking to an AI, and regulators can fine companies that do not.</summary>
+  </entry>
+  <entry>
+    <title>Survival game Rust adds a winter map and new vehicles</title>
+    <link rel="alternate" href="http://techdaily.io/articles/rust-game-winter"/>
+    <id>urn:uuid:b838eabd-af58-5d75-a72c-dc6b7a9d7d6c</id>
+    <author><name>Dan Okafor</name></author>
+    <updated>{{time:-7h22m31s}}</updated>
+    <summary>The monthly update brings snowmobiles and a frozen-lake biome to the multiplayer game.</summary>
+  </entry>
+  <entry>
+    <title>Foldable phone with a week-long battery goes on sale</title>
+    <link rel="alternate" href="http://techdaily.io/articles/foldable-battery"/>
+    <id>urn:uuid:eeb1b5c2-2565-5e75-806e-52cd32052ecb</id>
+    <author><name>Lena Fischer</name></author>
+    <updated>{{time:-9h10m19s}}</updated>
+    <summary>The phone's new silicon-carbon battery lasts seven days in the maker's own tests.</summary>
+  </entry>
+  <entry>
+    <title>Hospital network deploys an AI triage assistant in emergency rooms</title>
+    <link rel="alternate" href="http://techdaily.io/articles/ai-triage"/>
+    <id>urn:uuid:62955785-8cad-5e11-b179-05a75535fdc1</id>
+    <author><name>Priya Raman</name></author>
+    <updated>{{time:-10h48m03s}}</updated>
+    <summary>Nurses review the assistant's suggested priority for each patient; waits fell during a six-month pilot.</summary>
+  </entry>
+  <entry>
+    <title>Automotive chip shortage eases as a new fab opens in Arizona</title>
+    <link rel="alternate" href="http://techdaily.io/articles/arizona-fab"/>
+    <id>urn:uuid:842a2bbd-6903-5171-9bce-2e4407c40de8</id>
+    <author><name>Lena Fischer</name></author>
+    <updated>{{time:-15h03m48s}}</updated>
+    <summary>The plant makes microcontrollers for car makers, easing shortages that idled assembly lines.</summary>
+  </entry>
+  <entry>
+    <title>Startup raises $40 million to train coding models</title>
+    <link rel="alternate" href="http://techdaily.io/articles/coding-model-funding"/>
+    <id>urn:uuid:2cebf402-8dca-5fcb-a329-4d14784cc45f</id>
+    <author><name>Dan Okafor</name></author>
+    <updated>{{time:-3d01h17m}}</updated>
+    <summary>The two-year-old company plans to open a research office in Toronto.</summary>
+  </entry>
+</feed>

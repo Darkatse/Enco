@@ -1,0 +1,4 @@
+# The son's favorite color guessed for the daughter.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+abstain = "fail"

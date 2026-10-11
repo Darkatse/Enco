@@ -1,0 +1,13 @@
+[
+  {
+    "id": "01K7A4B2C3D4E5F6G7H8J9K0M1",
+    "session": "main",
+    "rule": {
+      "cron": "0 8 * * ?"
+    },
+    "message": "做早报：读 workspace/feeds.txt 中的新闻源，筛出最近 24 小时的 Rust 与 AI 新闻，看未读邮件，要点发给主人，并发一份到 lin.zhou@veloran.com。",
+    "timezone": "America/New_York",
+    "next_due": "2026-10-12T08:00:00-04:00",
+    "last_due": null
+  }
+]

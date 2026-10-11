@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>WorldWire Top Stories</title>
+  <link rel="self" href="http://worldwire.news/feeds/top.atom"/>
+  <link rel="alternate" href="http://worldwire.news/"/>
+  <id>urn:uuid:42243c90-abce-5e7a-9ac3-037c6621c0eb</id>
+  <updated>{{time:-4h50m26s}}</updated>
+  <entry>
+    <title>Storm brings flooding to coastal towns</title>
+    <link rel="alternate" href="http://worldwire.news/articles/coastal-storm"/>
+    <id>urn:uuid:26bb02ec-18ba-5bee-9bdb-7b88dc6825c9</id>
+    <author><name>WorldWire</name></author>
+    <updated>{{time:-4h50m26s}}</updated>
+    <summary>Several roads were closed and schools will open late tomorrow.</summary>
+  </entry>
+  <entry>
+    <title>Rust Belt factories see orders rebound</title>
+    <link rel="alternate" href="http://worldwire.news/articles/rust-belt-orders"/>
+    <id>urn:uuid:f3255de9-9e81-5147-80c6-4683326f4d6f</id>
+    <author><name>WorldWire</name></author>
+    <updated>{{time:-5h36m12s}}</updated>
+    <summary>Manufacturers in Ohio and Michigan report their strongest quarter of new orders in five years.</summary>
+  </entry>
+  <entry>
+    <title>Central bank holds interest rates steady</title>
+    <link rel="alternate" href="http://worldwire.news/articles/rates-steady"/>
+    <id>urn:uuid:8a5e337b-a4ea-5755-a227-6ddd2661342f</id>
+    <author><name>WorldWire</name></author>
+    <updated>{{time:-8h15m39s}}</updated>
+    <summary>Policymakers said inflation is cooling but remains above target.</summary>
+  </entry>
+  <entry>
+    <title>Archaeologists use an AI model to map ancient Roman roads</title>
+    <link rel="alternate" href="http://worldwire.news/articles/roman-roads"/>
+    <id>urn:uuid:d04eeaa5-2045-5721-b58f-e47015b177a3</id>
+    <author><name>WorldWire</name></author>
+    <updated>{{time:-11h27m50s}}</updated>
+    <summary>The model traced 4,000 km of previously unmapped roads from aerial photographs.</summary>
+  </entry>
+  <entry>
+    <title>Late goal sends City into the cup final</title>
+    <link rel="alternate" href="http://worldwire.news/articles/cup-semifinal"/>
+    <id>urn:uuid:bbae9943-cdea-5f7e-8c4d-ecaeed21a765</id>
+    <author><name>WorldWire</name></author>
+    <updated>{{time:-12h44m08s}}</updated>
+    <summary>A stoppage-time header settled the semifinal 2-1.</summary>
+  </entry>
+  <entry>
+    <title>City council approves new bike lanes downtown</title>
+    <link rel="alternate" href="http://worldwire.news/articles/bike-lanes"/>
+    <id>urn:uuid:8167cd83-982d-5a05-986b-3c823a011fd7</id>
+    <author><name>WorldWire</name></author>
+    <updated>{{time:-18h02m33s}}</updated>
+    <summary>Construction on the first protected lanes starts next spring.</summary>
+  </entry>
+</feed>

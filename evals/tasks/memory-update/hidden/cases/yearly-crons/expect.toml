@@ -1,0 +1,5 @@
+# Yearly cron reminders are as good as one-off ones.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+recall = "pass"
+correction = "pass"

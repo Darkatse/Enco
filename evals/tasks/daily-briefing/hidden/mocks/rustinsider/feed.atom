@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Rust Insider</title>
+  <link rel="self" href="http://feeds.rustinsider.net/atom.xml"/>
+  <link rel="alternate" href="http://feeds.rustinsider.net/"/>
+  <id>urn:uuid:d086d6ea-bcda-5a90-bc09-7de7f3373cb0</id>
+  <updated>{{time:-3h05m14s}}</updated>
+  <entry>
+    <title>Parallel front end enabled by default in Rust nightly</title>
+    <link rel="alternate" href="http://feeds.rustinsider.net/articles/parallel-frontend"/>
+    <id>urn:uuid:20dac4c6-f7dd-51e7-84d2-1dd96ae7cdf4</id>
+    <author><name>Mara Lindqvist</name></author>
+    <updated>{{time:-3h05m14s}}</updated>
+    <summary>Starting with tonight's nightly, rustc type-checks crates on several threads by default; large workspaces build up to 30% faster.</summary>
+  </entry>
+  <entry>
+    <title>Rust Foundation launches a fund for core maintainers</title>
+    <link rel="alternate" href="http://feeds.rustinsider.net/articles/maintainer-fund"/>
+    <id>urn:uuid:948f62e9-d7a1-59ab-ba96-3717f05ef7a6</id>
+    <author><name>Rust Insider staff</name></author>
+    <updated>{{time:-19h40m02s}}</updated>
+    <summary>Member companies will pay twelve maintainers of widely used crates for the next two years.</summary>
+  </entry>
+  <entry>
+    <title>State of Rust survey: results are in</title>
+    <link rel="alternate" href="http://feeds.rustinsider.net/articles/survey-results"/>
+    <id>urn:uuid:44971659-fed5-56e1-9d10-b184248b995b</id>
+    <author><name>Mara Lindqvist</name></author>
+    <updated>{{time:-5d02h11m}}</updated>
+    <summary>More respondents than ever use Rust at work; compile times remain the top complaint.</summary>
+  </entry>
+  <entry>
+    <title>Inside Rust: compiler team update</title>
+    <link rel="alternate" href="http://feeds.rustinsider.net/articles/compiler-update"/>
+    <id>urn:uuid:90f6959d-e5c3-5f6f-9783-f2b74a05e466</id>
+    <author><name>Rust Insider staff</name></author>
+    <updated>{{time:-9d04h30m}}</updated>
+    <summary>Progress on the parallel front end and the next-generation trait solver.</summary>
+  </entry>
+</feed>

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A reminder fires on March 7, a week before the daughter's birthday (March 14), as a one-off or yearly.",
+  "type": "array",
+  "contains": {
+    "type": "object",
+    "required": [
+      "rule"
+    ],
+    "properties": {
+      "rule": {
+        "anyOf": [
+          {
+            "type": "object",
+            "required": [
+              "at"
+            ],
+            "properties": {
+              "at": {
+                "type": "string",
+                "pattern": "^\\d{4}-03-07T"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "cron"
+            ],
+            "properties": {
+              "cron": {
+                "type": "string",
+                "pattern": "^\\S+ \\S+ 0?7 0?3 \\S+$"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

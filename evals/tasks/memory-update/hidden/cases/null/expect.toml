@@ -1,0 +1,11 @@
+# The agent saved nothing, scheduled nothing and answered nothing: the task fails.
+start = 2026-10-11T09:00:00-04:00
+success = false
+
+[criteria]
+recall = "fail"
+correction = "fail"
+update = "fail"
+precision = "fail"
+abstain = "fail"
+memory-state = "fail"

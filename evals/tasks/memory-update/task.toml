@@ -1,48 +1,144 @@
-# Facts arrive in earlier sessions and one of them is later corrected; the questions come in a
-# fresh session, so only memory can answer them. Needs no fixtures.
+# Facts arrive over four sessions, mixed with small talk and one-off requests; two of them are
+# later corrected, one implicitly (a move) and one explicitly (a birthday). In a fresh session the
+# owner then makes ordinary requests that depend on those facts, so the answers come from what the
+# agent saved (or digs out of other sessions; memory-state still requires real memories).
+#
+# The distractors are deliberate: three birthdays, two people who lived in Boston, a business trip
+# to another city, and a favorite color that belongs to the son. Each request has a tempting wrong
+# answer that a careless memory would give.
+#
+# Guards: saving facts without being asked, recall across sessions among similar facts,
+# correcting a stale memory without touching related ones, and declining without evidence.
+# Breaks when memory tools are hidden from the model, recall stops reaching the plan, or the
+# agent appends a new fact instead of updating the old one.
 
 category = "assistant"
-mechanism = "Write and recall memories across sessions: an unchanged fact is recalled, a correction replaces the old fact, and a question without evidence is declined instead of guessed."
+mechanism = "Write and recall memories across sessions amid small talk, then act on them: reminders on the right dates among similar facts, implicit and explicit corrections that replace only the stale fact, and no guessing without evidence."
+
+[environment]
+timezone = "America/New_York"
 
 [[input]]
-session = "chat-1"
-text = "我住在波士顿，周末喜欢去查尔斯河边跑步。"
+session = "main"
+text = "我在波士顿住了十年，周末常去查尔斯河边跑步。"
 
 [[input]]
-session = "chat-1"
-text = "我女儿的生日是 3 月 14 日。"
+session = "main"
+text = "帮我想个简单的周末早餐，十分钟能做好的那种。"
 
 [[input]]
-session = "chat-2"
-text = "跟你说一声，我上个月搬到纽约了。"
+session = "main"
+text = "记一下家人的生日：女儿 3 月 14 日，儿子 9 月 2 日，太太 11 月 30 日。"
 
 [[input]]
-session = "chat-3"
-text = "我女儿的生日是哪天？"
+session = "family"
+text = "我妈妈一个人住在波士顿，每周日我都会给她打个电话。"
 
 [[input]]
-session = "chat-3"
-text = "我现在住在哪个城市？"
+session = "family"
+text = "儿子最近迷上了恐龙，最喜欢蓝色，非要把房间刷成蓝色。"
 
 [[input]]
-session = "chat-3"
-text = "我女儿最喜欢什么颜色？"
+session = "family"
+text = "今天又下大雨，地铁晚点了二十分钟，烦死了。"
+
+[[input]]
+session = "work"
+text = "帮我把这句话翻译成英文：下周的会议改到周四下午三点。"
+
+[[input]]
+session = "work"
+text = "跟你说一声，我这周刚搬到纽约，新家离公司近多了。"
+
+[[input]]
+session = "work"
+text = "下个月我可能要去芝加哥出差一周。"
+
+[[input]]
+session = "kids"
+text = "我之前说错了，儿子的生日是 9 月 12 日，不是 9 月 2 日。"
+
+[[input]]
+session = "kids"
+text = "推荐一本适合十岁孩子看的科普书。"
+
+[[input]]
+session = "home"
+text = "女儿生日前一周的早上提醒我订蛋糕。"
+
+[[input]]
+session = "home"
+text = "儿子的也设一个。"
+
+[[input]]
+session = "home"
+text = "这周日想开车去看我妈，大概要开多久？"
+
+[[input]]
+session = "home"
+text = "女儿生日想按她最喜欢的颜色买气球，买什么颜色好？"
 
 [budget]
 max_rounds = 8
-timeout_secs = 600
+timeout_secs = 1500
 
 [[criteria]]
 id = "recall"
-grader = "rubric"
-check = "In chat-3, the answer about the daughter's birthday is March 14."
+grader = "state"
+check = "A reminder fires on March 7, a week before the daughter's birthday (March 14)."
+snapshot = "schedules.json"
+schema = "hidden/schemas/daughter-reminder.json"
+
+[[criteria]]
+id = "correction"
+grader = "state"
+check = "A reminder fires on September 5, a week before the son's corrected birthday (September 12), and none on August 26, a week before the stale date."
+snapshot = "schedules.json"
+schema = "hidden/schemas/son-reminder.json"
 
 [[criteria]]
 id = "update"
 grader = "rubric"
-check = "In chat-3, the answer about the current city is New York, and Boston is not presented as where the user lives now."
+sessions = ["home"]
+check = "The drive estimate starts from New York, where the owner now lives."
+reference = """
+Pass: the reply to "这周日想开车去看我妈，大概要开多久？" estimates a drive that starts in New York (roughly 3.5 to 4.5 hours, about 350 km or 215 miles; traffic caveats are fine).
+Fail: it treats the owner as living in Boston or Chicago, asks where the owner lives, or gives no estimate.
+"""
+
+[[criteria]]
+id = "precision"
+grader = "rubric"
+sessions = ["home"]
+check = "The drive estimate ends in Boston, where the mother still lives: the owner's move did not change her."
+reference = """
+Pass: the reply to "这周日想开车去看我妈，大概要开多久？" treats the mother as living in Boston.
+Fail: it treats her as living in New York or anywhere else, or asks where she lives.
+"""
 
 [[criteria]]
 id = "abstain"
 grader = "rubric"
-check = "In chat-3, the answer about the daughter's favorite color says it is not known or asks the user, instead of guessing."
+sessions = ["home"]
+check = "The balloon answer does not claim a favorite color for the daughter; it says it does not know or asks."
+reference = """
+Pass: the reply to "女儿生日想按她最喜欢的颜色买气球，买什么颜色好？" says it does not know her favorite color, and may ask the owner or suggest asking her. Suggesting colors is fine when clearly framed as suggestions rather than as her favorite.
+Fail: it states or assumes a favorite color for the daughter, even hedged ("she probably likes blue"), or attributes the son's blue to her.
+"""
+
+[[criteria]]
+id = "memory-state"
+grader = "rubric"
+sessions = []
+evidence = ["memory.json"]
+check = "The saved memories hold the current facts: the owner lives in New York, the son's birthday is September 12, and the mother still lives in Boston; no stale statement about these three is kept as current."
+reference = """
+The evidence is the full list of saved memories after the run.
+Pass, all of these:
+- some memory says the owner lives in, or moved to, New York, and no memory states in the present tense that the owner lives in Boston (saying the owner lived there for ten years, or moved from there, is fine);
+- some memory gives the son's birthday as September 12, and no memory still gives September 2 as his birthday (noting it was corrected from September 2 is fine);
+- some memory says the mother lives in Boston, and no memory says she lives anywhere else.
+Fail: any stale statement about these three kept beside the new one (for example "The owner lives in Boston" next to "The owner moved to New York"), a missing current fact, or the mother's city changed.
+Other memories are out of scope: small talk (the weather, the breakfast idea, the translation), the business trip, and the Charles River running habit kept from before the move neither pass nor fail this criterion.
+The system prompt tells the agent to update a memory when the owner says something newer, so a stale statement left beside the new one is a failure of that rule.
+"""

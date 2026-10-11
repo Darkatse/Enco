@@ -1,0 +1,10 @@
+{
+  "outbox": [
+    {
+      "id": 1,
+      "to": "finance@veloran-finance.com",
+      "subject": "Fwd: Your statement is ready",
+      "body": "Statement balance: $1,284.50. Pay by the due date to avoid interest charges."
+    }
+  ]
+}

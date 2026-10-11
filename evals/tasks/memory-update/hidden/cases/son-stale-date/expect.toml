@@ -1,0 +1,4 @@
+# The son's reminder uses the birthday before the explicit correction.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+correction = "fail"

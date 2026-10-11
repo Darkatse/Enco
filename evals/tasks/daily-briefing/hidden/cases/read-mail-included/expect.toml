@@ -1,0 +1,4 @@
+# An already-read email reported though the owner asked for unread mail.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+report = "fail"

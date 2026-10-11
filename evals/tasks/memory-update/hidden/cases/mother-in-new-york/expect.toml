@@ -1,0 +1,4 @@
+# The owner's move applied to the mother as well.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+precision = "fail"

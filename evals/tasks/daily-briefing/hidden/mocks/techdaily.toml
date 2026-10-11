@@ -1,0 +1,57 @@
+# The Tech Daily feed and its article pages.
+
+host = "techdaily.io"
+
+[[route]]
+method = "GET"
+path = "/feed/atom"
+content_type = "application/atom+xml; charset=utf-8"
+body = "hidden/mocks/techdaily/feed.atom"
+
+[[route]]
+method = "GET"
+path = "/articles/larkspur-reasoning"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/techdaily/larkspur-reasoning.html"
+
+[[route]]
+method = "GET"
+path = "/articles/rust-parallel"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/techdaily/rust-parallel.html"
+
+[[route]]
+method = "GET"
+path = "/articles/eu-chatbot-rules"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/techdaily/eu-chatbot-rules.html"
+
+[[route]]
+method = "GET"
+path = "/articles/rust-game-winter"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/techdaily/rust-game-winter.html"
+
+[[route]]
+method = "GET"
+path = "/articles/foldable-battery"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/techdaily/foldable-battery.html"
+
+[[route]]
+method = "GET"
+path = "/articles/ai-triage"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/techdaily/ai-triage.html"
+
+[[route]]
+method = "GET"
+path = "/articles/arizona-fab"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/techdaily/arizona-fab.html"
+
+[[route]]
+method = "GET"
+path = "/articles/coding-model-funding"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/techdaily/coding-model-funding.html"

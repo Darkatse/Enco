@@ -1,0 +1,4 @@
+# The chat briefing is right but the emailed copy gives the old deadline.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+report = "fail"

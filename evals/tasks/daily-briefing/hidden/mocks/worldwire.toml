@@ -1,0 +1,45 @@
+# The WorldWire Top Stories feed and its article pages.
+
+host = "worldwire.news"
+
+[[route]]
+method = "GET"
+path = "/feeds/top.atom"
+content_type = "application/atom+xml; charset=utf-8"
+body = "hidden/mocks/worldwire/feed.atom"
+
+[[route]]
+method = "GET"
+path = "/articles/coastal-storm"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/worldwire/coastal-storm.html"
+
+[[route]]
+method = "GET"
+path = "/articles/rust-belt-orders"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/worldwire/rust-belt-orders.html"
+
+[[route]]
+method = "GET"
+path = "/articles/rates-steady"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/worldwire/rates-steady.html"
+
+[[route]]
+method = "GET"
+path = "/articles/roman-roads"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/worldwire/roman-roads.html"
+
+[[route]]
+method = "GET"
+path = "/articles/cup-semifinal"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/worldwire/cup-semifinal.html"
+
+[[route]]
+method = "GET"
+path = "/articles/bike-lanes"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/worldwire/bike-lanes.html"

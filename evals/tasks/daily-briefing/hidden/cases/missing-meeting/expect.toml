@@ -1,0 +1,4 @@
+# The parent-teacher conference is left out.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+report = "fail"
