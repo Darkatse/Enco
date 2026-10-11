@@ -28,7 +28,7 @@ Agent 友好的核心是认知负担轻。这里有两个读者：运行中的�
 1. **可用 ≠ 可见**：Round 快照钉住全部可用的能力，ContextPlan 中的披露集决定模型能看到哪些。**模型只能调用它被告知过的能力**：可调用 = 已披露（包括本 Round 内通过搜索展开并已记录的）∩ 快照。
 2. **ContextPlan 就是准备好的请求**：composer 输出一组有序的请求片段，每段要么是内联内容（由 composer 生成，例如 SillyTavern 格式化后的文本），要么是对不可变内容的引用（Log 条目、blob、候选块）。内联消息记录实际使用的候选来源（id 与原始文本哈希），供 composer 沿用与事后查看。此外还有披露集（每项带完整的工具定义，即模型看到的名称、描述与 schema；名称必须与注册表一致，§4.10）、被省略的条目及原因，以及每段的稳定性标注。内核只负责解引用，不包含任何排版逻辑；校验通过后按内容寻址记录，再原样交给 Provider。
 3. **记录缓存事实**：每次 Attempt 记录 Provider 回报的用量，包括命中缓存的 token 数；上一份 ContextPlan 作为 composer 的输入。这样缓存优化可以测量、可以迭代，而内核本身不含任何缓存逻辑。
-4. **声明的要求与安全模式**：Session 的配置可以声明要求，例如默认的 Agent 配置要求救生集常驻（`fs_*`、`shell_exec`、`plugin_status/deploy/rollback`、`manual_read`、`capability_search`）。内核据此校验计划，不满足的计划按 composer 失败处理：回退代际或进入安全模式。安全模式下的出厂 composer 永远带有救生集。角色扮演一类的 Session 可以不声明这项要求。
+4. **声明的要求与安全模式**：Session 的配置可以声明要求，例如默认的 Agent 配置要求救生集常驻（`fs_*`、`shell_exec`、`plugin_status/build/deploy/rollback`、`manual_read`、`capability_search`）。内核据此校验计划，不满足的计划按 composer 失败处理：回退代际或进入安全模式。安全模式下的出厂 composer 永远带有救生集。角色扮演一类的 Session 可以不声明这项要求。
 
 **缓存优化的分工。** composer 知道哪些内容是稳定的（这是语义），所以在片段上标注 `stable` 或 `volatile`。默认 composer 在一个请求系列内只追加披露，在压缩时开始新系列。Provider 知道怎样在线上利用稳定性（例如在稳定边界放置缓存断点、用原生的延迟加载保持工具列表不变）。内核记录命中率。换一个 composer 或 Provider，正确性都不受影响。
 
@@ -104,8 +104,8 @@ deliver: async func(target: string, message: json) -> outcome;
 
 ## 7.5 两种手册：源码手册与运行时手册
 
-- **源码手册**描述 git 中的版本。WIT 契约和内核、SDK 的 API.md 由 `cargo xtask docs` 生成；插件手册（README 生成区）是以空配置调用 `describe()` / `list-tools()` 得到的手册。
-- **运行时手册**描述正在运行的代际：从制品中解码嵌入的 WIT，加上以该代际的配置调用 `describe()` / `list-tools()` 的结果，以代际为键存储。配置不同，手册就可能不同（§4.5）；其中只取决于制品的部分（解码出的 WIT）可以按制品哈希缓存。
+- **源码手册**描述 git 中的版本。WIT 契约和内核、SDK 的 API.md 由 `cargo xtask docs` 生成；插件手册（README 生成区）是以空配置调用 `describe(config)` / `tools.list(config)` 得到的手册。
+- **运行时手册**描述正在运行的代际：从制品中解码嵌入的 WIT，加上以该代际的配置调用 `describe(config)` / `tools.list(config)` 的结果，以代际为键存储。配置不同，手册就可能不同（§4.5）；其中只取决于制品的部分（解码出的 WIT）可以按制品哈希缓存。
 - 插件手册只有一个生成器，位于 `enco-wasm` 的构建与校验中，输入是制品和一份配置：`plugin_build` 用空配置生成 README 生成区，`plugin_deploy` 用新代际的配置生成运行时手册；本仓库的出厂插件由 xtask 调用同一个生成器。
 - CLI `enco manual <contract|plugin|capability> [--node X]` 和给运行中的 Agent 使用的工具 `manual_read`，读取的都是运行时手册。所以手册永远与实际执行的代码一致，并且按节点区分，因为不同节点可能运行不同的代际。
 - 手册描述代际是什么，随代际固定不变；代际现在是否健康、接到了谁、在哪些节点上准入，属于 `plugin_status`（§4.10）。

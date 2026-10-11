@@ -27,7 +27,7 @@ scripts/check-crate-boundaries   # 依赖方向（§4.1）
 
 已知的第一个拆分点是 `enco-host`。它同时承载两个概念：**Host 机制**（Store、blob、KV、fs/exec/http 原语、检索索引、时钟）与**原生能力**（出厂 composer、救生工具、工作区上下文、记忆策略）。
 
-- **触发条件**：WIT 第一次需要 `log`、`http` 之外的宿主导入（例如 `state-get`、`blob-put`、`exec`，预计在 P1–P2）。那时插件运行时必须调用 Host 机制，而当前的依赖方向不允许 `enco-wasm` 依赖 `enco-host`。
+- **触发条件**：插件第一次需要 Host 机制提供的宿主导入（例如 `state-get`、`blob-put`、`exec`）。那时插件运行时必须调用 Host 机制，而当前的依赖方向不允许 `enco-wasm` 依赖 `enco-host`。`config()` 这类由 enco-wasm 从代际记录直接提供的导入不算。
 - **拆分后的形态**（名称到时再定）：
 
   ```text
