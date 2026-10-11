@@ -17,7 +17,7 @@ xtask/           # cargo xtask docs [--check]：WIT → CONTRACT、目录、API 
 plugins/
 evals/           # 评测任务集与黑盒运行器（§4.8）；runner/ 是独立的 Cargo 工作区，只调用 enco 的命令行
 wit/             # *.wit + 生成的 CONTRACT.md / CONTRACT-CHANGES.md
-docs/{AGENTS.md, decisions/, plan/, history/, cookbook/, generated/}   # plan/ 是进行中阶段的里程碑计划，验收后原样移入 history/
+docs/{AGENTS.md, decisions/, plan/, history/, cookbook/, generated/}   # plan/ 是进行中阶段的里程碑计划，验收后由 history/ 记下结论
 scripts/check-crate-boundaries   # 依赖方向（§4.1）
 ```
 

@@ -23,5 +23,8 @@ target
 # Local develop documents
 .archived_docs
 
+# Accepted milestone plans with their real run data and personal configs
+.archive
+
 # Local desktop metadata
 .DS_Store

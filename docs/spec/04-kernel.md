@@ -747,7 +747,7 @@ pub enum KernelError {
 
 ## 14. 请求查看：`Kernel::inspect`
 
-把一次 Attempt 记录的东西解析成模型实际收到的请求。它和 Round 用同一个 `plan::resolve`，所以看到的就是发出去的；A2 的验收（09 §4）用它核对。
+把一次 Attempt 记录的东西解析成模型实际收到的请求。它和 Round 用同一个 `plan::resolve`，所以看到的就是发出去的。
 
 ```rust
 pub struct Inspection {
