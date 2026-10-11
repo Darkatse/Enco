@@ -5,6 +5,7 @@ mod config;
 mod daemon;
 mod paths;
 mod protocol;
+mod send;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -15,7 +16,11 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 #[derive(Parser)]
-#[command(name = "enco", about = "A personal agent with a durable execution log")]
+#[command(
+    name = "enco",
+    version,
+    about = "A personal agent with a durable execution log"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Action,
@@ -36,6 +41,8 @@ enum Action {
     Send {
         #[arg(long, default_value = "main")]
         session: String,
+        #[arg(long)]
+        wait: bool,
         text: String,
     },
     Schedules {
@@ -113,7 +120,19 @@ async fn main() -> Result<()> {
             return daemon::serve(paths).await;
         }
         Action::Chat { session } => return chat::chat(&paths, session).await,
-        Action::Send { session, text } => Command::Send {
+        Action::Send {
+            session,
+            text,
+            wait: true,
+        } => {
+            println!("{:#}", send::wait(&paths, session, text).await?);
+            return Ok(());
+        }
+        Action::Send {
+            session,
+            text,
+            wait: false,
+        } => Command::Send {
             session,
             text,
             event_id: EventId::new(),

@@ -35,13 +35,20 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         .await
         .unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
-        .args(["send", "hello"])
+        .args(["send", "--wait", "hello"])
         .env("ENCO_HOME", daemon.root.path())
         .output()
         .await
         .unwrap();
     assert!(output.status.success());
+    let waited: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let entries = finish(&mut client).await;
+    let ended = entries.last().unwrap();
+    let EntryBody::RunEnded { run, end } = &ended.body else {
+        panic!("Run did not end");
+    };
+    assert_eq!(waited["run"], json!(run));
+    assert_eq!(waited["end"], json!(end));
     assert!(entries.iter().any(|entry| matches!(&entry.body,
         EntryBody::AttemptSettled { result: AttemptResult::Completed { message, .. }, .. }
             if message.joined_text() == "hello"

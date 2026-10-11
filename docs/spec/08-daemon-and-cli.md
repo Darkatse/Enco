@@ -4,6 +4,8 @@
 
 ## 1. 子命令
 
+`enco --version` 打印版本，不连接守护进程。
+
 | 命令 | 作用 |
 |---|---|
 | `enco init` | 创建 `ENCO_HOME`、`.data/`、工作区目录、`.gitignore` 与配置模板（已存在的文件不覆盖），打印下一步。模板的 `timezone` 填入检测到的本机 IANA 时区；检测不到时这一行写成注释，下一步提示中要求填写 |
@@ -280,7 +282,7 @@ pub enum ServerMessage {
 
 1. 先 `subscribe` 这个 Session，再 `send`，所以接纳这条输入的条目一定在订阅之后。
 2. 在推送中找 `event.id` 等于本次 `event_id` 的 `EventConsumed`，然后取它之后的第一个 `RunEnded`。"所在的 Run"由 Log 认定：输入落进一个已在进行的 Run 时，结局就是这个 Run 的结局。
-3. 收到 `lagged` 时，用 `log { after }` 从最后看到的位置补读，再继续等待推送。
+3. 收到 `lagged` 时，用 `log { after }` 从最后看到的位置补读。守护进程按顺序写出同一连接的回复与推送，所以补读回复之前到达的推送与 `lagged` 都已包含在回复中，直接丢弃；回复之后的推送可能与回复重叠，按 Log 位置去重。
 4. 输出 `{ "session_id", "event_id", "accepted", "run", "end" }`，`end` 是 `RunEnd`，然后退出。等待没有时限，需要时限的调用方自己计时并 `enco cancel`（13 §4）。
 
 ## 8. 日志

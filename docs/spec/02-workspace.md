@@ -264,6 +264,7 @@ daemon.rs        enco serve：本地协议服务端
 protocol.rs      请求与推送消息类型
 client.rs        本地协议客户端
 chat.rs          enco chat：交互与渲染
+send.rs          enco send --wait：从订阅与补读的 Log 确定输入所属 Run 的结局
 ```
 
 **evals/runner**（独立工作区）
