@@ -9,7 +9,7 @@
 | `enco init` | 创建 `ENCO_HOME`、`.data/`、工作区目录、`.gitignore` 与配置模板（已存在的文件不覆盖），打印下一步。模板的 `timezone` 填入检测到的本机 IANA 时区；检测不到时这一行写成注释，下一步提示中要求填写 |
 | `enco serve` | 在前台运行守护进程 |
 | `enco chat [--session <name>]` | 交互式对话，默认 Session 为 `main` |
-| `enco send [--session <name>] <text>` | 发送一条消息后退出，不等待回复 |
+| `enco send [--session <name>] [--wait] <text>` | 发送一条消息。不带 `--wait` 时发出即退出；带 `--wait` 时等这条输入所在的 Run 结束，输出它的结局（§7） |
 | `enco status` | 节点、安全模式、代码版本、各 Session 状态，以及 Scheduler 停止的原因（`scheduler_stopped`） |
 | `enco sessions` | 列出 Session |
 | `enco log [--session <name>]` | 输出 Session 的全部条目 |
@@ -275,6 +275,13 @@ pub enum ServerMessage {
 | 其他 | 不显示 |
 
 客户端通过之前看到的 `AttemptStarted` 记住每个 Attempt 的目的。
+
+`enco send --wait` 只用已有的 `subscribe`、`send` 与 `log`，协议不变：
+
+1. 先 `subscribe` 这个 Session，再 `send`，所以接纳这条输入的条目一定在订阅之后。
+2. 在推送中找 `event.id` 等于本次 `event_id` 的 `EventConsumed`，然后取它之后的第一个 `RunEnded`。"所在的 Run"由 Log 认定：输入落进一个已在进行的 Run 时，结局就是这个 Run 的结局。
+3. 收到 `lagged` 时，用 `log { after }` 从最后看到的位置补读，再继续等待推送。
+4. 输出 `{ "session_id", "event_id", "accepted", "run", "end" }`，`end` 是 `RunEnd`，然后退出。等待没有时限，需要时限的调用方自己计时并 `enco cancel`（13 §4）。
 
 ## 8. 日志
 

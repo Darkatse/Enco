@@ -13,18 +13,18 @@
 
 `cargo xtask check` 的顺序：
 
-1. `cargo fmt --all --check`；`cargo fmt --all --check --manifest-path plugins/Cargo.toml`
-2. `cargo xtask boundaries`；校验两个工作区共用的 lint 表与各 crate 的继承
+1. `cargo fmt --all --check`；对 `plugins/Cargo.toml` 与 `evals/runner/Cargo.toml` 各执行一次
+2. `cargo xtask boundaries`；校验三个工作区共用的 lint 表与各 crate 的继承
 3. `cargo xtask docs --check`
 4. `cargo xtask build-factory`
-5. `cargo clippy --workspace --all-targets -- -D warnings`；`cargo clippy --manifest-path plugins/Cargo.toml --target wasm32-wasip2 --all-targets -- -D warnings`
-6. `cargo test --workspace`；`cargo test --manifest-path plugins/Cargo.toml`
+5. `cargo clippy --workspace --all-targets -- -D warnings`；`cargo clippy --manifest-path plugins/Cargo.toml --target wasm32-wasip2 --all-targets -- -D warnings`；`cargo clippy --manifest-path evals/runner/Cargo.toml --all-targets -- -D warnings`
+6. `cargo test --workspace`；`cargo test --manifest-path plugins/Cargo.toml`；以 `ENCO_BIN` 指向主工作区构建出的 `enco`，运行 `cargo test --manifest-path evals/runner/Cargo.toml`（评测运行器的测试要用真实的 `enco`，§3）
 
 ### 1.1 boundaries
 
 用 `cargo_metadata` 读取工作区。对每个成员，收集它依赖的**工作区内** crate（包括 normal、build、dev 依赖），检查是否属于 02 §3 表中允许的集合。违反时列出"谁依赖了谁、允许的是什么"，退出码非零。
 
-同样读取独立的插件工作区，拒绝插件对宿主工作区 crate 的依赖，保证插件只通过 WIT 接入。只检查依赖方向，不扫描源码文本。外部依赖由提问协议管控（01 §5），不在这里检查。
+同样读取两个独立工作区：拒绝插件对宿主工作区 crate 的依赖，保证插件只通过 WIT 接入；拒绝评测运行器对宿主工作区 crate 的依赖，保证它是黑盒客户端。只检查依赖方向，不扫描源码文本。外部依赖由提问协议管控（01 §5），不在这里检查。
 
 ## 2. WIT 门禁与 CONTRACT.md
 
@@ -77,9 +77,10 @@ complete: async func(settings: settings, request: request) -> result<completion,
 
 | 层 | 位置 | 内容 |
 |---|---|---|
-| 单元 | 模块内 `#[cfg(test)]` | 只用于集成测试不易触达的纯函数边界。目前只有记忆索引的 `reconcile`：同一记忆的重复节点、无法解析的 payload、rev 不一致 |
+| 单元 | 模块内 `#[cfg(test)]` | 只用于集成测试不易触达的纯函数边界。目前有记忆索引的 `reconcile`（同一记忆的重复节点、无法解析的 payload、rev 不一致），以及评测运行器的检验与占位符（超几何分布、分层卷积、工作日偏移，13 §8–§9） |
 | 集成 | `crates/enco-host/tests/` | Kernel + `Registry`（`ScriptedRuntime`）+ `SqliteStore`（临时目录）+ 原生工具 + `InstructionsContextSource` + `Memories`（临时目录）+ `FactoryComposer` + `ScriptedProvider` + `TestClock`。恢复、Transcript 投影、计划校验、composer 的预算与压缩、工具行为、注册表与健康门控都在这一层经过真实路径验证 |
 | 端到端 | `apps/enco/tests/` | 以子进程运行 `enco serve`（`env!("CARGO_BIN_EXE_enco")`），临时 `ENCO_HOME`，各 endpoint 与 `[embedding]` 都指向 `wiremock` 服务；经过真实的 Wasm 插件与出厂代际 |
+| 评测 | `evals/runner/tests/` | 运行器的完整流程对真实的 `enco`：路径经 `ENCO_BIN` 传入（§1）；被测模型与评判都是 `wiremock`，题目是测试目录中的小题 |
 
 测试辅助：
 
@@ -93,9 +94,9 @@ complete: async func(settings: settings, request: request) -> result<completion,
 
 ## 4. 验收场景
 
-每个阶段的完成以下列场景为准，"层"指主要在哪一层验证。"里程碑"一栏标出场景的出处；已验收里程碑的范围与核对记录见[存档](../history/milestones.md)。
+每个阶段的完成以下列场景为准，"层"指主要在哪一层验证。"里程碑"一栏标出场景的出处；里程碑的计划在 [plan/](../plan/)，已验收的见[存档](../history/)。
 
-当前实现已到 M18，没有进行中的里程碑。schema 版本为 4，旧库由 Agent 按 03 §3.1 手动迁移或重建；A58 的真实早报留待 VPS 部署后验收。
+当前实现已到 M18，下一个里程碑是 M19（[计划](../plan/M19.md)）。schema 版本为 4，旧库由 Agent 按 03 §3.1 手动迁移或重建。
 
 | # | 里程碑 | 场景 | 层 | 必须观察到 |
 |---|---|---|---|---|
@@ -157,6 +158,17 @@ complete: async func(settings: settings, request: request) -> result<completion,
 | A56 | M18 | 创建校验与取消 | 集成 | 无法解析的 cron、未知的时区名、永不触发的规则（`0 0 30 2 *`）、间隔小于 `MIN_RECURRENCE_INTERVAL` 的规则（`* 8 * * *`）、同时给出或都不给 `at` 与 `cron`：各自返回 `tool.invalid_arguments` 并说明原因，schedules 中没有新行，之后仍能成功创建；`schedule_cancel` 之后不再触发，`schedule_list` 与 `enco schedules` 不再列出，已进入 Inbox 的那次照常处理 |
 | A57 | M18 | 配置与旧库 | 手动一次 | 缺少 `timezone` 或名称无效：拒绝启动并指出该项；`enco init` 的模板含检测到的时区并通过校验；schema 为 3 的旧库被拒绝启动，库本身不变 |
 | A58 | M18 | 真实早报 | 手动一次 | 在 VPS 上配置 `timezone` 并手动迁移库；在 Telegram 的专用 Session 中让 Agent 创建每日早报（经命令行工具收邮件、读新闻），次日早上按时收到；停掉守护进程跨过触发时刻再启动，收到一次补发 |
+| A59 | M19 | 等待 Run 结束 | 端到端 | `enco send --wait` 输出的 `run` 与 `end` 与 `enco log` 中这条输入被接纳后的第一个 `RunEnded` 相同；在一个 Run 进行中送入第二条，它的输出是接纳它的那个 Run 的结局 |
+| A60 | M19 | 一次试验 | 评测 | wiremock 充当被测模型（先调用 `shell_exec` 执行 `mail list`，再回复）与评判：被测 home 的路径中没有 evals、trial 或题目名；`hidden/` 与 `task.toml` 不在 home 中；占位符已替换；`mail` 执行的是 home 中的夹具；快照中有 mock 的请求与状态、`tool-calls.json` 与对话文本；评判的请求与回复在 `judge/` 中，`reference` 中的日期已按开始时刻替换 |
+| A61 | M19 | 离线重评分 | 评测 | 守护进程停止后 `regrade`：state 评分的结局不变；不带 `--judge` 时不向评判发请求；带 `--judge` 时按 `result.json` 中的评判配置重新评判，`judge/` 中的请求与回复随之更新 |
+| A62 | M19 | 评判的结局 | 评测 | 评判回复的最后一行是 `UNKNOWN`：该评分项为 `fail`，原因注明 unknown；是其他内容，或评判返回 500 并重试 `JUDGE_RETRIES` 次后仍失败：该评分项为 `error`，没有其他评分项失败时试验记为 `instrument_error`，不计入分母；另有评分项失败时试验记为失败 |
+| A63 | M19 | 只排除仪器的失败 | 评测 | 被测模型的地址不可达：Run 以 `provider.network` 失败，试验记为失败，原因写明失败码；mock 无法监听：试验记为 `instrument_error`，不计入分母 |
+| A64 | M19 | 部署变体 | 评测 | 变体带一份 Provider 制品：第一条输入之前该插件的活跃代际就是它；`result.json` 记录制品哈希与 `generations` |
+| A65 | M19 | 代理 | 评测 | 经 `shell_exec` 的 curl 访问 mock 的主机名得到 mock 的响应；访问其他主机得到 403，`network.jsonl` 中有这次访问 |
+| A66 | M19 | 超时与越界 | 评测 | 被测模型阻塞直到超过 `timeout_secs`：Run 被取消，试验失败，原因是超时；工具调用的参数中出现运行目录的绝对路径：试验失败，原因是越界 |
+| A67 | M19 | 比较与判定 | 单元、评测 | 13 §9 灵敏度表中的 p 值；两道目标题的分层检验；`accept` 与 `reject` 列出的原因；某道题的一个变体没有有效试验时结论为 `reject`，原因是没有有效样本；题目哈希不同的两份结果被拒绝比较，并指出是哪一项 |
+| A68 | M19 | 题目自检 | 手动一次 | 配置真实的评判模型，`check memory-update daily-briefing`：全部案例符合期望，rubric 案例两次评判一致，空跑整道题失败 |
+| A69 | M19 | A/A 基线 | 手动一次 | 配置真实的被测模型，`compare` 以同一个变体为基准与候选，跑两道题各 k 次，不指定目标：端到端完成；被判为倒退的题数写进 13 §11；结果作为基线保存 |
 
 ## 5. 每个里程碑的完成条件
 
@@ -167,4 +179,4 @@ complete: async func(settings: settings, request: request) -> result<completion,
 - 自检清单（01 §6）逐项确认。
 - 偏离规格的决定已经说明理由并得到主人确认，规格已经同步为实际的实现。
 - 里程碑结束时系统完整可用；过渡形态只存在于代码中，规格只描述最终形态。
-- 验收通过后，把该里程碑的范围行与手动核对记录移入[存档](../history/milestones.md)，仍有效的"暂不实现"移入路线图；本节只保留进行中的里程碑。
+- 计划的生命周期：阶段开始时，路线图写阶段目标与里程碑顺序，每个里程碑一份计划放在 [plan/](../plan/)（目标、范围、要更新的规格、验收、待定）。里程碑开始时计划定稿，规格按计划更新，验收场景写入 §4。实现中的偏离与手动核对记录写进计划。验收通过后，计划原样移入[存档](../history/)，之后不再更新；仍有效的"暂不实现"移入路线图或后续计划。

@@ -38,12 +38,17 @@ plugins/                   # 独立的 Cargo 工作区，目标 wasm32-wasip2；
   typesafe/
   provider-protocol/      # 插件内部共享的类型绑定与线上协议；不是插件，不依赖宿主 crate
 wit/                       # enco:plugin 包；CONTRACT.md 为生成物
+evals/
+  runner/                  # 评测运行器（13）：独立的 Cargo 工作区，Enco 的黑盒客户端
+  tasks/                   # 评测题目，格式见 evals/README.md
 docs/
 ```
 
 `enco-sdk`、`enco-space` 目前**不创建**（架构文档 §10 中它们分别属于 P2、P4）。`enco-host` 的拆分（§10）等 WIT 第一次需要 `log`、`http` 之外的宿主导入时再做，预计在 P2。
 
 插件放在独立工作区，因为它们的目标平台不同。`xtask build-factory` 负责构建插件并把产物放到 `target/factory/`（07 §5）。
+
+评测运行器也放在独立工作区，因为它是 Enco 的黑盒客户端：它只启动 `enco` 并读取命令行的输出，不能引用宿主的 crate。独立的工作区让这一点由结构保证；它的依赖与 `Cargo.lock` 也与主工作区分开，评测用的 HTTP 服务与 JSON Schema 不进入宿主的依赖。
 
 ## 3. crate 职责与依赖方向
 
@@ -102,13 +107,35 @@ tempfile = "3.27.0"
 
 插件工作区（`plugins/Cargo.toml`）只依赖 `wit-bindgen = "0.62.0"`、`serde`、`serde_json`。
 
+评测工作区（`evals/runner/Cargo.toml`）的依赖写在它自己的 `Cargo.toml` 中，与主工作区共有的依赖使用相同的版本：
+
+```toml
+tokio = { version = "1.53", features = ["full"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.6"
+clap = { version = "4.6.7", features = ["derive"] }
+anyhow = "1.0.104"
+reqwest = "0.13.5"                       # 评判（13 §6）
+hyper = "1.11.1"                         # mock 与代理（13 §7）
+hyper-util = "0.1.21"
+http-body-util = "0.1.5"
+form_urlencoded = "1.2.2"                # mock 解析表单
+jsonschema = { version = "0.58.6", default-features = false }   # state 评分；不解析远程引用
+blake3 = "1.8.7"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
+chrono-tz = "0.10.4"
+ulid = "3.0.0"
+wiremock = "0.6.5"                       # dev：测试中的被测模型与评判
+```
+
 新增依赖必须先提问（01 §5）。
 
 ## 5. Lint
 
-lint 清单只有一份来源：根 `Cargo.toml` 的 `[workspace.lints]`，每条附有理由。`plugins/` 是独立工作区，不能跨工作区继承，所以保存一份副本，由 `cargo xtask check` 校验。每个 crate 都写 `[lints] workspace = true`。
+lint 清单只有一份来源：根 `Cargo.toml` 的 `[workspace.lints]`，每条附有理由。`plugins/` 与 `evals/runner/` 是独立工作区，不能跨工作区继承，所以各保存一份副本，由 `cargo xtask check` 校验。每个 crate 都写 `[lints] workspace = true`。
 
-两份清单只有一处不同：`unsafe_code` 在根工作区为 `forbid`，在插件工作区为 `deny`。宿主进程的内存安全是插件边界成立的前提，所以宿主代码不写 unsafe，经过审计的依赖（wasmtime、TriviumDB 等）内部的 unsafe 不在此列。插件运行在 Wasm 沙箱里，其中的 unsafe 最多让插件自己 trap，由健康门控归因到代际并回退（11 §7），所以这条 lint 在插件侧只约束写法：插件源码不手写 unsafe；wit-bindgen 生成的导出胶水按语言定义含 unsafe，在生成它的模块上写 `#![expect(unsafe_code, reason = …)]` 接受（07 §4）。
+评测工作区的副本与根工作区完全相同。插件工作区的副本只有一处不同：`unsafe_code` 在根工作区为 `forbid`，在插件工作区为 `deny`。宿主进程的内存安全是插件边界成立的前提，所以宿主代码不写 unsafe，经过审计的依赖（wasmtime、TriviumDB 等）内部的 unsafe 不在此列。插件运行在 Wasm 沙箱里，其中的 unsafe 最多让插件自己 trap，由健康门控归因到代际并回退（11 §7），所以这条 lint 在插件侧只约束写法：插件源码不手写 unsafe；wit-bindgen 生成的导出胶水按语言定义含 unsafe，在生成它的模块上写 `#![expect(unsafe_code, reason = …)]` 接受（07 §4）。
 
 `enco-core` 与 `enco-kernel` 的 `lib.rs` 另加 `#![warn(missing_docs)]`（`xtask check` 以 `-D warnings` 运行，所以实际是错误）。
 
@@ -238,6 +265,10 @@ protocol.rs      请求与推送消息类型
 client.rs        本地协议客户端
 chat.rs          enco chat：交互与渲染
 ```
+
+**evals/runner**（独立工作区）
+
+见 13 §12。
 
 ## 7. 编码规范
 
