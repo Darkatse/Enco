@@ -1,0 +1,26 @@
+category = "assistant"
+mechanism = "Exercise the public CLI, fixture commands, proxy and independent grading."
+
+[environment]
+timezone = "America/New_York"
+
+[[input]]
+text = "Read my unread mail with the mail command, then tell me when it is done."
+
+[budget]
+max_rounds = 4
+timeout_secs = 30
+
+[[criteria]]
+id = "calls"
+grader = "state"
+check = "A tool was invoked through the public execution path."
+snapshot = "tool-calls.json"
+schema = "hidden/calls.json"
+
+[[criteria]]
+id = "reply"
+grader = "rubric"
+check = "The assistant reported completion."
+sessions = ["main"]
+reference = "The trial began on {{date:0|en}}. Pass when the assistant's final reply is done, fail otherwise."

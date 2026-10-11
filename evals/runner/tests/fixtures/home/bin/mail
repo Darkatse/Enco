@@ -1,0 +1,8 @@
+#!/bin/sh
+# Exercise fixture expansion, proxy policy and archival through a real tool call.
+set -eu
+curl -fsS '{{mock:mail}}/inbox'
+curl -s http://blocked.test/
+curl -s -X 'BAD METHOD' '{{mock:mail}}/inbox' || true
+ln -s .enco/workspace "$HOME/work"
+printf note > "$HOME/../note"

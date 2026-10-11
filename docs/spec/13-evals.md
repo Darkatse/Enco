@@ -14,8 +14,9 @@ eval-runner check   --config <file> [<id>…]
 ```
 
 - `--tasks` 省略时为 `evals/tasks/` 下的全部题目；`-k` 默认 `DEFAULT_K`；`--jobs` 默认 1。
+- 命令在仓库根目录运行；配置与变体中的路径相对于各自所在的文件。
 - `run` 与 `compare` 的结果写入 `target/evals/<run>/`，`<run>` 是开始时刻（UTC，`YYYYMMDD-HHMMSS`）加 4 位随机后缀。
-- `regrade` 用已有的快照重新评分，重写 `grades.json` 与 `result.json`。不带 `--judge` 时，rubric 沿用 `judge/` 中已有的回复；带 `--judge` 时重新调用评判，并重写 `judge/`：评判的地址、模型与 key 的变量名取自 `result.json` 中的 `judge`，值从当前环境读取，所以测量工具与原来相同。评判提示词随运行器版本变了时，`result.json` 中的哈希随之更新。
+- `regrade` 用已有的快照重新评分，重写 `grades.json` 与 `result.json`。不带 `--judge` 时，rubric 沿用 `judge/` 中已有的回复；带 `--judge` 时按 `result.json` 中的 `judge` 重新评判（key 的值从当前环境读取），重写 `judge/` 与提示词哈希。
 - 退出码：`run`、`compare`、`regrade` 完成即为 0，结论在 `result.json` 中；`check` 全部符合期望为 0，否则为 1；用法错误、配置错误或运行器自身出错为 2。
 
 ## 2. 配置
@@ -23,12 +24,13 @@ eval-runner check   --config <file> [<id>…]
 `--config` 是一个 TOML 文件：
 
 ```toml
-model = "evals/models/deepseek.toml"   # 被测的模型：一段 Enco 配置，相对本文件
+model = "model.toml"                   # 被测的模型：一段 Enco 配置，相对本文件
 
 [judge]                                # 评判：OpenAI 兼容的 Chat Completions
 base_url = "https://api.openai.com/v1"
 model = "gpt-5.2"
 api_key_env = "OPENAI_API_KEY"
+temperature = 0                        # 可选，默认 0
 
 [trial]                                # 可选
 root = "/tmp"                          # 被测 home 的上级目录，默认系统临时目录
@@ -36,9 +38,9 @@ user = "lin"                           # HOME 目录的名字，默认 lin
 path = "/usr/local/bin:/usr/bin:/bin"  # 被测守护进程 PATH 中 bin/ 之后的部分，默认即此值
 ```
 
-- `model` 指向的文件只含 `[endpoint.*]`、`[profile.*]`、`[embedding]` 与可选的 `[decision]`（08 §3），原样写进每个被测 home 的 `config.toml`。其中出现的 `api_key_env` 进入环境变量白名单，`base_url` 的主机进入 `NO_PROXY`。
+- `model` 指向的文件只含 `[endpoint.*]`、`[profile.*]`、`[embedding]` 与可选的 `[decision]`（08 §3）；运行器在解析后的表中加入题目的时区与预算，再写入被测 home 的 `config.toml`。其中出现的 `api_key_env` 进入环境变量白名单，`base_url` 的主机进入 `NO_PROXY`。
 - 评判模型与被测模型应属于不同的家族，避免评判偏袒自己一家的回答。评判的 key 只由运行器读取，不进入被测的环境。
-- 配置不合法时退出码为 2，不开始任何试验。
+- 配置不合法（包括缺少 key 变量）时退出码为 2，不开始任何试验。
 
 ## 3. 变体
 
@@ -72,18 +74,20 @@ artifact = "plugin.wasm"         # 相对本文件
 
    其余环境变量一律不传。
 6. **部署**：对变体的每一项执行 `enco plugin deploy <plugin> <artifact>`。M24 起，再构建并部署题目 `home/plugins/` 下的夹具插件。
-7. **输入**：按顺序对每条输入执行 `enco send --session <s> --wait <text>`（08 §7）。截止时刻是开始时刻加上 `budget.timeout_secs`；到时对正在进行的 Session 执行 `enco cancel`，等它的 `RunEnded`，这次试验记为失败，原因是超时。
-8. **静止**：全部输入之后，等所有 Session 都空闲（`enco status`）。试验期间触发的定时会多出一个 Run，等它结束再取快照。
-9. **快照**：按 §5 导出。某条 enco 命令失败时，对应的文件不写，原因记入 `trial.json`。
-10. **收尾**：向守护进程发送 SIGTERM，超过 `SHUTDOWN_GRACE` 仍未退出则 SIGKILL；停止 mock 与代理；把 HOME 移入 `trials/<题>/<变体>/<i>/home`，原路径记入 `trial.json`。
+7. **输入**：按顺序对每条输入执行 `enco send --session <s> --wait <text>`（08 §7）。试验开始后超过 `budget.timeout_secs` 时，对正在进行的 Session 执行 `enco cancel`，等它的 `RunEnded`，这次试验记为失败，原因是超时。
+8. **空闲**：全部输入之后，等 `enco status` 中没有正在执行的 Run。超过预算后，每次查询都取消仍在执行的 Run，它们须在 `SHUTDOWN_GRACE` 内结算。试验期间触发的定时会多出一个 Run，等它结束再取快照；快照由几条 CLI 查询依次导出，不是原子的。
+9. **快照**：按 §5 导出。某条 enco 命令失败时，对应的文件不写，原因记入 `trial.json`，执行记为失败；其余导出继续。
+10. **收尾**：守护进程自成一个进程组，工具启动的命令也在其中。向这个进程组发送 SIGTERM，超过 `SHUTDOWN_GRACE` 后 SIGKILL；停止 mock 与代理，导出它们的状态；把 HOME 移入 `trials/<题>/<变体>/<i>/home`，原路径记入 `trial.json`，删除本次试验的随机父目录。运行器被 SIGINT 或 SIGTERM 中断时，同样终止每次试验的进程组、删除临时 home，退出码为 2。
 11. **评分**：按 §6 进行。
 
-**只排除测量仪器自身的失败**：home 无法建立、mock 或代理无法监听，记为仪器错误，这次试验不计入分母；评分阶段的仪器错误见 §6。被测对象启动之后的一切失败都算失败，包括守护进程起不来、Run 以 `provider.*` 失败和超时。
+**只排除测量仪器自身的失败**：home 无法建立、mock 或代理无法监听，快照、mock 状态或 home 无法写出，记为仪器错误，这次试验不计入分母；评分阶段的仪器错误见 §6。被测对象启动之后的一切失败都算失败，包括守护进程起不来、Run 以 `provider.*` 失败和超时。
 
 - 失败码由被测的插件自己报告，不能据此判断失败来自哪里，这与安全模式的进入是同一个理由（架构文档 §4.6）。如果按失败码排除试验，一个坏掉的候选 Provider 就能让自己的失败全部消失。
 - 服务商的故障同时影响交错运行的两个变体，带来的是噪声而不是偏差，并且在失败原因中看得见。偏差会系统性地偏袒坏掉的候选，比噪声危险得多。
 
-**完整性**：工具调用的参数中出现运行器所在仓库的绝对路径，或者本次运行目录的绝对路径，这次试验记为失败，原因是越界。被测 home 不在这两处之下（第 2 步），所以 Agent 正常工作不会触发它。
+**等待有界**：运行器对被测对象的每次等待都有时限：管理命令 `CLI_TIMEOUT`，输入受预算约束，取消后 `SHUTDOWN_GRACE`。超时是这次试验的失败，坏掉的候选因此不会让整次比较停住。
+
+**完整性**：工具调用的参数中出现运行器所在仓库的绝对路径，或者本次运行目录的绝对路径（按路径分量边界匹配），这次试验记为失败，原因是越界。读配置时拒绝位于仓库内的 `trial.root`，所以 Agent 正常工作不会触发它。
 
 ## 5. 快照
 
@@ -91,8 +95,9 @@ artifact = "plugin.wasm"         # 相对本文件
 
 ```text
 trials/<题>/<变体>/<i>/
-  trial.json                 开始时刻、home 的原路径、各阶段的耗时，以及仪器错误、超时、越界或某条 enco 命令失败的原因
+  trial.json                 开始时刻、home 的原路径、执行结局，以及导出命令失败的原因
   home/                      被测的 home（第 10 步移入）
+  daemon.log                 enco serve 的 stderr
   snapshot/
     sessions.json            enco sessions
     log/<session>.json       enco log --session <session>
@@ -106,10 +111,13 @@ trials/<题>/<变体>/<i>/
     mock/<名字>/requests.jsonl
     network.jsonl            被代理拒绝的访问
   judge/<评分项>.json        评判的请求与回复
+  command/<评分项>.stdout    command 评分的输出（另有 .stderr）
   grades.json
 ```
 
-**tool-calls.json**：一个数组，按 Log 顺序列出每个工具调用：
+`trial.json` 的 `execution.result` 是 `completed`、`failure` 或 `instrument_error`，后两种带 `execution.reason`；`export_errors` 按导出名称保存 CLI 错误。它们是重评分保留的执行事实。
+
+**tool-calls.json**：一个数组，按 `sessions.json` 中的 Session 顺序分组，每组按 Log 中工具提出的顺序列出调用：
 
 ```json
 { "session": "main", "round": "<RoundId>", "call": "<CallId>", "name": "shell_exec",
@@ -134,11 +142,13 @@ trials/<题>/<变体>/<i>/
 
 任何一项为 `fail` 时，这次试验失败；没有 `fail` 而有 `error` 时，结局无法确认，记为仪器错误，不计入分母；全部为 `pass` 时成功。结果写进 `grades.json`：`{ "<评分项>": { "result", "reason" } }`。
 
-**state**：读取 `snapshot` 指向的文件，以 JSON Schema 2020-12 校验 `schema` 指向的 Schema。通过为 `pass`；不通过为 `fail`，原因是校验器给出的前几条错误。文件缺失为 `fail`，因为被测对象没有交出这份状态（导出它的 enco 命令失败了，原因在 `trial.json` 中）；Schema 无效为 `error`。
+所有评分项需要的快照或证据缺失时为 `fail`，因为被测对象没有交出它；导出命令失败的原因在 `trial.json` 中。
+
+**state**：读取 `snapshot` 指向的文件，以 JSON Schema 2020-12 校验 `schema` 指向的 Schema。通过为 `pass`；不通过为 `fail`，原因是校验器给出的前几条错误。Schema 无效为 `error`。
 
 **rubric**：向评判发出一次请求。
 
-- 请求：`POST {base_url}/chat/completions`，`temperature` 为 0，消息只有两条。系统消息是下面的固定提示词；用户消息依次列出 `check`、按开始时刻替换占位符后的 `reference`、`sessions` 中每个 Session 的对话文本，以及 `evidence` 中每个文件（带 `#` 的取 JSON Pointer 指向的部分，格式化为 JSON）：
+- 请求：`POST {base_url}/chat/completions`，`temperature` 取评判配置，消息只有两条。系统消息是下面的固定提示词；用户消息依次列出 `check`、按开始时刻替换占位符后的 `reference`、`sessions` 中每个 Session 的对话文本，以及 `evidence` 中每个文件（带 `#` 的取 JSON Pointer 指向的部分，格式化为 JSON）：
 
   ```text
   ## Criterion
@@ -165,9 +175,9 @@ trials/<题>/<变体>/<i>/
   ```
 
 - 回复：最后一个非空行是 `PASS`、`FAIL` 或 `UNKNOWN` 时即为结局，其余内容作为原因。`UNKNOWN` 记为 `fail`，原因中注明：它取决于被测的输出，证据不足通常说明 Agent 没有交出应有的东西；参考答案本身判定不了的情况，由题目自检的案例发现（§11）。最后一行是其他内容，或者 HTTP 失败重试 `JUDGE_RETRIES` 次后仍失败，为 `error`。
-- 请求与回复写入 `judge/<评分项>.json`。
+- 请求与回复写入 `judge/<评分项>.json`。每次请求的时限为 `GRADER_TIMEOUT`。
 
-**command**：在题目目录下执行 `run`，参数是试验目录，时限 `COMMAND_TIMEOUT`。退出码 0 为 `pass`，1 为 `fail`，其他或超时为 `error`；原因取 stdout 的末尾。
+**command**：在题目目录下执行 `run`，参数是试验目录，时限 `GRADER_TIMEOUT`。退出码 0 为 `pass`，1 为 `fail`，其他或超时为 `error`；原因取 stdout 的末尾。
 
 ## 7. mock 与代理
 
@@ -201,10 +211,10 @@ trials/<题>/<变体>/<i>/
 ```
 
 - 偏移是 `0`，或者带符号的若干段 `<n>d`、`<n>h`、`<n>m`、`<n>s` 的组合（例如 `-3h05m14s`），或者带符号的 `<n>b`。
-- `b` 按工作日（周一到周五）向前或向后数 n 个，时刻不变。
-- 时间都按题目的时区计算，跨夏令时切换时取当地时刻。
+- `d` 按当地日历移动，`b` 按工作日（周一到周五）移动；保留当地时刻，重复时刻取较早的一个，夏令时缺口取缺口之后第一个有效时刻。
+- `h/m/s` 按绝对时长移动，组合偏移按书写顺序计算；`0` 保留原时刻。输出使用题目的时区。
 - 替换发生在三处：试验开始时替换 `home/` 中的文本文件、路由的 `body` 文件与集合的初始数据；评分时替换 `reference`。三处都用同一个开始时刻。
-- 未知的 mock 名或无法解析的偏移，`check` 报错；试验中遇到时，整次运行停止，退出码为 2。
+- 未知的 mock 名或无法解析的偏移在加载题目时拒绝：`check` 报题目错误并继续其他题；`run` 与 `compare` 在开始试验前退出，退出码为 2。
 
 ## 9. 比较与判定
 
@@ -234,7 +244,7 @@ trials/<题>/<变体>/<i>/
 
 `k = 5` 只能发现接近彻底的倒退；要看得更细就加大 k，规则不变。逐题检验有多重比较：5 道题都没有真实变化时，至少一道被误判为倒退的概率不超过约 23%，Fisher 检验是离散的，实际更低。误报的实测由 A/A 比较给出，写在 §11。
 
-**可比性**：比较的两组试验必须有相同的题目哈希（题目目录全部文件的 blake3）、被测模型配置的哈希、评判模型与评判提示词的哈希。`compare` 同时运行两个变体，所以这些天然相同；从已有的结果比较时逐项核对，不一致就拒绝，并指出是哪一项。
+**可比性**：`compare` 在同一次运行中交错两个变体，题目、被测模型与评判天然相同，没有拼接旧成绩的入口。`regrade` 先核对题目哈希（题目目录全部文件的路径、内容与可执行位），不同就拒绝，并指出是哪一道。
 
 ## 10. result.json
 
@@ -248,7 +258,7 @@ trials/<题>/<变体>/<i>/
   "k": 5,
   "tasks": { "<题>": { "hash": "<blake3>" } },
   "model": { "hash": "<blake3>", "endpoints": { "<名字>": { "plugin": "…", "base_url": "…", "model": "…" } } },
-  "judge": { "base_url": "…", "model": "…", "api_key_env": "…", "prompt": "<blake3>" },
+  "judge": { "base_url": "…", "model": "…", "api_key_env": "…", "temperature": 0, "prompt": "<blake3>" },
   "variants": {
     "base": { "enco": { "path": "…", "hash": "<blake3>", "version": "…" },
               "deploy": [ { "plugin": "…", "artifact": "…", "hash": "<blake3>" } ] }
@@ -261,7 +271,7 @@ trials/<题>/<变体>/<i>/
     "criteria": { "<评分项>": { "result": "pass | fail | error", "reason": "…" } },
     "rounds": 12, "wall_secs": 431.5,
     "usage": { "input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0 },
-    "generations": { "<插件>": "<GenerationId>" },
+    "generations": { "<插件>": 2 },
     "network_violations": 0
   } ],
   "summary": { "base": { "<题>": { "passes": 4, "valid": 5, "instrument_errors": 0, "all_passed": false } } },
@@ -279,7 +289,11 @@ trials/<题>/<变体>/<i>/
 
 - `run` 的结果只有一个变体，名为 `base`，没有 `comparison`。
 - `generations` 是每次试验结束时各插件的活跃代际（取自 `plugins.json`）。
+- `model.endpoints` 以配置中的路径为键，例如 `endpoint.chat`、`embedding`。
 - 每个评分项的原因都写进 `trials[].criteria`：失败的原因是 Agent 提出下一个假设的来源。
+- 执行中确定的失败（超时、越界等）记在 `trial.json`，重评分保留它们。
+- `usage` 汇总各 Attempt 报告的用量，有一次未报告缓存命中时为 `null`；`wall_secs` 不含评分。
+- `result.json` 在全部试验结束后写出一次；整次运行中止时不写。
 
 ## 11. 题目自检（check）
 
@@ -289,10 +303,10 @@ trials/<题>/<变体>/<i>/
    - 案例的 `expect.toml` 只引用存在的评分项；
    - `reference` 用了时间占位符时，案例写明了 `start`。
 2. **案例**：对每个案例，以它的 `snapshot/` 为快照、以它的 `start` 为开始时刻，运行列出的评分项（写了 `success` 时运行全部），结局必须与期望相同。rubric 的案例评判两次，两次都必须相同。
-3. **空跑**：把被测模型换成一个对每个请求都回答"好的。"的 mock：补全返回这句话，嵌入返回 `NULL_EMBEDDING_DIMENSIONS` 维的零向量；它经代理以一个虚构的主机名访问。用这个模型完整跑一次试验，整道题必须失败，并且不是仪器错误。
+3. **空跑**：把被测模型换成一个对每个请求都回答"好的。"的 mock：补全返回这句话，嵌入返回 `NULL_EMBEDDING_DIMENSIONS` 维的零向量；它经代理以一个虚构的主机名访问。用这个模型完整跑一次试验：执行必须正常结束，整道题由评分项判为失败。守护进程没能运行的空跑不算通过，运行器自身的配置问题因此在比较之前暴露。
 4. 打印每一项的结果，有任何不符时退出码为 1。
 
-A/A 比较的误报实测（M19 验收时记录）：待填。
+A/A 比较的误报实测（M19）：两道题各 k = 5，0/2 道被判为倒退，保留 `DEFAULT_K = 5`。一轮未误报不是长期误报率的估计，灵敏度以 §9 为准。
 
 ## 12. 文件布局
 
@@ -301,11 +315,14 @@ evals/runner/
   Cargo.toml     独立工作区：依赖（02 §4）与 lint 表的副本（02 §5）
 evals/runner/src/
   main.rs        clap 命令与退出码
+  run.rs         安排试验、汇总与重评分
   config.rs      运行器配置与变体
-  task.rs        task.toml、mock 定义、题目哈希
+  task.rs        题目加载与校验、mock 定义、题目哈希
   render.rs      占位符
   home.rs        建 home、写 config.toml、环境变量
   enco.rs        启动与停止守护进程，调用 enco 的命令行
+  enco/output.rs 运行器消费的 CLI 输出类型
+  server.rs      mock 与代理共用的 HTTP 监听
   mock.rs        mock 服务
   proxy.rs       代理
   trial.rs       一次试验的流程（§4）
@@ -313,8 +330,9 @@ evals/runner/src/
   grade.rs       三种评分
   judge.rs       评判的请求与解析
   stats.rs       超几何分布、分层检验与结论（§9）
-  result.rs      result.json
+  result.rs      result.json 与 trial.json
   check.rs       题目自检（§11）
+  limits.rs      常量（§13）
 ```
 
 ## 13. 常量
@@ -324,8 +342,10 @@ evals/runner/src/
 | `DEFAULT_K` | 5 |
 | `ALPHA` | 0.05 |
 | `DAEMON_READY_TIMEOUT` | 30 s |
+| `CLI_TIMEOUT` | 60 s |
 | `SHUTDOWN_GRACE` | 10 s |
-| `COMMAND_TIMEOUT` | 300 s |
+| `GRADER_TIMEOUT` | 300 s |
 | `JUDGE_RETRIES` | 2 |
 | `REASON_BYTES` | 2000 |
 | `NULL_EMBEDDING_DIMENSIONS` | 8 |
+| `STATUS_INTERVAL` | 100 ms |

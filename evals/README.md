@@ -2,7 +2,17 @@
 
 本目录衡量 Agent 经正式路径（构建、部署、回退）改进自身能力的效果。从 P2 起，composer、工具与记忆策略的迭代以这里的任务成功率为目标，以 Attempt 记录的用量（含缓存命中）为成本约束（[路线图](../docs/Roadmap.md) P2，[架构文档 §4.8](../docs/architecture/04-plugins.md)）。
 
-现在的五道题各验证一个 P2 机制，用来确认机制走得通并建立基线，不是排行榜。题目会随使用增加，Agent 也可以补充自己的开发题。
+题目各验证一个机制，用来确认机制走得通并建立基线，不是排行榜。题目会随 P2 的里程碑与使用增加，Agent 也可以补充自己的开发题。
+
+## 运行
+
+在仓库根目录构建被测程序与运行器；命令、配置与结果格式见 [spec 13](../docs/spec/13-evals.md)。
+
+```sh
+cargo xtask build-factory
+cargo build -p enco
+cargo build --manifest-path evals/runner/Cargo.toml
+```
 
 ## 评测对进化的意义
 
@@ -26,7 +36,7 @@ Agent 改进自己的每一步，都要回答同一个问题：这次改动是�
 
 - **黑盒**：运行器 `runner/` 是独立的 Cargo 工作区，只调用 `enco` 的命令行，引用不了宿主的 crate。输入经 `enco send`，观察只读取管理命令输出的 JSON。评分与插件一样，只看公开的表面。
 - **一题一个全新的 home**：每道题在新的 `ENCO_HOME` 中运行，题目的初始文件复制进去，`task.toml` 与 `hidden/` 永远不复制进去。
-- **评分只读快照**：运行结束后，运行器经命令行把一切可观察的状态导出到快照目录。评分是快照的纯函数，所以可以离线重评分，也可以用手写的快照测试评分本身。
+- **评分只读快照**：运行结束后，运行器经命令行把一切可观察的状态导出到快照目录。保存的评判回复让重评分可以离线进行，也可以用手写的快照测试评分本身。
 - **可以回放**：运行后保留 home。Attempt 记录写明所用的代际、模型与参数，`enco inspect` 能看到每次实际发出的请求。
 - **产出是比较，而不是分数**：被测模型与评判模型固定，改动前后的两个变体在同一时间窗口内交错运行同一批题，结论回答进化时的问题：目标题上是否更好，其余每道题是否没有倒退。每道题运行 k 次，报告通过次数，以及 k 次全部成功的比例；判定规则见 spec 13。
 
@@ -35,7 +45,7 @@ Agent 改进自己的每一步，都要回答同一个问题：这次改动是�
 ```text
 evals/
   README.md
-  runner/                黑盒运行器（P2 实现）
+  runner/                黑盒运行器，独立 Cargo 工作区
   tasks/<id>/            题目的 id 就是目录名
     task.toml            类别、验证的机制、输入、预算、评分项与参考答案
     home/                复制进新 ENCO_HOME 的初始文件，对 Agent 可见
@@ -167,11 +177,10 @@ recall = "fail"        # 列出的评分项必须得到这个结局
 
 | id | 类别 | 验证的机制 | 被测系统需要 |
 |---|---|---|---|
-| [`adapter-drift`](tasks/adapter-drift/task.toml) | 编程 | 上游 API 变化后，Agent 只读手册和插件源码，经正式路径修好工具插件；外部失败不触发回退 | P2 的工具插件与 `plugin_build` |
-| [`build-from-spec`](tasks/build-from-spec/task.toml) | 编程 | 按 API 文档新建工具插件，在同一次任务的后续 Round 用上；运行时手册随代际生效 | 同上，再加 `plugin_scaffold` |
-| [`many-tools`](tasks/many-tools/task.toml) | 助理 | 约 50 个工具时 composer 的披露策略（目录与 `capability_search`），跨应用完成请求且不改动无关状态 | P2 的工具插件；composer 改为插件后才能迭代 |
 | [`memory-update`](tasks/memory-update/task.toml) | 助理 | 记忆：跨 Session 准确召回，更正替换旧事实，没有依据时不猜 | 无，P0 的记忆就是基线 |
 | [`daily-briefing`](tasks/daily-briefing/task.toml) | 助理 | 主人真实的每日早报：周期定时，经命令行工具收邮件、读新闻，遵守常驻偏好，汇报，发信，不执行邮件里的注入指令 | 无，M18 的周期定时就是基线 |
+
+后续的 `adapter-drift`、`build-from-spec` 与 `many-tools` 题目设计见 [M25](../docs/plan/M25.md)，夹具与评分齐备后再加入可运行题集。
 
 ## 隔离
 

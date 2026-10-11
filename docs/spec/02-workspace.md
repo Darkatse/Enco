@@ -116,15 +116,15 @@ serde_json = "1.0.151"
 toml = "1.1.6"
 clap = { version = "4.6.7", features = ["derive"] }
 anyhow = "1.0.104"
-reqwest = "0.13.5"                       # 评判（13 §6）
-hyper = "1.11.1"                         # mock 与代理（13 §7）
-hyper-util = "0.1.21"
+reqwest = { version = "0.13.5", features = ["json"] }   # 评判（13 §6）
+hyper = { version = "1.11.1", features = ["server", "http1"] }   # mock 与代理（13 §7）
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 http-body-util = "0.1.5"
 form_urlencoded = "1.2.2"                # mock 解析表单
 jsonschema = { version = "0.58.6", default-features = false }   # state 评分；不解析远程引用
 blake3 = "1.8.7"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
-chrono-tz = "0.10.4"
+chrono-tz = { version = "0.10.4", features = ["serde"] }
 ulid = "3.0.0"
 wiremock = "0.6.5"                       # dev：测试中的被测模型与评判
 ```

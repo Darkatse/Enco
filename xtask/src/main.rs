@@ -15,17 +15,16 @@ fn main() -> Result<()> {
         Some("docs") => docs::generate(std::env::args().any(|a| a == "--check")),
         Some("build-factory") => build_factory(),
         Some("check") => {
-            run("cargo", &["fmt", "--all", "--check"])?;
-            run(
-                "cargo",
-                &[
-                    "fmt",
-                    "--all",
-                    "--check",
-                    "--manifest-path",
-                    "plugins/Cargo.toml",
-                ],
-            )?;
+            for manifest in [
+                "Cargo.toml",
+                "plugins/Cargo.toml",
+                "evals/runner/Cargo.toml",
+            ] {
+                run(
+                    "cargo",
+                    &["fmt", "--all", "--check", "--manifest-path", manifest],
+                )?;
+            }
             boundaries()?;
             lints()?;
             docs::generate(true)?;
@@ -55,8 +54,30 @@ fn main() -> Result<()> {
                     "warnings",
                 ],
             )?;
+            run(
+                "cargo",
+                &[
+                    "clippy",
+                    "--manifest-path",
+                    "evals/runner/Cargo.toml",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
+            )?;
             run("cargo", &["test", "--workspace"])?;
-            run("cargo", &["test", "--manifest-path", "plugins/Cargo.toml"])
+            run("cargo", &["test", "--manifest-path", "plugins/Cargo.toml"])?;
+            let metadata = cargo_metadata::MetadataCommand::new().no_deps().exec()?;
+            let status = Command::new("cargo")
+                .args(["test", "--manifest-path", "evals/runner/Cargo.toml"])
+                .env("ENCO_BIN", metadata.target_directory.join("debug/enco"))
+                .status()
+                .context("running evaluation tests")?;
+            if !status.success() {
+                bail!("evaluation tests failed ({status})");
+            }
+            Ok(())
         }
         _ => bail!("usage: cargo xtask <check|boundaries|docs [--check]|build-factory>"),
     }
@@ -107,25 +128,30 @@ fn boundaries() -> Result<()> {
             }
         }
     }
-    let plugins = cargo_metadata::MetadataCommand::new()
-        .manifest_path("plugins/Cargo.toml")
-        .no_deps()
-        .exec()?;
-    for package in &plugins.packages {
-        for dep in &package.dependencies {
-            if metadata.packages.iter().any(|p| p.name == dep.name) {
-                bail!(
-                    "plugin {} depends on host crate {}; plugins use WIT only",
-                    package.name,
-                    dep.name
-                );
+    for (manifest, boundary) in [
+        ("plugins/Cargo.toml", "plugins use WIT only"),
+        ("evals/runner/Cargo.toml", "the evaluator uses the CLI only"),
+    ] {
+        let workspace = cargo_metadata::MetadataCommand::new()
+            .manifest_path(manifest)
+            .no_deps()
+            .exec()?;
+        for package in &workspace.packages {
+            for dep in &package.dependencies {
+                if metadata.packages.iter().any(|p| p.name == dep.name) {
+                    bail!(
+                        "{} depends on host crate {}; {boundary}",
+                        package.name,
+                        dep.name
+                    );
+                }
             }
         }
     }
     Ok(())
 }
 
-/// Both workspaces enforce one lint table, except that plugins deny rather than forbid
+/// All workspaces enforce one lint table, except that plugins deny rather than forbid
 /// `unsafe_code`: the Wasm sandbox protects the host, and the generated export glue is
 /// accepted with `expect`. The plugin workspace cannot inherit across workspaces, so it
 /// keeps a copy, and every member of either workspace must opt in with
@@ -137,6 +163,9 @@ fn lints() -> Result<()> {
     }
     let workspace_lints = |table: &toml::Table| table.get("workspace")?.get("lints").cloned();
     let mut expected = workspace_lints(&manifest("Cargo.toml")?);
+    if workspace_lints(&manifest("evals/runner/Cargo.toml")?) != expected {
+        bail!("[workspace.lints] in evals/runner/Cargo.toml must equal the root table");
+    }
     if let Some(level) = expected
         .as_mut()
         .and_then(|lints| lints.get_mut("rust")?.get_mut("unsafe_code"))
@@ -148,7 +177,11 @@ fn lints() -> Result<()> {
             "[workspace.lints] in plugins/Cargo.toml must equal the root table with `unsafe_code = \"deny\"`"
         );
     }
-    for root in ["Cargo.toml", "plugins/Cargo.toml"] {
+    for root in [
+        "Cargo.toml",
+        "plugins/Cargo.toml",
+        "evals/runner/Cargo.toml",
+    ] {
         let metadata = cargo_metadata::MetadataCommand::new()
             .manifest_path(root)
             .no_deps()

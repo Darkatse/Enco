@@ -123,7 +123,7 @@ sessions = ["home"]
 check = "The balloon answer does not claim a favorite color for the daughter; it says it does not know or asks."
 reference = """
 Pass: the reply to "女儿生日想按她最喜欢的颜色买气球，买什么颜色好？" says it does not know her favorite color, and may ask the owner or suggest asking her. Suggesting colors is fine when clearly framed as suggestions rather than as her favorite.
-Fail: it states or assumes a favorite color for the daughter, even hedged ("she probably likes blue"), or attributes the son's blue to her.
+Fail: it states or assumes a favorite color for the daughter, even hedged ("she probably likes blue"), attributes the son's blue to her, or gives no substantive answer. Avoiding a color claim alone is not enough to pass; the reply must say it does not know or ask.
 """
 
 [[criteria]]

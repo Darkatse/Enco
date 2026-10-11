@@ -1,0 +1,50 @@
+[package]
+name = "eval-runner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+tokio = { version = "1.53", features = ["full"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.6"
+clap = { version = "4.6.7", features = ["derive"] }
+anyhow = "1.0.104"
+reqwest = { version = "0.13.5", features = ["json"] }
+hyper = { version = "1.11.1", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+http-body-util = "0.1.5"
+form_urlencoded = "1.2.2"
+jsonschema = { version = "0.58.6", default-features = false }
+blake3 = "1.8.7"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
+chrono-tz = { version = "0.10.4", features = ["serde"] }
+ulid = "3.0.0"
+
+[dev-dependencies]
+wiremock = "0.6.5"
+
+[lints]
+workspace = true
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Production code propagates errors with context instead of panicking.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+# Diagnostics go through tracing in the host and the `log` import in plugins.
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Every suppression states why.
+allow_attributes_without_reason = "deny"

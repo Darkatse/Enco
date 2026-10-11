@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*", "apps/enco", "xtask"]
-exclude = ["plugins"]
+exclude = ["plugins", "evals/runner"]
 resolver = "3"
 
 [workspace.package]
@@ -48,7 +48,7 @@ enco-wasm = { path = "crates/enco-wasm" }
 [profile.release]
 incremental = true
 
-# plugins/Cargo.toml keeps an identical copy; `cargo xtask check` rejects any difference.
+# Independent workspaces copy this table; `cargo xtask check` verifies them.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
