@@ -18,6 +18,8 @@ pub(super) fn kinds() -> [Kind; 4] {
     [Kind::Read, Kind::Write, Kind::Edit, Kind::List]
 }
 
+/// Local file IO finishes quickly, so file tools ignore cancellation and settle normally;
+/// a blocking special file such as a FIFO holds cancellation and shutdown until it returns.
 pub(super) struct FileTool {
     pub workspace: PathBuf,
     pub kind: Kind,

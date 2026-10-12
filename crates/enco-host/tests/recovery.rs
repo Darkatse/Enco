@@ -15,6 +15,10 @@ use std::sync::{
 use support::*;
 use tokio::sync::Notify;
 
+// These tests simulate `kill -9` in process. The old kernel runs on its own runtime, which is
+// shut down while a call blocks at an injection point; the Drop notification proves the
+// in-flight future was discarded. Only then is the old kernel handle released, so no ordinary
+// cancellation settles anything before a new kernel opens the same database.
 struct PendingProvider {
     entered: Notify,
     dropped: Notify,

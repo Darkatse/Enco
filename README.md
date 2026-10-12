@@ -18,7 +18,7 @@ A personal agent that runs on your own machines. It is written in Rust, and ever
 
 Enco is an assistant for one owner. It runs with full access to the machine it is on, keeps an append-only record of what it does, and remembers what you tell it across conversations. The kernel is small, and features live in plugins that the agent can read, fix and rebuild on its own.
 
-The design is described in [docs/Architecture.md](docs/Architecture.md) (in Chinese).
+The design is described in [docs/design/](docs/design/README.md) (in Chinese).
 
 ## Design
 
@@ -66,7 +66,7 @@ P0 runs on macOS and Linux as a background service with a command-line client; s
 
 ### A small set of concepts
 
-The whole system is described with ten concepts and two rules for mutable state. Each piece of state has one owner that applies changes in order, and callbacks return their writes for the owner to commit in one transaction. Chat connections, stateful tools and derived indexes all follow these two rules instead of each having a framework of its own. The implementation spec keeps a fixed vocabulary and lists structures the code should avoid.
+The whole system is described with ten concepts and two rules for mutable state. Each piece of state has one owner that applies changes in order, and callbacks return their writes for the owner to commit in one transaction. Chat connections, stateful tools and derived indexes all follow these two rules instead of each having a framework of its own. The design keeps a fixed vocabulary, so each word names one thing.
 
 ## Roadmap
 
@@ -109,9 +109,9 @@ Set `ENCO_HOME` to use a directory other than `~/.enco`. Run `cargo xtask check`
 
 ## Documentation
 
-- [docs/Architecture.md](docs/Architecture.md): architecture outline, with chapters in `docs/architecture/` (Chinese)
+- [docs/design/](docs/design/README.md): the design outline and the judgments behind each area (Chinese)
 - [docs/Roadmap.md](docs/Roadmap.md): phases and their acceptance criteria (Chinese)
-- [docs/spec/](docs/spec/): the specification of the implemented system (Chinese)
+- [LESSONS.md](LESSONS.md): approaches that failed in practice; read before changing code (Chinese)
 - [wit/CONTRACT.md](wit/CONTRACT.md): the plugin contract, generated from WIT
 - [CONTRIBUTING.md](CONTRIBUTING.md): project principles and how to contribute
 

@@ -22,4 +22,4 @@ cargo xtask check
 
 出厂产物嵌入 `enco`。修改插件后，将构建产物交给 `enco plugin deploy <name> <path>`；用 `enco plugin status` 查看代际，用 `enco plugin rollback <name>` 回退。
 
-真实服务示例见 [deepseek-gemini.toml](../examples/deepseek-gemini.toml)，插件边界的规格见 [07-plugin-boundary.md](../docs/spec/07-plugin-boundary.md)。密钥来自配置指定的环境变量，插件源码和配置文件不含密钥。
+真实服务示例见 [deepseek-gemini.toml](../examples/deepseek-gemini.toml)，插件契约见 [CONTRACT.md](../wit/CONTRACT.md)，边界的设计见[插件专题](../docs/design/plugins.md)。密钥来自配置指定的环境变量，插件源码和配置文件不含密钥。

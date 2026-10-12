@@ -18,7 +18,7 @@
 
 Enco 是只服务一位主人的助理。它在所在的机器上拥有完整权限，把自己做过的事记录在追加式日志里，并且跨会话记住你告诉它的事。内核很小，功能都放在插件里，Agent 可以自己阅读、修复并重新构建这些插件。
 
-完整设计见 [docs/Architecture.md](docs/Architecture.md)。
+完整设计见 [docs/design/](docs/design/README.md)。
 
 ## 设计
 
@@ -66,7 +66,7 @@ P0 在 macOS 和 Linux 上以后台服务加命令行客户端的形式运行，
 
 ### 少量一致的概念
 
-整个系统用十个概念和两条规则来描述可变状态：每份状态只有一个归属者，由它按顺序处理变更；回调把写入作为返回值交出，由归属者在一个事务中提交。聊天连接、有状态的工具和派生索引都遵循这两条规则，没有各自的一套框架。实施规格固定了术语，并列出了代码中应当避免的结构。
+整个系统用十个概念和两条规则来描述可变状态：每份状态只有一个归属者，由它按顺序处理变更；回调把写入作为返回值交出，由归属者在一个事务中提交。聊天连接、有状态的工具和派生索引都遵循这两条规则，没有各自的一套框架。设计固定了术语，每个词只指一样东西。
 
 ## 路线图
 
@@ -109,9 +109,9 @@ cargo run -p enco -- chat      # 在另一个终端中
 
 ## 文档
 
-- [docs/Architecture.md](docs/Architecture.md)：架构总纲，各章节在 `docs/architecture/`
+- [docs/design/](docs/design/README.md)：设计总纲与各领域的判断
 - [docs/Roadmap.md](docs/Roadmap.md)：各阶段的计划与验收标准
-- [docs/spec/](docs/spec/)：已实现系统的规格
+- [LESSONS.md](LESSONS.md)：实践中被证伪的做法，改代码前先读
 - [wit/CONTRACT.md](wit/CONTRACT.md)：插件契约，由 WIT 生成
 - [CONTRIBUTING.md](CONTRIBUTING.md)：项目理念与贡献方式
 

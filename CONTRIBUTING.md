@@ -2,7 +2,7 @@
 
 感谢你愿意为 Enco 做出贡献。
 
-本项目处于设计与早期实现阶段，贡献规则会随着维护流程逐步补充。当前请先遵守以下基本要求。架构的权威说明见总纲 [`docs/Architecture.md`](docs/Architecture.md) 与 `docs/architecture/` 下的章节。
+本项目处于设计与早期实现阶段，贡献规则会随着维护流程逐步补充。当前请先遵守以下基本要求。设计的权威说明见 [`docs/design/`](docs/design/README.md) 的总纲与各专题。
 
 ### 目标分支
 
@@ -106,7 +106,7 @@ KISS 要求我们选择能够完整解决当前问题的最简单方案。判断
 
 测试用于守住可观察行为、非平凡不变式与边界，以及已经发生并修复的具体缺陷。代码变化或覆盖率增加本身不是新增测试的理由。
 
-不要测试源码文本、字面量、显然控制流、直接委托、实现细节或已移除功能。不要提前添加回归测试。优先复用最高层的现有行为覆盖；并发测试使用确定性协调，不依赖 sleep。删除功能或测试后，也应删除失效的 fixture、fake、hook 与依赖。各阶段需要守住的关键不变式与验收标准，见架构文档的路线图。
+不要测试源码文本、字面量、显然控制流、直接委托、实现细节或已移除功能。不要提前添加回归测试。优先复用最高层的现有行为覆盖；并发测试使用确定性协调，不依赖 sleep。删除功能或测试后，也应删除失效的 fixture、fake、hook 与依赖。各阶段需要守住的关键不变式与验收标准，见[路线图](docs/Roadmap.md)。
 
 ### 提交 PR 前
 
@@ -120,7 +120,7 @@ KISS 要求我们选择能够完整解决当前问题的最简单方案。判断
 
 Thank you for contributing to Enco.
 
-This project is in its design and early implementation stage, and the contribution rules will be expanded as the maintenance workflow matures. For now, please follow the basic requirements below. The authoritative architecture document is the outline [`docs/Architecture.md`](docs/Architecture.md) together with the chapters in `docs/architecture/`.
+This project is in its design and early implementation stage, and the contribution rules will be expanded as the maintenance workflow matures. For now, please follow the basic requirements below. The authoritative design is the outline and topics in [`docs/design/`](docs/design/README.md).
 
 ### Target Branch
 
@@ -224,7 +224,7 @@ Use these principles to ask questions and explain decisions. No decision needs t
 
 Tests protect observable behavior, non-trivial invariants and boundaries, and concrete defects that have already been fixed. A code change or higher coverage is not, by itself, a reason to add a test.
 
-Do not test source text, literals, obvious control flow, direct delegation, implementation details, or removed features. Do not add regression tests speculatively. Prefer the highest existing behavior boundary, and coordinate concurrency deterministically instead of sleeping. When a feature or test is removed, also remove obsolete fixtures, fakes, hooks, and dependencies. The key invariants and acceptance criteria for each phase are listed in the roadmap of the architecture document.
+Do not test source text, literals, obvious control flow, direct delegation, implementation details, or removed features. Do not add regression tests speculatively. Prefer the highest existing behavior boundary, and coordinate concurrency deterministically instead of sleeping. When a feature or test is removed, also remove obsolete fixtures, fakes, hooks, and dependencies. The key invariants and acceptance criteria for each phase are listed in the [roadmap](docs/Roadmap.md).
 
 ### Before Opening a PR
 

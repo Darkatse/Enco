@@ -48,7 +48,7 @@ async fn node_lock_is_held_while_serving_and_until_shutdown_is_quiescent() {
     let mut client = daemon.connect().await;
     client.request(Command::Status {}).await.unwrap();
 
-    // fs_read does not observe cancellation (05 §2), so a FIFO read holds shutdown open
+    // fs_read does not observe cancellation, so a FIFO read holds shutdown open
     // until this test closes its writer, without sleeps.
     let fifo = daemon.root.path().join("workspace/held");
     assert!(

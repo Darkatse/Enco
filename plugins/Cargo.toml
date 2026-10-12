@@ -18,12 +18,12 @@ strip = true
 # rejects any other difference.
 [workspace.lints.rust]
 # Plugins write no unsafe by hand; the generated canonical ABI glue is accepted with
-# `expect`. The Wasm sandbox, not this lint, protects the host (docs/spec/02 §5).
+# `expect`. The Wasm sandbox, not this lint, protects the host (docs/design/engineering.md).
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
 # Production code propagates errors with context instead of panicking. In a plugin a
-# panic is a trap, which health gating attributes to the generation (§4.6).
+# panic is a trap, which health gating attributes to the generation (docs/design/generations.md).
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"

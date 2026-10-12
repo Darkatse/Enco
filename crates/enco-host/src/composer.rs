@@ -183,6 +183,9 @@ fn reply_items(
                 "Memories you recall for the next message:",
             );
         }
+        // A note describes the agent's own circumstances, yet it takes the user role: some
+        // protocols accept system messages only at the start, and some chat templates move
+        // every system message there.
         if !note.is_empty() {
             items.push(PlanItem::Message {
                 message: Message::text(Role::User, note),
@@ -239,6 +242,11 @@ fn history_sizes(
 const LOCAL_TIME: &str = "%Y-%m-%d %H:%M, %A";
 
 /// Describe the recorded circumstances of each input once for both reply and compaction.
+///
+/// Arrival times appear only when the local hour changes, to the minute and without an
+/// offset: the time zone under Environment is their reference, so a note depends only on
+/// recorded facts and the cached prefix stays stable. The request carries no current time;
+/// the agent asks the shell when it needs one.
 fn annotated_history(input: &ComposeInput) -> Vec<(&TranscriptItem, String)> {
     let mut previous_hour = None;
     let mut run_ends = input.transcript.run_ends.iter().peekable();
