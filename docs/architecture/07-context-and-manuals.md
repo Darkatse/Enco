@@ -100,7 +100,7 @@ deliver: async func(target: string, message: json) -> outcome;
 | L2 | 内核与 SDK 的公开 API 索引（条目、签名、摘要、`file:line`） | rustdoc JSON | `crates/<crate>/API.md` |
 | L3 | 源码 | — | — |
 
-- 公开 API 索引来自 rustdoc JSON，使用仓库固定的同一个 stable 工具链生成，不引入第二个工具链：`RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --no-deps`（已在 rustc 1.98.1 上实测，输出 `format_version` 60，保留文档注释）。`RUSTC_BOOTSTRAP` 只在 xtask 的这一步中设置，并使用独立的 target 目录。JSON 格式随工具链版本变化，所以 xtask 使用与之匹配的 `rustdoc-types` 版本，工具链升级时一起更新。
+- 公开 API 索引来自 rustdoc JSON，使用仓库固定的同一个 stable 工具链生成，不引入第二个工具链：`RUSTC_BOOTSTRAP=1 RUSTDOCFLAGS="-Z unstable-options --output-format json" cargo doc --no-deps`（已在 rustc 1.99.0 上实测，输出 `format_version` 61，保留文档注释）。`RUSTC_BOOTSTRAP` 只在 xtask 的这一步中设置，并使用独立的 target 目录。JSON 格式随工具链版本变化，所以 xtask 使用与之匹配的 `rustdoc-types` 版本，工具链升级时一起更新。
 - **API.md 本身就是公开 API 的快照**：它提交入库，kernel 或 SDK 的公开 API 一旦变化，就会以 API.md 的 diff 出现在评审中，`--check` 保证它不过期。不需要再引入 `cargo public-api`：所有文档，包括 API 差异，都走同一个"生成物 + `--check`"机制。
 - HTML 版 rustdoc 照常生成，给人看。Agent 读 Markdown。
 

@@ -7,7 +7,7 @@
 [English](README.md) · **简体中文**
 
 [![License](https://img.shields.io/github/license/Darkatse/Enco?style=flat-square)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.98.1-b7410e?style=flat-square&logo=rust)](rust-toolchain.toml)
+[![Rust](https://img.shields.io/badge/Rust-1.99.0-b7410e?style=flat-square&logo=rust)](rust-toolchain.toml)
 
 </div>
 
@@ -85,7 +85,7 @@ P0 在 macOS 和 Linux 上以后台服务加命令行客户端的形式运行，
 
 ## 从源码构建
 
-需要 Rust 1.98.1 与 `wasm32-wasip2` 目标。版本固定在 `rust-toolchain.toml` 中，第一次构建时 `rustup` 会自动安装。
+需要 Rust 1.99.0 与 `wasm32-wasip2` 目标。版本固定在 `rust-toolchain.toml` 中，第一次构建时 `rustup` 会自动安装。
 
 ```bash
 git clone https://github.com/Darkatse/Enco.git

@@ -7,7 +7,7 @@ A personal agent that runs on your own machines. It is written in Rust, and ever
 **English** · [简体中文](README.zh-CN.md)
 
 [![License](https://img.shields.io/github/license/Darkatse/Enco?style=flat-square)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.98.1-b7410e?style=flat-square&logo=rust)](rust-toolchain.toml)
+[![Rust](https://img.shields.io/badge/Rust-1.99.0-b7410e?style=flat-square&logo=rust)](rust-toolchain.toml)
 
 </div>
 
@@ -85,7 +85,7 @@ Each phase has acceptance criteria, listed in [docs/Roadmap.md](docs/Roadmap.md)
 
 ## Building from source
 
-Requirements: Rust 1.98.1 with the `wasm32-wasip2` target. The versions are pinned in `rust-toolchain.toml`, so `rustup` installs them on first build.
+Requirements: Rust 1.99.0 with the `wasm32-wasip2` target. The versions are pinned in `rust-toolchain.toml`, so `rustup` installs them on first build.
 
 ```bash
 git clone https://github.com/Darkatse/Enco.git
