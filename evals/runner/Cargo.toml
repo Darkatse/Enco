@@ -28,6 +28,10 @@ ulid = "3.0.0"
 [dev-dependencies]
 wiremock = "0.6.5"
 
+# Each run hashes the enco binary; see spec 02.
+[profile.dev.package.blake3]
+opt-level = 3
+
 [lints]
 workspace = true
 

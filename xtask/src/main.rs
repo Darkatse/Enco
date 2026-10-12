@@ -2,7 +2,11 @@ mod docs;
 
 use anyhow::{Context, Result, bail};
 use cargo_metadata::DependencyKind;
-use std::{path::Path, process::Command};
+use std::{
+    io::{Read, Write},
+    path::Path,
+    process::{Command, ExitStatus},
+};
 
 fn main() -> Result<()> {
     std::env::set_current_dir(
@@ -66,18 +70,23 @@ fn main() -> Result<()> {
                     "warnings",
                 ],
             )?;
-            run("cargo", &["test", "--workspace"])?;
-            run("cargo", &["test", "--manifest-path", "plugins/Cargo.toml"])?;
+            // The evaluation tests drive the enco binary, so it must be built before they start.
+            run("cargo", &["test", "--workspace", "--no-run"])?;
             let metadata = cargo_metadata::MetadataCommand::new().no_deps().exec()?;
-            let status = Command::new("cargo")
+            let mut workspace = Command::new("cargo");
+            workspace.args(["test", "--workspace"]);
+            let mut plugins = Command::new("cargo");
+            plugins.args(["test", "--manifest-path", "plugins/Cargo.toml"]);
+            let mut evaluation = Command::new("cargo");
+            evaluation
                 .args(["test", "--manifest-path", "evals/runner/Cargo.toml"])
-                .env("ENCO_BIN", metadata.target_directory.join("debug/enco"))
-                .status()
-                .context("running evaluation tests")?;
-            if !status.success() {
-                bail!("evaluation tests failed ({status})");
-            }
-            Ok(())
+                .env("ENCO_BIN", metadata.target_directory.join("debug/enco"));
+            // The three workspaces have separate build directories, so their suites run side by side.
+            concurrently([
+                ("workspace tests", workspace),
+                ("plugin tests", plugins),
+                ("evaluation tests", evaluation),
+            ])
         }
         _ => bail!("usage: cargo xtask <check|boundaries|docs [--check]|build-factory>"),
     }
@@ -92,6 +101,40 @@ fn run(program: &str, args: &[&str]) -> Result<()> {
         bail!("{program} {} failed ({status})", args.join(" "));
     }
     Ok(())
+}
+
+/// Run each command to completion on its own thread, then print the outputs in order.
+fn concurrently<const N: usize>(commands: [(&str, Command); N]) -> Result<()> {
+    let outputs = std::thread::scope(|scope| {
+        commands
+            .map(|(name, command)| (name, scope.spawn(move || interleaved(command))))
+            .map(|(name, handle)| (name, handle.join()))
+    });
+    let mut failed = Vec::new();
+    for (name, output) in outputs {
+        let (status, output) = output
+            .map_err(|_| anyhow::anyhow!("{name}: thread panicked"))?
+            .with_context(|| format!("running {name}"))?;
+        std::io::stdout().write_all(&output)?;
+        if !status.success() {
+            failed.push(name);
+        }
+    }
+    if !failed.is_empty() {
+        bail!("{} failed", failed.join(", "));
+    }
+    Ok(())
+}
+
+/// One pipe for both streams keeps cargo's progress next to the results it introduces.
+fn interleaved(mut command: Command) -> std::io::Result<(ExitStatus, Vec<u8>)> {
+    let (mut reader, writer) = std::io::pipe()?;
+    let mut child = command.stdout(writer.try_clone()?).stderr(writer).spawn()?;
+    // Our copies of the write end must close, or the read below never reaches the end.
+    drop(command);
+    let mut output = Vec::new();
+    reader.read_to_end(&mut output)?;
+    Ok((child.wait()?, output))
 }
 
 fn boundaries() -> Result<()> {

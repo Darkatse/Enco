@@ -18,7 +18,7 @@
 3. `cargo xtask docs --check`
 4. `cargo xtask build-factory`
 5. `cargo clippy --workspace --all-targets -- -D warnings`；`cargo clippy --manifest-path plugins/Cargo.toml --target wasm32-wasip2 --all-targets -- -D warnings`；`cargo clippy --manifest-path evals/runner/Cargo.toml --all-targets -- -D warnings`
-6. `cargo test --workspace`；`cargo test --manifest-path plugins/Cargo.toml`；以 `ENCO_BIN` 指向主工作区构建出的 `enco`，运行 `cargo test --manifest-path evals/runner/Cargo.toml`（评测运行器的测试要用真实的 `enco`，§3）
+6. `cargo test --workspace --no-run`，构建出全部测试与 `enco`；然后三个工作区的测试同时运行：`cargo test --workspace`、`cargo test --manifest-path plugins/Cargo.toml`，以及以 `ENCO_BIN` 指向主工作区的 `enco` 运行的 `cargo test --manifest-path evals/runner/Cargo.toml`（评测运行器的测试要用真实的 `enco`，§3）。三者的构建目录互不相同，所以不会互相等待；输出在全部结束后按这个顺序打印
 
 ### 1.1 boundaries
 
@@ -88,6 +88,7 @@ complete: async func(settings: settings, request: request) -> result<completion,
 - `ScriptedRuntime`：实现 `Runtime`。按制品的字节内容决定 `load` 的结果：预先登记的字节返回带 `ScriptedProvider` 的 `Loaded`（可以设定 probe 的结果、是否导出 embedding），其余返回 `LoadError`。健康门控的故障注入就是让某个代际的 `ScriptedProvider` 返回 `plugin.trap`，不需要真的构造会 trap 的组件。
 - `TestClock`：`Clock` 的实现，时刻可以设置。主人的时区来自配置代际的 `[owner]`（12 §1）。
 - **端到端测试中的等待**：测试辅助中写一个最小的本地协议客户端，订阅 Session 并等待期望的条目（例如 `RunEnded`），外加总超时；不要用固定时长的 sleep 或轮询代替。
+- **计时器**：进程内的测试用 tokio 的暂停时钟（`start_paused`），让退避、定时等计时器按先后立即到期；阻塞线程池中的 SQLite 调用会暂停自动推进，不受影响。子进程里的计时器无法虚拟，也不为测试在生产代码中另开时间开关（01 §2），所以黑盒测试只断言结局，不断言时长；不可避免的真实等待（试验时限、重试退避）各自独立成一个测试，与其他测试并行。
 - **进程内模拟 `kill -9`**：Kernel 和 Session actor 都在独立的 tokio runtime 内创建；在注入点阻塞后调用 `runtime.shutdown_background()`，用 Drop 通知确认执行中的 future 已被丢弃，之后才释放 Kernel 句柄，避免误走正常取消结算；然后在同一个数据库上启动新的 Kernel，检查恢复写入的条目。
 
 这些辅助只放在测试目录中，不进入库代码。

@@ -156,6 +156,16 @@ api_key_env = "EVAL_JUDGE_KEY"
         (path.parent().unwrap().to_owned(), result)
     }
 
+    /// Point the model under test at another endpoint, keeping the embedding service.
+    fn model_at(&self, endpoint: &str) {
+        let configuration = self.root.join("model.toml");
+        let source = std::fs::read_to_string(&configuration).unwrap();
+        write(
+            &configuration,
+            &source.replacen(&self.model.uri(), endpoint, 1),
+        );
+    }
+
     async fn finish(self) {
         tokio::fs::remove_dir_all(&self.root).await.unwrap();
     }
@@ -326,25 +336,19 @@ async fn comparison_rejects_missing_samples_and_known_failures_survive_judge_err
 }
 
 #[tokio::test]
-async fn cancelled_and_unreachable_providers_remain_execution_failures() {
+async fn trials_past_their_deadline_cancel_the_run_and_fail() {
     let evaluation = Evaluation::new().await;
     write(
         &evaluation.root.join("evals/tasks/mail/hidden/calls.json"),
         "{}",
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    let configuration = evaluation.root.join("model.toml");
-    let source = std::fs::read_to_string(&configuration).unwrap();
-    write(
-        &configuration,
-        &source.replacen(&evaluation.model.uri(), &endpoint, 1),
-    );
+    evaluation.model_at(&format!("http://{}", listener.local_addr().unwrap()));
     let task = evaluation.root.join("evals/tasks/mail/task.toml");
     let source = std::fs::read_to_string(&task).unwrap();
     write(
         &task,
-        &source.replace("timeout_secs = 30", "timeout_secs = 10"),
+        &source.replace("timeout_secs = 30", "timeout_secs = 3"),
     );
     // This endpoint never responds. Its socket closes when Enco settles cancellation.
     let mut stalled = tokio::spawn(async move {
@@ -381,8 +385,31 @@ async fn cancelled_and_unreachable_providers_remain_execution_failures() {
         read(&directory.join("result.json"))["trials"][0]["result"],
         "failure"
     );
-    write(&task, &source);
+    evaluation.finish().await;
+}
+
+#[tokio::test]
+async fn unreachable_providers_remain_execution_failures() {
+    let evaluation = Evaluation::new().await;
+    write(
+        &evaluation.root.join("evals/tasks/mail/hidden/calls.json"),
+        "{}",
+    );
+    // Nothing listens on the port once the probe listener is dropped.
+    let address = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    evaluation.model_at(&format!("http://{address}"));
     let (_, report) = evaluation.run().await;
-    assert_eq!(report["trials"][0]["result"], "failure");
+    let trial = &report["trials"][0];
+    assert_eq!(trial["result"], "failure");
+    assert!(
+        trial["reason"]
+            .as_str()
+            .unwrap()
+            .contains("provider.network"),
+        "{trial}"
+    );
     evaluation.finish().await;
 }

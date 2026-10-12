@@ -216,7 +216,8 @@ async fn unavailable_calls_and_invalid_arguments_are_settled_without_dispatch() 
     kernel.shutdown().await.unwrap();
 }
 
-#[tokio::test]
+// The retry backoff elapses on the paused clock instead of in real time.
+#[tokio::test(start_paused = true)]
 async fn retries_reuse_the_frozen_plan_and_nonretryable_failures_end_the_run() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![

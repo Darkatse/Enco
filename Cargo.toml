@@ -47,6 +47,16 @@ enco-wasm = { path = "crates/enco-wasm" }
 [profile.release]
 incremental = true
 
+# Daemon starts compile the factory components; see spec 02.
+[profile.dev.package.cranelift-codegen]
+opt-level = 2
+[profile.dev.package.regalloc2]
+opt-level = 2
+[profile.dev.package.wasmparser]
+opt-level = 2
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 2
+
 # Independent workspaces copy this table; `cargo xtask check` verifies them.
 [workspace.lints.rust]
 unsafe_code = "forbid"
