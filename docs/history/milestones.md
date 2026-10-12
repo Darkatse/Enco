@@ -4,7 +4,7 @@
 
 ## 里程碑
 
-P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。P1（可恢复替换）：M10 请求查看、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。P1 之后：M15 缓存友好的请求与时间标记、M16 按消息锚定的上下文、M17 决策接口与记忆的相关性过滤、M18 周期定时与主人的时区。P2：M19 评测运行器与基线、M20 契约 0.3 与凭证。
+P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。P1（可恢复替换）：M10 请求查看、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。P1 之后：M15 缓存友好的请求与时间标记、M16 按消息锚定的上下文、M17 决策接口与记忆的相关性过滤、M18 周期定时与主人的时区。P2：M19 评测运行器与基线、M20 契约 0.3 与凭证、M21 自我修改只有一条路径。
 
 | 里程碑 | 实现 | 暂不实现 |
 |---|---|---|
@@ -19,6 +19,7 @@ P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 �
 | M18 | 03 §1.4、§1.5、§1.9、§3：`ScheduleRule`、`last`、`ScheduleState` 改为 Active / Done / Cancelled 并去掉 `ScheduleStateKind`、`Reminder.skipped`、`AttemptStarted.provider` 收窄为 `GenerationId`、Event 的叙述移出规范形态（回退通知由注册表写下）、`fire_schedule` 的前置条件、schema 升到 4；04 §2、§3、§5、§6.3、§10–§12：`Clock` 只返回 UTC、`TranscriptItem.event`、`KernelConfig.timezone`、`ComposeInput.timezone`、Scheduler 在内存中推出下一次触发并只补最近一次、`schedule_*` 的新参数与结果、两个常量；05 §4、§5：Environment 与时间标记按主人的时区、输入来源的说明；08 §1、§3、§4：必填的 `timezone`、`enco init` 检测本机时区、`enco schedules` 的显示；02 §3、§4：croner、chrono-tz、iana-time-zone；同步更新 `enco init` 的模板与 `examples/` 中的配置示例 | 定时租约与按 `(schedule, due_at)` 的 Inbox 唯一约束（P4）；修改已有的定时（取消后重建）；`at` 接受不带偏移的当地时间 |
 | M19 | 13：独立工作区的黑盒运行器 `eval-runner`（`run`、`compare`、`regrade`、`check`），中性 home 与白名单环境、mock 与拒绝代理、经 CLI 导出的快照、三种评分、逐题单侧 Fisher 检验与目标题的分层检验、`result.json`；08 §1、§7：`enco --version` 与 `enco send --wait`；02、09：运行器的依赖、lint 副本与门禁；`memory-update` 与 `daily-briefing` 细化并带齐自检案例，其余三道题的设计移入 M25 | 题目 `home/plugins/` 下夹具插件的构建（M24） |
 | M20 | 07：契约 0.3，`describe` 返回摘要、配置 schema 与凭证，`settings` 删除 `api-key`；enco-wasm 在传输层按 origin 附加凭证、只在同一 origin 内跟随重定向、遮蔽交回插件的密钥值，加载时检查契约的主版本；04 §2、§6.4 与 06：三个端口与各种 endpoint 不再携带密钥的值，`Loaded.credential` 只含是否必需；11 §3、§6：回退的候选以当前出厂代际结尾，接线检查加上凭证；08 §3、12：启动时只检查变量已设置且非空；03 §1.6：`credential.unavailable`；三个出厂插件重建，provider-protocol 中的鉴权头与遮蔽删除 | 插件自带的凭证（名字与 origin）及代际级的凭证准入（M23）；路径前缀等放置方式（P3）；`config-schema` 的读者，即 README 与运行时手册中的配置项（M24、M25） |
+| M21 | 11：配置代际与插件代际共用编号，库里只存内容；`TableOwner` 与求出声明，`ActiveConfig` 合起内容与声明，视图只经 `watch` 发布；`apply_config` 求出声明、在锁外探测新出现的使用、在锁内核对期望的活跃代际并提交；`config_divergence`；`set_profile` 与 `session_view` 经注册表；`deploy` 与 `apply_config` 接受代际编号；03：`generations` 父表、两种代际的子表与 `config`，schema 5，`config.invalid`；12：`[owner]`、`[run]`、`[endpoint.*]`、`[profile.*]` 由内核解析，`uses()`；06：`[memory]` 按名字引用 endpoint，索引身份与相关性过滤跟随视图；10：`[telegram]` 的归属者与跟随视图的监督任务；08：`enco config apply [--generation]`、`enco config rollback`、`enco plugin deploy --generation`；05：`config_apply` 进入 enco-host 与救生集，删除 `plugin_rollback` 工具；04：配置来自视图，Scheduler 订阅视图；删除 `KernelConfig`、`KernelDeps.profiles` 与 `arc-swap`；`enco init` 的模板、`examples/` 与 spec 13 的配置同步 | 插件代际的设置与 `[plugin.*]` 的归属者（M23）；`config.toml` 的源码历史（M24）；旧 schema 的迁移步骤，旧库重建（自动迁移在 P4）；A84 的手动核对推迟到 P2 结束（路线图） |
 
 每个里程碑结束时系统都完整可用。M11 到 M13 之间的过渡形态（临时 profile）只存在于代码中，规格只描述最终形态。
 
@@ -32,7 +33,7 @@ A70、A75 于 2026-10-11 核对：用临时组件加载一份导入 `enco:plugin
 
 ### 验收场景
 
-M1–M20 的验收场景，"层"指主要在哪一层验证。编号在后续里程碑中延续。
+M1–M21 的验收场景，"层"指主要在哪一层验证。编号在后续里程碑中延续。
 
 | # | 里程碑 | 场景 | 层 | 必须观察到 |
 |---|---|---|---|---|
@@ -111,6 +112,15 @@ M1–M20 的验收场景，"层"指主要在哪一层验证。编号在后续里
 | A73 | M20 | 接线中的凭证 | 集成 | endpoint 写了 `api_key_env` 而插件没有声明凭证：拒绝启动，错误写明 endpoint 与插件；deepseek 的 endpoint 没有 `api_key_env`：拒绝启动；openai-compatible 的 endpoint 不写 `api_key_env`：正常启动，请求不带 `Authorization`。把一份不声明凭证的制品部署到带 key 的 endpoint 所用的插件：`Rejected`，注册表不变 |
 | A74 | M20 | 回退落到出厂代际 | 集成 | 活跃代际的制品无法加载、也没有可加载的更早健康代际：启动后插件的活跃代际是当前出厂代际，无法加载的代际标为 `failed` 并记下原因。手动 `rollback` 与自动回退使用同一份候选，不另验 |
 | A75 | M20 | 真实服务 | 手动一次 | 经凭证绑定与真实的 DeepSeek、Kimi 对话；`enco log` 中找不到密钥的值 |
+| A76 | M21 | 首次登记 | 集成 | 空库启动：`config.toml` 登记为第一个配置代际，`enco status` 中活跃配置代际是它；首次登记没有发出任何模型请求；再次启动不新增配置代际；全新 home 的 `config.toml` 无效：拒绝启动，错误指明是哪一张表 |
+| A77 | M21 | 每张表的归属者 | 集成 | 缺少 `[owner] timezone`、profile 所选的 endpoint 没有写窗口、`[memory] embedding` 所选的 endpoint 没有写维度、出现不属于任何归属者的表（包括 `[plugin.web.config]`）：应用配置各自被拒绝，错误指明那一张表，不登记任何代际 |
+| A78 | M21 | 真实调用 | 集成 | 回复 endpoint 的模型名改成 mock 拒绝的名字：整次被拒绝，错误指出那个 endpoint；回复 endpoint 换成拒绝带工具请求的服务：被拒绝；只改压缩 endpoint：只对它发一次不带工具的请求；没有改变的 endpoint 不被请求；结果的 `probes` 列出每次调用 |
+| A79 | M21 | 应用后生效 | 集成 | 改了 profile 所选的 endpoint：下一个 Round 的 `AttemptStarted.settings` 是新的，正在进行的 Round 不受影响，不重启；改了 `[owner] timezone`：不重启，跟随型定时按新时区推算（与 A55 的期望相同）；改了 `[memory] relevance`：下一次召回用新的 endpoint；改了 `[memory] embedding` 所选 endpoint 的模型，或只改它的 `base_url`：都不重启，下一次召回前索引按新的身份重建，`index.json` 记录新的身份；只改 endpoint 的 `api_key_env`：索引不重建；改了 `[telegram] api_base`：不重启，渠道停止后按新表连接，之后的消息经新的地址收发 |
+| A80 | M21 | 在用的 profile | 集成 | 删掉一个仍有 Session 在用的 profile 再应用：整次被拒绝，错误列出这些 Session；用 `enco profile` 切走之后重新应用，成功 |
+| A81 | M21 | 期望的活跃代际 | 集成 | 用确定性协调拖住应用配置的真实调用：期间同一插件部署了新代际，应用配置返回 `Conflict`，什么都不写；期间一个试用代际晋升，应用照常成功。同一插件的两次部署交错提交：后提交者 `Conflict`，活跃的是先提交的那条 |
+| A82 | M21 | 重启只恢复 | 集成 | 改了 `config.toml` 但没有应用就重启：活跃配置代际不变，启动日志与 `enco status` 报出 `unapplied`；`config.toml` 写坏后重启：节点照常启动；去掉某个 endpoint 的环境变量后重启：节点照常启动，用到它的调用以 `credential.unavailable` 结束；`[telegram]` 的 token 缺失：渠道不启动，`status.channels` 的 `stopped` 写明原因；活跃配置代际中的 `[memory]` 在当前宿主下解析不了（测试直接写入库）：节点照常启动，`status.config.invalid` 列出这张表，召回不使用索引（06 §3.2），应用一份有效的配置之后恢复 |
+| A83 | M21 | 撤销也是登记 | 集成 | `plugin_deploy` 以代际编号重新部署：新代际的制品与那个代际相同，状态为 `trial`；`config_apply` 以上一个代际的编号 N 重新应用：产生一条新的配置代际，文档与代际 N 相同，`config.toml` 不变，`enco status` 报出 `superseded` 并写明新代际重新登记了 N；把 `config.toml` 改回之后不一致消失；`enco config rollback` 回到上一个配置代际，`enco status` 报出 `superseded`，原因是机械回退；救生集中有 `config_apply`，没有 `plugin_rollback` |
+| A84 | M21 | 真实配置 | 手动一次 | 在 Telegram 中经 `config_apply` 换一次压缩模型并对话，再按 A83 的方式撤销 |
 
 ## 已完成的路线图阶段
 
