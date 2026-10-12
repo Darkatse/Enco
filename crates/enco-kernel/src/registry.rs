@@ -101,7 +101,8 @@ pub struct View {
 }
 
 /// The active configuration generation: registered content plus the declarations the current
-/// host derives from it. Built only from one evaluation, so the parts cannot drift apart.
+/// host derives from it. The declarations are private to the registry, so only the registry
+/// builds one, from a single evaluation, and the parts cannot drift apart.
 #[derive(Clone)]
 pub struct ActiveConfig {
     /// Active configuration generation.
@@ -111,9 +112,9 @@ pub struct ActiveConfig {
     /// Parsed kernel-owned tables.
     pub kernel: KernelSettings,
     /// Endpoint users declared by the kernel and the host owners.
-    pub uses: Vec<Use>,
+    uses: Vec<Use>,
     /// Tables the current host cannot interpret; empty after any intentional registration.
-    pub invalid: Vec<SettingsError>,
+    invalid: Vec<SettingsError>,
 }
 
 /// Routing is published only after the durable mutation commits.
