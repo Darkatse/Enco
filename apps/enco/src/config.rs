@@ -153,6 +153,7 @@ impl Config {
                     user: format!("profile {name}.{purpose}"),
                     plugin: endpoint.plugin.clone(),
                     interface: Interface::Completion,
+                    has_key: endpoint.settings.api_key_env.is_some(),
                 });
             }
         }
@@ -160,12 +161,14 @@ impl Config {
             user: "embedding".into(),
             plugin: self.embedding.plugin.clone(),
             interface: Interface::Embedding,
+            has_key: self.embedding.settings.api_key_env.is_some(),
         });
         if let Some(endpoint) = &self.decision {
             wiring.push(Use {
                 user: "decision".into(),
                 plugin: endpoint.plugin.clone(),
                 interface: Interface::Decision,
+                has_key: endpoint.settings.api_key_env.is_some(),
             });
         }
         wiring
@@ -182,7 +185,7 @@ impl EndpointConfig {
                 "window_tokens and max_output_tokens must be positive, with output smaller than the window"
             );
         }
-        let (settings, api_key) = resolve_settings(ProviderSettings {
+        let settings = resolve_settings(ProviderSettings {
             base_url: self.base_url,
             model: self.model,
             api_key_env: self.api_key_env,
@@ -191,7 +194,6 @@ impl EndpointConfig {
         Ok(Endpoint {
             plugin: self.plugin,
             settings,
-            api_key,
             budget: Budget {
                 context_tokens: self.window_tokens,
                 max_output_tokens: self.max_output_tokens,
@@ -205,7 +207,7 @@ impl EmbeddingConfig {
         if self.dimensions == 0 {
             bail!("dimensions must be positive");
         }
-        let (settings, api_key) = resolve_settings(ProviderSettings {
+        let settings = resolve_settings(ProviderSettings {
             base_url: self.base_url,
             model: self.model,
             api_key_env: self.api_key_env,
@@ -214,7 +216,6 @@ impl EmbeddingConfig {
         Ok(EmbeddingEndpoint {
             plugin: self.plugin,
             settings,
-            api_key,
             dimensions: self.dimensions,
         })
     }
@@ -222,7 +223,7 @@ impl EmbeddingConfig {
 
 impl DecisionConfig {
     fn resolve(self) -> Result<DecisionEndpoint> {
-        let (settings, api_key) = resolve_settings(ProviderSettings {
+        let settings = resolve_settings(ProviderSettings {
             base_url: self.base_url,
             model: self.model,
             api_key_env: self.api_key_env,
@@ -231,24 +232,20 @@ impl DecisionConfig {
         Ok(DecisionEndpoint {
             plugin: self.plugin,
             settings,
-            api_key,
         })
     }
 }
 
-fn resolve_settings(settings: ProviderSettings) -> Result<(ProviderSettings, Option<String>)> {
+fn resolve_settings(settings: ProviderSettings) -> Result<ProviderSettings> {
     if settings.base_url.trim().is_empty() || settings.model.trim().is_empty() {
         bail!("base_url and model must not be empty");
     }
-    let api_key = settings
-        .api_key_env
-        .as_ref()
-        .map(|name| {
-            std::env::var(name)
-                .with_context(|| format!("API key environment variable {name} is not set"))
-        })
-        .transpose()?;
-    Ok((settings, api_key))
+    if let Some(name) = &settings.api_key_env
+        && !std::env::var(name).is_ok_and(|value| !value.is_empty())
+    {
+        bail!("API key environment variable {name} is not set or is empty");
+    }
+    Ok(settings)
 }
 
 #[derive(Deserialize)]

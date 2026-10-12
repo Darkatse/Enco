@@ -4,7 +4,8 @@ mod health;
 mod state;
 
 use crate::{
-    Clock, Decision, Embedding, Loaded, NewGeneration, Provider, Runtime, Store, StoreError,
+    Clock, Credential, Decision, Embedding, Loaded, NewGeneration, Provider, Runtime, Store,
+    StoreError,
 };
 use activation::ActivationReason;
 use arc_swap::ArcSwap;
@@ -46,6 +47,8 @@ pub struct Use {
     pub plugin: String,
     /// Required interface.
     pub interface: Interface,
+    /// Whether the caller's endpoint supplies a credential environment variable name.
+    pub has_key: bool,
 }
 
 /// Interfaces currently consumed by the host and kernel.
@@ -203,7 +206,7 @@ pub struct PluginStatus {
     pub active: Option<GenerationRecord>,
     /// Description of the active component, if loaded.
     pub summary: Option<String>,
-    /// Nearest earlier healthy generation.
+    /// First recovery candidate, including the current factory fallback.
     pub rollback_target: Option<GenerationId>,
     /// Configured users of this plugin.
     pub users: Vec<String>,
@@ -231,7 +234,7 @@ pub enum RegistryError {
         /// Loading or admission failure.
         reason: String,
     },
-    /// No earlier usable generation exists.
+    /// No usable recovery generation exists.
     #[error("plugin {0} has no generation to roll back to")]
     NoRollbackTarget(String),
     /// The active generation or target health changed while the target was prepared.
@@ -382,26 +385,18 @@ impl Registry {
     }
 
     fn admit(&self, name: &str, loaded: &Loaded) -> Result<(), RegistryError> {
-        let missing: Vec<_> = self
+        let errors: Vec<_> = self
             .wiring
             .iter()
             .filter(|usage| usage.plugin == name)
-            .filter_map(|usage| {
-                let interface = match usage.interface {
-                    Interface::Completion if loaded.completion.is_none() => "completion",
-                    Interface::Embedding if loaded.embedding.is_none() => "embedding",
-                    Interface::Decision if loaded.decision.is_none() => "decision",
-                    _ => return None,
-                };
-                Some(format!("{} requires {interface}", usage.user))
-            })
+            .filter_map(|usage| wiring_error(usage, loaded))
             .collect();
-        if missing.is_empty() {
+        if errors.is_empty() {
             Ok(())
         } else {
             Err(RegistryError::Rejected {
                 name: name.into(),
-                reason: format!("missing exports: {}", missing.join(", ")),
+                reason: errors.join(", "),
             })
         }
     }
@@ -436,4 +431,25 @@ fn validate_name(name: &str) -> Result<(), RegistryError> {
             reason: "name must use lowercase letters, digits and single hyphens".into(),
         })
     }
+}
+
+/// Why a caller cannot use a loaded generation: the interface it imports is missing, or the
+/// credential the endpoint names does not match what the generation declares.
+fn wiring_error(usage: &Use, loaded: &Loaded) -> Option<String> {
+    let (exported, interface) = match usage.interface {
+        Interface::Completion => (loaded.completion.is_some(), "completion"),
+        Interface::Embedding => (loaded.embedding.is_some(), "embedding"),
+        Interface::Decision => (loaded.decision.is_some(), "decision"),
+    };
+    if !exported {
+        return Some(format!("{} requires {interface}", usage.user));
+    }
+    let mismatch = match (loaded.credential, usage.has_key) {
+        (None, true) => "sets api_key_env, but the artifact declares no credential",
+        (Some(Credential { required: true }), false) => {
+            "has no api_key_env, but the artifact requires a credential"
+        }
+        _ => return None,
+    };
+    Some(format!("{} {mismatch}", usage.user))
 }

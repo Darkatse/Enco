@@ -29,8 +29,6 @@ pub struct EmbeddingEndpoint {
     pub plugin: String,
     /// Durable service parameters, excluding the credential itself.
     pub settings: ProviderSettings,
-    /// Credential held only in memory.
-    pub api_key: Option<String>,
     /// Expected vector width, paired with the model name to identify the derived index.
     pub dimensions: usize,
 }
@@ -247,11 +245,7 @@ impl Memories {
             &self.registry,
             self.registry.exports().embedding(&endpoint.plugin),
             cancel,
-            |adapter| async move {
-                adapter
-                    .embed(&endpoint.settings, endpoint.api_key.as_deref(), inputs)
-                    .await
-            },
+            |adapter| async move { adapter.embed(&endpoint.settings, inputs).await },
         )
         .await?;
         let vectors = match result

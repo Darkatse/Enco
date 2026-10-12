@@ -1,8 +1,10 @@
 use crate::{
     bindings::{
         BasePre, CompletionPluginPre, DecisionPluginPre, EmbeddingPluginPre, enco::plugin::types,
+        lifecycle,
     },
     convert,
+    credentials::{CallCredential, Placement},
     engine::WasmEngine,
     host_imports::HostState,
     limits,
@@ -16,7 +18,7 @@ use std::sync::Arc;
 use wasmtime::{Store, StoreLimitsBuilder, component::ResourceTable};
 use wasmtime_wasi::WasiCtx;
 
-/// Compiled exports with no captured endpoint or credentials.
+/// Compiled exports with no captured endpoint or credential value.
 pub(super) struct WasmPlugin {
     pub lifecycle: BasePre<HostState>,
     pub completion: Option<CompletionPluginPre<HostState>>,
@@ -25,15 +27,18 @@ pub(super) struct WasmPlugin {
     pub engine: Arc<WasmEngine>,
     pub http: reqwest::Client,
     pub name: String,
+    pub placement: Option<Placement>,
 }
 
 impl WasmPlugin {
     /// Every logical call owns a fresh Store and shares the same limits and failure boundary.
     async fn invoke<T>(
         &self,
+        credential: Option<CallCredential>,
         call: impl AsyncFnOnce(Store<HostState>) -> wasmtime::Result<Result<T, types::Failure>>,
     ) -> Result<T, Failure> {
         let state = HostState {
+            credential: credential.map(Arc::new),
             wasi: WasiCtx::builder().inherit_stderr().build(),
             table: ResourceTable::new(),
             http: self.http.clone(),
@@ -56,25 +61,26 @@ impl WasmPlugin {
             .map_err(convert::failure)
     }
 
-    pub async fn describe(&self, config: &serde_json::Value) -> Result<String, Failure> {
+    pub async fn describe(
+        &self,
+        config: &serde_json::Value,
+    ) -> Result<lifecycle::Description, Failure> {
         let config = config.to_string();
-        self.invoke(async |mut store| {
+        self.invoke(None, async |mut store| {
             let plugin = self.lifecycle.instantiate_async(&mut store).await?;
-            Ok(plugin
+            plugin
                 .enco_plugin_lifecycle()
                 .call_describe(&mut store, &config)
-                .await?
-                .map(|description| description.summary))
+                .await
         })
         .await
     }
 }
 
-fn settings(settings: &ProviderSettings, api_key: Option<&str>) -> types::Settings {
+fn settings(settings: &ProviderSettings) -> types::Settings {
     types::Settings {
         base_url: settings.base_url.clone(),
         model: settings.model.clone(),
-        api_key: api_key.map(str::to_owned),
         options: settings.options.to_string(),
     }
 }
@@ -90,7 +96,7 @@ fn trap(message: impl Into<String>) -> Failure {
 #[async_trait]
 impl Lifecycle for WasmPlugin {
     async fn probe(&self) -> Result<(), Failure> {
-        self.invoke(async |mut store| {
+        self.invoke(None, async |mut store| {
             let plugin = self.lifecycle.instantiate_async(&mut store).await?;
             store
                 .run_concurrent(async move |accessor| {
@@ -107,7 +113,6 @@ impl Provider for WasmPlugin {
     async fn complete(
         &self,
         params: &ProviderSettings,
-        api_key: Option<&str>,
         request: ProviderRequest,
     ) -> Result<Completion, Failure> {
         let pre = self
@@ -115,9 +120,10 @@ impl Provider for WasmPlugin {
             .as_ref()
             .ok_or_else(|| trap("completion export is missing"))?;
         let request = convert::request(request);
-        let settings = settings(params, api_key);
+        let settings = settings(params);
+        let credential = CallCredential::resolve(self.placement.as_ref(), params)?;
         let result = self
-            .invoke(async move |mut store| {
+            .invoke(credential, async move |mut store| {
                 let plugin = pre.instantiate_async(&mut store).await?;
                 store
                     .run_concurrent(async move |accessor| {
@@ -138,7 +144,6 @@ impl Embedding for WasmPlugin {
     async fn embed(
         &self,
         params: &ProviderSettings,
-        api_key: Option<&str>,
         inputs: Vec<String>,
     ) -> Result<Vec<Vec<f32>>, Failure> {
         let pre = self
@@ -146,9 +151,10 @@ impl Embedding for WasmPlugin {
             .as_ref()
             .ok_or_else(|| trap("embedding export is missing"))?;
         let count = inputs.len();
-        let settings = settings(params, api_key);
+        let settings = settings(params);
+        let credential = CallCredential::resolve(self.placement.as_ref(), params)?;
         let vectors = self
-            .invoke(async move |mut store| {
+            .invoke(credential, async move |mut store| {
                 let plugin = pre.instantiate_async(&mut store).await?;
                 store
                     .run_concurrent(async move |accessor| {
@@ -169,7 +175,6 @@ impl Decision for WasmPlugin {
     async fn decide(
         &self,
         params: &ProviderSettings,
-        api_key: Option<&str>,
         state: String,
         questions: Vec<Question>,
     ) -> Result<Vec<Answer>, Failure> {
@@ -178,9 +183,10 @@ impl Decision for WasmPlugin {
             .as_ref()
             .ok_or_else(|| trap("decision export is missing"))?;
         let wire_questions = questions.iter().map(convert::question).collect();
-        let settings = settings(params, api_key);
+        let settings = settings(params);
+        let credential = CallCredential::resolve(self.placement.as_ref(), params)?;
         let answers = self
-            .invoke(async move |mut store| {
+            .invoke(credential, async move |mut store| {
                 let plugin = pre.instantiate_async(&mut store).await?;
                 store
                     .run_concurrent(async move |accessor| {

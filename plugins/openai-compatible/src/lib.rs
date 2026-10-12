@@ -11,12 +11,12 @@ mod bindings {
         path: "../../wit",
         world: "provider-plugin",
         with: {
-            "enco:plugin/host@0.2.1": provider_protocol::host,
-            "enco:plugin/types@0.2.1": provider_protocol::types,
-            "enco:plugin/completion@0.2.1/request": provider_protocol::Request,
-            "enco:plugin/completion@0.2.1/completion": provider_protocol::Completion,
-            "enco:plugin/completion@0.2.1/usage": provider_protocol::Usage,
-            "enco:plugin/completion@0.2.1/stop-reason": provider_protocol::StopReason,
+            "enco:plugin/host@0.3.0": provider_protocol::host,
+            "enco:plugin/types@0.3.0": provider_protocol::types,
+            "enco:plugin/completion@0.3.0/request": provider_protocol::Request,
+            "enco:plugin/completion@0.3.0/completion": provider_protocol::Completion,
+            "enco:plugin/completion@0.3.0/usage": provider_protocol::Usage,
+            "enco:plugin/completion@0.3.0/stop-reason": provider_protocol::StopReason,
         },
     });
     use super::Plugin;
@@ -26,9 +26,16 @@ mod bindings {
 struct Plugin;
 
 impl lifecycle::Guest for Plugin {
-    fn describe(_config: String) -> Result<lifecycle::Description, Failure> {
+    fn describe(config: String) -> Result<lifecycle::Description, Failure> {
+        provider_protocol::empty_config(&config)?;
         Ok(lifecycle::Description {
             summary: "OpenAI-compatible Chat Completions and Embeddings".into(),
+            config_schema: r#"{"type":"object","additionalProperties":false}"#.into(),
+            credential: Some(lifecycle::Credential {
+                header: "authorization".into(),
+                prefix: "Bearer ".into(),
+                required: false,
+            }),
         })
     }
 

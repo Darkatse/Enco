@@ -70,7 +70,7 @@ impl SessionActor {
                     message: "model request cancelled".into(),
                     retryable: false,
                 }),
-                result = export.adapter.complete(&endpoint.settings, endpoint.api_key.as_deref(), planned.request.clone()) => result,
+                result = export.adapter.complete(&endpoint.settings, planned.request.clone()) => result,
             };
             match result {
                 Ok(completion) => {

@@ -26,6 +26,8 @@ async fn open(root: &Path, provider: Arc<dyn Embedding>, dimensions: usize) -> A
         Loaded {
             lifecycle: Arc::new(Probe(Ok(()))),
             summary: "embedding".into(),
+            config_schema: serde_json::json!({}),
+            credential: None,
             completion: None,
             embedding: Some(provider),
             decision: None,
@@ -283,7 +285,6 @@ impl Embedding for GatedEmbedding {
     async fn embed(
         &self,
         _: &ProviderSettings,
-        _: Option<&str>,
         inputs: Vec<String>,
     ) -> Result<Vec<Vec<f32>>, Failure> {
         if self.blocked.load(Ordering::SeqCst) {

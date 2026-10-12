@@ -16,7 +16,6 @@ const RELEVANCE_QUESTION: &str = "Does this stored memory about the user relate 
 pub struct DecisionEndpoint {
     pub plugin: String,
     pub settings: ProviderSettings,
-    pub api_key: Option<String>,
 }
 
 /// Optional filtering of newly recalled memories before they become context candidates.
@@ -61,12 +60,7 @@ impl Relevance {
             cancel,
             |adapter| async move {
                 adapter
-                    .decide(
-                        &endpoint.settings,
-                        endpoint.api_key.as_deref(),
-                        query.to_owned(),
-                        questions,
-                    )
+                    .decide(&endpoint.settings, query.to_owned(), questions)
                     .await
             },
         )

@@ -44,6 +44,16 @@ async fn decision_plugin_maps_distributions_and_reports_bad_responses() {
         api_key_env: None,
         options: json!({}),
     };
+    let unset = ProviderSettings {
+        api_key_env: Some(format!("ENCO_UNSET_{}", EventId::new())),
+        ..settings.clone()
+    };
+    let failure = decision
+        .decide(&unset, "evidence".into(), vec![])
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, code::CREDENTIAL_UNAVAILABLE);
+    assert!(server.received_requests().await.unwrap().is_empty());
     let labels = vec![
         Label {
             name: "z".into(),
@@ -65,7 +75,7 @@ async fn decision_plugin_maps_distributions_and_reports_bad_responses() {
         },
     ];
     let answers = decision
-        .decide(&settings, None, "evidence".into(), questions)
+        .decide(&settings, "evidence".into(), questions)
         .await
         .unwrap();
     assert!(matches!(&answers[0], Answer::Choice(p) if p == &[0.8, 0.2]));
@@ -83,7 +93,6 @@ async fn decision_plugin_maps_distributions_and_reports_bad_responses() {
     let error = decision
         .decide(
             &settings,
-            None,
             "evidence".into(),
             vec![Question {
                 instructions: "Predicate".into(),
@@ -164,7 +173,7 @@ async fn relevance_filters_new_recall_and_service_failure_keeps_it() {
         .await;
     let base_url = server.uri();
     let config = format!(
-        "{}\n[decision]\nplugin = 'typesafe'\nbase_url = {base_url:?}\nmodel = 'mock'\n",
+        "{}\n[decision]\nplugin = 'typesafe'\nbase_url = {base_url:?}\nmodel = 'mock'\napi_key_env = 'ENCO_TEST_API_KEY'\n",
         Daemon::config(&server, "openai-compatible")
     );
     let mut daemon = Daemon::start_config(&config).await;

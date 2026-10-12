@@ -28,6 +28,21 @@ pub fn bad(message: impl Into<String>) -> Failure {
     failure("provider.bad_response", message, false)
 }
 
+/// Providers currently accept only the empty configuration; service parameters belong to callers.
+pub fn empty_config(config: &str) -> Result<(), Failure> {
+    let value: Value = serde_json::from_str(config)
+        .map_err(|e| failure("config.invalid", e.to_string(), false))?;
+    if value.as_object().is_some_and(|object| object.is_empty()) {
+        Ok(())
+    } else {
+        Err(failure(
+            "config.invalid",
+            "expected an empty configuration object",
+            false,
+        ))
+    }
+}
+
 pub async fn complete(settings: Settings, request: Request) -> Result<Completion, Failure> {
     let messages = request
         .messages

@@ -242,6 +242,7 @@ impl Arguments { pub fn parse(raw: &str) -> Self; }
 | `profile.unknown` | Session 的 profile 不在配置中（12 §3） | 内核 |
 | `provider.network` `provider.auth` `provider.rate_limited` `provider.server` `provider.bad_request` | Provider 的失败分类（07 §4.5）；外部失败，不计入健康 | Provider |
 | `provider.bad_response` | 服务的答案无法使用：不合协议（07 §4.5），或者没有通过调用方的核对，即回复既无正文也无工具调用、摘要为空（04 §6.4），或向量维度不符（06 §3.3）；外部失败，不计入健康 | Provider、内核、记忆 |
+| `credential.unavailable` | 凭证的环境变量缺失或值不可用，插件没有被调用（07 §3.3）；环境问题，不计入健康 | enco-wasm |
 | `plugin.trap` | wasmtime 在实例化或调用中报错（07 §3.3）；计入健康 | enco-wasm |
 | `plugin.contract` | 插件的返回违反契约（07 §3.3）；计入健康 | enco-wasm |
 | `plugin.load` | 已登记代际的制品缺失、损坏或 Runtime 加载失败；原始原因在 message 中（11 §5） | 注册表 |

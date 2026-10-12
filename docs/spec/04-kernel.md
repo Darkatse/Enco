@@ -41,7 +41,12 @@ pub struct Loaded {
     pub completion: Option<Arc<dyn Provider>>,
     pub embedding: Option<Arc<dyn Embedding>>,
     pub decision: Option<Arc<dyn Decision>>,
+    pub config_schema: serde_json::Value,      // describe 的配置说明，随代际保留供手册使用
+    pub credential: Option<Credential>,        // describe 声明的凭证；内核只用它做接线检查（11 §6）
 }
+
+/// 附加到调用方选定的服务的凭证。放置方式属于传输层，由 Runtime 的实现保存（07 §3.2）。
+pub struct Credential { pub required: bool }
 
 #[async_trait]
 pub trait Lifecycle: Send + Sync {
@@ -58,9 +63,9 @@ pub struct LoadError(pub String);
 // ports/provider.rs
 #[async_trait]
 pub trait Provider: Send + Sync {
-    /// 一次非流式补全。调用参数每次传入；密钥单独传，不属于参数（12 §3）。
-    /// 超时由实现负责，以 Failure { code: "timeout", retryable: true } 返回。
-    async fn complete(&self, settings: &ProviderSettings, api_key: Option<&str>, request: ProviderRequest) -> Result<Completion, Failure>;
+    /// 一次非流式补全。调用参数每次传入；密钥不经过内核，由实现按 `settings.api_key_env`
+    /// 在传输层读取（07 §3.2、12 §3）。超时由实现负责，以 Failure { code: "timeout", retryable: true } 返回。
+    async fn complete(&self, settings: &ProviderSettings, request: ProviderRequest) -> Result<Completion, Failure>;
 }
 
 pub struct ProviderRequest {
@@ -78,7 +83,7 @@ pub struct Completion { pub message: Message, pub usage: Usage, pub stop: StopRe
 #[async_trait]
 pub trait Embedding: Send + Sync {
     /// 把若干段文本转换为向量，结果与输入一一对应。内核自己不调用它，它供宿主使用（06 §3.3）。
-    async fn embed(&self, settings: &ProviderSettings, api_key: Option<&str>, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure>;
+    async fn embed(&self, settings: &ProviderSettings, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure>;
 }
 ```
 
@@ -87,7 +92,7 @@ pub trait Embedding: Send + Sync {
 #[async_trait]
 pub trait Decision: Send + Sync {
     /// 对同一份 state 独立回答每个问题，答案与问题一一对应。内核自己不调用它，它供宿主使用（06 §5.1）。
-    async fn decide(&self, settings: &ProviderSettings, api_key: Option<&str>, state: String, questions: Vec<Question>) -> Result<Vec<Answer>, Failure>;
+    async fn decide(&self, settings: &ProviderSettings, state: String, questions: Vec<Question>) -> Result<Vec<Answer>, Failure>;
 }
 
 pub struct Question { pub instructions: String, pub kind: QuestionKind }
@@ -154,8 +159,6 @@ pub enum ComposeError {
     Invalid(String),
 }
 ```
-
-`ComposeInput.profile` 带着整份 `Profile`，其中包括 `Endpoint.api_key`。P1 的 composer 是原生代码，输入既不序列化也不记录，所以可以接受；composer 成为插件、输入要跨越 WIT 之前，先把密钥从 `Profile` 中分离出去。
 
 ```rust
 // ports/context.rs
@@ -449,7 +452,7 @@ attempt(endpoint, round, safe_mode, planned, token):
                                  composer: planned.composer,
                                  provider: export.generation, settings: endpoint.settings }])
         result = select {
-            r = export.adapter.complete(&endpoint.settings, endpoint.api_key, planned.request.clone()) => r,
+            r = export.adapter.complete(&endpoint.settings, planned.request.clone()) => r,
             _ = token.cancelled() => Err(Failure(cancelled))
         }
         match result:

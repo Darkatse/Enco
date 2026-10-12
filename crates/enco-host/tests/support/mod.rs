@@ -50,7 +50,6 @@ impl Provider for ScriptedProvider {
     async fn complete(
         &self,
         settings: &ProviderSettings,
-        _api_key: Option<&str>,
         request: ProviderRequest,
     ) -> Result<Completion, Failure> {
         self.requests.lock().unwrap().push(request);
@@ -68,7 +67,6 @@ impl Embedding for ScriptedProvider {
     async fn embed(
         &self,
         _settings: &ProviderSettings,
-        _api_key: Option<&str>,
         inputs: Vec<String>,
     ) -> Result<Vec<Vec<f32>>, Failure> {
         if let Some(failure) = self.embedding_failure.lock().unwrap().clone() {
@@ -133,7 +131,6 @@ pub fn endpoint() -> Endpoint {
     Endpoint {
         plugin: "fixture".into(),
         settings: settings(),
-        api_key: None,
         budget: Budget {
             context_tokens: 128000,
             max_output_tokens: 8192,
@@ -156,7 +153,6 @@ pub fn embedding_endpoint(model: &str, dimensions: usize) -> EmbeddingEndpoint {
             model: model.into(),
             ..settings()
         },
-        api_key: None,
         dimensions,
     }
 }
@@ -232,6 +228,8 @@ pub async fn kernel_with(
         Loaded {
             lifecycle: Arc::new(Probe(Ok(()))),
             summary: "scripted".into(),
+            config_schema: serde_json::json!({}),
+            credential: None,
             completion: Some(provider),
             embedding: None,
             decision: None,

@@ -9,7 +9,10 @@ use enco_kernel::{Inspection, Runtime};
 use enco_wasm::WasmRuntime;
 use protocol::Command;
 use serde_json::json;
-use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{header, path},
+};
 
 mod support;
 
@@ -136,6 +139,86 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
     assert!(output.status.success());
     let restored: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(restored["id"], json!(generation));
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn credentials_stay_at_the_service_origin_and_out_of_recorded_results() {
+    let server = MockServer::start().await;
+    let other = MockServer::start().await;
+    let mut daemon = Daemon::start(&server, "deepseek").await;
+    for (session, reply, completed) in [
+        (
+            "same-origin",
+            ResponseTemplate::new(307).insert_header("Location", format!("{}/reply", server.uri())),
+            true,
+        ),
+        (
+            "cross-origin",
+            ResponseTemplate::new(302).insert_header("Location", format!("{}/reply", other.uri())),
+            false,
+        ),
+        (
+            "service-error",
+            ResponseTemplate::new(401).set_body_string("rejected enco-test-secret"),
+            false,
+        ),
+    ] {
+        server.reset().await;
+        Mock::given(path("/chat/completions"))
+            .and(header("Authorization", "Bearer enco-test-secret"))
+            .respond_with(reply)
+            .expect(1..)
+            .mount(&server)
+            .await;
+        Mock::given(path("/reply"))
+            .and(header("Authorization", "Bearer enco-test-secret"))
+            .respond_with(support::response(
+                json!({
+                    "role": "assistant", "content": "echo enco-test-secret"
+                }),
+                "stop",
+            ))
+            .mount(&server)
+            .await;
+        let mut client = daemon.connect().await;
+        client
+            .request(Command::Subscribe {
+                session: session.into(),
+            })
+            .await
+            .unwrap();
+        client
+            .send(Command::Send {
+                session: session.into(),
+                text: "hello".into(),
+                event_id: EventId::new(),
+            })
+            .await
+            .unwrap();
+        let entries = finish(&mut client).await;
+        let inspection: Inspection = serde_json::from_value(
+            client
+                .request(Command::Inspect {
+                    session: session.into(),
+                    attempt_id: None,
+                })
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            matches!(inspection.result, Some(AttemptResult::Completed { .. })),
+            completed
+        );
+        let recorded = serde_json::to_string(&(entries, inspection)).unwrap();
+        assert!(!recorded.contains("enco-test-secret"));
+        if session != "cross-origin" {
+            assert!(recorded.contains("[redacted:ENCO_TEST_API_KEY]"));
+        }
+        server.verify().await;
+    }
+    assert!(other.received_requests().await.unwrap().is_empty());
     daemon.stop().await;
 }
 
@@ -406,10 +489,18 @@ async fn wasm_embedding_preserves_batch_order_and_rejects_reserved_options() {
         .unwrap();
     assert_eq!(
         provider
-            .embed(&settings, None, vec!["one".into(), "two".into()])
+            .embed(&settings, vec!["one".into(), "two".into()])
             .await
             .unwrap(),
         vec![vec![1., 0.], vec![0., 1.]]
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| !request.headers.contains_key("authorization"))
     );
     server.reset().await;
     Mock::given(path("/embeddings"))
@@ -421,7 +512,7 @@ async fn wasm_embedding_preserves_batch_order_and_rejects_reserved_options() {
         .await;
     assert_eq!(
         provider
-            .embed(&settings, None, vec!["one".into(), "two".into()])
+            .embed(&settings, vec!["one".into(), "two".into()])
             .await
             .unwrap_err()
             .code,
@@ -433,7 +524,7 @@ async fn wasm_embedding_preserves_batch_order_and_rejects_reserved_options() {
     };
     assert_eq!(
         provider
-            .embed(&bad, None, vec!["one".into()])
+            .embed(&bad, vec!["one".into()])
             .await
             .unwrap_err()
             .code,

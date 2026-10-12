@@ -34,14 +34,10 @@ pub async fn post(
     body: Value,
     timeout_ms: Option<u32>,
 ) -> Result<Value, Failure> {
-    let mut headers = vec![("Content-Type".into(), "application/json".into())];
-    if let Some(key) = &settings.api_key {
-        headers.push(("Authorization".into(), format!("Bearer {key}")));
-    }
     let response = host::http(host::HttpRequest {
         method: "POST".into(),
         url: format!("{}/{}", settings.base_url.trim_end_matches('/'), path),
-        headers,
+        headers: vec![("Content-Type".into(), "application/json".into())],
         body: Some(body.to_string().into_bytes()),
         timeout_ms,
     })
@@ -60,11 +56,6 @@ pub async fn post(
     if !(200..300).contains(&response.status) {
         let text = String::from_utf8_lossy(&response.body);
         let mut excerpt = text.into_owned();
-        if let Some(key) = &settings.api_key
-            && !key.is_empty()
-        {
-            excerpt = excerpt.replace(key, "[redacted]");
-        }
         excerpt.truncate(excerpt.floor_char_boundary(500));
         let (code, retryable) = match response.status {
             401 | 403 => ("provider.auth", false),

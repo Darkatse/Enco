@@ -1,5 +1,5 @@
-use crate::{bindings::enco::plugin::host, limits};
-use std::time::Duration;
+use crate::{bindings::enco::plugin::host, credentials::CallCredential, limits};
+use std::{sync::Arc, time::Duration};
 use wasmtime::component::{Accessor, HasSelf, ResourceTable};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
@@ -9,6 +9,7 @@ pub(crate) struct HostState {
     pub http: reqwest::Client,
     pub name: String,
     pub limits: wasmtime::StoreLimits,
+    pub credential: Option<Arc<CallCredential>>,
 }
 
 impl WasiView for HostState {
@@ -47,8 +48,11 @@ impl<U> host::HostWithStore<U> for HasSelf<HostState> {
         accessor: &Accessor<U, Self>,
         request: host::HttpRequest,
     ) -> Result<host::HttpResponse, host::HttpFailure> {
-        let client = accessor.with(|mut access| access.get().http.clone());
-        http(&client, request).await
+        let (client, credential) = accessor.with(|mut access| {
+            let state = access.get();
+            (state.http.clone(), state.credential.clone())
+        });
+        http(&client, credential.as_deref(), request).await
     }
 }
 
@@ -64,11 +68,28 @@ fn failure(
     }
 }
 
+/// Everything the plugin sends and sees passes here: the credential is attached on the way out
+/// and redacted from whatever comes back.
 async fn http(
     client: &reqwest::Client,
+    credential: Option<&CallCredential>,
     request: host::HttpRequest,
 ) -> Result<host::HttpResponse, host::HttpFailure> {
-    let request = build_request(client, request)?;
+    let mut request = build_request(client, request)?;
+    if let Some(credential) = credential {
+        credential.attach(&mut request);
+    }
+    let mut result = send(client, request).await;
+    if let Some(credential) = credential {
+        credential.redact(&mut result);
+    }
+    result
+}
+
+async fn send(
+    client: &reqwest::Client,
+    request: reqwest::Request,
+) -> Result<host::HttpResponse, host::HttpFailure> {
     let mut response = client.execute(request).await.map_err(|e| {
         let (kind, request_sent) = if e.is_timeout() {
             (host::HttpErrorKind::Timeout, true)

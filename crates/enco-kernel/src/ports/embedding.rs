@@ -9,7 +9,6 @@ pub trait Embedding: Send + Sync {
     async fn embed(
         &self,
         settings: &ProviderSettings,
-        api_key: Option<&str>,
         inputs: Vec<String>,
     ) -> Result<Vec<Vec<f32>>, Failure>;
 }

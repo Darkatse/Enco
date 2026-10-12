@@ -8,7 +8,6 @@ pub trait Decision: Send + Sync {
     async fn decide(
         &self,
         settings: &ProviderSettings,
-        api_key: Option<&str>,
         state: String,
         questions: Vec<Question>,
     ) -> Result<Vec<Answer>, Failure>;

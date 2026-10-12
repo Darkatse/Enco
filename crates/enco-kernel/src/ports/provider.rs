@@ -4,12 +4,11 @@ use enco_core::*;
 /// Completion boundary. Implementations own timeouts and per-invocation state.
 #[async_trait]
 pub trait Provider: Send + Sync {
-    /// Complete a frozen request with the caller's settings and separately supplied credential.
+    /// Complete a frozen request; the transport resolves credentials from the settings.
     /// Dropping the future cancels local work.
     async fn complete(
         &self,
         settings: &ProviderSettings,
-        api_key: Option<&str>,
         request: ProviderRequest,
     ) -> Result<Completion, Failure>;
 }

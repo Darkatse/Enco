@@ -1,15 +1,13 @@
 use crate::Budget;
 use enco_core::{AttemptPurpose, ProviderSettings};
 
-/// A caller's endpoint and credentials, independent of the chosen code generation.
+/// A caller's endpoint, independent of the chosen code generation.
 #[derive(Clone)]
 pub struct Endpoint {
     /// Registered plugin name whose completion export serves this endpoint.
     pub plugin: String,
     /// Durable parameters copied into AttemptStarted.
     pub settings: ProviderSettings,
-    /// Credential read once by the composition root; never serialized.
-    pub api_key: Option<String>,
     /// Context window and reserved output of this model.
     pub budget: Budget,
 }

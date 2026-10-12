@@ -36,6 +36,7 @@ impl Daemon {
 plugin = {plugin:?}
 base_url = {base_url:?}
 model = 'mock'
+api_key_env = 'ENCO_TEST_API_KEY'
 window_tokens = 128000
 max_output_tokens = 8192
 
@@ -159,6 +160,7 @@ async fn spawn(root: &Path) -> (Child, tokio::io::Lines<BufReader<ChildStderr>>)
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
         .arg("serve")
         .env("ENCO_HOME", root)
+        .env("ENCO_TEST_API_KEY", "enco-test-secret")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true)

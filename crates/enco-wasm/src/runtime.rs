@@ -1,14 +1,16 @@
 use crate::{
     bindings::{
-        BasePre, CompletionPluginPre, DecisionPluginPre, EmbeddingPluginPre, enco::plugin::host,
+        BasePre, CONTRACT_VERSION, CompletionPluginPre, DecisionPluginPre, EmbeddingPluginPre,
+        enco::plugin::host,
     },
+    credentials::Placement,
     engine::WasmEngine,
     host_imports::HostState,
     plugin::WasmPlugin,
 };
 use async_trait::async_trait;
 use enco_core::ContentHash;
-use enco_kernel::{Decision, Embedding, LoadError, Loaded, Provider, Runtime};
+use enco_kernel::{Credential, Decision, Embedding, LoadError, Loaded, Provider, Runtime};
 use std::sync::Arc;
 use wasmtime::component::{Component, HasSelf, Linker};
 
@@ -30,9 +32,38 @@ impl WasmRuntime {
     pub fn new() -> Result<Self, WasmError> {
         Ok(Self {
             engine: Arc::new(WasmEngine::new()?),
-            http: reqwest::Client::builder().build()?,
+            http: reqwest::Client::builder()
+                .redirect(same_origin_redirects())
+                .build()?,
         })
     }
+}
+
+/// Credentials attach by origin, while reqwest strips only a few known headers when a redirect
+/// changes host. Redirects are therefore followed only within one origin; any other redirect is
+/// returned to the plugin as the response.
+fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let leaves_origin = attempt
+            .previous()
+            .last()
+            .is_some_and(|previous| previous.origin() != attempt.url().origin());
+        if leaves_origin {
+            attempt.stop()
+        } else if attempt.previous().len() > crate::limits::HTTP_MAX_REDIRECTS {
+            attempt.error("too many redirects")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
+/// In a 0.x contract the minor version is the compatibility boundary.
+fn same_major(version: &str) -> bool {
+    version
+        .split('.')
+        .take(2)
+        .eq(CONTRACT_VERSION.split('.').take(2))
 }
 
 #[async_trait]
@@ -45,15 +76,24 @@ impl Runtime for WasmRuntime {
             .await
             .map_err(load_error)?
             .map_err(load_error)?;
+        for (name, _) in component.component_type().imports(&self.engine.engine) {
+            if let Some(version) = name.strip_prefix("enco:plugin/host@")
+                && !same_major(version)
+            {
+                return Err(LoadError(format!(
+                    "built against enco:plugin@{version}; this host links enco:plugin@{CONTRACT_VERSION}, rebuild the plugin"
+                )));
+            }
+        }
         let mut linker = Linker::new(&self.engine.engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(load_error)?;
         host::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |s| s).map_err(load_error)?;
         let pre = linker.instantiate_pre(&component).map_err(load_error)?;
         let lifecycle = BasePre::new(pre.clone()).map_err(load_error)?;
-        // Semver-compatible lookup also finds exports built against earlier 0.2 patches.
+        // Wasmtime handles compatible patch versions when resolving an export.
         let exports = |interface: &str| {
             component
-                .get_export_index(None, format!("enco:plugin/{interface}@0.2.1"))
+                .get_export_index(None, format!("enco:plugin/{interface}@{CONTRACT_VERSION}"))
                 .is_some()
         };
         let completion = exports("completion")
@@ -73,7 +113,7 @@ impl Runtime for WasmRuntime {
                 "component exports none of completion, embedding or decision".into(),
             ));
         }
-        let plugin = Arc::new(WasmPlugin {
+        let mut plugin = WasmPlugin {
             lifecycle,
             completion,
             embedding,
@@ -81,13 +121,26 @@ impl Runtime for WasmRuntime {
             engine: self.engine.clone(),
             http: self.http.clone(),
             name: hash.to_string()[..8].into(),
-        });
-        let summary = plugin
+            placement: None,
+        };
+        let description = plugin
             .describe(config)
             .await
             .map_err(|failure| LoadError(format!("{}: {}", failure.code, failure.message)))?;
+        let config_schema = serde_json::from_str(&description.config_schema)
+            .map_err(|e| LoadError(format!("configuration schema is not JSON: {e}")))?;
+        plugin.placement = description
+            .credential
+            .as_ref()
+            .map(Placement::new)
+            .transpose()?;
+        let plugin = Arc::new(plugin);
         Ok(Loaded {
-            summary,
+            summary: description.summary,
+            config_schema,
+            credential: description.credential.map(|credential| Credential {
+                required: credential.required,
+            }),
             lifecycle: plugin.clone(),
             completion: plugin
                 .completion

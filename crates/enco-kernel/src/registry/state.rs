@@ -109,16 +109,26 @@ impl State {
             .ok_or_else(|| RegistryError::UnknownPlugin(plugin.to_string()))
     }
 
-    /// Candidates strictly descend in commit order; exhaustion does not require a factory plugin.
+    /// Earlier healthy generations first, with the current factory as the recovery floor.
     pub fn candidates(&self, plugin: PluginId, before: GenerationId) -> Vec<GenerationRecord> {
-        self.generations
+        let mut candidates: Vec<_> = self
+            .generations
             .range(..before)
             .rev()
             .filter(|(_, record)| {
                 record.plugin == plugin && record.status == GenerationStatus::Healthy
             })
             .map(|(_, record)| record.clone())
-            .collect()
+            .collect();
+        if let Some(factory) = self.factory.get(&plugin)
+            && *factory != before
+            && !candidates.iter().any(|record| record.id == *factory)
+            && let Some(record) = self.generations.get(factory)
+            && record.status == GenerationStatus::Healthy
+        {
+            candidates.push(record.clone());
+        }
+        candidates
     }
 
     pub fn exports(&self) -> Exports {

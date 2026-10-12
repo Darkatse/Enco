@@ -44,7 +44,7 @@ P1 不检查 `~/.enco/plugins/<名字>/` 目录是否存在，也不做 `scaffol
 
 - 每个插件任一时刻至多一个活跃代际。
 - 活跃代际的状态是 `trial` 或 `healthy`。`failed` 的代际永远不再活跃；要再用这份制品，就重新部署，得到新的编号。
-- **回退目标**：同一插件中，编号小于当前活跃代际、状态为 `healthy` 的代际里编号最大的那个。找不到就没有回退目标，例如插件没有出厂代际，或者已经处在最早的健康代际。
+- **回退的候选**：同一插件中，编号小于当前活跃代际、状态为 `healthy` 的代际，按编号从大到小；最后是当前二进制的出厂代际（它不在前面、也不是当前活跃代际时）。出厂是恢复层级的底（架构文档 §4.6）：主版本升级后，旧制品全部无法加载，插件仍能落到当前的出厂代际，尽管它的编号比活跃代际大。**回退目标**是候选中的第一个；没有候选就没有回退目标，例如插件没有出厂代际且已处在最早的健康代际，或者活跃的就是当前出厂代际且没有更早的健康代际。
 - **出厂代际**：来源为 `factory`，制品是当前二进制里嵌入的那一份。宿主升级后制品哈希变了，就是一个新的出厂代际；旧的出厂代际仍然是普通的健康代际。
 
 ## 4. 归属者：`Registry`
@@ -142,7 +142,7 @@ impl Exports {
 
 **激活**是手动回退、自动回退（§7）和启动恢复（§4.1）共用的流程，形式为 `activate(插件, expected, 候选, 原因)`。原因是手动回退、启动恢复、试用失败三者之一，试用失败还带着故障和来源 Session。调用方先持锁确定当前活跃代际（即 expected）和候选，然后：
 
-1. 锁外准备：按顺序取候选作为目标，还没加载就加载它。加载失败时记下这个代际及其原因，改用下一个候选，直到候选用尽。
+1. 锁外准备：按 §3 的顺序取候选作为目标，还没加载就加载它。加载失败时记下这个代际及其原因，改用下一个候选，直到候选用尽。
 2. 持锁核对：活跃代际已经不是 expected、目标已被标为 `failed`，或者试用失败时 expected 已经晋升为 `healthy`，都返回 `Conflict`，本次准备的写入一律不提交。
 3. 在同一个事务里：把要标为失败的代际（包括第 1 步加载失败的）连同原因标为 `failed`，更新活跃代际；试用失败有来源 Session 时，把回退事件写入它的 Inbox。事务成功后更新内存，发布 `Exports`。
 
@@ -165,15 +165,20 @@ impl Exports {
 | `decision` | `[decision].plugin`（配置了时） | `decision` |
 
 ```rust
-pub struct Use { pub user: String, pub plugin: String, pub interface: Interface }
+pub struct Use { pub user: String, pub plugin: String, pub interface: Interface, pub has_key: bool }   // has_key：使用者的 endpoint 写了 api_key_env
 pub enum Interface { Completion, Embedding, Decision }
 ```
 
-检查只有一个函数：给定插件和一份 `Loaded`，确认这个插件的每个使用者需要的接口都在导出中。它在三处调用：
+检查只有一个函数：给定插件和一份 `Loaded`，确认这个插件的每个使用者需要的接口都在导出中，并且凭证与使用者相符。密钥写在决定请求去向的 endpoint 旁边（架构文档 §4.11），所以凭证在接线中检查，不在代际的准入中：
+
+- 使用者给了 `api_key_env`，插件却没有声明凭证（`Loaded.credential` 为空）：这个 key 无处可放。
+- 插件声明凭证为必需，使用者没有给 `api_key_env`。
+
+两者都不通过。同一个插件代际可以同时服务带 key 与不带 key 的 endpoint，只要它声明的凭证不是必需的。检查在三处调用：
 
 - 启动时对每个插件的活跃代际检查。引用了未登记的插件、插件没有活跃代际、缺接口，都拒绝启动，错误分别说明原因并列出使用者。
-- 部署时对新加载的制品检查。失败返回 `Rejected`，message 形如 `used by profile default.reply, embedding; the artifact does not export completion`。部署是有意的命令，不能拆掉在用的接线。
-- 回退时不检查。回退是机械恢复，可以拆掉接线；之后的调用在 `Exports` 处得到 `plugin.unavailable`，与其他失败一样由调用方处理。
+- 部署时对新加载的制品检查。失败返回 `Rejected`，message 形如 `used by profile default.reply, embedding; the artifact does not export completion`，或者 `profile default.reply sets api_key_env, but the artifact declares no credential`。部署是有意的命令，不能拆掉在用的接线。
+- 回退时不检查。回退是机械恢复，可以拆掉接线；之后缺接口的调用在 `Exports` 处、凭证不匹配的调用在传输绑定前得到 `plugin.unavailable`，与其他失败一样由调用方处理。
 
 `completion` 只由内核导入（架构文档 §4.10）。P1 还没有插件之间的导入，所以每个活跃代际都准入，这一条也暂时不需要检查。
 

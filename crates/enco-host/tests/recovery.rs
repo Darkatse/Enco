@@ -25,7 +25,6 @@ impl Provider for PendingProvider {
     async fn complete(
         &self,
         _: &ProviderSettings,
-        _: Option<&str>,
         _: ProviderRequest,
     ) -> Result<Completion, Failure> {
         let _dropped = Dropped(&self.dropped);

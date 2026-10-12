@@ -26,14 +26,13 @@ impl Provider for PausedCompaction {
     async fn complete(
         &self,
         settings: &ProviderSettings,
-        api_key: Option<&str>,
         request: ProviderRequest,
     ) -> Result<Completion, Failure> {
         if settings.model == "old-compaction" && self.pause.swap(false, Ordering::SeqCst) {
             self.entered.notify_one();
             self.resume.notified().await;
         }
-        self.provider.complete(settings, api_key, request).await
+        self.provider.complete(settings, request).await
     }
 }
 

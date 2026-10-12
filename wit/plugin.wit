@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.2.1;
+package enco:plugin@0.3.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -30,8 +30,8 @@ interface types {
     /// A tool disclosed to the model. `input-schema` describes its arguments as JSON Schema.
     record tool-spec { name: string, description: string, input-schema: json }
 
-    /// Endpoint, model, credentials and adapter options supplied by the caller for this call.
-    record settings { base-url: string, model: string, api-key: option<string>, options: json }
+    /// Endpoint, model and adapter options supplied by the caller for this call.
+    record settings { base-url: string, model: string, options: json }
 }
 
 /// Host-owned logging and transport available to plugins.
@@ -61,6 +61,11 @@ interface host {
     record http-failure { kind: http-error-kind, message: string, request-sent: bool }
 
     /// Send a request and collect its response. Non-2xx statuses are returned as responses.
+    /// The host attaches declared credentials only to the bound origin (scheme, host and port),
+    /// overriding the matching request header. Redirects are followed only within that origin.
+    /// Cross-origin redirects are returned unchanged. Credential values in response headers,
+    /// bodies and failures are replaced with [redacted:<environment variable name>].
+    /// Encoded forms of a credential (such as base64) are not redacted.
     http: async func(request: http-request) -> result<http-response, http-failure>;
 }
 
@@ -130,10 +135,16 @@ interface decision {
 interface lifecycle {
     use types.{json, failure};
 
-    /// Human-facing description shown with the registered plugin.
-    record description { summary: string }
+    /// Credential attached by the host to the caller-selected service's origin.
+    /// The host sets `header` to `prefix` followed by the credential value; plugins never see it.
+    record credential { header: string, prefix: string, required: bool }
 
-    /// Describe the component or reject its configuration. P1 supplies an empty JSON object.
+    /// Plugin-wide facts and requirements. `config-schema` documents configuration as JSON Schema;
+    /// configuration validation belongs to `describe`, not to a second host-side schema validator.
+    record description { summary: string, config-schema: json, credential: option<credential> }
+
+    /// Describe the component or reject its configuration. An empty object must be accepted
+    /// and provide the plugin's minimum capabilities. Declarations are fixed with the generation.
     describe: func(config: json) -> result<description, failure>;
 
     /// Check the component without network access or owner-specific configuration.

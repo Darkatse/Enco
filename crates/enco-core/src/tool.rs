@@ -170,6 +170,8 @@ pub mod code {
     pub const PROVIDER_BAD_REQUEST: &str = "provider.bad_request";
     /// The service's answer is unusable: it violates the protocol or fails the caller's check.
     pub const PROVIDER_BAD_RESPONSE: &str = "provider.bad_response";
+    /// The endpoint's credential variable is unset or empty, so the plugin was not called.
+    pub const CREDENTIAL_UNAVAILABLE: &str = "credential.unavailable";
 }
 
 impl ToolSpec {

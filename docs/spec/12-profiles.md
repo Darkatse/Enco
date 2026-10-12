@@ -17,11 +17,10 @@ pub struct ProviderSettings {
 
 ```rust
 // enco-kernel profile.rs
-/// 一个模型端点：哪个插件、什么参数、什么预算。密钥只在内存里。
+/// 一个模型端点：哪个插件、什么参数、什么预算。不含密钥的值。
 pub struct Endpoint {
     pub plugin: String,
     pub settings: ProviderSettings,
-    pub api_key: Option<String>,
     pub budget: Budget,              // 04 §2，context_tokens 与 max_output_tokens
 }
 
@@ -69,14 +68,14 @@ requires_lifeline = true
 
 - `[profile.default]` 必须存在，新 Session 用它。
 - endpoint 可以被多个 profile、多个用途共用；同一个插件可以出现在多个 endpoint 里，各自的模型与参数不同。
-- 读取配置时的检查：每个 profile 引用的 endpoint 存在；每个 endpoint 的 `window_tokens` 与 `max_output_tokens` 为正且后者小于前者；给出了 `api_key_env` 的变量都已设置，密钥读进 `Endpoint.api_key`。插件名是否存在、是否导出 `completion`，由注册表在启动时检查（11 §6）。
+- 读取配置时的检查：每个 profile 引用的 endpoint 存在；每个 endpoint 的 `window_tokens` 与 `max_output_tokens` 为正且后者小于前者；给出了 `api_key_env` 的变量都已设置且非空；这里只做检查，不保留值。插件名是否存在、是否导出 `completion`、凭证声明与 endpoint 是否匹配，由注册表在启动时检查（11 §6）。
 
 ## 3. 什么时候解析
 
 - 配置在启动时读取一次，交给内核：`KernelDeps.profiles: BTreeMap<String, Profile>`。修改 `config.toml` 要重启守护进程。
 - **Round 开始时**按 `session.profile` 取 Profile。没有这个名字时，这个 Round 以 `Failed { code: "profile.unknown" }` 结束，Run 失败。主人下一条消息到来时，composer 根据 `Transcript.run_ends` 在输入说明中呈现这件事（05 §4.3）；主人改配置后重启，或者用 `enco profile` 换一个名字（§4）。
-- **Attempt 开始时**取 `profile.endpoint(用途)`，再从导出表取 `exports.completion(endpoint.plugin, safe_mode)`（11 §4.2）。`AttemptStarted` 记录 `provider: export.generation` 与 `settings: endpoint.settings`；调用 `export.adapter.complete(&endpoint.settings, endpoint.api_key.as_deref(), request)`（04 §6.4）。
-- 密钥的路径只有一条：配置读取时从环境变量取出，放在 `Endpoint.api_key` 里，调用时传给适配器。它不进入 Log、计划、`status` 输出和日志。
+- **Attempt 开始时**取 `profile.endpoint(用途)`，再从导出表取 `exports.completion(endpoint.plugin, safe_mode)`（11 §4.2）。`AttemptStarted` 记录 `provider: export.generation` 与 `settings: endpoint.settings`；调用 `export.adapter.complete(&endpoint.settings, request)`（04 §6.4）。
+- 密钥的路径只有一条，值只出现在传输层（架构文档 §4.11）：内核与配置只认识 `api_key_env` 这个变量名，它随 `settings` 记入 `AttemptStarted`；enco-wasm 在每次调用时按变量名读取值，附加到去往 `base_url` 所在 origin 的请求上（07 §3.2）。值不进入内核、Log、计划、`status` 输出和日志。
 
 两个 Session 用不同的 profile，各自的 Attempt 记录写明各自的模型与参数；同一个 Session 的回复与压缩用不同的 endpoint，两类 Attempt 记录也不同。事后看 Log 就能知道每次请求用了什么，不需要去翻当时的配置。
 

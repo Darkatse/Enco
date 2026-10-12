@@ -15,6 +15,10 @@ pub trait Runtime: Send + Sync {
 pub struct Loaded {
     /// Adapter-provided description, not a plugin identity.
     pub summary: String,
+    /// Plugin-owned configuration documentation, retained with the loaded generation.
+    pub config_schema: serde_json::Value,
+    /// Credential requirement used to check the caller's wiring.
+    pub credential: Option<Credential>,
     /// Self-check required before a deployment is admitted.
     pub lifecycle: Arc<dyn Lifecycle>,
     /// Completion interface when supplied by the component.
@@ -23,6 +27,13 @@ pub struct Loaded {
     pub embedding: Option<Arc<dyn Embedding>>,
     /// Decision interface when supplied by the component.
     pub decision: Option<Arc<dyn Decision>>,
+}
+
+/// Credential placement belongs to the transport; wiring only needs this requirement.
+#[derive(Clone, Copy)]
+pub struct Credential {
+    /// The caller's endpoint must name a credential environment variable.
+    pub required: bool,
 }
 
 /// Compilation, import validation or component description failed.

@@ -12,6 +12,8 @@
 
 改动协议先读对应入口和共享转换；宿主无需识别服务商。`settings.options` 表达线上协议的附加设置，不能覆盖已记录请求的消息、模型、工具、输出上限或开启流式响应。服务商返回的额外 Assistant 字段由内核按产生它的代际追溯身份，只回放给同一插件；插件不自报名字或身份。
 
+`describe` 声明配置说明与凭证需求；宿主在 HTTP 传输层读取、附加并遮蔽密钥，插件只处理协议，不接收密钥值。
+
 ```sh
 cargo xtask build-factory
 cargo test -p enco --test daemon --test memory

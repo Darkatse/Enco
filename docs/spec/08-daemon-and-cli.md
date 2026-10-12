@@ -64,7 +64,7 @@ timezone = "America/New_York"     # 必填；主人的时区（IANA 名称）。
 plugin = "deepseek"               # 插件名，须有活跃代际并导出 completion（11 §6）
 base_url = "https://api.deepseek.com"
 model = "deepseek-chat"
-api_key_env = "DEEPSEEK_API_KEY"  # 可选；不需要认证的本地服务可以省略
+api_key_env = "DEEPSEEK_API_KEY"  # 插件声明凭证为必需时必填；不需要认证的本地服务可以省略（11 §6）
 options = {}                      # 可选；合并进请求体，例如 { temperature = 0.7 }
 window_tokens = 128000            # 这个模型的上下文窗口
 max_output_tokens = 8192          # 这个模型的输出上限，须小于窗口
@@ -108,8 +108,8 @@ api_base = "https://api.telegram.org"   # 可选
 
 - 配置文件不存在：报错并提示运行 `enco init`。
 - 缺少 `timezone` 或它不是有效的 IANA 名称：报错并拒绝启动，提示补上这一行，不回退到节点的系统时区（架构文档 §3.7）。
-- 缺少 `[profile.default]` 或 `[embedding]`，profile 引用了不存在的 endpoint，endpoint 的窗口或输出上限不合法：报错并拒绝启动。插件名是否存在、是否导出所需接口，由注册表启动时检查（11 §6）。
-- 给出了 `api_key_env` 但该环境变量未设置：报错并拒绝启动。API key 只从环境变量读取，不写进配置文件，读出后放在内存中的 `Endpoint.api_key`（12 §3）。`[telegram]` 的 `token_env` 同理。
+- 缺少 `[profile.default]` 或 `[embedding]`，profile 引用了不存在的 endpoint，endpoint 的窗口或输出上限不合法：报错并拒绝启动。插件名是否存在、是否导出所需接口、凭证与插件的声明是否匹配，由注册表启动时检查（11 §6）。
+- 给出了 `api_key_env` 但该环境变量未设置或为空：报错并拒绝启动。这里只检查变量是否存在，值不读进配置：插件调用时由传输层按变量名读取（07 §3.2、12 §3）。`[telegram]` 的 `token_env` 由原生的 Telegram 适配器在启动时读取（10）。
 - 修改配置要重启守护进程。
 - 这是全部配置项。新增配置项需要先提问（01 §5）。
 

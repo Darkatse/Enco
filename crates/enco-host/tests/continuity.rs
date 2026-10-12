@@ -256,6 +256,8 @@ async fn small_window_compaction_preserves_context_across_restart() {
         Loaded {
             lifecycle: Arc::new(Probe(Ok(()))),
             summary: "embedding".into(),
+            config_schema: serde_json::json!({}),
+            credential: None,
             completion: None,
             embedding: Some(provider.clone()),
             decision: None,

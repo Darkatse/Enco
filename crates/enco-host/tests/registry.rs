@@ -14,6 +14,8 @@ fn loaded(provider: Arc<ScriptedProvider>) -> Loaded {
     Loaded {
         lifecycle: Arc::new(Probe(Ok(()))),
         summary: "fixture".into(),
+        config_schema: serde_json::json!({}),
+        credential: None,
         completion: Some(provider.clone()),
         embedding: Some(provider),
         decision: None,
@@ -93,13 +95,24 @@ async fn factory_updates_are_idempotent_and_preserve_owner_deployments() {
     assert_eq!(registry.status().await[0].active.as_ref(), Some(&deployed));
     assert_eq!(registry.status().await[0].generations.len(), 4);
     drop(registry);
+    // A contract upgrade can make every older artifact unloadable, including the active one.
+    let runtime = Arc::new(ScriptedRuntime::default());
+    runtime.insert(b"factory-4", loaded(ScriptedProvider::new(vec![])));
+    let registry = open(store.clone(), runtime.clone(), b"factory-4", vec![])
+        .await
+        .unwrap();
+    assert_eq!(
+        registry.status().await[0].active.as_ref().unwrap().artifact,
+        ContentHash::of(b"factory-4")
+    );
+    drop(registry);
     std::fs::write(
         dir.path().join("plugins.lock"),
         format!("[plugins.fixture]\nid = \"{}\"\n", PluginId::new()),
     )
     .unwrap();
     assert!(matches!(
-        open(store, runtime, b"factory-3", vec![]).await,
+        open(store, runtime, b"factory-4", vec![]).await,
         Err(RegistryError::FactoryIdentity(_))
     ));
 }
@@ -110,12 +123,20 @@ async fn admission_keeps_configured_exports_connected() {
     let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
     let runtime = Arc::new(ScriptedRuntime::default());
     let provider = ScriptedProvider::new(vec![]);
-    runtime.insert(FACTORY_BYTES, loaded(provider.clone()));
+    let mut factory = loaded(provider.clone());
+    factory.credential = Some(Credential { required: false });
+    runtime.insert(FACTORY_BYTES, factory);
+    runtime.insert(b"no-credential", loaded(provider.clone()));
+    let mut required = loaded(provider.clone());
+    required.credential = Some(Credential { required: true });
+    runtime.insert(b"required", required);
     runtime.insert(
         b"completion-only",
         Loaded {
             lifecycle: Arc::new(Probe(Ok(()))),
             summary: "completion".into(),
+            config_schema: serde_json::json!({}),
+            credential: None,
             completion: Some(provider),
             embedding: None,
             decision: None,
@@ -125,21 +146,35 @@ async fn admission_keeps_configured_exports_connected() {
         user: "embedding".into(),
         plugin: "fixture".into(),
         interface: Interface::Embedding,
+        has_key: true,
     }];
     let registry = open(store.clone(), runtime.clone(), FACTORY_BYTES, wiring)
         .await
         .unwrap();
     let before = registry.status().await.remove(0);
-    assert!(
-        matches!(registry.deploy("fixture", b"completion-only".to_vec()).await,
-        Err(RegistryError::Rejected { reason, .. }) if reason.contains("embedding"))
-    );
+    for bytes in [b"completion-only".as_slice(), b"no-credential"] {
+        assert!(matches!(
+            registry.deploy("fixture", bytes.to_vec()).await,
+            Err(RegistryError::Rejected { .. })
+        ));
+    }
     assert_eq!(registry.status().await[0].generations, before.generations);
     drop(registry);
     let wiring = vec![Use {
         user: "profile default.reply".into(),
+        plugin: "fixture".into(),
+        interface: Interface::Completion,
+        has_key: false,
+    }];
+    assert!(matches!(
+        open(store.clone(), runtime.clone(), b"required", wiring).await,
+        Err(RegistryError::Rejected { .. })
+    ));
+    let wiring = vec![Use {
+        user: "profile default.reply".into(),
         plugin: "missing".into(),
         interface: Interface::Completion,
+        has_key: false,
     }];
     assert!(open(store, runtime, FACTORY_BYTES, wiring).await.is_err());
 }

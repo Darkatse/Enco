@@ -2,6 +2,7 @@
 mod bindings;
 
 mod convert;
+mod credentials;
 mod engine;
 mod host_imports;
 mod limits;

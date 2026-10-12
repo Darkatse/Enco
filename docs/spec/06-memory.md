@@ -96,7 +96,7 @@ sync(query: Option<&str>, cancel) -> Result<Synced, MemoryError>
     rows = 权威中 batch 的当前内容（期间被遗忘的跳过）
     inputs = [query（如果有）] ++ rows 的文本
     if inputs 为空: return Synced { query_vector: None, unindexed: [], failure: None }
-    结果 = reported_call(exports.embedding(endpoint.plugin), embed(&endpoint.settings, endpoint.api_key, inputs))
+    结果 = reported_call(exports.embedding(endpoint.plugin), embed(&endpoint.settings, inputs))
     成功，且向量维度与索引配置相符:
         替换每个 row 的节点，节点的 rev 取自 row；build_text_index()
         return Synced { query_vector, unindexed: r.unindexed 去掉 rows, failure: None }
@@ -160,7 +160,7 @@ Memories::recall(query: &str, limit: usize, cancel) -> Result<Recall, MemoryErro
 
 ```rust
 /// 来自配置的 [decision]（08 §3）。
-pub struct DecisionEndpoint { pub plugin: String, pub settings: ProviderSettings, pub api_key: Option<String> }
+pub struct DecisionEndpoint { pub plugin: String, pub settings: ProviderSettings }
 
 pub struct Relevance { endpoint: DecisionEndpoint, registry: Arc<Registry> }
 pub struct Filtered { pub kept: Vec<Memory>, pub omitted: Vec<Omission> }
@@ -175,7 +175,7 @@ impl Relevance {
 filter(query, recalled, cancel)
     if recalled 为空: return Filtered { kept: [], omitted: [] }
     questions = 每条记忆一个 Predicate，instructions 为 RELEVANCE_QUESTION 填入记忆内容
-    结果 = reported_call(exports.decision(endpoint.plugin), decide(&endpoint.settings, endpoint.api_key, query, questions))   // 与 §3.3 的 embed 同一条路径
+    结果 = reported_call(exports.decision(endpoint.plugin), decide(&endpoint.settings, query, questions))   // 与 §3.3 的 embed 同一条路径
     成功: 概率低于 MEMORY_RELEVANCE_THRESHOLD 的记忆移出 kept，各记一条省略；Refused 的保留
     失败: 全部保留，记一条省略
 ```
@@ -226,7 +226,7 @@ pub struct Memories { /* 见下 */ }
 
 pub struct MemoryPaths { pub db: PathBuf, pub index: PathBuf }
 /// 来自配置的 [embedding]（08 §3）：哪个插件、什么参数、什么维度。索引的身份是 (settings.model, dimensions)。
-pub struct EmbeddingEndpoint { pub plugin: String, pub settings: ProviderSettings, pub api_key: Option<String>, pub dimensions: usize }
+pub struct EmbeddingEndpoint { pub plugin: String, pub settings: ProviderSettings, pub dimensions: usize }
 
 pub struct Recall { pub memories: Vec<Memory>, pub unindexed: Vec<Memory>, pub lexical_only: Option<Failure> }
 pub struct MemoryList { pub memories: Vec<Memory>, pub unindexed: Vec<MemoryId> }

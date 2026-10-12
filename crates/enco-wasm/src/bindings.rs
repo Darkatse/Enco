@@ -43,7 +43,11 @@ mod decision {
     });
 }
 
+/// Package version of `wit/plugin.wit`; change it together with the WIT.
+pub(crate) const CONTRACT_VERSION: &str = "0.3.0";
+
 pub(crate) use base::BasePre;
+pub(crate) use base::exports::enco::plugin::lifecycle;
 pub(crate) use completion::{CompletionPluginPre, enco, exports};
 pub(crate) use decision::{DecisionPluginPre, exports::enco::plugin::decision as decisions};
 pub(crate) use embedding::EmbeddingPluginPre;
