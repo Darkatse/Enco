@@ -20,11 +20,8 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Local develop documents
+# Local develop documents, and accepted milestone plans with their real run data and personal configs
 .archived_docs
-
-# Accepted milestone plans with their real run data and personal configs
-.archive
 
 # Local desktop metadata
 .DS_Store

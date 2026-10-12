@@ -4,7 +4,7 @@
 
 ## 里程碑
 
-P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。P1（可恢复替换）：M10 请求查看、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。P1 之后：M15 缓存友好的请求与时间标记、M16 按消息锚定的上下文、M17 决策接口与记忆的相关性过滤、M18 周期定时与主人的时区。P2：M19 评测运行器与基线。
+P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 记忆、M6 压缩与提醒、M7 收尾、M8 审阅修正、M9 目录布局与 Telegram 渠道。P1（可恢复替换）：M10 请求查看、M11 代际与注册表、M12 契约 0.2、M13 profile 与接线、M14 健康门控。P1 之后：M15 缓存友好的请求与时间标记、M16 按消息锚定的上下文、M17 决策接口与记忆的相关性过滤、M18 周期定时与主人的时区。P2：M19 评测运行器与基线、M20 契约 0.3 与凭证。
 
 | 里程碑 | 实现 | 暂不实现 |
 |---|---|---|
@@ -17,22 +17,22 @@ P0：M1 地基、M2 主干回路、M3 插件边界与 CLI、M4 持久性、M5 �
 | M16 | 05 §4：请求在最新条目处结束，不再追加末尾的上下文消息；输入前的说明（跨整点的时间、工作结局、召回的记忆）留在原位；composer 决定是否沿用上一份回复计划（`ComposeInput.previous_plan`）；`Candidate.standing`，内联消息记录 `sources`，inspect 返回原始计划；置顶记忆进 System 消息；Environment 给出时区；`Transcript.run_ends` 提供工作结局，文案由 composer 逐字记入计划（03 §1.8，04 §2） | 稳定性标注；按空闲时长开始新系列 |
 | M17 | 07：契约 0.2.1 新增 `decision` 与 `decision-plugin`，enco-wasm 的 `Decision` 适配器与返回契约，出厂插件 `typesafe`（§4.4、§5）；04 §2 的 `Decision` 端口；11 §4.2、§6 的 `Exports::decision` 与 `Interface::Decision`；08 §3、§4 的可选 `[decision]` 与第三个出厂身份；06 §5.1 的相关性过滤；`plugins/README.md` 与 `examples/` 同步 | OpenAI 的 `/v1/decisions`；`tool.gate` |
 | M18 | 03 §1.4、§1.5、§1.9、§3：`ScheduleRule`、`last`、`ScheduleState` 改为 Active / Done / Cancelled 并去掉 `ScheduleStateKind`、`Reminder.skipped`、`AttemptStarted.provider` 收窄为 `GenerationId`、Event 的叙述移出规范形态（回退通知由注册表写下）、`fire_schedule` 的前置条件、schema 升到 4；04 §2、§3、§5、§6.3、§10–§12：`Clock` 只返回 UTC、`TranscriptItem.event`、`KernelConfig.timezone`、`ComposeInput.timezone`、Scheduler 在内存中推出下一次触发并只补最近一次、`schedule_*` 的新参数与结果、两个常量；05 §4、§5：Environment 与时间标记按主人的时区、输入来源的说明；08 §1、§3、§4：必填的 `timezone`、`enco init` 检测本机时区、`enco schedules` 的显示；02 §3、§4：croner、chrono-tz、iana-time-zone；同步更新 `enco init` 的模板与 `examples/` 中的配置示例 | 定时租约与按 `(schedule, due_at)` 的 Inbox 唯一约束（P4）；修改已有的定时（取消后重建）；`at` 接受不带偏移的当地时间 |
-
 | M19 | 13：独立工作区的黑盒运行器 `eval-runner`（`run`、`compare`、`regrade`、`check`），中性 home 与白名单环境、mock 与拒绝代理、经 CLI 导出的快照、三种评分、逐题单侧 Fisher 检验与目标题的分层检验、`result.json`；08 §1、§7：`enco --version` 与 `enco send --wait`；02、09：运行器的依赖、lint 副本与门禁；`memory-update` 与 `daily-briefing` 细化并带齐自检案例，其余三道题的设计移入 M25 | 题目 `home/plugins/` 下夹具插件的构建（M24） |
+| M20 | 07：契约 0.3，`describe` 返回摘要、配置 schema 与凭证，`settings` 删除 `api-key`；enco-wasm 在传输层按 origin 附加凭证、只在同一 origin 内跟随重定向、遮蔽交回插件的密钥值，加载时检查契约的主版本；04 §2、§6.4 与 06：三个端口与各种 endpoint 不再携带密钥的值，`Loaded.credential` 只含是否必需；11 §3、§6：回退的候选以当前出厂代际结尾，接线检查加上凭证；08 §3、12：启动时只检查变量已设置且非空；03 §1.6：`credential.unavailable`；三个出厂插件重建，provider-protocol 中的鉴权头与遮蔽删除 | 插件自带的凭证（名字与 origin）及代际级的凭证准入（M23）；路径前缀等放置方式（P3）；`config-schema` 的读者，即 README 与运行时手册中的配置项（M24、M25） |
 
 每个里程碑结束时系统都完整可用。M11 到 M13 之间的过渡形态（临时 profile）只存在于代码中，规格只描述最终形态。
 
 ### 手动核对记录
 
-A45 已于 2026-10-02 手动核对：使用临时 `ENCO_HOME`，由本机 HTTP 服务代替模型服务，另外核对了晋升、probe 拒绝、安全模式和下一个 Round 的规范消息。旧 schema 的库被拒绝启动，库本身不变。
-
 A51 于 2026-10-08 核对：M16 的 OpenAI-Compatible 与 DeepSeek 制品均经新宿主部署、probe 与实际调用通过，调用记录指向部署的旧制品代际。真实 Jev 经守护进程的聊天请求路径判断中文记忆：饮品偏好保留，编辑器偏好被省略（p=0.05），阈值保持 0.5。
 
 A68、A69 于 2026-10-11 核对：两道题的案例全部符合期望，rubric 两次评判一致，空跑整道题失败；A/A 每题每变体 5 次，早报 5/5 对 4/5，记忆 5/5 对 5/5，没有仪器错误，未判倒退，保留 `k = 5`。
 
+A70、A75 于 2026-10-11 核对：用临时组件加载一份导入 `enco:plugin/host@0.2.1` 的制品，加载失败，报错写明制品所用的版本与宿主链接的版本；按测试准入不保留文案断言。真实的 DeepSeek（`deepseek-flash`）与 Kimi（`k3-256k`）经凭证绑定各完成一次对话，保存下来的 Log、inspect 输出、宿主日志与 home 中的文件都没有出现密钥的值。
+
 ### 验收场景
 
-M1–M19 的验收场景，"层"指主要在哪一层验证。编号在后续里程碑中延续。
+M1–M20 的验收场景，"层"指主要在哪一层验证。编号在后续里程碑中延续。
 
 | # | 里程碑 | 场景 | 层 | 必须观察到 |
 |---|---|---|---|---|
@@ -105,6 +105,12 @@ M1–M19 的验收场景，"层"指主要在哪一层验证。编号在后续里
 | A67 | M19 | 比较与判定 | 单元、评测 | 13 §9 灵敏度表中的 p 值；两道目标题的分层检验；`accept` 与 `reject` 列出的原因；某道题的一个变体没有有效试验时结论为 `reject`，原因是没有有效样本；重评分发现题目哈希与原记录不同就拒绝，并指出是哪一道 |
 | A68 | M19 | 题目自检 | 手动一次 | 配置真实的评判模型，`check memory-update daily-briefing`：全部案例符合期望，rubric 案例两次评判一致，空跑整道题失败 |
 | A69 | M19 | A/A 基线 | 手动一次 | 配置真实的被测模型，`compare` 以同一个变体为基准与候选，跑两道题各 k 次，不指定目标：端到端完成；被判为倒退的题数写进 13 §11；结果作为基线保存 |
+| A70 | M20 | 契约 0.3 | 端到端 | 三个出厂插件以 0.3 重建，`cargo xtask check` 通过；基于 0.2 的制品加载失败，message 写明制品所用的版本与宿主链接的版本（手动核对一次） |
+| A71 | M20 | 密钥只在传输层 | 集成 | wiremock 模拟 Chat Completions：请求带有 `Authorization: Bearer <环境变量的值>`；服务在错误响应的正文中回显这个值时，`AttemptSettled` 的失败消息中是 `[redacted:<变量名>]`；Log 与 `enco inspect` 的输出中都找不到这个值 |
+| A72 | M20 | 重定向 | 集成 | 同一 origin 的 307：跟随，第二个请求带着凭证，补全成功；跨 origin 的 302：Attempt 以 `provider.bad_request` 失败，message 中有 302，另一个 origin 的 mock 没有收到任何请求 |
+| A73 | M20 | 接线中的凭证 | 集成 | endpoint 写了 `api_key_env` 而插件没有声明凭证：拒绝启动，错误写明 endpoint 与插件；deepseek 的 endpoint 没有 `api_key_env`：拒绝启动；openai-compatible 的 endpoint 不写 `api_key_env`：正常启动，请求不带 `Authorization`。把一份不声明凭证的制品部署到带 key 的 endpoint 所用的插件：`Rejected`，注册表不变 |
+| A74 | M20 | 回退落到出厂代际 | 集成 | 活跃代际的制品无法加载、也没有可加载的更早健康代际：启动后插件的活跃代际是当前出厂代际，无法加载的代际标为 `failed` 并记下原因。手动 `rollback` 与自动回退使用同一份候选，不另验 |
+| A75 | M20 | 真实服务 | 手动一次 | 经凭证绑定与真实的 DeepSeek、Kimi 对话；`enco log` 中找不到密钥的值 |
 
 ## 已完成的路线图阶段
 
