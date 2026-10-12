@@ -1,10 +1,11 @@
 use crate::{
     compose_root,
     paths::Paths,
-    protocol::{Command, Request, ServerMessage},
+    protocol::{Command, DeploySource, Request, ServerMessage},
 };
 use anyhow::{Context, Result, bail};
 use enco_core::*;
+use enco_host::config;
 use enco_kernel::{Accepted, Kernel, KernelError, Scheduled};
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
@@ -80,12 +81,7 @@ async fn run(listener: UnixListener, paths: &Paths) -> Result<()> {
     // All exits after startup stop accepting work and await the existing owners.
     drop(listener);
     stop.cancel();
-    let mut channel_result = Ok(());
-    for channel in &application.channels {
-        if let Err(error) = channel.shutdown().await {
-            channel_result = Err(error);
-        }
-    }
+    let channel_result = application.channels.shutdown().await;
     let (kernel_result, ()) = tokio::join!(kernel.shutdown(), async {
         while connections.join_next().await.is_some() {}
     });
@@ -286,11 +282,18 @@ async fn process(
         }
         Command::Status {} => {
             let mut status = json!(kernel.status().await?);
-            let mut channels = Vec::new();
-            for channel in &application.channels {
-                channels.push(channel.status().await?);
-            }
-            status["channels"] = json!(channels);
+            status["channels"] = json!(application.channels.status().await?);
+            status["config"] = json!(kernel.registry().status().await.config);
+            status["config"]["divergence"] = json!(
+                kernel
+                    .registry()
+                    .config_divergence(
+                        config::document(&application.paths.config())
+                            .await
+                            .map_err(|error| error.to_string())
+                    )
+                    .await
+            );
             status
         }
         Command::Sessions {} => json!(kernel.sessions().await?),
@@ -301,20 +304,40 @@ async fn process(
             let session = existing_session(kernel, &name).await?;
             json!(kernel.log(session.id, after).await?)
         }
-        Command::PluginStatus {} => json!(kernel.registry().status().await),
-        Command::PluginDeploy { name, path } => {
-            let bytes = tokio::fs::read(&path).await.map_err(|error| CommandError {
-                code: "bad_request",
-                message: format!("{}: {error}", path.display()),
-            })?;
+        Command::PluginStatus {} => json!(kernel.registry().status().await.plugins),
+        Command::PluginDeploy { name, source } => {
+            let source = match source {
+                DeploySource::Path(path) => enco_kernel::PluginSource::Artifact(
+                    tokio::fs::read(&path).await.map_err(|error| CommandError {
+                        code: "bad_request",
+                        message: format!("{}: {error}", path.display()),
+                    })?,
+                ),
+                DeploySource::Generation(id) => enco_kernel::PluginSource::Generation(id),
+            };
             json!(
                 kernel
                     .registry()
-                    .deploy(&name, bytes)
+                    .deploy(&name, source)
                     .await
                     .map_err(KernelError::from)?
             )
         }
+        Command::ConfigApply { generation } => {
+            config::apply(&application.paths.config(), kernel.registry(), generation)
+                .await
+                .map_err(|error| CommandError {
+                    code: "config",
+                    message: error.to_string(),
+                })?
+        }
+        Command::ConfigRollback {} => json!(
+            kernel
+                .registry()
+                .rollback_config()
+                .await
+                .map_err(KernelError::from)?
+        ),
         Command::PluginRollback { name } => json!(
             kernel
                 .registry()

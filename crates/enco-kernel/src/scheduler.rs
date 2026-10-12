@@ -1,5 +1,5 @@
 use crate::{
-    Clock, Store, StoreError, limits,
+    Clock, Store, StoreError, View, limits,
     session::{SessionHandle, lock},
 };
 use croner::{
@@ -14,7 +14,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -256,15 +256,12 @@ impl Scheduler {
         mut self,
         store: Arc<dyn Store>,
         clock: Arc<dyn Clock>,
-        timezone: Tz,
+        views: watch::Receiver<Arc<View>>,
         sessions: Arc<Mutex<HashMap<SessionId, Arc<SessionHandle>>>>,
         shutdown: CancellationToken,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
-            if let Err(error) = self
-                .run(&*store, &*clock, timezone, &sessions, shutdown)
-                .await
-            {
+            if let Err(error) = self.run(&*store, &*clock, views, &sessions, shutdown).await {
                 *lock(&self.stopped) = Some(error.to_string());
                 tracing::error!(%error, "Scheduler stopped");
             }
@@ -275,28 +272,28 @@ impl Scheduler {
         &mut self,
         store: &dyn Store,
         clock: &dyn Clock,
-        timezone: Tz,
+        mut views: watch::Receiver<Arc<View>>,
         sessions: &Mutex<HashMap<SessionId, Arc<SessionHandle>>>,
         shutdown: CancellationToken,
     ) -> Result<(), ScheduleError> {
-        let mut agenda = Agenda::new();
-        for schedule in store.schedules(Some(ScheduleState::Active)).await? {
-            let context = |source| ScheduleError::Restore {
-                id: schedule.id,
-                source: Box::new(source),
-            };
-            let rule = Rule::parse(&schedule.rule, timezone).map_err(context)?;
-            let after = schedule
-                .last
-                .map_or(schedule.created_at, |last| last.due_at);
-            let next = rule.first_after(after).map_err(context)?;
-            agenda.insert((next, schedule.id), AgendaEntry { schedule, rule });
-        }
+        let mut timezone = views.borrow_and_update().config.kernel.timezone;
+        let schedules = store.schedules(Some(ScheduleState::Active)).await?;
+        let mut agenda = agenda(schedules, timezone)?;
         let mut tick = tokio::time::interval(limits::SCHEDULER_TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
+                biased;
                 _ = shutdown.cancelled() => return Ok(()),
+                changed = views.changed() => {
+                    if changed.is_err() { return Ok(()); }
+                    let next = views.borrow_and_update().config.kernel.timezone;
+                    if next != timezone {
+                        timezone = next;
+                        let schedules = std::mem::take(&mut agenda).into_values().map(|entry| entry.schedule);
+                        agenda = self::agenda(schedules, timezone)?;
+                    }
+                },
                 command = self.rx.recv() => {
                     let Some(command) = command else { return Ok(()); };
                     command.execute(store, clock, timezone, &mut agenda).await;
@@ -305,6 +302,27 @@ impl Scheduler {
             }
         }
     }
+}
+
+/// Startup and timezone changes derive due times from the last recorded occurrence.
+fn agenda(
+    schedules: impl IntoIterator<Item = Schedule>,
+    timezone: Tz,
+) -> Result<Agenda, ScheduleError> {
+    let mut agenda = Agenda::new();
+    for schedule in schedules {
+        let context = |source| ScheduleError::Restore {
+            id: schedule.id,
+            source: Box::new(source),
+        };
+        let rule = Rule::parse(&schedule.rule, timezone).map_err(context)?;
+        let after = schedule
+            .last
+            .map_or(schedule.created_at, |last| last.due_at);
+        let next = rule.first_after(after).map_err(context)?;
+        agenda.insert((next, schedule.id), AgendaEntry { schedule, rule });
+    }
+    Ok(agenda)
 }
 
 impl Command {

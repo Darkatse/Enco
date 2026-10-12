@@ -92,6 +92,9 @@ pub enum ChannelError {
     Protocol(#[from] Fault),
     #[error("channel task: {0}")]
     Task(String),
+    /// The owner did not complete cleanup, so its helpers may still be running.
+    #[error("channel owner did not finish shutdown: {0}")]
+    Unjoined(tokio::task::JoinError),
     #[error("channel configuration: {0}")]
     Config(String),
 }
@@ -135,7 +138,7 @@ pub struct Channel {
     task: Mutex<Option<JoinHandle<Result<(), ChannelError>>>>,
 }
 
-fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(crate) fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     value
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -200,8 +203,7 @@ impl Channel {
         self.stop.cancel();
         let task = lock(&self.task).take();
         if let Some(task) = task {
-            task.await
-                .map_err(|error| ChannelError::Task(error.to_string()))??;
+            task.await.map_err(ChannelError::Unjoined)??;
         }
         Ok(())
     }

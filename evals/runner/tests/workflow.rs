@@ -82,7 +82,8 @@ data = "hidden/inbox.json"
             &format!(
                 r#"endpoint.chat = {{ plugin = "openai-compatible", base_url = {:?}, model = "agent", window_tokens = 128000, max_output_tokens = 8192 }}
 profile.default = {{ reply = "chat", compaction = "chat" }}
-embedding = {{ plugin = "openai-compatible", base_url = {:?}, model = "embedding", dimensions = 4 }}
+memory.embedding = "embed"
+endpoint.embed = {{ plugin = "openai-compatible", base_url = {:?}, model = "embedding", dimensions = 4 }}
 "#,
                 model.uri(),
                 model.uri()

@@ -56,3 +56,14 @@ pub struct RolledBack {
     /// Plugin fault which triggered recovery.
     pub failure: Failure,
 }
+
+/// An immutable registered configuration document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConfigGeneration {
+    /// Global registry sequence number, shared with plugin generations.
+    pub id: GenerationId,
+    /// Complete configuration content; declarations are derived by its owners.
+    pub document: serde_json::Value,
+    /// Observation time for display, never ordering.
+    pub created_at: DateTime<Utc>,
+}

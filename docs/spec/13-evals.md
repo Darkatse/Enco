@@ -38,7 +38,7 @@ user = "lin"                           # HOME 目录的名字，默认 lin
 path = "/usr/local/bin:/usr/bin:/bin"  # 被测守护进程 PATH 中 bin/ 之后的部分，默认即此值
 ```
 
-- `model` 指向的文件只含 `[endpoint.*]`、`[profile.*]`、`[embedding]` 与可选的 `[decision]`（08 §3）；运行器在解析后的表中加入题目的时区与预算，再写入被测 home 的 `config.toml`。其中出现的 `api_key_env` 进入环境变量白名单，`base_url` 的主机进入 `NO_PROXY`。
+- `model` 指向的文件只含 `[endpoint.*]`、`[profile.*]` 与 `[memory]`（08 §3）；运行器在解析后的表中加入题目的时区与预算，再写入被测 home 的 `config.toml`。其中出现的 `api_key_env` 进入环境变量白名单，`base_url` 的主机进入 `NO_PROXY`。
 - 评判模型与被测模型应属于不同的家族，避免评判偏袒自己一家的回答。评判的 key 只由运行器读取，不进入被测的环境。
 - 配置不合法（包括缺少 key 变量）时退出码为 2，不开始任何试验。
 
@@ -55,7 +55,7 @@ artifact = "plugin.wasm"         # 相对本文件
 ```
 
 - 省略 `--variant` 时，变体是 PATH 中的 `enco`，不部署任何东西，也就是出厂代际。
-- 变体的身份是二进制与各制品的 blake3 哈希，写进 `result.json`。M21 起 `[[deploy]]` 可以带插件的设置。
+- 变体的身份是二进制与各制品的 blake3 哈希，写进 `result.json`。插件设置加入（路线图 M23）之后，`[[deploy]]` 可以带插件的设置。
 - 部署失败说明变体本身有问题，整次运行停止并报告，退出码为 2。
 
 ## 4. 一次试验
@@ -64,7 +64,7 @@ artifact = "plugin.wasm"         # 相对本文件
 
 1. **开始时刻**：当前时刻按题目的时区取整到分钟，记为 `start`。占位符都相对于它（§8）。
 2. **home**：在 `<trial.root>/<随机名>/<trial.user>/` 建 HOME，`ENCO_HOME` 为 `$HOME/.enco`。复制题目的 `home/`，保留文件权限；UTF-8 文本文件中的占位符被替换，其余文件原样复制。路径中不出现 evals、trial 或题目名。
-3. **配置**：写 `$ENCO_HOME/config.toml`，与 `enco init` 的模板同形、不带注释：`timezone` 取题目的时区，`[run] max_rounds` 取题目的 `budget.max_rounds`，然后是被测模型的那段配置。
+3. **配置**：写 `$ENCO_HOME/config.toml`，与 `enco init` 的模板同形、不带注释：`[owner] timezone` 取题目的时区，`[run] max_rounds` 取题目的 `budget.max_rounds`，然后是被测模型的那段配置。守护进程首次启动时把它登记为第一个配置代际（11 §4.1）。
 4. **mock 与代理**：启动题目的每个 mock 和一个代理，都监听 `127.0.0.1` 的随机端口（§7）。
 5. **守护进程**：以下面的环境启动 `<enco> serve`，再反复执行 `enco status`，直到成功或超过 `DAEMON_READY_TIMEOUT`：
    - `HOME`、`ENCO_HOME`、`TMPDIR`（`$HOME/tmp`）、`LANG=C.UTF-8`；

@@ -1,14 +1,13 @@
 use super::{args, resolve_path};
 use async_trait::async_trait;
 use enco_core::*;
-use enco_kernel::{CallContext, Registry, RegistryError, TRIAL_CALLS, Tool};
+use enco_kernel::{CallContext, PluginSource, Registry, RegistryError, TRIAL_CALLS, Tool};
 use serde_json::{Map, Value, json};
 use std::{path::PathBuf, sync::Arc};
 
 enum Kind {
     Status,
     Deploy,
-    Rollback,
 }
 struct PluginTool {
     registry: Arc<Registry>,
@@ -18,7 +17,7 @@ struct PluginTool {
 
 /// Plugin commands use the same registry entry points as the native CLI.
 pub fn plugin_tools(registry: Arc<Registry>, workspace: PathBuf) -> Vec<Arc<dyn Tool>> {
-    [Kind::Status, Kind::Deploy, Kind::Rollback]
+    [Kind::Status, Kind::Deploy]
         .into_iter()
         .map(|kind| {
             Arc::new(PluginTool {
@@ -46,24 +45,21 @@ impl Tool for PluginTool {
             ),
             Kind::Deploy => (
                 "plugin_deploy",
-                format!("Deploy a WebAssembly component after its local self-check. path is relative to the workspace unless absolute. New calls use the trial generation immediately; {TRIAL_CALLS} successful calls make it healthy. A plugin trap or contract violation during trial automatically rolls back to an earlier healthy generation. Service failures do not affect plugin health. Inspect with plugin_status; use plugin_rollback for manual recovery."),
+                format!("Deploy a WebAssembly component after its local self-check. path is relative to the workspace unless absolute. New calls use the trial generation immediately; {TRIAL_CALLS} successful calls make it healthy. A plugin trap or contract violation during trial automatically rolls back to an earlier healthy generation. Service failures do not affect plugin health. Provide exactly one of path or generation. Re-registering a generation undoes later changes without rewriting plugin source. Inspect history with plugin_status."),
                 Effect::SideEffect,
-                json!({"name": {"type": "string"}, "path": {"type": "string"}}),
-                vec!["name", "path"],
-            ),
-            Kind::Rollback => (
-                "plugin_rollback",
-                "Activate the nearest earlier usable healthy generation of a registered plugin. The current generation is preserved if no usable target exists. A conflict means the registry changed while the rollback was prepared; inspect status before retrying.".into(),
-                Effect::SideEffect,
-                json!({"name": {"type": "string"}}),
+                json!({"name": {"type": "string"}, "path": {"type": "string"}, "generation": {"type": "integer", "minimum": 1}}),
                 vec!["name"],
             ),
         };
+        let mut input_schema = closed_object_schema(properties, &required);
+        if matches!(self.kind, Kind::Deploy) {
+            input_schema["oneOf"] = json!([{"required": ["path"]}, {"required": ["generation"]}]);
+        }
         ToolSpec {
             name: name.into(),
             description,
             effect,
-            input_schema: closed_object_schema(properties, &required),
+            input_schema,
         }
     }
 
@@ -78,33 +74,41 @@ impl Tool for PluginTool {
 impl PluginTool {
     async fn execute(&self, args: Map<String, Value>) -> Result<Value, Failure> {
         Ok(match self.kind {
-            Kind::Status => json!(self.registry.status().await),
+            Kind::Status => json!(self.registry.status().await.plugins),
             Kind::Deploy => {
                 let name = args::string(&args, "name")?;
-                let path = resolve_path(&self.workspace, args::string(&args, "path")?);
-                let bytes = tokio::fs::read(&path).await.map_err(|error| {
-                    args::failure(code::TOOL_FAILED, format!("{}: {error}", path.display()))
-                })?;
+                let source = match (args.get("path"), args.get("generation")) {
+                    (Some(_), None) => {
+                        let path = resolve_path(&self.workspace, args::string(&args, "path")?);
+                        PluginSource::Artifact(tokio::fs::read(&path).await.map_err(|error| {
+                            args::failure(code::TOOL_FAILED, format!("{}: {error}", path.display()))
+                        })?)
+                    }
+                    (None, Some(_)) => PluginSource::Generation(GenerationId(args::integer(
+                        &args,
+                        "generation",
+                        1,
+                        1,
+                        u64::MAX,
+                    )?)),
+                    _ => return Err(args::invalid("provide exactly one of path or generation")),
+                };
                 json!(
                     self.registry
-                        .deploy(name, bytes)
+                        .deploy(name, source)
                         .await
                         .map_err(registry_error)?
                 )
             }
-            Kind::Rollback => json!(
-                self.registry
-                    .rollback(args::string(&args, "name")?)
-                    .await
-                    .map_err(registry_error)?
-            ),
         })
     }
 }
 
 fn registry_error(error: RegistryError) -> Failure {
     let code = match &error {
-        RegistryError::UnknownPlugin(_) => code::TOOL_INVALID_ARGUMENTS,
+        RegistryError::UnknownPlugin(_) | RegistryError::UnknownGeneration(_) => {
+            code::TOOL_INVALID_ARGUMENTS
+        }
         RegistryError::Rejected { .. }
         | RegistryError::NoRollbackTarget(_)
         | RegistryError::Conflict(_) => code::PLUGIN_REJECTED,

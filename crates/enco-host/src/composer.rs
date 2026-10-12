@@ -35,7 +35,7 @@ impl Composer for FactoryComposer {
     fn compose(&self, input: &ComposeInput) -> Result<Composition, ComposeError> {
         let budget = input.profile.reply.budget;
         let mut omitted = input.context.omitted.clone();
-        let mut memory_budget = budget.context_tokens.saturating_mul(MEMORY_PERCENT) / 100;
+        let mut memory_budget = budget.context_tokens.get().saturating_mul(MEMORY_PERCENT) / 100;
         let pinned = select_memories(
             input
                 .context
@@ -64,8 +64,8 @@ impl Composer for FactoryComposer {
         let total = system_tokens
             .saturating_add(history_tokens)
             .saturating_add(encoded_tokens(&definitions)?)
-            .saturating_add(budget.max_output_tokens);
-        let window = budget.context_tokens;
+            .saturating_add(budget.max_output_tokens.get());
+        let window = budget.context_tokens.get();
         if total > window.saturating_mul(COMPACTION_TRIGGER_PERCENT) / 100 {
             if input.compactions_left > 0 {
                 let keep = window.saturating_mul(COMPACTION_TAIL_PERCENT) / 100;
@@ -87,7 +87,7 @@ impl Composer for FactoryComposer {
         Ok(Composition::Plan(ContextPlan {
             items,
             tools: input.tools.clone(),
-            max_output_tokens: Some(budget.max_output_tokens),
+            max_output_tokens: Some(budget.max_output_tokens.get()),
             omitted,
         }))
     }
@@ -339,6 +339,7 @@ fn append_instructions(
         .reply
         .budget
         .context_tokens
+        .get()
         .saturating_mul(INSTRUCTION_PERCENT)
         / 100;
     if size <= budget {
@@ -474,6 +475,7 @@ impl Compaction {
             .compaction
             .budget
             .max_output_tokens
+            .get()
             .min(COMPACTION_OUTPUT_TOKENS);
         // Estimating parts separately never undercounts their concatenation.
         let overhead = estimate_tokens(COMPACTION_PROMPT)
@@ -498,7 +500,7 @@ impl Compaction {
         history_tokens: u32,
         keep: u32,
     ) -> Option<LogPos> {
-        let window = input.profile.compaction.budget.context_tokens;
+        let window = input.profile.compaction.budget.context_tokens.get();
         let mut tail = history_tokens;
         let mut needed = self.overhead;
         let mut sizes = sizes.iter().peekable();

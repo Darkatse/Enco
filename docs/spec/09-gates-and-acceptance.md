@@ -79,14 +79,14 @@ complete: async func(settings: settings, request: request) -> result<completion,
 |---|---|---|
 | 单元 | 模块内 `#[cfg(test)]` | 只用于集成测试不易触达的纯函数边界。目前有记忆索引的 `reconcile`（同一记忆的重复节点、无法解析的 payload、rev 不一致），以及评测运行器的检验与占位符（超几何分布、分层卷积、工作日偏移，13 §8–§9） |
 | 集成 | `crates/enco-host/tests/` | Kernel + `Registry`（`ScriptedRuntime`）+ `SqliteStore`（临时目录）+ 原生工具 + `InstructionsContextSource` + `Memories`（临时目录）+ `FactoryComposer` + `ScriptedProvider` + `TestClock`。恢复、Transcript 投影、计划校验、composer 的预算与压缩、工具行为、注册表与健康门控都在这一层经过真实路径验证 |
-| 端到端 | `apps/enco/tests/` | 以子进程运行 `enco serve`（`env!("CARGO_BIN_EXE_enco")`），临时 `ENCO_HOME`，各 endpoint 与 `[embedding]` 都指向 `wiremock` 服务；经过真实的 Wasm 插件与出厂代际 |
+| 端到端 | `apps/enco/tests/` | 以子进程运行 `enco serve`（`env!("CARGO_BIN_EXE_enco")`），临时 `ENCO_HOME`，各 endpoint（包括 `[memory]` 所选的）都指向 `wiremock` 服务；经过真实的 Wasm 插件与出厂代际 |
 | 评测 | `evals/runner/tests/` | 运行器的完整流程对真实的 `enco`：路径经 `ENCO_BIN` 传入（§1）；被测模型与评判都是 `wiremock`，题目是测试目录中的小题 |
 
 测试辅助：
 
 - `ScriptedProvider`：实现 `Provider` 与 `Embedding`。按队列返回预设的 `Completion` 或 `Failure`，并记录收到的每个 `ProviderRequest` 与 `ProviderSettings`；可以在某次调用处阻塞在 barrier 上，用于模拟崩溃。`embed` 是确定性的：把文本的字符二元组做特征哈希（feature hashing）得到固定维度的向量并归一化，因此字面相近的文本向量相近；可以切换为返回 `provider.network` 失败。
 - `ScriptedRuntime`：实现 `Runtime`。按制品的字节内容决定 `load` 的结果：预先登记的字节返回带 `ScriptedProvider` 的 `Loaded`（可以设定 probe 的结果、是否导出 embedding），其余返回 `LoadError`。健康门控的故障注入就是让某个代际的 `ScriptedProvider` 返回 `plugin.trap`，不需要真的构造会 trap 的组件。
-- `TestClock`：`Clock` 的实现，时刻可以设置。主人的时区由 `KernelConfig.timezone` 给出。
+- `TestClock`：`Clock` 的实现，时刻可以设置。主人的时区来自配置代际的 `[owner]`（12 §1）。
 - **端到端测试中的等待**：测试辅助中写一个最小的本地协议客户端，订阅 Session 并等待期望的条目（例如 `RunEnded`），外加总超时；不要用固定时长的 sleep 或轮询代替。
 - **进程内模拟 `kill -9`**：Kernel 和 Session actor 都在独立的 tokio runtime 内创建；在注入点阻塞后调用 `runtime.shutdown_background()`，用 Drop 通知确认执行中的 future 已被丢弃，之后才释放 Kernel 句柄，避免误走正常取消结算；然后在同一个数据库上启动新的 Kernel，检查恢复写入的条目。
 
@@ -96,10 +96,19 @@ complete: async func(settings: settings, request: request) -> result<completion,
 
 里程碑开始时，计划中的验收写成下表的场景，"层"指主要在哪一层验证。验收通过后，这些场景原样移入[存档](../history/milestones.md)，编号延续。
 
-当前实现已到 M20，下一个里程碑是 M21（[计划](../plan/M21.md)）。schema 版本为 4，旧库由 Agent 按 03 §3.1 手动迁移或重建。
+M21（[计划](../plan/M21.md)）已实现，待主人审核。当前数据格式见 03 §3.1。
 
 | # | 里程碑 | 场景 | 层 | 必须观察到 |
 |---|---|---|---|---|
+| A76 | M21 | 首次登记 | 集成 | 空库启动：`config.toml` 登记为第一个配置代际，`enco status` 中活跃配置代际是它；首次登记没有发出任何模型请求；再次启动不新增配置代际；全新 home 的 `config.toml` 无效：拒绝启动，错误指明是哪一张表 |
+| A77 | M21 | 每张表的归属者 | 集成 | 缺少 `[owner] timezone`、profile 所选的 endpoint 没有写窗口、`[memory] embedding` 所选的 endpoint 没有写维度、出现不属于任何归属者的表（包括 `[plugin.web.config]`）：应用配置各自被拒绝，错误指明那一张表，不登记任何代际 |
+| A78 | M21 | 真实调用 | 集成 | 回复 endpoint 的模型名改成 mock 拒绝的名字：整次被拒绝，错误指出那个 endpoint；回复 endpoint 换成拒绝带工具请求的服务：被拒绝；只改压缩 endpoint：只对它发一次不带工具的请求；没有改变的 endpoint 不被请求；结果的 `probes` 列出每次调用 |
+| A79 | M21 | 应用后生效 | 集成 | 改了 profile 所选的 endpoint：下一个 Round 的 `AttemptStarted.settings` 是新的，正在进行的 Round 不受影响，不重启；改了 `[owner] timezone`：不重启，跟随型定时按新时区推算（与 A55 的期望相同）；改了 `[memory] relevance`：下一次召回用新的 endpoint；改了 `[memory] embedding` 所选 endpoint 的模型，或只改它的 `base_url`：都不重启，下一次召回前索引按新的身份重建，`index.json` 记录新的身份；只改 endpoint 的 `api_key_env`：索引不重建；改了 `[telegram] api_base`：不重启，渠道停止后按新表连接，之后的消息经新的地址收发 |
+| A80 | M21 | 在用的 profile | 集成 | 删掉一个仍有 Session 在用的 profile 再应用：整次被拒绝，错误列出这些 Session；用 `enco profile` 切走之后重新应用，成功 |
+| A81 | M21 | 期望的活跃代际 | 集成 | 用确定性协调拖住应用配置的真实调用：期间同一插件部署了新代际，应用配置返回 `Conflict`，什么都不写；期间一个试用代际晋升，应用照常成功。同一插件的两次部署交错提交：后提交者 `Conflict`，活跃的是先提交的那条 |
+| A82 | M21 | 重启只恢复 | 集成 | 改了 `config.toml` 但没有应用就重启：活跃配置代际不变，启动日志与 `enco status` 报出 `unapplied`；`config.toml` 写坏后重启：节点照常启动；去掉某个 endpoint 的环境变量后重启：节点照常启动，用到它的调用以 `credential.unavailable` 结束；`[telegram]` 的 token 缺失：渠道不启动，`status.channels` 的 `stopped` 写明原因；活跃配置代际中的 `[memory]` 在当前宿主下解析不了（测试直接写入库）：节点照常启动，`status.config.invalid` 列出这张表，召回不使用索引（06 §3.2），应用一份有效的配置之后恢复 |
+| A83 | M21 | 撤销也是登记 | 集成 | `plugin_deploy` 以代际编号重新部署：新代际的制品与那个代际相同，状态为 `trial`；`config_apply` 以上一个代际的编号 N 重新应用：产生一条新的配置代际，文档与代际 N 相同，`config.toml` 不变，`enco status` 报出 `superseded` 并写明新代际重新登记了 N；把 `config.toml` 改回之后不一致消失；`enco config rollback` 回到上一个配置代际，`enco status` 报出 `superseded`，原因是机械回退；救生集中有 `config_apply`，没有 `plugin_rollback` |
+| A84 | M21 | 真实配置 | 手动一次 | 在 Telegram 中经 `config_apply` 换一次压缩模型并对话，再按 A83 的方式撤销 |
 
 ## 5. 每个里程碑的完成条件
 

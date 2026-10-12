@@ -124,6 +124,11 @@ impl Arguments {
 
 /// Stable failure codes shared with WIT plugins.
 pub mod code {
+    /// A registered configuration table is invalid for the current host.
+    pub const CONFIG_INVALID: &str = "config.invalid";
+    /// An intentional configuration registration failed validation or lost a commit race.
+    pub const CONFIG_REJECTED: &str = "config.rejected";
+
     /// No active generation exports the caller's required interface.
     pub const PLUGIN_UNAVAILABLE: &str = "plugin.unavailable";
     /// An explicit deployment or rollback could not be accepted.

@@ -16,8 +16,6 @@ pub trait Store: Send + Sync {
     async fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError>;
     /// Read the metadata sampled by the Session actor at each Round boundary.
     async fn session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError>;
-    /// Select the profile name to use from the next Round onward.
-    async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError>;
     /// Look up a Session without creating it.
     async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError>;
     /// Create if absent, with local binding at epoch one and the default profile.
@@ -67,7 +65,9 @@ pub trait Store: Send + Sync {
         event: &Event,
     ) -> Result<(), StoreError>;
 
-    // ---- Plugin identity and generations (writer: Registry)
+    // ---- Identity, generations and wiring (writer: Registry)
+    /// Select the profile under the registry committer, effective at the next Round.
+    async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError>;
     /// Read the authoritative name-to-identity mapping from plugins.lock.
     async fn plugin_names(&self) -> Result<BTreeMap<String, PluginId>, StoreError>;
     /// Register a new name before any generation is committed for its identity.
@@ -80,6 +80,14 @@ pub trait Store: Send + Sync {
         generation: &NewGeneration,
         activate: bool,
     ) -> Result<GenerationId, StoreError>;
+    /// Register and activate a configuration document in one transaction.
+    async fn insert_config_generation(
+        &self,
+        document: &serde_json::Value,
+        created_at: DateTime<Utc>,
+    ) -> Result<GenerationId, StoreError>;
+    /// Activate a previously registered configuration.
+    async fn activate_config(&self, generation: GenerationId) -> Result<(), StoreError>;
     /// Promote a trial generation after successful observation.
     async fn promote(&self, generation: GenerationId) -> Result<(), StoreError>;
     /// Commit each failed generation with its reason, routing and an optional notice atomically.
@@ -119,6 +127,10 @@ pub struct RegistryState {
     pub generations: Vec<GenerationRecord>,
     /// Active generations; a missing plugin has no active generation.
     pub active: BTreeMap<PluginId, GenerationId>,
+    /// Configuration history in registry order.
+    pub config_generations: Vec<ConfigGeneration>,
+    /// Active configuration; absent until first registration.
+    pub active_config: Option<GenerationId>,
 }
 
 /// A generation awaiting its registry-assigned sequence number.

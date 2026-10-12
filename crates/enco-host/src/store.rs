@@ -17,7 +17,7 @@ use std::{
 
 /// `PRAGMA user_version` covers SQLite and its referenced plans. Until P4, persistent
 /// format changes bump it and existing databases are migrated by hand.
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 const SESSION_COLUMNS: &str = "id,name,created_at,binding_node,binding_epoch,profile";
 const SCHEDULE_COLUMNS: &str = "id,session_id,rule,message,created_at,state,last_due,last_event_id";
 
@@ -495,6 +495,23 @@ impl Store for SqliteStore {
     ) -> Result<GenerationId, StoreError> {
         let generation = generation.clone();
         self.run(move |connection| registry::insert(connection, &generation, activate))
+            .await
+    }
+
+    async fn insert_config_generation(
+        &self,
+        document: &serde_json::Value,
+        created_at: DateTime<Utc>,
+    ) -> Result<GenerationId, StoreError> {
+        let document = document.clone();
+        self.run(move |connection| {
+            registry::insert_config_generation(connection, &document, created_at)
+        })
+        .await
+    }
+
+    async fn activate_config(&self, generation: GenerationId) -> Result<(), StoreError> {
+        self.run(move |connection| registry::activate_config(connection, generation))
             .await
     }
 

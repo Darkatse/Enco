@@ -146,7 +146,7 @@ async fn aborted_provider_request_is_settled_without_automatic_resumption() {
     }));
     assert!(
         !log.iter()
-            .any(|e| { matches!(e.body, EntryBody::ToolCallStarted { .. }) })
+            .any(|entry| matches!(entry.body, EntryBody::ToolCallStarted { .. }))
     );
     assert!(next.requests.lock().unwrap().is_empty());
     let mut rx = kernel.subscribe(session.id).unwrap();
@@ -311,6 +311,7 @@ async fn safe_mode_bypasses_broken_context_and_normal_mode_can_resume() {
             "schedule_create",
             &serde_json::json!({ "at": at, "message": "must not be created" }).to_string(),
         )]),
+        calls(vec![call("config_apply", "{}")]),
         reply("safe"),
         reply("normal"),
     ]);
@@ -329,6 +330,13 @@ async fn safe_mode_bypasses_broken_context_and_normal_mode_can_resume() {
             ..
         }
     ));
+    let mut document = configuration();
+    document["run"] = serde_json::json!({"max_rounds": 30});
+    std::fs::write(
+        dir.path().join("config.toml"),
+        toml::to_string(&document).unwrap(),
+    )
+    .unwrap();
     kernel.set_safe_mode(true).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "repair".into())
@@ -345,9 +353,23 @@ async fn safe_mode_bypasses_broken_context_and_normal_mode_can_resume() {
         )
     }));
     assert!(kernel.schedules().list(None).await.unwrap().is_empty());
-    assert!(
-        !log.iter()
-            .any(|e| { matches!(e.body, EntryBody::ToolCallStarted { .. }) })
+    assert_eq!(
+        log.iter()
+            .filter(|entry| matches!(entry.body, EntryBody::ToolCallStarted { .. }))
+            .count(),
+        1
+    );
+    assert!(log.iter().any(|entry| matches!(&entry.body,
+        EntryBody::ToolCallSettled { outcome: Settlement::Ok, content, .. } if serde_json::from_str::<serde_json::Value>(content).unwrap()["unchanged"] == false)));
+    assert_eq!(
+        kernel
+            .registry()
+            .view()
+            .config
+            .kernel
+            .max_rounds_per_run
+            .get(),
+        30
     );
     assert!(log.iter().any(|entry| match &entry.body {
         EntryBody::ToolCallSettled {
@@ -370,6 +392,9 @@ async fn safe_mode_bypasses_broken_context_and_normal_mode_can_resume() {
             .map(|(_, t)| t.name.as_str())
             .collect::<Vec<_>>(),
         enco_host::LIFELINE
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>()
     );
     std::fs::write(dir.path().join("AGENTS.md"), "Call the owner River.").unwrap();
     kernel.set_safe_mode(false).await.unwrap();

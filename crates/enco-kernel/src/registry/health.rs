@@ -12,28 +12,34 @@ impl Registry {
         let (name, plugin, candidates, failure) = {
             let mut state = self.state.lock().await;
             let record = state
+                .plugins
                 .generations
                 .get(&generation)
                 .ok_or(StoreError::UnknownGeneration(generation))?;
             let plugin = record.plugin;
             if record.status != GenerationStatus::Trial
-                || state.active.get(&plugin) != Some(&generation)
+                || state.plugins.active.get(&plugin) != Some(&generation)
             {
                 return Ok(None);
             }
             let failure = match verdict {
                 Verdict::Ok => {
-                    let successes =
-                        state.trial_successes.get(&generation).copied().unwrap_or(0) + 1;
+                    let successes = state
+                        .plugins
+                        .trial_successes
+                        .get(&generation)
+                        .copied()
+                        .unwrap_or(0)
+                        + 1;
                     if successes == crate::TRIAL_CALLS {
                         self.store.promote(generation).await?;
                         // The record was checked above and the commit lock is still held.
-                        if let Some(record) = state.generations.get_mut(&generation) {
+                        if let Some(record) = state.plugins.generations.get_mut(&generation) {
                             record.status = GenerationStatus::Healthy;
                         }
                         self.publish(&mut state);
                     } else {
-                        state.trial_successes.insert(generation, successes);
+                        state.plugins.trial_successes.insert(generation, successes);
                     }
                     return Ok(None);
                 }
@@ -47,8 +53,13 @@ impl Registry {
                 }
                 Verdict::Failed(_) => return Ok(None),
             };
-            let name = state.name_of(plugin)?.to_owned();
-            (name, plugin, state.candidates(plugin, generation), failure)
+            let name = state.plugins.name_of(plugin)?.to_owned();
+            (
+                name,
+                plugin,
+                state.plugins.candidates(plugin, generation),
+                failure,
+            )
         };
         match self
             .activate(

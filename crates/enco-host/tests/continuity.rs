@@ -251,31 +251,6 @@ async fn small_window_compaction_preserves_context_across_restart() {
         message: "request rejected".into(),
         retryable: false,
     }));
-    let (embedding_registry, _) = registry(
-        &dir.path().join("embedding-registry"),
-        Loaded {
-            lifecycle: Arc::new(Probe(Ok(()))),
-            summary: "embedding".into(),
-            config_schema: serde_json::json!({}),
-            credential: None,
-            completion: None,
-            embedding: Some(provider.clone()),
-            decision: None,
-        },
-    )
-    .await;
-    let memories = Memories::open(
-        MemoryPaths {
-            db: dir.path().join("memory.db"),
-            index: dir.path().join("memory-index"),
-        },
-        embedding_endpoint("fixture", 64),
-        embedding_registry,
-        Arc::new(SystemClock),
-    )
-    .await
-    .unwrap();
-    memories.save("Owner is River".into(), true).await.unwrap();
     let clock = Arc::new(TestClock(Mutex::new(
         DateTime::parse_from_rfc3339("2026-09-29T09:00:00-04:00")
             .unwrap()
@@ -283,28 +258,18 @@ async fn small_window_compaction_preserves_context_across_restart() {
     )));
     let timestamp = "2026-09-29 09:00";
     let compaction_window = 2500;
-    let configure = |deps: &mut KernelDeps| {
-        deps.clock = clock.clone();
-        deps.context
-            .push(Arc::new(MemoryContextSource::new(memories.clone(), None)));
-        deps.tools.extend(memory_tools(memories.clone()));
-        let profile = deps.profiles.get_mut("default").unwrap();
-        profile.reply.budget = Budget {
-            context_tokens: 6000,
-            max_output_tokens: 256,
-        };
-        profile.compaction.budget = Budget {
-            context_tokens: compaction_window,
-            max_output_tokens: 512,
-        };
-    };
-    let (kernel, _) = kernel_with(
-        dir.path(),
-        provider.clone(),
-        Tz::America__New_York,
-        configure,
-    )
-    .await;
+    let mut document = configuration();
+    document["owner"]["timezone"] = serde_json::json!(Tz::America__New_York);
+    document["endpoint"]["reply"]["window_tokens"] = 6000.into();
+    document["endpoint"]["reply"]["max_output_tokens"] = 256.into();
+    document["endpoint"]["compaction"]["window_tokens"] = compaction_window.into();
+    document["endpoint"]["compaction"]["max_output_tokens"] = 512.into();
+    let (kernel, memories) =
+        kernel_with_memory(dir.path(), provider.clone(), document.clone(), |deps| {
+            deps.clock = clock.clone();
+        })
+        .await;
+    memories.save("Owner is River".into(), true).await.unwrap();
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
@@ -368,12 +333,10 @@ async fn small_window_compaction_preserves_context_across_restart() {
         .expect("history did not compact");
     kernel.shutdown().await.unwrap();
     drop(kernel);
-    let (kernel, _) = kernel_with(
-        dir.path(),
-        provider.clone(),
-        Tz::America__New_York,
-        configure,
-    )
+    drop(memories);
+    let (kernel, _memories) = kernel_with_memory(dir.path(), provider.clone(), document, |deps| {
+        deps.clock = clock.clone();
+    })
     .await;
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
@@ -477,16 +440,15 @@ async fn recurring_schedules_resume_from_last_delivery_and_follow_the_owner_zone
         )
         .await
         .unwrap();
-    kernel.shutdown().await.unwrap();
-    drop(kernel);
-
-    // A westward zone change uses the same catch-up rule; an explicit zone stays fixed.
+    // A live westward change uses the same catch-up rule; an explicit zone stays fixed.
     *clock.0.lock().unwrap() = "2026-03-10T16:00:00Z".parse().unwrap();
-    let (kernel, _) = kernel_with(dir.path(), provider, Tz::America__Los_Angeles, |deps| {
-        deps.clock = clock.clone()
-    })
-    .await;
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut document = kernel.registry().view().config.document.clone();
+    document["owner"]["timezone"] = json!(Tz::America__Los_Angeles);
+    kernel
+        .registry()
+        .apply_config(ConfigSource::Document(document))
+        .await
+        .unwrap();
     finish(&mut rx).await;
     assert_eq!(
         kernel

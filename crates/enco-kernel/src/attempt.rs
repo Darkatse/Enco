@@ -46,7 +46,8 @@ impl SessionActor {
             let export = self
                 .deps
                 .registry
-                .exports()
+                .view()
+                .exports
                 .completion(&endpoint.plugin, safe_mode)
                 .map_err(|failure| RoundError::Ended(RoundEnd::Failed { failure }))?;
             let attempt = AttemptId::new();

@@ -1,7 +1,6 @@
 mod chat;
 mod client;
 mod compose_root;
-mod config;
 mod daemon;
 mod paths;
 mod protocol;
@@ -9,7 +8,7 @@ mod send;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
-use enco_core::{AttemptId, EventId, MemoryId, ScheduleId};
+use enco_core::{AttemptId, EventId, GenerationId, MemoryId, ScheduleId};
 use paths::Paths;
 use protocol::Command;
 use std::path::{Path, PathBuf};
@@ -28,6 +27,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    Config {
+        #[command(subcommand)]
+        command: ConfigAction,
+    },
     Plugin {
         #[command(subcommand)]
         command: PluginAction,
@@ -81,8 +84,25 @@ enum Action {
 #[derive(Subcommand)]
 enum PluginAction {
     Status,
-    Deploy { name: String, path: PathBuf },
-    Rollback { name: String },
+    Deploy {
+        name: String,
+        #[arg(required_unless_present = "generation", conflicts_with = "generation")]
+        path: Option<PathBuf>,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        generation: Option<u64>,
+    },
+    Rollback {
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    Apply {
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        generation: Option<u64>,
+    },
+    Rollback,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -102,11 +122,25 @@ async fn main() -> Result<()> {
     let command = match cli.command {
         Action::Plugin { command } => match command {
             PluginAction::Status => Command::PluginStatus {},
-            PluginAction::Deploy { name, path } => Command::PluginDeploy {
+            PluginAction::Deploy {
                 name,
-                path: std::path::absolute(path)?,
+                path,
+                generation,
+            } => Command::PluginDeploy {
+                name,
+                source: match (path, generation) {
+                    (Some(path), None) => protocol::DeploySource::Path(std::path::absolute(path)?),
+                    (None, Some(id)) => protocol::DeploySource::Generation(GenerationId(id)),
+                    _ => anyhow::bail!("provide exactly one of path or generation"),
+                },
             },
             PluginAction::Rollback { name } => Command::PluginRollback { name },
+        },
+        Action::Config { command } => match command {
+            ConfigAction::Apply { generation } => Command::ConfigApply {
+                generation: generation.map(GenerationId),
+            },
+            ConfigAction::Rollback => Command::ConfigRollback {},
         },
         Action::Init => return init(&paths).await,
         Action::Serve => {

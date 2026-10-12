@@ -13,13 +13,13 @@
    └────────────────────────────────────────────────────────────────────────┘
                                         │ embed
                                         ▼
-            Embedding 端口（导出表中 [embedding].plugin 的活跃代际，11 §4.2）→ Wasm 插件 → /embeddings
+            Embedding 端口（[memory] embedding 所选 endpoint 的插件的活跃代际，11 §4.2）→ Wasm 插件 → /embeddings
 ```
 
 全部机制都从下面三条规则推出。遇到规格没有写到的情况，先回到这三条。
 
 1. **归属**：记忆跨 Session 共享，是可变状态，由唯一的归属者 `Memories` 管理（架构文档 §3.6 规则一）。它与 Scheduler 管理提醒是同一个模式：主人的 CLI 命令与 Agent 的工具调用走同一组方法。
-2. **权威与派生**：`memory.db` 是权威。TriviumDB 索引是权威的函数：打开时与每次召回前，都用同一个对账函数比较两者并补齐差异，所以不需要在任何地方记住"哪些还没进索引"。对索引有任何疑问（打不开、embedding 模型或维度变了），就删掉重建，不做修补。
+2. **权威与派生**：`memory.db` 是权威。TriviumDB 索引是权威与 embedding 身份的函数：每次召回前，都用同一个对账函数比较两者并补齐差异，所以不需要在任何地方记住"哪些还没进索引"。对索引有任何疑问（打不开、视图中 embedding 的身份与索引不同），就删掉重建，不做修补。
 3. **索引提名，权威裁决**：检索命中的每一条，都回到权威读取当前内容之后才能返回；权威中已经不存在的命中直接丢弃。因此过期的索引只影响召回质量，永远不会让已经更正或遗忘的内容重新出现。
 
 ## 2. 权威：memory.db（`memory/authority.rs`）
@@ -47,7 +47,7 @@ CREATE TABLE memories (
 
 ### 3.1 形态
 
-- 目录 `$ENCO_HOME/.data/memory-index/`，其中是 `memory.tdb`（以及 TriviumDB 自己的附属文件）和 `index.json`：`{"model": "...", "dimensions": n}`，记录建索引时使用的 embedding 模型。
+- 目录 `$ENCO_HOME/.data/memory-index/`，其中是 `memory.tdb`（以及 TriviumDB 自己的附属文件）和 `index.json`：建索引时的身份 `{"base_url", "model", "options", "dimensions"}`（§7）。
 - 打开：`Database::<f32>::open_with_config(path, Config { dim: dimensions, load_text_index: false, ..Default::default() })`，其余保持默认。**不要**调用 `enable_auto_compaction`（它会启动后台线程）。
 - 每条记忆对应一个节点：向量是记忆文本的 embedding，payload 是 `{"memory": "<MemoryId>", "rev": n}`。节点 ID 由 TriviumDB 分配，只在索引内部有意义，不出现在索引之外。
 - 内存中维护 `nodes: HashMap<MemoryId, IndexedMemory>`，`IndexedMemory { node, rev }` 明确区分索引节点与权威修订号，打开时从 payload 重建。
@@ -58,22 +58,27 @@ CREATE TABLE memories (
 
 ### 3.2 打开与对账
 
+索引的身份是视图中 `[memory] embedding` 所选 endpoint 的 `identity()`（§7）。`sync`（§3.3）每次先取当前视图的身份；与已打开索引的身份不同，或者还没有打开索引时，按下面的流程打开：
+
 ```text
-open():
-    if index.json 不存在，或与配置的 (model, dimensions) 不一致:
+open_index(identity):
+    if index.json 不存在，或与 identity 不一致:
         删除整个目录，重新创建，写入 index.json
-    db = 打开 memory.tdb；失败则删除目录并重建一次；再失败返回 MemoryError::Index
+    db = 打开 memory.tdb；被另一个进程占用时返回 MemoryError::Index；其他失败删除目录并重建一次，再失败返回 MemoryError::Index
     active = 权威中全部记忆的 (id, rev, text)
     r = reconcile(active 的 (id, rev), 索引中每个节点的 (NodeId, 解析出的 (MemoryId, rev) 或 None))
     删除 r.delete 中的节点；nodes = r.keep
     for 每个保留的节点: index_text(节点, 权威中的文本)
     build_text_index(); flush()
-    重复 sync(None)，直到 unindexed 为空、没有进展或某一次失败
 ```
 
-`flush()` 只在打开时调用：运行期间的写入留在 TriviumDB 的 WAL 中，下次打开时由它自己回放。
+`Memories::open` 打开权威，然后重复 `sync(None)`，直到 unindexed 为空、没有进展或某一次失败；第一次 `sync` 就打开了索引。所以启动与改了 `[memory] embedding` 走同一条路：身份变了，索引删掉重建，全部记忆按批重新进入索引，期间它们按 §4 直接出现在召回结果中。
+
+`flush()` 只在打开索引时调用：运行期间的写入留在 TriviumDB 的 WAL 中，下次打开时由它自己回放。
 
 embedding 服务不可用时照常打开，未进入索引的记忆在召回时直接纳入（§4）。守护进程不因此拒绝启动。
+
+`[memory]` 在当前视图中解析不了（11 §4.1）时，`sync` 不改变已打开的索引，不发 embedding 请求，以 `config.invalid` 失败，召回退化为只按文本检索；还没有打开过索引时，召回只返回未进入索引的记忆。
 
 ### 3.3 对账（`reconcile` 与 `sync`）
 
@@ -89,6 +94,9 @@ reconcile(active: [(MemoryId, rev)], nodes: [(NodeId, Option<(MemoryId, rev)>)])
 
 ```text
 sync(query: Option<&str>, cancel) -> Result<Synced, MemoryError>
+    settings = 当前视图的记忆设置（§7）；解析不了时按 §3.2 以 config.invalid 结束
+    if 索引没有打开，或身份与 settings.embedding 的不同: open_index(身份)（§3.2）
+    endpoint = settings.embedding
     active = 权威中全部记忆的 (id, rev)，由权威查询按 updated_at 从新到旧、id 打破同时间并列
     r = reconcile(active, nodes)
     删除 r.delete 中的节点
@@ -106,7 +114,7 @@ sync(query: Option<&str>, cancel) -> Result<Synced, MemoryError>
 
 `reported_call` 是记忆调用插件的唯一路径，相关性过滤（§5.1）也用它：导出按调用解析（11 §4.2），解析失败即 `plugin.unavailable`；调用可以被 cancel 打断，失败不重试；结束后向注册表回报（11 §7，只有 `plugin.trap` 与 `plugin.contract` 计入健康）；已取消就返回 `Cancelled`。
 
-嵌入插件部署了新代际，下一次 `sync` 就用新代际，与内核的 Attempt 按调用解析是同一条规则。回报触发回退时，注册表记下失败原因（11 §7）。记忆没有来源 Session，所以不投递通知，原因在 `plugin_status` 里查看。
+嵌入插件的新代际与 `[memory] embedding` 的新 endpoint，都从下一次 `sync` 起使用。回报触发回退时，注册表记下失败原因（11 §7）。记忆没有来源 Session，所以不投递通知，原因在 `plugin_status` 里查看。
 
 数量、向量非空、维度彼此一致与数值有限属于 `Embedding` 的返回契约，由运行时边界核对（07 §3.3）。Memories 只核对索引配置的目标维度；配置不匹配不能据此把插件标为失败。
 
@@ -146,7 +154,7 @@ Memories::recall(query: &str, limit: usize, cancel) -> Result<Recall, MemoryErro
 2. `recall(query, MEMORY_RECALL_DEFAULT)` 的 `memories`，去掉置顶的，`standing: false`。
 3. `recall` 的 `unindexed`，去掉置顶的，`standing: false`。
 
-配置了 `[decision]` 时，第 2、3 项先经过相关性过滤（§5.1）。
+`[memory]` 写了 `relevance` 时，第 2、3 项先经过相关性过滤（§5.1）。
 
 每个候选为 `Candidate { id: "memory:<MemoryId>", kind: Memory, text, standing }`。
 
@@ -156,23 +164,14 @@ Memories::recall(query: &str, limit: usize, cancel) -> Result<Recall, MemoryErro
 
 ### 5.1 相关性过滤（`memory/relevance.rs`）
 
-检索按相似度取前 `limit` 条，其中可能有与输入无关的记忆。配置了 `[decision]`（08 §3）时，召回之后用一次 `decide` 判断每条记忆是否与输入相关。只过滤自动召回：`memory_search` 的结果由 Agent 自己判断，置顶记忆总是提供。
+检索按相似度取前 `limit` 条，其中可能有与输入无关的记忆。`[memory]` 写了 `relevance`（§7）时，召回之后用一次 `decide` 判断每条记忆是否与输入相关。只过滤自动召回：`memory_search` 的结果由 Agent 自己判断，置顶记忆总是提供。
 
-```rust
-/// 来自配置的 [decision]（08 §3）。
-pub struct DecisionEndpoint { pub plugin: String, pub settings: ProviderSettings }
-
-pub struct Relevance { endpoint: DecisionEndpoint, registry: Arc<Registry> }
-pub struct Filtered { pub kept: Vec<Memory>, pub omitted: Vec<Omission> }
-
-impl Relevance {
-    pub fn new(endpoint: DecisionEndpoint, registry: Arc<Registry>) -> Self;
-    pub async fn filter(&self, query: &str, recalled: Vec<Memory>, cancel: &CancellationToken) -> Result<Filtered, MemoryError>;
-}
-```
+相关性过滤是 `Memories::filter_relevance`，由 `MemoryContextSource` 在召回后调用，与 `sync` 共用记忆的设置（§7）。
 
 ```text
-filter(query, recalled, cancel)
+filter_relevance(query, recalled, cancel)
+    endpoint = 当前视图的记忆设置（§7）中的 relevance；设置解析不了时全部保留，记一条省略
+    if endpoint 为空: return Filtered { kept: recalled, omitted: [] }      // 没有写 relevance，不过滤
     if recalled 为空: return Filtered { kept: [], omitted: [] }
     questions = 每条记忆一个 Predicate，instructions 为 RELEVANCE_QUESTION 填入记忆内容
     结果 = reported_call(exports.decision(endpoint.plugin), decide(&endpoint.settings, query, questions))   // 与 §3.3 的 embed 同一条路径
@@ -196,6 +195,7 @@ Memory: {记忆内容}
 - 判为无关：`Omission { source: "memory:<MemoryId>", reason: "judged irrelevant to the input (p={概率，两位小数})" }`。
 - 判断失败：`Omission { source: "memory:relevance", reason: "decision failed ({code}): {message}; recalled memories were not filtered" }`。
 - 有答案为 Refused：`Omission { source: "memory:relevance", reason: "decision refused {n} memories; they were kept" }`。
+- 设置解析不了：`Omission { source: "memory:relevance", reason: "config.invalid: {错误}; recalled memories were not filtered" }`。
 
 判断失败只让召回变宽，与 `lexical_only` 相同，Round 照常进行。
 
@@ -225,15 +225,36 @@ pub fn memory_tools(memories: Arc<Memories>) -> Vec<Arc<dyn Tool>>;
 pub struct Memories { /* 见下 */ }
 
 pub struct MemoryPaths { pub db: PathBuf, pub index: PathBuf }
-/// 来自配置的 [embedding]（08 §3）：哪个插件、什么参数、什么维度。索引的身份是 (settings.model, dimensions)。
-pub struct EmbeddingEndpoint { pub plugin: String, pub settings: ProviderSettings, pub dimensions: usize }
+// 以下配置类型位于 memory/settings.rs，只供记忆模块内部使用。
+/// [memory] embedding 所选的 endpoint：哪个插件、什么参数、什么维度。
+pub(super) struct EmbeddingEndpoint { pub endpoint: Endpoint, pub dimensions: NonZeroUsize }
+
+impl EmbeddingEndpoint {
+    /// 索引的身份：决定向量空间的全部定义，即 `base_url`、`model`、`options` 与 `dimensions`。
+    /// `options` 整体纳入，因为宿主不解读它，无法知道哪一项影响向量空间；多重建一次是安全的，混用两种向量空间不是。
+    /// 不含 endpoint 的名字与 `api_key_env`，它们不改变向量；也不含插件，`embedding` 的契约是返回服务给出的向量，插件只翻译协议。
+    pub fn identity(&self) -> serde_json::Value;
+}
+
+/// [memory] 的解析结果。两种使用者共用 `Endpoint`，按名字由 `KernelSettings::endpoint` 解析（12 §1）。
+pub(super) struct MemorySettings { pub embedding: EmbeddingEndpoint, pub relevance: Option<Endpoint> }
+
+impl MemorySettings {
+    /// 解析 [memory]。`embedding` 必填，所选 endpoint 必须写了 `dimensions`；`relevance` 可选，所选 endpoint 必须存在。
+    fn from_document(document: &serde_json::Value, kernel: &KernelSettings) -> Result<MemorySettings, SettingsError>;
+    /// 接线（11 §6）：memory.embedding 声明 `Need::Embedding { dimensions }`，memory.relevance 声明 `Need::Decision`。
+    fn uses(&self) -> Vec<Use>;
+}
+
+/// 交给注册表的归属者（11 §4）：`tables = ["memory"]`，`declare` 是 `from_document` 之后取 `uses()`。
+pub const TABLE_OWNER: TableOwner;
 
 pub struct Recall { pub memories: Vec<Memory>, pub unindexed: Vec<Memory>, pub lexical_only: Option<Failure> }
 pub struct MemoryList { pub memories: Vec<Memory>, pub unindexed: Vec<MemoryId> }
 
 impl Memories {
-    /// 打开权威与索引并完成对账（§3.2）。嵌入适配器不在这里固定，每次 sync 从注册表的导出表取（§3.3）。
-    pub async fn open(paths: MemoryPaths, endpoint: EmbeddingEndpoint, registry: Arc<Registry>, clock: Arc<dyn Clock>) -> Result<Arc<Memories>, MemoryError>;
+    /// 打开权威，并按 §3.2 完成第一次对账。endpoint、索引身份与嵌入适配器都在每次 sync 时从视图取（§3.3）。
+    pub async fn open(paths: MemoryPaths, registry: Arc<Registry>, clock: Arc<dyn Clock>) -> Result<Arc<Memories>, MemoryError>;
     pub async fn save(&self, text: String, pinned: bool) -> Result<Memory, MemoryError>;
     /// 记忆不存在时返回 None。
     pub async fn update(&self, id: MemoryId, text: Option<String>, pinned: Option<bool>) -> Result<Option<Memory>, MemoryError>;
@@ -260,7 +281,9 @@ pub enum MemoryError {
 }
 ```
 
-内部状态只有两份：权威连接；`index: Arc<tokio::sync::Mutex<MemoryIndex>>`（TriviumDB 与内存中的 `nodes`），`sync` 与检索期间一直持有，用 `lock_owned()` 把守卫移进 `spawn_blocking`。写入只用权威连接，不必等待正在进行的召回。
+内部状态只有两份：权威连接；`index: Arc<tokio::sync::Mutex<Option<MemoryIndex>>>`（还没有打开时为空；打开后是身份、TriviumDB 与内存中的 `nodes`），`sync` 与检索期间一直持有，用 `lock_owned()` 把守卫移进 `spawn_blocking`。写入只用权威连接，不必等待正在进行的召回。
+
+记忆的设置是 `MemorySettings::from_document(&view.config.document, &view.config.kernel)`，按配置代际的编号缓存，`sync` 与相关性过滤共用；缓存随时可以丢弃重算，不算状态。
 
 运行期间 TriviumDB 的操作出错时返回 `MemoryError::Index`，不做就地修复：删除 `memory-index/` 目录永远是安全的，下次启动会重建。
 

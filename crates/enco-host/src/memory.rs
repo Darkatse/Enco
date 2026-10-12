@@ -2,15 +2,17 @@ mod authority;
 mod context;
 mod index;
 mod relevance;
+mod settings;
 mod tools;
 
 use crate::limits::EMBED_BATCH;
 use authority::Authority;
 pub use context::MemoryContextSource;
 use enco_core::*;
-use enco_kernel::{Clock, Export, Registry, RegistryError, Verdict};
+use enco_kernel::{Clock, Export, Registry, RegistryError, Verdict, View};
 use index::MemoryIndex;
-pub use relevance::{DecisionEndpoint, Relevance};
+pub use settings::TABLE_OWNER;
+use settings::{EmbeddingEndpoint, SettingsCache};
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
@@ -20,17 +22,6 @@ pub use tools::memory_tools;
 pub struct MemoryPaths {
     pub db: PathBuf,
     pub index: PathBuf,
-}
-
-/// Configured embedding caller. The adapter is resolved for each synchronization call.
-#[derive(Clone)]
-pub struct EmbeddingEndpoint {
-    /// Registered plugin whose embedding interface is used.
-    pub plugin: String,
-    /// Durable service parameters, excluding the credential itself.
-    pub settings: ProviderSettings,
-    /// Expected vector width, paired with the model name to identify the derived index.
-    pub dimensions: usize,
 }
 
 /// Current authority records nominated by the index, plus recent unindexed records.
@@ -68,10 +59,24 @@ pub enum MemoryError {
 /// Sole entry point for memory writes and recall. The index never owns memory content.
 pub struct Memories {
     authority: Authority,
-    index: Arc<Mutex<MemoryIndex>>,
-    embedding: EmbeddingEndpoint,
+    index: Arc<Mutex<Option<MemoryIndex>>>,
+    index_path: PathBuf,
+    settings: SettingsCache,
     registry: Arc<Registry>,
     clock: Arc<dyn Clock>,
+}
+
+/// Keep the lock with blocking work; on failure, close the index before releasing the slot.
+struct OpenIndex {
+    index: MemoryIndex,
+    slot: OwnedMutexGuard<Option<MemoryIndex>>,
+}
+
+impl OpenIndex {
+    fn into_guard(mut self) -> OwnedMutexGuard<Option<MemoryIndex>> {
+        *self.slot = Some(self.index);
+        self.slot
+    }
 }
 
 struct Synced {
@@ -83,23 +88,15 @@ struct Synced {
 impl Memories {
     pub async fn open(
         paths: MemoryPaths,
-        embedding: EmbeddingEndpoint,
         registry: Arc<Registry>,
         clock: Arc<dyn Clock>,
     ) -> Result<Arc<Self>, MemoryError> {
         let authority = Authority::open(paths.db).await?;
-        let active = authority.all(false).await?;
-        let model = embedding.settings.model.clone();
-        let dimensions = embedding.dimensions;
-        let index = tokio::task::spawn_blocking(move || {
-            MemoryIndex::open(&paths.index, &model, dimensions, &active)
-        })
-        .await
-        .map_err(index_error)??;
         let memories = Arc::new(Self {
             authority,
-            index: Arc::new(Mutex::new(index)),
-            embedding,
+            index: Arc::new(Mutex::new(None)),
+            index_path: paths.index,
+            settings: SettingsCache::default(),
             registry,
             clock,
         });
@@ -158,8 +155,10 @@ impl Memories {
                 rev: m.rev,
             })
             .collect::<Vec<_>>();
-        let (index_guard, unindexed) =
-            index_work(index_guard, move |index| Ok(index.unindexed(&active))).await?;
+        let (index_guard, unindexed) = index_work(index_guard, move |index| {
+            Ok(unindexed(index.as_ref(), &active))
+        })
+        .await?;
         drop(index_guard);
         Ok(MemoryList {
             memories,
@@ -184,8 +183,9 @@ impl Memories {
 
         let text = query.to_owned();
         let vector = synced.query_vector;
-        let (index_guard, hits) = index_work(index_guard, move |index| {
-            index.search(&text, vector.as_deref(), limit)
+        let (index_guard, hits) = index_work(index_guard, move |index| match &mut **index {
+            Some(index) => index.search(&text, vector.as_deref(), limit),
+            None => Ok(vec![]),
         })
         .await?;
         drop(index_guard);
@@ -211,15 +211,70 @@ impl Memories {
 
     async fn sync(
         &self,
-        index_guard: OwnedMutexGuard<MemoryIndex>,
+        index_guard: OwnedMutexGuard<Option<MemoryIndex>>,
         query: Option<&str>,
         cancel: &CancellationToken,
-    ) -> Result<(OwnedMutexGuard<MemoryIndex>, Synced), MemoryError> {
-        // Authority supplies newest-first revisions; reconciliation preserves that order.
+    ) -> Result<(OwnedMutexGuard<Option<MemoryIndex>>, Synced), MemoryError> {
+        let view = self.registry.view();
+        let settings = match self.settings.get(&view) {
+            Ok(settings) => settings,
+            Err(error) => {
+                let active = self.authority.revisions().await?;
+                let unindexed = unindexed(index_guard.as_ref(), &active);
+                return Ok((
+                    index_guard,
+                    Synced {
+                        query_vector: None,
+                        unindexed,
+                        failure: Some(config_failure(error)),
+                    },
+                ));
+            }
+        };
+        let endpoint = &settings.embedding;
+        let rows = if index_guard
+            .as_ref()
+            .is_none_or(|index| index.identity != endpoint.identity())
+        {
+            self.authority.all(false).await?
+        } else {
+            vec![]
+        };
+        let path = self.index_path.clone();
+        let requested = endpoint.clone();
+        let (index_guard, index) = index_work(index_guard, move |slot| {
+            match slot.take() {
+                Some(index) if index.identity == requested.identity() => Ok(index),
+                previous => {
+                    // Release Trivium's file lock before opening the next vector space.
+                    drop(previous);
+                    MemoryIndex::open(&path, &requested, &rows)
+                }
+            }
+        })
+        .await?;
+        let opened = OpenIndex {
+            index,
+            slot: index_guard,
+        };
+        let (opened, synced) = self
+            .sync_index(opened, &view, endpoint, query, cancel)
+            .await?;
+        Ok((opened.into_guard(), synced))
+    }
+
+    async fn sync_index(
+        &self,
+        opened: OpenIndex,
+        view: &View,
+        endpoint: &EmbeddingEndpoint,
+        query: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<(OpenIndex, Synced), MemoryError> {
         let active = self.authority.revisions().await?;
         check_cancel(cancel)?;
-        let (index_guard, unindexed) =
-            index_work(index_guard, move |index| index.reconcile(&active)).await?;
+        let (opened, unindexed) =
+            index_work(opened, move |opened| opened.index.reconcile(&active)).await?;
         check_cancel(cancel)?;
 
         // Reserve one embedding slot for the query; startup uses the same batch path.
@@ -231,7 +286,7 @@ impl Memories {
         inputs.extend(rows.iter().map(|m| m.text.clone()));
         if inputs.is_empty() {
             return Ok((
-                index_guard,
+                opened,
                 Synced {
                     query_vector: None,
                     unindexed: vec![],
@@ -240,21 +295,20 @@ impl Memories {
             ));
         }
 
-        let endpoint = &self.embedding;
         let result = reported_call(
             &self.registry,
-            self.registry.exports().embedding(&endpoint.plugin),
+            view.exports.embedding(&endpoint.endpoint.plugin),
             cancel,
-            |adapter| async move { adapter.embed(&endpoint.settings, inputs).await },
+            |adapter| async move { adapter.embed(&endpoint.endpoint.settings, inputs).await },
         )
         .await?;
         let vectors = match result
-            .and_then(|vectors| validate_dimensions(vectors, self.embedding.dimensions))
+            .and_then(|vectors| validate_dimensions(vectors, endpoint.dimensions.get()))
         {
             Ok(vectors) => vectors,
             Err(failure) => {
                 return Ok((
-                    index_guard,
+                    opened,
                     Synced {
                         query_vector: None,
                         unindexed,
@@ -272,12 +326,12 @@ impl Memories {
         };
         let inserted: HashSet<_> = rows.iter().map(|m| m.id).collect();
         let replacements = rows.into_iter().zip(vectors).collect();
-        let (index_guard, ()) =
-            index_work(index_guard, move |index| index.apply(replacements)).await?;
+        let (opened, ()) =
+            index_work(opened, move |opened| opened.index.apply(replacements)).await?;
         check_cancel(cancel)?;
 
         Ok((
-            index_guard,
+            opened,
             Synced {
                 query_vector,
                 unindexed: unindexed
@@ -341,13 +395,13 @@ fn index_error(e: impl std::fmt::Display) -> MemoryError {
 
 // Move the owned guard into blocking IO and return it to keep sync + search serialized.
 // Callers await completion even when cancelled, so no index write outlives its owner.
-async fn index_work<T: Send + 'static>(
-    mut index_guard: OwnedMutexGuard<MemoryIndex>,
-    work: impl FnOnce(&mut MemoryIndex) -> Result<T, MemoryError> + Send + 'static,
-) -> Result<(OwnedMutexGuard<MemoryIndex>, T), MemoryError> {
+async fn index_work<S: Send + 'static, T: Send + 'static>(
+    mut state: S,
+    work: impl FnOnce(&mut S) -> Result<T, MemoryError> + Send + 'static,
+) -> Result<(S, T), MemoryError> {
     tokio::task::spawn_blocking(move || {
-        let value = work(&mut index_guard)?;
-        Ok((index_guard, value))
+        let value = work(&mut state)?;
+        Ok((state, value))
     })
     .await
     .map_err(index_error)?
@@ -366,4 +420,19 @@ fn validate_dimensions(
         });
     }
     Ok(vectors)
+}
+
+fn unindexed(index: Option<&MemoryIndex>, active: &[authority::Revision]) -> Vec<MemoryId> {
+    index.map_or_else(
+        || active.iter().map(|row| row.id).collect(),
+        |index| index.unindexed(active),
+    )
+}
+
+fn config_failure(error: enco_kernel::SettingsError) -> Failure {
+    Failure {
+        code: code::CONFIG_INVALID.into(),
+        message: error.to_string(),
+        retryable: false,
+    }
 }

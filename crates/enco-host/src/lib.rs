@@ -5,19 +5,21 @@ mod clock;
 mod composer;
 mod context;
 mod limits;
-mod memory;
+pub mod memory;
 mod sqlite;
 mod store;
-mod telegram;
+pub mod telegram;
 mod tools;
 
 pub use clock::SystemClock;
 pub use composer::FactoryComposer;
 pub use context::InstructionsContextSource;
 pub use memory::{
-    DecisionEndpoint, EmbeddingEndpoint, Memories, MemoryContextSource, MemoryError, MemoryList,
-    MemoryPaths, Recall, Relevance, memory_tools,
+    Memories, MemoryContextSource, MemoryError, MemoryList, MemoryPaths, Recall, memory_tools,
 };
 pub use store::{SqliteStore, StorePaths};
 pub use telegram::Telegram;
-pub use tools::{LIFELINE, native_tools, plugin_tools};
+pub use tools::{LIFELINE, config, native_tools, plugin_tools};
+
+/// Configuration ownership for the host components assembled by the application.
+pub const TABLE_OWNERS: [enco_kernel::TableOwner; 2] = [memory::TABLE_OWNER, telegram::TABLE_OWNER];

@@ -1,3 +1,4 @@
+[owner]
 timezone = "America/New_York"
 
 [endpoint.chat]
@@ -13,15 +14,19 @@ max_output_tokens = 8192
 reply = "chat"
 compaction = "chat"
 
-[embedding]
+[endpoint.embed]
 plugin = "openai-compatible"
 base_url = "https://api.openai.com/v1"
 model = "text-embedding-3-small"
 dimensions = 1536
 api_key_env = "OPENAI_API_KEY"
 
+[memory]
+embedding = "embed"
+# relevance = "relevance"
+
 # Optional relevance filtering for automatically recalled memories.
-# [decision]
+# [endpoint.relevance]
 # plugin = "typesafe"
 # base_url = "https://api.typesafe.ai/v1"
 # model = "jev-latest"

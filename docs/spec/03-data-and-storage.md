@@ -247,7 +247,9 @@ impl Arguments { pub fn parse(raw: &str) -> Self; }
 | `plugin.contract` | 插件的返回违反契约（07 §3.3）；计入健康 | enco-wasm |
 | `plugin.load` | 已登记代际的制品缺失、损坏或 Runtime 加载失败；原始原因在 message 中（11 §5） | 注册表 |
 | `plugin.unavailable` | 插件没有活跃代际，或活跃代际不导出所需接口（11 §4.2） | 注册表 |
-| `plugin.rejected` | 部署或回退被拒绝（11 §8） | 插件工具 |
+| `plugin.rejected` | 部署被拒绝（11 §8） | 插件工具 |
+| `config.rejected` | 应用配置被拒绝（08 §3.1） | `config_apply` |
+| `config.invalid` | 活跃配置代际中某张表在当前宿主下解析不了（11 §4.1） | 记忆；渠道的停止原因也用它开头 |
 
 ### 1.7 能力（`capability.rs`）
 
@@ -267,12 +269,12 @@ pub enum CodeRef {
 ### 1.7a 代际（`generation.rs`）
 
 ```rust
-/// 注册表中的一条代际记录（11 §3）。
+/// 注册表中的一条插件代际记录（11 §3）。
 pub struct GenerationRecord {
     pub id: GenerationId,
     pub plugin: PluginId,
     pub artifact: ContentHash,
-    pub config: serde_json::Value,   // 插件配置；P1 恒为 {}
+    pub config: serde_json::Value,   // 插件配置（11 §1）
     pub origin: Origin,
     pub status: GenerationStatus,
     pub failure: Option<Failure>,   // failed 时必有，其余为空；与状态同事务写入
@@ -412,7 +414,6 @@ pub trait Store: Send + Sync {
     async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError>;
     /// 不存在则创建，binding 为 (本节点, Epoch(1))，profile 为 "default"。`created_at` 由内核从 Clock 取得。
     async fn ensure_session(&self, name: &str, created_at: DateTime<Utc>) -> Result<SessionRecord, StoreError>;
-    async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError>;
 
     // ---- Log（写者：该 Session 的 actor）
     async fn log(&self, session: SessionId, after: Option<LogPos>) -> Result<Vec<Entry>, StoreError>;
@@ -441,8 +442,14 @@ pub trait Store: Send + Sync {
 
     // ---- 注册表（写者：Registry 的提交者，11 §4）
     async fn registry(&self) -> Result<RegistryState, StoreError>;
-    /// 插入一条代际，分配编号；`activate` 为真时在同一事务中把它设为该插件的活跃代际。
+    /// 插入一条插件代际，分配编号；`activate` 为真时在同一事务中把它设为该插件的活跃代际。
     async fn insert_generation(&self, generation: &NewGeneration, activate: bool) -> Result<GenerationId, StoreError>;
+    /// 插入一条配置代际并在同一事务中设为活跃，分配编号。编号与插件代际共用一个序号（§3.2）。
+    async fn insert_config_generation(&self, document: &serde_json::Value, created_at: DateTime<Utc>) -> Result<GenerationId, StoreError>;
+    /// 把一个已有的配置代际设为活跃（11 §5 的 rollback_config）。
+    async fn activate_config(&self, to: GenerationId) -> Result<(), StoreError>;
+    /// Session 选用的 profile 也是接线（11 §6），所以由注册表在提交者的锁内写入（11 §5 的 set_profile）。
+    async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError>;
     /// trial → healthy。
     async fn promote(&self, generation: GenerationId) -> Result<(), StoreError>;
     /// 原子更新活跃代际、各代际的失败状态与原因，以及可选的回退事件。回退与启动时切换出厂代际都用它。
@@ -460,8 +467,16 @@ pub trait Store: Send + Sync {
 
 pub struct NodeRecord { pub id: NodeId, pub safe_mode: bool }
 
-/// 注册表的全部持久状态（11 §3）。
-pub struct RegistryState { pub generations: Vec<GenerationRecord>, pub active: BTreeMap<PluginId, GenerationId> }
+/// 注册表的全部持久状态（11 §3）。还没有配置代际时 `active_config` 为空，启动时首次登记（11 §4.1）。
+pub struct RegistryState {
+    pub generations: Vec<GenerationRecord>,
+    pub active: BTreeMap<PluginId, GenerationId>,
+    pub config_generations: Vec<ConfigGeneration>,
+    pub active_config: Option<GenerationId>,
+}
+
+/// 一条配置代际：只存文档（11 §1），没有状态。
+pub struct ConfigGeneration { pub id: GenerationId, pub document: serde_json::Value, pub created_at: DateTime<Utc> }
 
 /// 待插入的代际：状态为 trial 或 healthy；代际只经由 activate 标为 failed。
 pub struct NewGeneration { pub plugin: PluginId, pub artifact: ContentHash, pub config: serde_json::Value, pub origin: Origin, pub status: GenerationStatus, pub created_at: DateTime<Utc> }
@@ -503,7 +518,7 @@ pub enum StoreError {
     #[error("unknown generation {0}")]
     UnknownGeneration(GenerationId),
     #[error("database schema version {found} does not match this Enco ({expected}); …")]
-    SchemaVersion { found: u32, expected: u32 },   // 库较新时提示升级 Enco，较旧时提示手动迁移或重建
+    SchemaVersion { found: u32, expected: u32 },   // 较新时提示升级 Enco，较旧时提示手动迁移或重建；不改动已有数据
     #[error("storage: {0}")]
     Backend(String),
     #[error("commit contains no entries")]
@@ -536,16 +551,10 @@ Inbox 是一个邮箱：任何人都可以投递（`accept`），只有归属者
 
 - `SqliteStore::open(paths: StorePaths)`，`StorePaths { db, blobs, artifacts, plugins_lock }`：Store 负责的全部文件都在这里给出。
 - 数据库文件：`$ENCO_HOME/.data/enco.db`。
-- 版本记在 SQLite 自带的 `PRAGMA user_version`，`memory.db` 用同一条规则（06 §2）。当前版本是 `4`。
+- 版本记在 SQLite 自带的 `PRAGMA user_version`，`memory.db` 用同一条规则（06 §2）。当前版本是 `5`。
 - 空库在一个事务中建立完整 schema，设置版本号，写入新生成的 `node_id` 和 `safe_mode = '0'`。
 - 已有库的版本不等于当前版本时返回 `SchemaVersion`，拒绝启动，不改动库。
-- P4 之前不写迁移代码。每次改 schema 都把版本号加一；已有的库由 Agent 按 §3.2 手动迁移并设置版本号，或者删库重建。本节只保留从上一版本迁移的步骤，更早的步骤见引入它们的提交。从 P4 起，升级不丢记录（路线图 P4）。
-- M18 改写 schedules 表，给 `Reminder` 加上 `skipped`，把 Event 的叙述移出规范形态，并把 `AttemptStarted.provider` 收紧为代际编号。旧库的手动迁移：
-  - schedules 表按 §3.2 重建：`pending` 改为 `active`，`rule` 为 `Once { at = due_at }`；`fired` 改为 `done`，`last` 取 `(due_at, fired_event_id)`；`cancelled` 不变，`rule` 同样取自 `due_at`。
-  - Inbox 与 Log 中的 `Reminder` 补上 `skipped = 0`。只有 Log 中的 `text` 改写为旧的规范消息 `[reminder scheduled for {due_at}] {text}`，其中 `due_at` 按旧值的 `to_rfc3339()` 写出（以 `+00:00` 结尾，有小数秒时保留），旧计划回放因此逐字不变；Inbox 中尚未消费的提醒还没有计划引用，保留原文，由 composer 的说明叙述。
-  - Inbox 与 Log 中的 `GenerationRolledBack` 把回退事实移入 `rollback`，`text` 写为 `[plugin rolled back] {plugin}: generation {from} failed ({code}: {message}); now using generation {to}`，没有 `to` 时分号后为 `no generation is active`，与 `registry/activation.rs` 的 `notice` 相同。
-  - Log 中 `AttemptStarted.provider` 从 `{ "kind": "generation", "id": 编号 }` 改为该编号。
-  - 再把版本设为 4。
+- 当前只支持本版本的数据格式；旧库可手动迁移或重建，但不保留旧格式的兼容实现或具体迁移步骤。自动迁移属于路线图 P4。
 - 一个 `rusqlite::Connection`，放在 `std::sync::Mutex` 中；每个方法在 `tokio::task::spawn_blocking` 中执行。不要引入连接池。
 - 打开时执行：`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;`
 - 写事务使用 `BEGIN IMMEDIATE`。
@@ -619,29 +628,43 @@ CREATE TABLE deliveries (
 CREATE INDEX delivery_failures ON deliveries(connection, order_no)
   WHERE outcome IN ('failed', 'unknown');
 
--- 注册表（11 §3）。写者是 Registry 的提交者。
-CREATE TABLE plugins (
-  id     TEXT PRIMARY KEY,                -- PluginId（ULID）；名字在 plugins.lock 中
-  active INTEGER REFERENCES generations(id)
-) STRICT;
-
+-- 注册表（11 §3）。写者是 Registry 的提交者。两种代际共用 generations 的编号。
 CREATE TABLE generations (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,   -- GenerationId：全局单调编号
+  created_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE plugins (
+  id     TEXT PRIMARY KEY,                -- PluginId（ULID）；名字在 plugins.lock 中
+  active INTEGER REFERENCES plugin_generations(id)
+) STRICT;
+
+CREATE TABLE plugin_generations (
+  id         INTEGER PRIMARY KEY REFERENCES generations(id),
   plugin_id  TEXT NOT NULL REFERENCES plugins(id),
   artifact   TEXT NOT NULL,                       -- 制品哈希
   config     TEXT NOT NULL,                       -- 插件配置的 JSON
   origin     TEXT NOT NULL CHECK (origin IN ('factory', 'deployed')),
   status     TEXT NOT NULL CHECK (status IN ('trial', 'healthy', 'failed')),
   failure    TEXT,                               -- Failure 的 JSON；只在 failed 时存在
-  created_at TEXT NOT NULL,
   CHECK ((status = 'failed') = (failure IS NOT NULL))
 ) STRICT;
-CREATE INDEX generations_by_plugin ON generations(plugin_id, id);
+CREATE INDEX plugin_generations_by_plugin ON plugin_generations(plugin_id, id);
+
+CREATE TABLE config_generations (
+  id       INTEGER PRIMARY KEY REFERENCES generations(id),
+  document TEXT NOT NULL                          -- 配置文档的 JSON（11 §1）
+) STRICT;
+
+CREATE TABLE config (                             -- 只有一行：活跃配置代际
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  active    INTEGER NOT NULL REFERENCES config_generations(id)
+) STRICT;
 ```
 
-`kind` 是生成列，只用于查询与调试，事实来源仍然是 `body`。
+`log.kind` 是生成列，只用于查询与调试，事实来源仍然是 `body`；代际类别由 `plugin_generations` 或 `config_generations` 子表表达。
 
-`plugins` 与 `generations` 互相引用：插入顺序是先插件行（`active` 为空），再代际，再更新 `active`，都在同一个事务里。
+插入一条代际时，先在 `generations` 中分配编号，再写 `plugin_generations` 或 `config_generations`，最后更新 `plugins.active` 或 `config.active`，都在同一个事务里。`plugins` 与 `plugin_generations` 互相引用，所以新插件先插入 `active` 为空的插件行。
 
 ### 3.3 Blob 存储（`store/content.rs`）
 

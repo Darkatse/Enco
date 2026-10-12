@@ -109,13 +109,12 @@ impl Model {
     pub(crate) fn parse(source: String) -> Result<Self> {
         let document: toml::Table = toml::from_str(&source).context("parse model configuration")?;
         ensure!(
-            document.keys().all(|key| matches!(
-                key.as_str(),
-                "endpoint" | "profile" | "embedding" | "decision"
-            )),
-            "model configuration may contain only endpoint, profile, embedding and decision"
+            document
+                .keys()
+                .all(|key| matches!(key.as_str(), "endpoint" | "profile" | "memory")),
+            "model configuration may contain only endpoint, profile and memory"
         );
-        for key in ["endpoint", "profile", "embedding"] {
+        for key in ["endpoint", "profile", "memory"] {
             ensure!(
                 document.contains_key(key),
                 "model configuration is missing {key}"
@@ -151,24 +150,24 @@ impl Model {
     }
 
     fn endpoints(document: &toml::Table) -> Result<BTreeMap<String, &toml::Value>> {
-        let mut endpoints: BTreeMap<_, _> = document
+        Ok(document
             .get("endpoint")
             .and_then(toml::Value::as_table)
             .context("endpoint must be a table")?
             .iter()
             .map(|(name, value)| (format!("endpoint.{name}"), value))
-            .collect();
-        for name in ["embedding", "decision"] {
-            if let Some(value) = document.get(name) {
-                endpoints.insert(name.into(), value);
-            }
-        }
-        Ok(endpoints)
+            .collect())
     }
 
     pub(crate) fn configuration(&self, timezone: chrono_tz::Tz, max_rounds: u32) -> Result<String> {
         let mut document = self.document.clone();
-        document.insert("timezone".into(), timezone.name().into());
+        document.insert(
+            "owner".into(),
+            toml::Value::Table(toml::Table::from_iter([(
+                "timezone".into(),
+                timezone.name().into(),
+            )])),
+        );
         document.insert(
             "run".into(),
             toml::Value::Table(toml::Table::from_iter([(

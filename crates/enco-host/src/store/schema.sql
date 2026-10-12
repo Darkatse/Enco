@@ -65,21 +65,35 @@ CREATE TABLE deliveries (
 CREATE INDEX delivery_failures ON deliveries(connection, order_no)
   WHERE outcome IN ('failed', 'unknown');
 
--- Registry state is committed by the single Registry writer.
-CREATE TABLE plugins (
-  id     TEXT PRIMARY KEY,
-  active INTEGER REFERENCES generations(id)
-) STRICT;
-
+-- Plugin and configuration histories share one sequence and one committer.
 CREATE TABLE generations (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE plugins (
+  id     TEXT PRIMARY KEY,
+  active INTEGER REFERENCES plugin_generations(id)
+) STRICT;
+
+CREATE TABLE plugin_generations (
+  id         INTEGER PRIMARY KEY REFERENCES generations(id),
   plugin_id  TEXT NOT NULL REFERENCES plugins(id),
   artifact   TEXT NOT NULL,
   config     TEXT NOT NULL,
   origin     TEXT NOT NULL CHECK (origin IN ('factory', 'deployed')),
   status     TEXT NOT NULL CHECK (status IN ('trial', 'healthy', 'failed')),
-  failure    TEXT,                       -- Serialized Failure; present only when failed
-  created_at TEXT NOT NULL,
+  failure    TEXT,
   CHECK ((status = 'failed') = (failure IS NOT NULL))
 ) STRICT;
-CREATE INDEX generations_by_plugin ON generations(plugin_id, id);
+CREATE INDEX plugin_generations_by_plugin ON plugin_generations(plugin_id, id);
+
+CREATE TABLE config_generations (
+  id       INTEGER PRIMARY KEY REFERENCES generations(id),
+  document TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE config (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  active    INTEGER NOT NULL REFERENCES config_generations(id)
+) STRICT;

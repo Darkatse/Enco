@@ -1,6 +1,6 @@
-use super::{MemoryError, authority::Revision};
+use super::{MemoryError, authority::Revision, settings::EmbeddingEndpoint};
 use enco_core::{Memory, MemoryId};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::{
     collections::{HashMap, HashSet},
@@ -9,6 +9,7 @@ use std::{
 use triviumdb::{Database, SearchConfig, TriviumError, database::Config};
 
 pub(super) struct MemoryIndex {
+    pub identity: serde_json::Value,
     db: Database<f32>,
     nodes: HashMap<MemoryId, IndexedMemory>,
 }
@@ -23,12 +24,6 @@ struct Reconciled {
     delete: Vec<u64>,
     keep: HashMap<MemoryId, IndexedMemory>,
     unindexed: Vec<MemoryId>,
-}
-
-#[derive(Serialize, Deserialize, PartialEq)]
-struct Identity {
-    model: String,
-    dimensions: usize,
 }
 
 #[derive(Deserialize)]
@@ -86,17 +81,13 @@ fn reconcile(
 impl MemoryIndex {
     pub fn open(
         path: &Path,
-        model: &str,
-        dimensions: usize,
+        endpoint: &EmbeddingEndpoint,
         active: &[Memory],
     ) -> Result<Self, MemoryError> {
-        let identity = Identity {
-            model: model.to_owned(),
-            dimensions,
-        };
+        let identity = endpoint.identity();
         let previous = std::fs::read(path.join("index.json"))
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<Identity>(&bytes).ok());
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
         if previous.as_ref() != Some(&identity) {
             reset(path, &identity)?;
         }
@@ -105,7 +96,7 @@ impl MemoryIndex {
             .to_str()
             .ok_or_else(|| error("index path is not UTF-8"))?;
         let config = Config {
-            dim: dimensions,
+            dim: endpoint.dimensions.get(),
             load_text_index: false,
             ..Default::default()
         };
@@ -133,6 +124,7 @@ impl MemoryIndex {
             .collect();
         let reconciled = reconcile(&revisions, source);
         let mut index = Self {
+            identity,
             db,
             nodes: reconciled.keep,
         };
@@ -238,7 +230,7 @@ impl MemoryIndex {
     }
 }
 
-fn reset(path: &Path, identity: &Identity) -> Result<(), MemoryError> {
+fn reset(path: &Path, identity: &serde_json::Value) -> Result<(), MemoryError> {
     if path.exists() {
         std::fs::remove_dir_all(path).map_err(error)?;
     }

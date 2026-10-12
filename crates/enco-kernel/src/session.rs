@@ -1,12 +1,9 @@
 use crate::{
-    Clock, Commit, KernelConfig, KernelError, Store, StoreError,
-    limits::SESSION_BROADCAST_CAPACITY, snapshot::Snapshot,
+    Clock, Commit, KernelError, Store, StoreError, limits::SESSION_BROADCAST_CAPACITY,
+    snapshot::Snapshot,
 };
 use enco_core::*;
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::{
     sync::{Notify, broadcast},
     task::JoinHandle,
@@ -21,9 +18,7 @@ pub(crate) struct SessionDeps {
     pub store: Arc<dyn Store>,
     pub clock: Arc<dyn Clock>,
     pub registry: Arc<crate::Registry>,
-    pub profiles: BTreeMap<String, crate::Profile>,
     pub snapshot: Arc<Snapshot>,
-    pub config: KernelConfig,
     pub shutdown: CancellationToken,
 }
 

@@ -1,3 +1,4 @@
+[owner]
 timezone = "America/New_York"
 
 [endpoint.chat]
@@ -14,7 +15,7 @@ max_output_tokens = 8192
 reply = "chat"
 compaction = "chat"
 
-[embedding]
+[endpoint.embed]
 plugin = "openai-compatible"
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 model = "gemini-embedding-001"
@@ -22,8 +23,12 @@ dimensions = 768
 api_key_env = "GEMINI_KEY"
 options = { dimensions = 768 }
 
+[memory]
+embedding = "embed"
+# relevance = "relevance"
+
 # Optional relevance filtering for automatically recalled memories.
-# [decision]
+# [endpoint.relevance]
 # plugin = "typesafe"
 # base_url = "https://api.typesafe.ai/v1"
 # model = "jev-latest"

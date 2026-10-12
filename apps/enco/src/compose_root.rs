@@ -1,11 +1,11 @@
-use crate::{config::Config, paths::Paths};
+use crate::paths::Paths;
 use anyhow::Result;
 use enco_host::{
     FactoryComposer, InstructionsContextSource, LIFELINE, Memories, MemoryContextSource,
-    MemoryPaths, Relevance, SqliteStore, StorePaths, SystemClock, memory_tools, native_tools,
+    MemoryPaths, SqliteStore, StorePaths, SystemClock, config, memory_tools, native_tools,
     plugin_tools,
 };
-use enco_kernel::{FactoryPlugin, Kernel, KernelConfig, KernelDeps, Registry, RegistryDeps};
+use enco_kernel::{FactoryPlugin, Kernel, KernelDeps, Registry, RegistryDeps};
 use enco_wasm::WasmRuntime;
 use std::sync::Arc;
 
@@ -22,17 +22,11 @@ const FACTORY: [(&str, &str, &[u8]); 3] = [
 pub(crate) struct Application {
     pub kernel: Arc<Kernel>,
     pub memories: Arc<Memories>,
-    pub channels: Vec<enco_host::channel::Channel>,
+    pub channels: enco_host::telegram::TelegramChannel,
+    pub paths: Paths,
 }
 
 pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
-    let config = Config::load(&paths.config()).await?;
-    let channel = config
-        .telegram
-        .as_ref()
-        .map(|config| Ok::<_, anyhow::Error>((config.adapter()?, config.owner_user_id.to_string())))
-        .transpose()?;
-    let kernel_config = KernelConfig::new(config.run.max_rounds, config.timezone)?;
     tokio::fs::create_dir_all(paths.workspace()).await?;
     let store = Arc::new(
         SqliteStore::open(StorePaths {
@@ -58,16 +52,28 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
         store: store.clone(),
         runtime: Arc::new(WasmRuntime::new()?),
         factory,
-        wiring: config.wiring(),
+        owners: enco_host::TABLE_OWNERS.into(),
+        bootstrap: config::document(&paths.config())
+            .await
+            .map_err(|error| error.to_string()),
         clock: clock.clone(),
     })
     .await?;
+    let divergence = registry
+        .config_divergence(
+            config::document(&paths.config())
+                .await
+                .map_err(|error| error.to_string()),
+        )
+        .await;
+    if !matches!(divergence, enco_kernel::ConfigDivergence::None) {
+        tracing::warn!(divergence = %serde_json::to_value(divergence)?, "config.toml differs from registered configuration");
+    }
     let memories = Memories::open(
         MemoryPaths {
             db: paths.memory_db(),
             index: paths.memory_index(),
         },
-        config.embedding,
         registry.clone(),
         clock.clone(),
     )
@@ -75,42 +81,29 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
     let mut tools = native_tools(paths.workspace());
     tools.extend(memory_tools(memories.clone()));
     tools.extend(plugin_tools(registry.clone(), paths.workspace()));
-    let relevance = config
-        .decision
-        .map(|endpoint| Relevance::new(endpoint, registry.clone()));
-    let kernel = Kernel::start(
-        KernelDeps {
-            store,
-            registry,
-            profiles: config.profiles,
-            composer: Arc::new(FactoryComposer::new(
-                paths.workspace(),
-                paths.instructions(),
-            )),
-            context: vec![
-                Arc::new(InstructionsContextSource::new(paths.instructions())),
-                Arc::new(MemoryContextSource::new(memories.clone(), relevance)),
-            ],
-            tools,
-            lifeline: LIFELINE.iter().map(|s| s.to_string()).collect(),
-            clock: clock.clone(),
-        },
-        kernel_config,
-    )
+    tools.extend(config::tools(paths.config(), registry.clone()));
+    let kernel = Kernel::start(KernelDeps {
+        store,
+        registry,
+        composer: Arc::new(FactoryComposer::new(
+            paths.workspace(),
+            paths.instructions(),
+        )),
+        context: vec![
+            Arc::new(InstructionsContextSource::new(paths.instructions())),
+            Arc::new(MemoryContextSource::new(memories.clone())),
+        ],
+        tools,
+        lifeline: LIFELINE.iter().map(|s| s.to_string()).collect(),
+        clock: clock.clone(),
+    })
     .await?;
     let kernel = Arc::new(kernel);
-    let mut channels = Vec::new();
-    if let Some((adapter, owner_id)) = channel {
-        channels.push(enco_host::channel::Channel::start(
-            kernel.clone(),
-            Arc::new(adapter),
-            owner_id,
-            clock,
-        ));
-    }
+    let channels = enco_host::telegram::TelegramChannel::start(kernel.clone(), clock);
     Ok(Arc::new(Application {
         kernel,
         memories,
         channels,
+        paths: paths.clone(),
     }))
 }

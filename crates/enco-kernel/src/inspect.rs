@@ -57,14 +57,15 @@ impl Kernel {
         let bytes = self.deps.store.get_blob(hash).await?;
         let plan: ContextPlan =
             serde_json::from_slice(&bytes).map_err(|error| invalid(error.to_string()))?;
-        let exports = self.deps.registry.exports();
+        let view = self.deps.registry.view();
+        let exports = &view.exports;
         let target = exports
             .plugin_of(*provider)
             .ok_or(StoreError::UnknownGeneration(*provider))?;
         let request = plan::resolve(
             &plan,
             &transcript::project(&entries[..index]),
-            &exports,
+            exports,
             target,
         )
         .map_err(|error| invalid(error.to_string()))?;

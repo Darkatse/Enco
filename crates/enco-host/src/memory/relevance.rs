@@ -1,8 +1,7 @@
-use super::{MemoryError, reported_call};
+use super::{Memories, MemoryError, reported_call};
 use crate::limits::MEMORY_RELEVANCE_THRESHOLD;
-use enco_core::{Memory, Omission, ProviderSettings};
-use enco_kernel::{Answer, Question, QuestionKind, Registry};
-use std::sync::Arc;
+use enco_core::{Memory, Omission};
+use enco_kernel::{Answer, Question, QuestionKind};
 use tokio_util::sync::CancellationToken;
 
 /// Asks for relatedness rather than usefulness: dropping a needed memory costs more than keeping
@@ -11,30 +10,14 @@ const RELEVANCE_QUESTION: &str = "Does this stored memory about the user relate 
     Yes if it concerns the message's topic, request, people or things; \
     no if it is about something unrelated.";
 
-/// Configured decision caller; the adapter is resolved for each evaluation.
-#[derive(Clone)]
-pub struct DecisionEndpoint {
-    pub plugin: String,
-    pub settings: ProviderSettings,
-}
-
-/// Optional filtering of newly recalled memories before they become context candidates.
-pub struct Relevance {
-    endpoint: DecisionEndpoint,
-    registry: Arc<Registry>,
-}
-
 pub(super) struct Filtered {
     pub kept: Vec<Memory>,
     pub omitted: Vec<Omission>,
 }
 
-impl Relevance {
-    pub fn new(endpoint: DecisionEndpoint, registry: Arc<Registry>) -> Self {
-        Self { endpoint, registry }
-    }
-
-    pub(super) async fn filter(
+impl Memories {
+    /// Filter automatic recall with the current memory settings.
+    pub(super) async fn filter_relevance(
         &self,
         query: &str,
         recalled: Vec<Memory>,
@@ -46,6 +29,27 @@ impl Relevance {
                 omitted: vec![],
             });
         }
+        let view = self.registry.view();
+        let settings = match self.settings.get(&view) {
+            Ok(settings) => settings,
+            Err(error) => {
+                return Ok(Filtered {
+                    kept: recalled,
+                    omitted: vec![Omission {
+                        source: "memory:relevance".into(),
+                        reason: format!(
+                            "config.invalid: {error}; recalled memories were not filtered"
+                        ),
+                    }],
+                });
+            }
+        };
+        let Some(endpoint) = &settings.relevance else {
+            return Ok(Filtered {
+                kept: recalled,
+                omitted: vec![],
+            });
+        };
         let questions = recalled
             .iter()
             .map(|memory| Question {
@@ -53,10 +57,9 @@ impl Relevance {
                 kind: QuestionKind::Predicate,
             })
             .collect();
-        let endpoint = &self.endpoint;
         let result = reported_call(
             &self.registry,
-            self.registry.exports().decision(&endpoint.plugin),
+            view.exports.decision(&endpoint.plugin),
             cancel,
             |adapter| async move {
                 adapter

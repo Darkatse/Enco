@@ -171,12 +171,11 @@ async fn relevance_filters_new_recall_and_service_failure_keeps_it() {
         })
         .mount(&server)
         .await;
-    let base_url = server.uri();
-    let config = format!(
-        "{}\n[decision]\nplugin = 'typesafe'\nbase_url = {base_url:?}\nmodel = 'mock'\napi_key_env = 'ENCO_TEST_API_KEY'\n",
-        Daemon::config(&server, "openai-compatible")
-    );
-    let mut daemon = Daemon::start_config(&config).await;
+    let mut document: serde_json::Value =
+        toml::from_str(&Daemon::config(&server, "openai-compatible")).unwrap();
+    document["endpoint"]["relevance"] = json!({"plugin": "typesafe", "base_url": server.uri(), "model": "mock", "api_key_env": "ENCO_TEST_API_KEY"});
+    document["memory"]["relevance"] = "relevance".into();
+    let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
     // Seed in a separate Session so tool arguments do not become the query's history.
     ask(&daemon, "seed", "seed").await;
     let decision_response = Mock::given(path("/systemone"))
@@ -216,6 +215,67 @@ async fn relevance_filters_new_recall_and_service_failure_keeps_it() {
             .iter()
             .any(|o| o.reason.starts_with("judged irrelevant to the input"))
     );
+
+    let replacement = MockServer::start().await;
+    Mock::given(path("/systemone"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let answers: serde_json::Map<_, _> = body["questions"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(|key| (key.clone(), json!({"type": "noul", "noul": 0.1})))
+                .collect();
+            ResponseTemplate::new(200).set_body_json(json!({"answers": answers}))
+        })
+        .expect(2)
+        .mount(&replacement)
+        .await;
+    document["endpoint"]["replacement"] = document["endpoint"]["relevance"].clone();
+    document["endpoint"]["replacement"]["base_url"] = replacement.uri().into();
+    document["memory"]["relevance"] = "replacement".into();
+    let config_path = daemon.root.path().join("config.toml");
+    std::fs::write(&config_path, toml::to_string(&document).unwrap()).unwrap();
+    daemon
+        .connect()
+        .await
+        .request(Command::ConfigApply { generation: None })
+        .await
+        .unwrap();
+    let previous_calls = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/systemone")
+        .count();
+    let switched = ask(&daemon, "switched", QUERY).await;
+    let text = switched
+        .request
+        .messages
+        .iter()
+        .map(Message::joined_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!text.contains(DRINK) && !text.contains(EDITOR));
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/systemone")
+            .count(),
+        previous_calls
+    );
+    document["memory"]["relevance"] = "relevance".into();
+    std::fs::write(&config_path, toml::to_string(&document).unwrap()).unwrap();
+    daemon
+        .connect()
+        .await
+        .request(Command::ConfigApply { generation: None })
+        .await
+        .unwrap();
 
     drop(decision_response);
     Mock::given(path("/systemone"))

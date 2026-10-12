@@ -13,7 +13,8 @@ pub trait Provider: Send + Sync {
     ) -> Result<Completion, Failure>;
 }
 
-/// Resolved request; all content comes from the frozen plan and its Log references.
+/// A canonical model request. Session requests resolve a frozen, recorded plan;
+/// registry probes contain only fixed validation text.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderRequest {
     /// Canonical messages in request order.

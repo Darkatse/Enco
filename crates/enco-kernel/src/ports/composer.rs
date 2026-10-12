@@ -38,9 +38,9 @@ pub struct ComposeInput {
 #[derive(Debug, Clone, Copy)]
 pub struct Budget {
     /// Total model window including reserved output.
-    pub context_tokens: u32,
+    pub context_tokens: std::num::NonZeroU32,
     /// Requested maximum generated tokens.
-    pub max_output_tokens: u32,
+    pub max_output_tokens: std::num::NonZeroU32,
 }
 
 /// Model-facing projection of immutable Log facts.

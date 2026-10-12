@@ -61,7 +61,7 @@ enco-core  ←  enco-kernel  ←  enco-host
 | crate | 允许依赖的工作区 crate | 允许的外部依赖 |
 |---|---|---|
 | enco-core | 无 | serde、serde_json、ulid、blake3、chrono、chrono-tz（`ScheduleRule` 与主人的时区，03 §1.9）、thiserror |
-| enco-kernel | enco-core | tokio（rt、sync、time、macros）、tokio-util、async-trait、serde、serde_json、ulid、thiserror、tracing、arc-swap、croner（周期定时，04 §10） |
+| enco-kernel | enco-core | tokio（rt、sync、time、macros）、tokio-util、async-trait、serde、serde_json、ulid、thiserror、tracing、croner（周期定时，04 §10） |
 | enco-host | enco-core、enco-kernel | rusqlite（bundled）、triviumdb、reqwest（Telegram，10）、tokio（rt、fs、process、io-util、time、sync）、tokio-util、async-trait、serde、serde_json、toml（plugins.lock，03 §3.5）、chrono、ulid、blake3、thiserror、tracing |
 | enco-wasm | enco-core、enco-kernel | wasmtime、wasmtime-wasi、reqwest、tokio、async-trait、serde_json、ulid、thiserror、tracing |
 | apps/enco | 以上全部 | clap、anyhow、tokio（full）、tokio-util、serde、serde_json、toml、tracing、tracing-subscriber、dirs、ulid、iana-time-zone（`enco init` 检测本机时区，08 §1）；dev：wiremock、tempfile |
@@ -97,7 +97,6 @@ clap = { version = "4.6.7", features = ["derive"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 toml = "1.1.6"
-arc-swap = "1.7"                         # 注册表发布导出表（11 §4.2）
 dirs = "7.0.0"
 cargo_metadata = "0.23.1"
 wit-parser = "0.259.0"
@@ -184,11 +183,14 @@ ports/composer.rs   Composer、ComposeInput、Composition、Transcript、Budget�
 ports/context.rs    ContextSource、ContextQuery、ContextError
 ports/tool.rs       Tool、CallContext
 ports/clock.rs      Clock
-kernel.rs      Kernel、KernelDeps、KernelConfig、KernelError、Inspection
-profile.rs     Profile、Endpoint（12）
-registry.rs    Registry、RegistryDeps、RegistryError、Exports、Export、Use、Interface、PluginStatus（11）
-registry/activate.rs 部署与激活：锁外加载、锁内提交、发布导出表
-registry/health.rs   回报的处理：试用计数、晋升、回退目标
+kernel.rs      Kernel、KernelDeps、KernelError、Inspection
+profile.rs     Profile、CompletionEndpoint（12）
+settings.rs    KernelSettings、Endpoint、EndpointSpec、SettingsError（12）
+registry.rs    Registry、RegistryDeps、RegistryError、TableOwner、PluginSource、ConfigSource、View、Exports、Export、Use、Need、PluginStatus（11）
+registry/state.rs         注册表的状态与启动时的恢复、首次登记
+registry/activation.rs    激活：锁外准备、锁内核对与提交
+registry/configuration.rs 求出声明、应用配置、探测、set_profile、不一致
+registry/health.rs        回报的处理：试用计数、晋升、回退目标
 snapshot.rs    Snapshot（本轮可用的原生能力）
 session.rs     Session actor：唤醒、启动恢复、驱动 Run
 run.rs         Run 与 Round 的算法
@@ -218,14 +220,16 @@ store/registry.rs plugins 与 generations 表的读写
 store/lock.rs    plugins.lock 的读写（03 §3.5）
 tools.rs         原生工具集合与救生集
 tools/args.rs    工具参数的读取与校验
+tools/config.rs  配置文件读取、应用入口与 config_apply 工具（08 §3.1）
 tools/files.rs   fs_read、fs_write、fs_edit、fs_list
 tools/shell.rs   shell_exec
-tools/plugins.rs plugin_status、plugin_deploy、plugin_rollback（05 §2.6）
-memory.rs        Memories（记忆的归属者）、MemoryError（06 §7）
+tools/plugins.rs plugin_status、plugin_deploy（05 §2.6）
+memory.rs        Memories（记忆的归属者）、TABLE_OWNER、MemoryError（06 §7）
+memory/settings.rs  MemorySettings、endpoint 与声明；配置类型留在记忆模块内部
 memory/authority.rs  memory.db
 memory/index.rs      TriviumDB 索引、reconcile、sync
 memory/context.rs    MemoryContextSource
-memory/relevance.rs  Relevance：自动召回的相关性过滤（06 §5）
+memory/relevance.rs  Memories::filter_relevance：自动召回的相关性过滤（06 §5）
 memory/tools.rs      memory_save / memory_update / memory_forget / memory_search
 composer.rs      出厂 composer
 prompts/         system.md、compaction.md、safe_mode.md（include_str!）
@@ -234,7 +238,8 @@ channel.rs       渠道协议边界、连接句柄与可查询状态（10）
 channel/connection.rs  连接 actor：权限、映射、接纳与投递结算
 channel/projection.rs  从 Log 投影默认回复与终止通知
 channel/transport.rs   轮询、分段发送、退避与取消
-telegram.rs      原生 Telegram 协议适配器：更新解析、分段与错误分类（10）
+telegram.rs      原生 Telegram 协议适配器：更新解析、分段与错误分类；`[telegram]` 的归属者 TABLE_OWNER（10）
+telegram/supervisor.rs  跟随视图启动、重启或停止渠道（10 §6）
 clock.rs         SystemClock
 limits.rs
 ```
@@ -258,7 +263,6 @@ limits.rs
 build.rs         嵌入出厂代际
 main.rs          clap 子命令分派
 paths.rs         ENCO_HOME 布局
-config.rs        config.toml
 compose_root.rs  构造 KernelDeps
 daemon.rs        enco serve：本地协议服务端
 protocol.rs      请求与推送消息类型

@@ -5,7 +5,7 @@ use crate::{
 };
 use enco_core::*;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     sync::{Arc, Mutex},
 };
 use tokio::sync::broadcast;
@@ -17,8 +17,6 @@ pub struct KernelDeps {
     pub store: Arc<dyn Store>,
     /// Sole owner of plugin generations and published exports.
     pub registry: Arc<Registry>,
-    /// Named Session policies resolved once by the composition root.
-    pub profiles: BTreeMap<String, Profile>,
     /// Pure context policy.
     pub composer: Arc<dyn Composer>,
     /// Context sources in contribution order.
@@ -29,28 +27,6 @@ pub struct KernelDeps {
     pub lifeline: Vec<String>,
     /// Clock supplied by the host or tests.
     pub clock: Arc<dyn Clock>,
-}
-
-/// Run limit and owner time zone, validated before starting any owner.
-#[derive(Clone)]
-pub struct KernelConfig {
-    /// Maximum Rounds in one Run.
-    pub(crate) max_rounds_per_run: u32,
-    /// Owner's local-time interpretation, independent of the node's system zone.
-    pub(crate) timezone: Tz,
-}
-
-impl KernelConfig {
-    /// Validate the Run limit before any owner or persistent resource is started.
-    pub fn new(max_rounds_per_run: u32, timezone: Tz) -> Result<Self, KernelError> {
-        if max_rounds_per_run == 0 {
-            return Err(KernelError::Config("max_rounds must be positive".into()));
-        }
-        Ok(Self {
-            max_rounds_per_run,
-            timezone,
-        })
-    }
 }
 
 /// Single-node execution owner. Sessions serialize their own Log writes.
@@ -134,10 +110,7 @@ pub enum KernelError {
 
 impl Kernel {
     /// Bind capabilities and start one actor for each existing Session.
-    pub async fn start(mut deps: KernelDeps, config: KernelConfig) -> Result<Self, KernelError> {
-        if !deps.profiles.contains_key(DEFAULT_PROFILE) {
-            return Err(KernelError::UnknownProfile(DEFAULT_PROFILE.into()));
-        }
+    pub async fn start(mut deps: KernelDeps) -> Result<Self, KernelError> {
         let (schedules, scheduler) = crate::scheduler::Scheduler::channel();
         deps.tools.extend(crate::builtin::tools(schedules.clone()));
         let node = deps.store.node().await?;
@@ -149,9 +122,7 @@ impl Kernel {
                 store: deps.store,
                 clock: deps.clock,
                 registry: deps.registry,
-                profiles: deps.profiles,
                 snapshot,
-                config,
                 shutdown: CancellationToken::new(),
             }),
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -162,7 +133,7 @@ impl Kernel {
         *lock(&kernel.scheduler) = Some(scheduler.start(
             kernel.deps.store.clone(),
             kernel.deps.clock.clone(),
-            kernel.deps.config.timezone,
+            kernel.deps.registry.subscribe(),
             kernel.sessions.clone(),
             kernel.deps.shutdown.clone(),
         ));
@@ -281,11 +252,15 @@ impl Kernel {
 
     /// Persist a profile choice; the current Round keeps its sampled policy.
     pub async fn set_profile(&self, session: SessionId, profile: &str) -> Result<(), KernelError> {
-        if !self.deps.profiles.contains_key(profile) {
-            return Err(KernelError::UnknownProfile(profile.into()));
-        }
         self.handle(session)?;
-        Ok(self.deps.store.set_profile(session, profile).await?)
+        self.deps
+            .registry
+            .set_profile(session, profile)
+            .await
+            .map_err(|error| match error {
+                RegistryError::UnknownProfile(name) => KernelError::UnknownProfile(name),
+                error => error.into(),
+            })
     }
 
     /// Inspect live state without involving the model.
@@ -308,7 +283,16 @@ impl Kernel {
             node: node.id,
             safe_mode: node.safe_mode,
             composer: self.deps.snapshot.composer.code(),
-            profiles: self.deps.profiles.keys().cloned().collect(),
+            profiles: self
+                .deps
+                .registry
+                .view()
+                .config
+                .kernel
+                .profiles
+                .keys()
+                .cloned()
+                .collect(),
             sessions,
             scheduler_stopped: self.schedules.stopped(),
         })

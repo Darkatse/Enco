@@ -21,7 +21,7 @@ pub fn native_tools(workspace: PathBuf) -> Vec<Arc<dyn Tool>>;
 pub fn plugin_tools(registry: Arc<Registry>, workspace: PathBuf) -> Vec<Arc<dyn Tool>>;
 /// 救生集：安全模式下唯一可用的工具，也是 requires_lifeline 的 profile 要求常驻的工具。
 pub const LIFELINE: [&str; 8] = ["fs_read", "fs_write", "fs_edit", "fs_list", "shell_exec",
-                                 "plugin_status", "plugin_deploy", "plugin_rollback"];
+                                 "plugin_status", "plugin_deploy", "config_apply"];
 ```
 
 所有原生工具的 `code()` 为 `CodeRef::Native { name: "host-tools", version: crate 版本 }`。
@@ -78,17 +78,19 @@ pub const LIFELINE: [&str; 8] = ["fs_read", "fs_write", "fs_edit", "fs_list", "s
 
 已知限制：目前只终止 `sh` 本身，命令派生的后台孙进程可能存活；没有重定向输出的后台进程在工具返回后写管道时会收到 `SIGPIPE`。进程组的处理留到后续阶段（需要新增依赖），不要自行引入。
 
-### 2.6 插件工具（`tools/plugins.rs`）
+### 2.6 插件与配置工具（`tools/plugins.rs`、`tools/config.rs`）
 
-它们把 Agent 的调用交给注册表（11），与记忆工具包住 `Memories` 是同一个模式；读文件在这里做，`Registry::deploy` 只收字节。
+它们把 Agent 的调用交给注册表（11），与记忆工具包住 `Memories` 是同一个模式；读文件在这里做，注册表只收内容或代际编号。撤销就是以编号重新登记，没有回退类的工具（架构文档 §4.6）。
 
 | 名称 | 参数 | 结果 | Effect |
 |---|---|---|---|
 | `plugin_status` | 无 | `Ok { [PluginStatus] }`（11 §4） | ReadOnly |
-| `plugin_deploy` | `name`；`path`：组件文件，相对路径相对于工作区 | `Ok { generation, users }`；文件读不到 → `tool.failed`；`Rejected` → `plugin.rejected` | SideEffect |
-| `plugin_rollback` | `name` | `Ok(GenerationRecord)`，与 CLI 相同；`NoRollbackTarget`、`Conflict` → `plugin.rejected`，message 原样带出 | SideEffect |
+| `plugin_deploy` | `name`；`path`：组件文件，相对路径相对于工作区；或 `generation`：已有代际的编号，重新登记它的内容；两者恰好给一个 | `Ok { generation, users }`；文件读不到 → `tool.failed`；`Rejected`、`Conflict` → `plugin.rejected`，message 原样带出 | SideEffect |
+| `config_apply` | `generation`：可选，已有配置代际的编号；给出时重新登记它的文档，不读 `config.toml` | 与 CLI 的 `config_apply` 相同（08 §3.1）：`Ok { generation, previous, unchanged, probes }`；被拒绝 → `config.rejected`，message 指明是哪一张表、哪个 endpoint 或注册表的原因 | SideEffect |
 
-`UnknownPlugin` 是参数问题，返回 `tool.invalid_arguments`。描述的要点见 11 §8。
+`UnknownPlugin`、`UnknownGeneration` 与 `path`、`generation` 没有恰好给一个，都是参数问题，返回 `tool.invalid_arguments`。描述的要点见 11 §8。
+
+`config_apply` 与读取 `config.toml` 的函数在同一个文件（08 §3.1），组合根只传配置路径与注册表。它的描述写明：先编辑 `config.toml` 再应用；以 `previous` 的编号重新应用就是撤销，之后要把 `config.toml` 改回来，否则下次应用会再次带上被撤销的内容。
 
 工具描述与省略原因中出现的上限（默认行数、超时、宽限时间、预算比例、记忆文本长度等）都由 `limits.rs` 的常量生成，不另写数字。
 

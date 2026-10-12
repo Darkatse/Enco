@@ -2,10 +2,10 @@ use super::{backend, encode, rows, signed};
 use crate::sqlite::timestamp;
 use enco_core::*;
 use enco_kernel::{NewGeneration, RegistryState, StoreError};
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 pub(super) fn read(connection: &Connection) -> Result<RegistryState, StoreError> {
-    let mut generations = connection.prepare("SELECT id,plugin_id,artifact,config,origin,status,COALESCE(failure,'null'),created_at FROM generations ORDER BY id").map_err(backend)?;
+    let mut generations = connection.prepare("SELECT g.id,p.plugin_id,p.artifact,p.config,p.origin,p.status,COALESCE(p.failure,'null'),g.created_at FROM plugin_generations p JOIN generations g ON g.id=p.id ORDER BY g.id").map_err(backend)?;
     let generations = generations
         .query_map([], |row| {
             Ok(GenerationRecord {
@@ -32,9 +32,29 @@ pub(super) fn read(connection: &Connection) -> Result<RegistryState, StoreError>
         .map_err(backend)?
         .collect::<Result<_, _>>()
         .map_err(backend)?;
+    let mut configs = connection.prepare("SELECT g.id,c.document,g.created_at FROM config_generations c JOIN generations g ON g.id=c.id ORDER BY g.id").map_err(backend)?;
+    let configs = configs
+        .query_map([], |row| {
+            Ok(ConfigGeneration {
+                id: GenerationId(rows::unsigned(row, 0)?),
+                document: rows::document(row, 1)?,
+                created_at: rows::text(row, 2)?,
+            })
+        })
+        .map_err(backend)?
+        .collect::<Result<_, _>>()
+        .map_err(backend)?;
+    let active_config = connection
+        .query_row("SELECT active FROM config WHERE singleton=1", [], |row| {
+            Ok(GenerationId(rows::unsigned(row, 0)?))
+        })
+        .optional()
+        .map_err(backend)?;
     Ok(RegistryState {
         generations,
         active,
+        config_generations: configs,
+        active_config,
     })
 }
 
@@ -61,8 +81,13 @@ pub(super) fn insert(
         GenerationStatus::Healthy => "healthy",
         GenerationStatus::Failed => "failed",
     };
-    tx.execute("INSERT INTO generations(plugin_id,artifact,config,origin,status,created_at) VALUES (?,?,?,?,?,?)", params![plugin, generation.artifact.to_string(), encode(&generation.config)?, origin, status, timestamp(generation.created_at)]).map_err(backend)?;
+    tx.execute(
+        "INSERT INTO generations(created_at) VALUES (?)",
+        [timestamp(generation.created_at)],
+    )
+    .map_err(backend)?;
     let id = tx.last_insert_rowid();
+    tx.execute("INSERT INTO plugin_generations(id,plugin_id,artifact,config,origin,status) VALUES (?,?,?,?,?,?)", params![id, plugin, generation.artifact.to_string(), encode(&generation.config)?, origin, status]).map_err(backend)?;
     if activate {
         tx.execute(
             "UPDATE plugins SET active=? WHERE id=?",
@@ -87,7 +112,7 @@ pub(super) fn activate(
     for (id, failure) in failed {
         let changed = tx
             .execute(
-                "UPDATE generations SET status='failed',failure=? WHERE id=? AND plugin_id=?",
+                "UPDATE plugin_generations SET status='failed',failure=? WHERE id=? AND plugin_id=?",
                 params![encode(failure)?, signed(id.0)?, plugin.to_string()],
             )
             .map_err(backend)?;
@@ -113,7 +138,7 @@ pub(super) fn activate(
 pub(super) fn promote(connection: &Connection, generation: GenerationId) -> Result<(), StoreError> {
     let changed = connection
         .execute(
-            "UPDATE generations SET status='healthy' WHERE id=? AND status='trial'",
+            "UPDATE plugin_generations SET status='healthy' WHERE id=? AND status='trial'",
             [signed(generation.0)?],
         )
         .map_err(backend)?;
@@ -122,5 +147,37 @@ pub(super) fn promote(connection: &Connection, generation: GenerationId) -> Resu
             "generation {generation} is absent or not trial"
         )));
     }
+    Ok(())
+}
+
+pub(super) fn insert_config_generation(
+    connection: &mut Connection,
+    document: &serde_json::Value,
+    created_at: DateTime<Utc>,
+) -> Result<GenerationId, StoreError> {
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(backend)?;
+    tx.execute(
+        "INSERT INTO generations(created_at) VALUES (?)",
+        [timestamp(created_at)],
+    )
+    .map_err(backend)?;
+    let id = GenerationId(u64::try_from(tx.last_insert_rowid()).map_err(backend)?);
+    tx.execute(
+        "INSERT INTO config_generations(id,document) VALUES (?,?)",
+        params![signed(id.0)?, encode(document)?],
+    )
+    .map_err(backend)?;
+    activate_config(&tx, id)?;
+    tx.commit().map_err(backend)?;
+    Ok(id)
+}
+
+pub(super) fn activate_config(
+    connection: &Connection,
+    generation: GenerationId,
+) -> Result<(), StoreError> {
+    connection.execute("INSERT INTO config(singleton,active) VALUES (1,?) ON CONFLICT(singleton) DO UPDATE SET active=excluded.active", [signed(generation.0)?]).map_err(backend)?;
     Ok(())
 }

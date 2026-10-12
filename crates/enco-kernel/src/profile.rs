@@ -1,13 +1,11 @@
-use crate::Budget;
-use enco_core::{AttemptPurpose, ProviderSettings};
+use crate::{Budget, Endpoint};
+use enco_core::AttemptPurpose;
 
-/// A caller's endpoint, independent of the chosen code generation.
+/// A profile's endpoint with the context limits required by completion.
 #[derive(Clone)]
-pub struct Endpoint {
-    /// Registered plugin name whose completion export serves this endpoint.
-    pub plugin: String,
-    /// Durable parameters copied into AttemptStarted.
-    pub settings: ProviderSettings,
+pub struct CompletionEndpoint {
+    /// Resolved service shared with all endpoint users.
+    pub endpoint: Endpoint,
     /// Context window and reserved output of this model.
     pub budget: Budget,
 }
@@ -16,16 +14,16 @@ pub struct Endpoint {
 #[derive(Clone)]
 pub struct Profile {
     /// Endpoint used for ordinary replies.
-    pub reply: Endpoint,
+    pub reply: CompletionEndpoint,
     /// Endpoint used for summarizing history.
-    pub compaction: Endpoint,
+    pub compaction: CompletionEndpoint,
     /// Whether every reply plan must disclose all lifeline tools.
     pub requires_lifeline: bool,
 }
 
 impl Profile {
     /// Resolve the endpoint for this Attempt without consulting mutable routing.
-    pub fn endpoint(&self, purpose: AttemptPurpose) -> &Endpoint {
+    pub fn endpoint(&self, purpose: AttemptPurpose) -> &CompletionEndpoint {
         match purpose {
             AttemptPurpose::Reply => &self.reply,
             AttemptPurpose::Compaction => &self.compaction,

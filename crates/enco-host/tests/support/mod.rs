@@ -16,10 +16,11 @@ use std::{
 };
 use tokio::sync::broadcast;
 
-pub struct Probe(pub Result<(), Failure>);
+/// A plugin whose admission probe has a fixed result.
+pub struct ScriptedLifecycle(pub Result<(), Failure>);
 
 #[async_trait]
-impl Lifecycle for Probe {
+impl Lifecycle for ScriptedLifecycle {
     async fn probe(&self) -> Result<(), Failure> {
         self.0.clone()
     }
@@ -118,63 +119,116 @@ pub fn store_paths(root: &Path) -> StorePaths {
     }
 }
 
-pub fn settings() -> ProviderSettings {
-    ProviderSettings {
-        base_url: "https://fixture.invalid".into(),
-        model: "fixture".into(),
-        api_key_env: None,
-        options: serde_json::json!({}),
-    }
-}
-
-pub fn endpoint() -> Endpoint {
-    Endpoint {
-        plugin: "fixture".into(),
-        settings: settings(),
-        budget: Budget {
-            context_tokens: 128000,
-            max_output_tokens: 8192,
+/// Memory's table is required in production, so the fixture also configures an embedding.
+pub fn configuration() -> serde_json::Value {
+    serde_json::json!({
+        "owner": {"timezone": "UTC"},
+        "endpoint": {
+            "reply": {"plugin": "fixture", "base_url": "https://fixture.invalid", "model": "fixture", "window_tokens": 128000, "max_output_tokens": 8192},
+            "compaction": {"plugin": "fixture", "base_url": "https://fixture.invalid", "model": "fixture", "window_tokens": 128000, "max_output_tokens": 8192},
+            "embed": {"plugin": "fixture", "base_url": "https://fixture.invalid", "model": "fixture", "dimensions": 64}
         },
+        "profile": {"default": {"reply": "reply", "compaction": "compaction"}},
+        "memory": {"embedding": "embed"}
+    })
+}
+
+/// Exports of the factory fixture, which serves every configured use.
+pub fn fixture(completion: Arc<dyn Provider>, embedding: Arc<dyn Embedding>) -> Loaded {
+    Loaded {
+        lifecycle: Arc::new(ScriptedLifecycle(Ok(()))),
+        summary: "fixture".into(),
+        config_schema: serde_json::json!({}),
+        credential: None,
+        completion: Some(completion),
+        embedding: Some(embedding),
+        decision: None,
     }
 }
 
-pub fn profile() -> Profile {
-    Profile {
-        reply: endpoint(),
-        compaction: endpoint(),
-        requires_lifeline: true,
-    }
-}
-
-pub fn embedding_endpoint(model: &str, dimensions: usize) -> EmbeddingEndpoint {
-    EmbeddingEndpoint {
-        plugin: "fixture".into(),
-        settings: ProviderSettings {
-            model: model.into(),
-            ..settings()
-        },
-        dimensions,
-    }
-}
-
-pub async fn registry(root: &Path, loaded: Loaded) -> (Arc<Registry>, Arc<SqliteStore>) {
-    let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
-    let runtime = Arc::new(ScriptedRuntime::default());
-    runtime.insert(FACTORY_BYTES, loaded);
-    let registry = Registry::open(RegistryDeps {
-        store: store.clone(),
+/// The registry as the composition root assembles it, over a scripted runtime.
+pub fn registry_deps(
+    store: Arc<SqliteStore>,
+    runtime: Arc<dyn Runtime>,
+    factory: &[u8],
+    document: serde_json::Value,
+) -> RegistryDeps {
+    RegistryDeps {
+        store,
         runtime,
         factory: vec![FactoryPlugin {
             name: "fixture".into(),
             id: FIXTURE_ID.parse().unwrap(),
-            artifact: FACTORY_BYTES.to_vec(),
+            artifact: factory.to_vec(),
         }],
-        wiring: vec![],
+        owners: TABLE_OWNERS.into(),
+        bootstrap: Ok(document),
         clock: Arc::new(SystemClock),
-    })
+    }
+}
+
+pub async fn registry_configured(
+    root: &Path,
+    loaded: Loaded,
+    document: serde_json::Value,
+) -> (Arc<Registry>, Arc<SqliteStore>) {
+    let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
+    let runtime = Arc::new(ScriptedRuntime::default());
+    runtime.insert(FACTORY_BYTES, loaded);
+    let registry = Registry::open(registry_deps(
+        store.clone(),
+        runtime,
+        FACTORY_BYTES,
+        document,
+    ))
     .await
     .unwrap();
     (registry, store)
+}
+
+pub async fn open_memories(root: &Path, registry: Arc<Registry>) -> Arc<Memories> {
+    Memories::open(
+        MemoryPaths {
+            db: root.join("memory.db"),
+            index: root.join("memory-index"),
+        },
+        registry,
+        Arc::new(SystemClock),
+    )
+    .await
+    .unwrap()
+}
+
+/// The Kernel as the composition root assembles it over an already-built registry; memory
+/// joins with its context source and tools when the test exercises it.
+pub fn kernel_deps(
+    root: &Path,
+    store: Arc<SqliteStore>,
+    registry: Arc<Registry>,
+    memories: Option<Arc<Memories>>,
+) -> KernelDeps {
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let instructions = root.join("AGENTS.md");
+    let mut context: Vec<Arc<dyn ContextSource>> = vec![Arc::new(InstructionsContextSource::new(
+        instructions.clone(),
+    ))];
+    let mut tools = native_tools(workspace.clone());
+    if let Some(memories) = memories {
+        context.push(Arc::new(MemoryContextSource::new(memories.clone())));
+        tools.extend(memory_tools(memories));
+    }
+    tools.extend(plugin_tools(registry.clone(), workspace.clone()));
+    tools.extend(config::tools(root.join("config.toml"), registry.clone()));
+    KernelDeps {
+        store,
+        registry,
+        composer: Arc::new(FactoryComposer::new(workspace, instructions)),
+        context,
+        tools,
+        lifeline: LIFELINE.iter().map(|name| (*name).into()).collect(),
+        clock: Arc::new(SystemClock),
+    }
 }
 
 pub fn reply(text: &str) -> Result<Completion, Failure> {
@@ -223,40 +277,38 @@ pub async fn kernel_with(
     timezone: Tz,
     configure: impl FnOnce(&mut KernelDeps),
 ) -> (Kernel, Arc<SqliteStore>) {
-    let (registry, store) = registry(
-        root,
-        Loaded {
-            lifecycle: Arc::new(Probe(Ok(()))),
-            summary: "scripted".into(),
-            config_schema: serde_json::json!({}),
-            credential: None,
-            completion: Some(provider),
-            embedding: None,
-            decision: None,
-        },
-    )
-    .await;
-    let workspace = root.join("workspace");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let mut deps = KernelDeps {
-        store: store.clone(),
-        profiles: [("default".into(), profile())].into(),
-        registry: registry.clone(),
-        composer: Arc::new(FactoryComposer::new(
-            workspace.clone(),
-            root.join("AGENTS.md"),
-        )),
-        context: vec![Arc::new(InstructionsContextSource::new(
-            root.join("AGENTS.md"),
-        ))],
-        tools: native_tools(workspace.clone()),
-        lifeline: LIFELINE.iter().map(|s| s.to_string()).collect(),
-        clock: Arc::new(SystemClock),
-    };
-    deps.tools.extend(plugin_tools(registry, workspace));
+    let mut document = configuration();
+    document["owner"]["timezone"] = serde_json::json!(timezone);
+    kernel_configured(root, provider, document, configure).await
+}
+
+pub async fn kernel_configured(
+    root: &Path,
+    provider: Arc<dyn Provider>,
+    document: serde_json::Value,
+    configure: impl FnOnce(&mut KernelDeps),
+) -> (Kernel, Arc<SqliteStore>) {
+    // Without memory nothing recalls; the export only satisfies memory's declared use.
+    let loaded = fixture(provider, ScriptedProvider::new(vec![]));
+    let (registry, store) = registry_configured(root, loaded, document).await;
+    let mut deps = kernel_deps(root, store.clone(), registry, None);
     configure(&mut deps);
-    let config = KernelConfig::new(24, timezone).unwrap();
-    (Kernel::start(deps, config).await.unwrap(), store)
+    (Kernel::start(deps).await.unwrap(), store)
+}
+
+/// A node whose Kernel and Memories follow one registry; the provider serves both uses.
+pub async fn kernel_with_memory(
+    root: &Path,
+    provider: Arc<ScriptedProvider>,
+    document: serde_json::Value,
+    configure: impl FnOnce(&mut KernelDeps),
+) -> (Kernel, Arc<Memories>) {
+    let loaded = fixture(provider.clone(), provider);
+    let (registry, store) = registry_configured(root, loaded, document).await;
+    let memories = open_memories(root, registry.clone()).await;
+    let mut deps = kernel_deps(root, store, registry, Some(memories.clone()));
+    configure(&mut deps);
+    (Kernel::start(deps).await.unwrap(), memories)
 }
 
 pub async fn finish(rx: &mut broadcast::Receiver<Entry>) -> Vec<Entry> {

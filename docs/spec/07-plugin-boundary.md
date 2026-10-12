@@ -2,7 +2,7 @@
 
 OpenAI-Compatible、DeepSeek 与 TypeSafe 三个 Provider 插件共享 `plugins/provider-protocol` 中的 WIT 绑定、HTTP 传输与失败分类。它们都以 Wasm 组件运行，作为出厂代际嵌入宿主二进制（11 §3）。插件边界从第一天起真实存在：插件只看到 WIT，宿主只看到端口。
 
-本章描述契约 `enco:plugin@0.3.0`。0.2.0 定稿了 P1 用到的五个接口：`types`、`host`、`completion`、`embedding`、`lifecycle`；0.2.1 新增 `decision`；0.3 让 `describe` 定形，并让密钥只出现在传输层。工具接口与插件自带的凭证随第一个工具插件加入，渠道接口在 P3，状态读取等到第一个有状态的插件。契约不预留：每一项随第一个使用者加入，需要破坏就升主版本（架构文档 §4.4）。
+本章描述当前契约 `enco:plugin@0.3.0`。工具接口与插件自带的凭证随第一个工具插件加入，渠道接口在 P3，状态读取等到第一个有状态的插件。契约不预留：每一项随第一个使用者加入，需要破坏就升主版本（架构文档 §4.4）。
 
 ## 1. WIT（`wit/`）
 
@@ -20,27 +20,15 @@ OpenAI-Compatible、DeepSeek 与 TypeSafe 三个 Provider 插件共享 `plugins/
 | `lifecycle` | `credential { header, prefix, required }`；`description { summary, config-schema: json, credential: option<credential> }`；`describe(config) -> result<description, failure>`；异步的 `probe() -> result<_, failure>` |
 | `base` / `completion-plugin` / `embedding-plugin` / `decision-plugin` / `provider-plugin` | `base` 导入 `host`、导出 `lifecycle`；其余在其上分别导出 `completion`、`embedding`、`decision`，`provider-plugin` 导出前两者 |
 
-与 0.1 的差别，以及为什么：
+契约按使用者划分，声明只包含实际需要的事实：
 
-- **`provider` 拆成 `completion` 与 `embedding`。** 两个接口的导入方不同（内核与宿主）、约束不同（补全只由内核导入），也可以单独提供：DeepSeek 只导出 `completion`，不再需要一个"返回不支持"的 `embed`。接口按导入方划分，不按实现方划分（架构文档 §4.10）。
-- **`extension` 不再带 `provider`。** 插件不自报身份。产生扩展字段的 Attempt 记录了代际，内核按代际查到身份，只把同一身份的扩展字段回放给插件（04 §6.5）。插件收到的扩展字段一定是自己的，直接合并回请求即可，不再比较名字。
-- **`describe` 不再返回名字与版本。** 名字是主人仓库里的目录名，身份记录在 `plugins.lock`（11 §2）。`describe(config)` 返回一句话 `summary`，供 `plugin status` 显示；配置无法接受时返回 `failure`，部署被拒绝。P1 的配置恒为 `{}`。
-- **加入 `probe`。** 自检，不联网，不依赖主人的配置；部署时调用，失败即拒绝（11 §7）。出厂插件的 probe 直接返回成功。
-- **`settings` 搬进 `types`。** 两个接口共用一份调用参数。
-
-0.2.1 新增 `decision`：
-
-- **为什么是新接口。** 它对同一份 state 独立回答若干问题，返回概率而不是文本，也可以单独提供：TypeSafe 只导出它（架构文档 §4.10）。TypeSafe 的 `/v1/systemone` 与 OpenAI 的 `/v1/decisions` 语义相同，实现它们的插件都导出这个接口。
-- **契约只取两家的公共部分。** 答案按问题顺序返回，与 `embed` 相同。只返回概率：选中项与加权分数可以由概率算出，置信度的算法各家不同，由导入方从分布自行判断。`refused` 是单个问题的结果，因为 OpenAI 会对单个问题拒绝回答。state 只收文本。
-- **为什么是 0.2.1。** 只增不改。wasmtime 按 `0.2` 兼容匹配导入与导出的名字，已部署的 0.2.0 制品照常加载。
-- **不扩展 `provider-plugin`。** 契约只提供单导出的 world；需要多个导出的插件在自己的 WIT 中用 `include` 组合。
-
-0.3 的改动，以及为什么：
-
-- **密钥只出现在传输层。** `settings` 删除 `api-key`。插件在 `describe` 中声明凭证放在哪个请求头、带什么前缀、是否必需；宿主在每次调用时按 endpoint 的 `api_key_env` 读取值，附加到去往 `base-url` 所在 origin 的请求上（§3.2）。插件、内核、Log 都碰不到值，插件的缺陷因此写不出它没见过的密钥（架构文档 §4.11）。
-- **`description` 定形。** 加上 `config-schema` 与 `credential`。`describe` 只放每个插件都有的东西：插件整体的事实，以及它对宿主导入的需求，凭证修饰的就是 `http` 导入。工具定义、渠道资源由各自的接口声明，不放进这里（架构文档 §4.4）。
-- **凭证只有一种，至多一个。** 它附加到调用方选定的服务，密钥写在同一个 endpoint 旁边；`option` 本身表达了至多一个。插件自带的凭证（名字与 origin）随第一个这样的插件加入，路径前缀等放置方式随第一个需要它们的服务加入。
-- **为什么是 0.3。** 改 record 是破坏性变化。宿主只链接 0.3 的制品，0.2 的制品在加载时被拒绝，错误信息写明版本（§3.3）。插件源码都归主人，出厂插件随宿主一起重建。
+- **`completion`、`embedding` 与 `decision` 分开导出。** 它们的导入方与约束不同，也可以单独提供：DeepSeek 只导出补全，TypeSafe 只导出判断。调用参数由 `types.settings` 共用；需要多个导出的插件通过 `include` 组合 world。
+- **身份由注册表拥有。** `describe(config)` 返回 `summary`、`config-schema` 与 `credential`；配置无法接受时返回 `failure`。名字与身份在 `plugins.lock` 中。扩展字段的归属由产生它的 Attempt 所记录的代际确定，内核只向同一插件身份回放（04 §6.5）。
+- **`probe` 只做自检。** 它不联网，也不依赖主人的配置；部署时调用，失败即拒绝（11 §7）。
+- **`decision` 返回概率。** 对同一份文本 state 独立判断每个问题，按问题顺序返回概率分布或 `refused`；选中项、分数与后续政策由导入方决定。
+- **密钥只出现在传输层。** 插件声明请求头、前缀与是否必需；宿主在调用时按 endpoint 的 `api_key_env` 读取值，仅附加到 `base-url` 所在 origin 的请求上（§3.2）。插件、内核与 Log 都不接触值。
+- **凭证至多一个。** `option<credential>` 表达当前服务所需的凭证；插件自带的凭证及其他放置方式随第一个使用者加入。
+- **宿主只链接当前契约的主版本。** 不匹配的制品在加载时被拒绝，错误指出版本；插件源码归主人，出厂插件随宿主一起重建。
 
 每个 world、interface、type、function 都必须有英文的 `///` 文档（02 §7），09 §2 的门禁会检查。失败码是普通字符串，与内核使用的码（03 §1.6）完全相同，不做任何转换。
 

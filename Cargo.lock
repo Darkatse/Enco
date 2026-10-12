@@ -104,15 +104,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
-name = "arc-swap"
-version = "1.9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -904,6 +895,7 @@ name = "enco"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "dirs",
  "enco-core",
@@ -911,6 +903,7 @@ dependencies = [
  "enco-kernel",
  "enco-wasm",
  "iana-time-zone",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -919,7 +912,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "ulid",
  "wiremock",
 ]
 
@@ -941,7 +933,6 @@ name = "enco-host"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "blake3",
  "chrono",
  "enco-core",
  "enco-kernel",
@@ -963,7 +954,6 @@ dependencies = [
 name = "enco-kernel"
 version = "0.1.0"
 dependencies = [
- "arc-swap",
  "async-trait",
  "croner",
  "enco-core",
@@ -973,7 +963,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "ulid",
 ]
 
 [[package]]

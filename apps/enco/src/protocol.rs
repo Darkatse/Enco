@@ -40,8 +40,12 @@ pub(crate) enum Command {
     PluginStatus {},
     PluginDeploy {
         name: String,
-        path: std::path::PathBuf,
+        source: DeploySource,
     },
+    ConfigApply {
+        generation: Option<GenerationId>,
+    },
+    ConfigRollback {},
     PluginRollback {
         name: String,
     },
@@ -74,4 +78,11 @@ pub(crate) enum ServerMessage {
         session: String,
         entry: Box<Entry>,
     },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DeploySource {
+    Path(std::path::PathBuf),
+    Generation(GenerationId),
 }

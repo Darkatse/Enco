@@ -36,7 +36,7 @@ The agent is the main user of Enco and also a long-term maintainer of its code. 
 
 ### Hot reload with rollback (P1)
 
-The agent can edit a plugin, rebuild it and swap it in while Enco keeps running. New code takes effect at the start of the next round, which is the only point where code is replaced. A new version is kept only if it passes a health check, and Enco falls back to the previous one otherwise. If things break badly, safe mode keeps a small set of file, shell and deployment tools available for repair. Replacing the host binary itself always needs the owner's confirmation.
+The agent can edit a plugin, rebuild it and swap it in while Enco keeps running. New code takes effect at the start of the next round, which is the only point where code is replaced. A new version is kept only if it passes a health check, and Enco falls back to the previous one otherwise. If things break badly, safe mode keeps a small set of file, shell, plugin deployment and configuration tools available for repair. Replacing the host binary itself always needs the owner's confirmation.
 
 ### A durable record
 
@@ -46,7 +46,7 @@ Every model request and tool call is written to an append-only log before it run
 
 Long-term memories are stored as records in SQLite. Recall goes through a [TriviumDB](https://github.com/YoKONCy/TriviumDB) index that combines vector search with keyword search suited to Chinese text. The index can be deleted and rebuilt from the records at any time, and every search hit is re-read from the records, so a corrected or forgotten memory cannot come back from a stale index. Pinned memories go into the context first. When the embedding service is unavailable, recall falls back to keywords and the recorded request notes why.
 
-An optional TypeSafe decision plugin filters automatically recalled memories for relevance. Enable `[decision]` in the [config example](examples/deepseek-gemini.toml) to use it. Service failures keep the recalled memories and record the reason; pinned memories and explicit `memory_search` results are not filtered.
+An optional TypeSafe decision plugin filters automatically recalled memories for relevance. Enable `[endpoint.relevance]` and select it with `[memory] relevance` in the [config example](examples/deepseek-gemini.toml). Service failures keep the recalled memories and record the reason; pinned memories and explicit `memory_search` results are not filtered.
 
 ### Roaming across devices (P4)
 
@@ -100,6 +100,8 @@ Edit `~/.enco/config.toml` (examples are in [`examples/`](examples/)), export th
 cargo run -p enco -- serve     # start the service
 cargo run -p enco -- chat      # in another terminal
 ```
+
+After the first startup, edit the config and run `enco config apply` to register changes. Restarts restore the registered configuration; `enco status` reports unapplied or superseded file contents. Use `enco config apply --generation <N>` to register earlier content again, or `enco config rollback` for recovery without model calls. Older databases require manual migration or recreation.
 
 Standing instructions live in `~/.enco/AGENTS.md`; runtime data lives in `~/.enco/.data/`. To enable Telegram, uncomment the `[telegram]` block in the config example, set your user ID, and export the token variable. `/session` selects a Session, `/cancel` cancels its Run, and `enco status` lists channel health and recent failed or uncertain deliveries.
 

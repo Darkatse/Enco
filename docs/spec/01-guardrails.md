@@ -22,7 +22,7 @@
 | 除规格列出的之外的后台任务 | 节点的后台任务只有：每个 Session 一个 actor、Scheduler、Wasm epoch 计时器、本地协议的接受循环与每连接任务、渠道归属者及其轮询/订阅/发送助手（10）。记忆没有后台任务：索引在召回前对账（06 §3.3）。评测运行器见 13 |
 | 超出 08 与 13 所列的配置项与环境变量（`ENCO_HOME`、`ENCO_LOG`、`api_key_env` / `token_env` 指定的变量），以及在本仓库的 crate 中定义 Cargo feature | 其余一律写死为常量，集中放在各 crate 的 `limits.rs` 中 |
 | 在通用执行路径中按具体工具、Provider 或服务身份写业务分支 | 分派只处理 `CapabilityId`、`ToolSpec`、`CodeRef`。内核自己的 Schedule 命令通过普通 Tool 端口接入（04 §11），不增加专用分派路径 |
-| 第二条请求构造路径；第二个事实来源 | 请求只由 composer 构造（04 §6.2）；事实只在 `enco.db`（Log、Inbox、schedules、connections、deliveries、plugins、generations、meta）、`memory.db`（记忆）与 `plugins.lock`（名字与身份）中。记忆索引与注册表的导出表是派生物，不是事实来源（06 §1、11 §4.2） |
+| 第二条请求构造路径；第二个事实来源 | 请求只由 composer 构造（04 §6.2）；事实只在 `enco.db`（Log、Inbox、schedules、connections、deliveries、plugins、两种代际与活跃配置、meta）、`memory.db`（记忆）与 `plugins.lock`（名字与身份）中。记忆索引与注册表的视图（导出表、已求出的声明）是派生物，不是事实来源（06 §1、11 §4） |
 | 为后续阶段预留空结构、空 trait、`todo!()`、注释掉的代码 | 到时候再加 |
 | 宏（`macro_rules!`、过程宏）、泛型参数化的"通用框架" | 重复三次以上并且确实相同时，提取普通函数 |
 

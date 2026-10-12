@@ -1,4 +1,4 @@
-use super::{Memories, Relevance};
+use super::Memories;
 use crate::limits::MEMORY_RECALL_DEFAULT;
 use async_trait::async_trait;
 use enco_core::*;
@@ -6,15 +6,11 @@ use enco_kernel::{ContextError, ContextQuery, ContextSource};
 use std::{collections::HashSet, sync::Arc};
 pub struct MemoryContextSource {
     memories: Arc<Memories>,
-    relevance: Option<Relevance>,
 }
 
 impl MemoryContextSource {
-    pub fn new(memories: Arc<Memories>, relevance: Option<Relevance>) -> Self {
-        Self {
-            memories,
-            relevance,
-        }
+    pub fn new(memories: Arc<Memories>) -> Self {
+        Self { memories }
     }
 }
 
@@ -42,16 +38,13 @@ impl ContextSource for MemoryContextSource {
                 .chain(recall.unindexed)
                 .filter(|memory| !memory.pinned)
                 .collect();
-            if let Some(relevance) = &self.relevance {
-                let filtered = relevance
-                    .filter(&text, recalled, &query.cancel)
-                    .await
-                    .map_err(|e| ContextError(e.to_string()))?;
-                rows.extend(filtered.kept);
-                omitted.extend(filtered.omitted);
-            } else {
-                rows.extend(recalled);
-            }
+            let filtered = self
+                .memories
+                .filter_relevance(&text, recalled, &query.cancel)
+                .await
+                .map_err(|e| ContextError(e.to_string()))?;
+            rows.extend(filtered.kept);
+            omitted.extend(filtered.omitted);
             if let Some(failure) = recall.lexical_only {
                 omitted.push(Omission {
                     source: "memory:semantic".into(),

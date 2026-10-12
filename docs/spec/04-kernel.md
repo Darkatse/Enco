@@ -103,7 +103,7 @@ pub struct Label { pub name: String, pub description: Option<String> }
 pub enum Answer { Predicate(f64), Choice(Vec<f64>), Score(Vec<f64>), Refused }
 ```
 
-代际由谁记录：适配器不再自报 `code()`。调用方从导出表拿到 `Export { generation, adapter }`（11 §4.2），把 `generation` 写进 Log。
+代际由谁记录：适配器不自报身份，调用方从导出表拿到 `Export { generation, adapter }`（11 §4.2），把 `generation` 写进 Log。
 
 ```rust
 // ports/composer.rs
@@ -115,7 +115,7 @@ pub trait Composer: Send + Sync {
 
 pub struct ComposeInput {
     pub now: DateTime<Utc>,                // 本 Round 读取的时刻（Clock）
-    pub timezone: Tz,                      // 主人的时区（KernelConfig），用于把时刻换算为当地时间
+    pub timezone: Tz,                      // 主人的时区（本 Round 钉住的配置，12 §1），用于把时刻换算为当地时间
     pub session: SessionRecord,
     pub profile: Profile,                  // 本 Round 解析出的 profile（12）：两个用途的预算与 requires_lifeline
     pub transcript: Transcript,
@@ -126,7 +126,7 @@ pub struct ComposeInput {
     pub compactions_left: u32,             // 本 Round 还允许几次压缩；为 0 时只能返回 Plan 或失败
 }
 
-pub struct Budget { pub context_tokens: u32, pub max_output_tokens: u32 }
+pub struct Budget { pub context_tokens: NonZeroU32, pub max_output_tokens: NonZeroU32 }
 
 /// Log 的模型视图，由内核投影（§5）。
 pub struct Transcript {
@@ -212,7 +212,6 @@ pub trait Clock: Send + Sync {
 pub struct KernelDeps {
     pub store: Arc<dyn Store>,
     pub registry: Arc<Registry>,     // 代际的归属者，由组合根先于 Kernel 打开（11 §4）
-    pub profiles: BTreeMap<String, Profile>,   // 来自配置（12 §2）；必须含 "default"
     pub composer: Arc<dyn Composer>,
     pub context: Vec<Arc<dyn ContextSource>>,
     pub tools: Vec<Arc<dyn Tool>>,   // 宿主提供的工具；内核再加入自己的内置工具（§11）
@@ -220,24 +219,14 @@ pub struct KernelDeps {
     pub clock: Arc<dyn Clock>,
 }
 
-/// 字段不公开，只能经 `KernelConfig::new` 构造。
-pub struct KernelConfig {
-    max_rounds_per_run: u32,
-    timezone: Tz,                 // 主人的时区（08 §3）：composer 的时间显示与跟随型周期定时都用它
-}
-
-impl KernelConfig {
-    /// Round 数必须为正，否则返回 `KernelError::Config`。预算随 profile 走，由配置读取时检查（12 §2）。
-    pub fn new(max_rounds_per_run: u32, timezone: Tz) -> Result<Self, KernelError>;
-}
+profile、`max_rounds` 与主人的时区是活跃配置代际中内核的几张表，从注册表的视图读取（11 §4、12 §1）。
 
 impl Kernel {
     /// 构造 Snapshot，启动 Scheduler，为每个已有 Session 启动 actor（actor 启动时自行恢复）。
-    /// `profiles` 中没有 "default" 时返回 `KernelError::UnknownProfile`。
-    pub async fn start(deps: KernelDeps, config: KernelConfig) -> Result<Kernel, KernelError>;
+    pub async fn start(deps: KernelDeps) -> Result<Kernel, KernelError>;
     /// 不存在则创建（profile 为 "default"），并确保它的 actor 已经启动。
     pub async fn open_session(&self, name: &str) -> Result<SessionRecord, KernelError>;
-    /// 改变 Session 的 profile，下一个 Round 生效。名字不在 `profiles` 中返回 `UnknownProfile`。
+    /// 改变 Session 的 profile，下一个 Round 生效。经注册表写入（11 §5），名字不在活跃配置代际中返回 `UnknownProfile`。
     pub async fn set_profile(&self, session: SessionId, profile: &str) -> Result<(), KernelError>;
     /// 把一次 Attempt 记录的请求解析出来（§14）。`attempt` 为空时取该 Session 最近的一次。
     pub async fn inspect(&self, session: SessionId, attempt: Option<AttemptId>) -> Result<Inspection, KernelError>;
@@ -268,7 +257,7 @@ pub struct Status {
     pub node: NodeId,
     pub safe_mode: bool,
     pub composer: CodeRef,
-    pub profiles: Vec<String>,            // 配置中的 profile 名字
+    pub profiles: Vec<String>,            // 当前视图中的 profile 名字
     pub sessions: Vec<SessionStatus>,
     pub scheduler_stopped: Option<String>, // Scheduler 因错误停止的原因，与 Session 的 stopped 同义
 }
@@ -276,7 +265,7 @@ pub struct Status {
 pub struct SessionStatus { pub session: SessionRecord, pub running: bool, pub stopped: Option<String> }
 ```
 
-Provider 不再出现在 `Status` 里：它随 profile 与代际变化，看 `enco plugin status` 与每次 Attempt 的记录。
+`Status` 里没有 Provider：它随 profile 与代际变化，看 `enco plugin status` 与每次 Attempt 的记录。
 
 Scheduler 触发提醒时走 `store.fire_schedule`，它把 Schedule 的状态变化与 Inbox 投递放在同一个事务里，是同一种提交的内部形式。
 
@@ -332,7 +321,7 @@ loop:
     run()                                         // §6
 ```
 
-`SessionRecord` 中只有 `profile` 会在运行中改变（`Kernel::set_profile`）。actor 在每个 Round 开始时用 `store.session(id)` 重读一次记录，所以改动在下一个 Round 生效，不需要给 actor 发消息。
+`SessionRecord` 中只有 `profile` 会在运行中改变（`Kernel::set_profile`，由注册表写入，11 §5）。actor 在每个 Round 开始时经注册表在提交者的锁内重读 `store.session(id)`，同时取得配置视图，使 profile 引用与配置来自同一个边界；改动在下一个 Round 生效，不需要给 actor 发消息。
 
 **提交辅助函数** `commit(bodies, consumed)`：从 `next` 开始依次分配位置，`at = clock.now()`，调用 `store.commit`；成功后追加到内存副本，并把每个条目发送到 broadcast（没有订阅者时忽略发送错误）。
 
@@ -360,7 +349,8 @@ run():
     run_id = RunId::new()
     token = shutdown.child_token(); handle.run_cancel = Some(token)
     prefix = [RunStarted { run: run_id }]         // 与第一个 Round 的开始一起提交
-    for _ in 1..=max_rounds_per_run:
+    max_rounds = registry.view().config.kernel.max_rounds_per_run   // Run 开始时读取一次
+    for _ in 1..=max_rounds:
         end = round(run_id, token, take(prefix))
         if let Some(run_end) = end.terminal_run_end(): end_run(run_end); return   // Cancelled、Failed、Interrupted
         if end == Replied && store.pending(session).is_empty(): end_run(Completed); return
@@ -376,13 +366,14 @@ run():
 ```text
 round(run, token, prefix) -> RoundEnd:
     round_id = RoundId::new()
-    session = store.session(id)                    // 重读，profile 可能已改（§4.2）
+    (session, view) = registry.session_view(id)    // 在提交者的锁内一起读取 Session 和视图
     snapshot = self.deps.snapshot.clone()          // 本轮钉住
+    config = view.config                          // 本轮钉住 profile 与时区；Attempt 仍从最新的视图取 Provider 代际（§6.4）
     safe_mode = store.node().safe_mode             // 安全模式在 Round 边界生效
     pending = store.pending(session)
     commit(prefix ++ [EventConsumed { e } for e in pending] ++ [RoundStarted { run, round_id, safe_mode }],
            consumed = pending 的 id)
-    profile = profiles[session.profile]，没有 → end_round(Failed(profile.unknown，错误中带 profile 名称))
+    profile = config.kernel.profiles[session.profile]，没有 → end_round(Failed(profile.unknown，错误中带 profile 名称))
 
     planned = compose(snapshot, profile, round_id, safe_mode, token)?            // §6.3；计划携带本轮 composer 的 CodeRef
     completion = attempt(profile.reply, round_id, safe_mode, planned, token)?   // §6.4；取消或失败则 end_round
@@ -409,7 +400,7 @@ compose(snapshot, profile, round, safe_mode, token):
     if token.is_cancelled(): return Ended(Cancelled)          // 无论来源返回了什么（§9）
     任何一个来源出错 → Failed(context.failed)
     input = ComposeInput {
-        now, timezone: config.timezone, session, profile, transcript: transcript::project(&entries),
+        now, timezone: config.kernel.timezone, session, profile, transcript: transcript::project(&entries),
         previous_plan: 最近一条目的为 Reply 的 AttemptStarted 的计划（从 blob 读取）,
         context,
         tools: if safe_mode { 救生集 } else { 全部 },
@@ -435,7 +426,7 @@ compose(snapshot, profile, round, safe_mode, token):
 
 上一份回复计划的 blob 缺失或内容哈希不符时，`previous_plan = None`，在 `input.context.omitted` 中记录 `previous-plan:<hash>` 及不可读取的原因。composer 由此开始新的系列；其他存储错误与计划反序列化错误照常传播。
 
-`exports = registry.exports()`，`target(用途)` 是 `profile.endpoint(用途).plugin` 通过 `completion(插件, safe_mode)` 取得的身份（11 §4.2）；找不到 → Failed(plugin.unavailable)。一个 Round 内目标插件由 profile 固定，代际可以变（§6.4），所以解析一次的请求在重试中仍然有效。
+`exports = registry.view().exports`，`target(用途)` 是 `profile.endpoint(用途).plugin` 通过 `completion(插件, safe_mode)` 取得的身份（11 §4.2）；找不到 → Failed(plugin.unavailable)。一个 Round 内目标插件由 profile 固定，代际可以变（§6.4），所以解析一次的请求在重试中仍然有效。
 
 ### 6.4 Attempt 与重试（`attempt.rs`）
 
@@ -446,7 +437,7 @@ attempt(endpoint, round, safe_mode, planned, token):
     plan_hash = store.put_blob(serde_json::to_vec(planned.plan))      // 先写 blob，再提交引用它的条目
     kind = planned.kind
     for n in 1..=MAX_ATTEMPTS:
-        export = registry.exports().completion(endpoint.plugin, safe_mode)?   // 失败 → Ended(Failed(plugin.unavailable))，不写 AttemptStarted
+        export = registry.view().exports.completion(endpoint.plugin, safe_mode)?   // 失败 → Ended(Failed(plugin.unavailable))，不写 AttemptStarted
         attempt_id = AttemptId::new()
         commit([AttemptStarted { round, attempt_id, purpose: kind 的目的, plan: plan_hash,
                                  composer: planned.composer,
@@ -616,7 +607,7 @@ impl Scheduled {
 ```text
 next_after(rule, after) -> Option<DateTime<Utc>>
     Once { at }               => at > after 时为 at，否则没有
-    Cron { expr, timezone }   => 在 timezone（为空时用 KernelConfig.timezone）中，求 after 之后的第一个触发，转为 UTC
+    Cron { expr, timezone }   => 在 timezone（为空时用主人的时区）中，求 after 之后的第一个触发，转为 UTC
 
 after = last.due_at；还没有触发过时为 created_at
 ```
@@ -624,7 +615,7 @@ after = last.due_at；还没有触发过时为 created_at
 - cron 的解析与求值用 croner，时区数据来自编译进二进制的 chrono-tz。使用 5 段规则（解析器的秒与年都设为 `Disallowed`），也接受解析器支持的别名，例如 `@daily`。
 - 夏令时的空档与重叠按 croner 的规则处理：固定时刻的规则每天触发一次，间隔型规则按当地时间逐个匹配。
 - 从 `last.due_at` 原样往后推，而不是从当前时刻，重复的那一小时才不会被算两遍。
-- 主人的时区随配置改变后（重启生效），跟随型的定时从 `last` 起按新时区推算，指定了 `timezone` 的不受影响。所以向西改时区时，新时区当天已经过去的那次会立即补发（例如纽约 08:00 已投递后改为洛杉矶，会补发洛杉矶的 08:00），与宕机后的补发是同一条规则。
+- 主人的时区来自注册表的视图。Scheduler 订阅视图（`Registry::subscribe`，11 §4），时区一变就立即为跟随型的定时从 `last` 起按新时区重新推算 `next_due`；指定了 `timezone` 的不受影响。所以向西改时区时，新时区当天已经过去的那次会立即补发（例如纽约 08:00 已投递后改为洛杉矶，会补发洛杉矶的 08:00），与宕机后的补发是同一条规则。
 
 ### 10.2 actor 循环
 
@@ -636,6 +627,7 @@ tick = interval(SCHEDULER_TICK)，MissedTickBehavior::Delay     // 第一次 tic
 loop select:
     cmd = rx.recv()          => create / list / cancel，同时更新内存
     _ = tick.tick()          => fire_due(clock.now())
+    _ = views.changed()      => 时区变了时，重新推算跟随型定时的 next_due
     _ = shutdown.cancelled() => break
 
 fire_due(now):
@@ -771,7 +763,7 @@ inspect(session, attempt):
     started = attempt 指定时找那条 AttemptStarted，否则取最后一条；没有 → UnknownAttempt
     plan = store.get_blob(started.plan)
     transcript = transcript::project(位置小于 started.pos 的条目)    // 组装时看到的历史
-    target = registry.exports().plugin_of(started.provider)            // 当时用的插件；注册表没有这个代际 → StoreError::UnknownGeneration
+    target = registry.view().exports.plugin_of(started.provider)            // 当时用的插件；注册表没有这个代际 → StoreError::UnknownGeneration
     request = plan::resolve(&plan, &transcript, &exports, target)
     result = 对应的 AttemptSettled（如果有）
 ```

@@ -36,7 +36,7 @@ Agent 是 Enco 的首要使用者，也是它长期的维护者。能力、源�
 
 ### 热更新与回滚（P1）
 
-Agent 可以在 Enco 运行时修改插件、重新构建并替换上线。新代码从下一个 Round 开始生效，Round 边界是唯一替换代码的时机。新版本通过健康检查才会保留，否则退回上一版。如果改坏得比较严重，安全模式会保留一小组文件、Shell 和部署工具用来修复。替换宿主程序本身始终需要主人确认。
+Agent 可以在 Enco 运行时修改插件、重新构建并替换上线。新代码从下一个 Round 开始生效，Round 边界是唯一替换代码的时机。新版本通过健康检查才会保留，否则退回上一版。如果改坏得比较严重，安全模式会保留一小组文件、Shell、插件部署和配置工具用来修复。替换宿主程序本身始终需要主人确认。
 
 ### 可靠的记录
 
@@ -46,7 +46,7 @@ Agent 可以在 Enco 运行时修改插件、重新构建并替换上线。新�
 
 长期记忆以记录的形式存放在 SQLite 中。召回经过 [TriviumDB](https://github.com/YoKONCy/TriviumDB) 索引，它把向量检索和适合中文的关键词检索结合起来。索引随时可以删除并从记录重建；每条检索结果都要回到记录中重新读取，所以已经更正或遗忘的记忆不会因为索引过期而重新出现。置顶记忆优先进入上下文。embedding 服务不可用时，召回退回到关键词检索，并在记录的请求中注明原因。
 
-可选的 TypeSafe 决策插件按相关性过滤自动召回的记忆，启用[配置示例](examples/deepseek-gemini.toml)中的 `[decision]` 即可。服务失败时保留召回结果并记录原因；置顶记忆和显式 `memory_search` 的结果不经过过滤。
+可选的 TypeSafe 决策插件按相关性过滤自动召回的记忆，启用[配置示例](examples/deepseek-gemini.toml)中的 `[endpoint.relevance]`，并在 `[memory] relevance` 中选用它即可。服务失败时保留召回结果并记录原因；置顶记忆和显式 `memory_search` 的结果不经过过滤。
 
 ### 多设备漫游（P4）
 
@@ -100,6 +100,8 @@ cargo run -p enco -- init      # 创建 ~/.enco 与配置模板
 cargo run -p enco -- serve     # 启动服务
 cargo run -p enco -- chat      # 在另一个终端中
 ```
+
+首次启动之后，修改配置要执行 `enco config apply` 才会登记生效。重启恢复已登记的配置；`enco status` 报告文件中尚未应用或已被取代的内容。`enco config apply --generation <N>` 可以重新登记早期内容，`enco config rollback` 则用于不发模型调用的机械恢复。旧库需要手动迁移或重建。
 
 常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`。启用 Telegram 时，取消配置示例中 `[telegram]` 段的注释，填写主人的 user ID 并导出 token 环境变量。`/session` 切换 Session，`/cancel` 取消当前 Run；`enco status` 列出渠道状态以及最近失败或未知的投递。
 

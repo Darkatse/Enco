@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) struct State {
+pub(super) struct Plugins {
     pub names: BTreeMap<String, PluginId>,
     pub generations: BTreeMap<GenerationId, GenerationRecord>,
     pub active: BTreeMap<PluginId, GenerationId>,
@@ -9,8 +9,11 @@ pub(super) struct State {
     pub trial_successes: BTreeMap<GenerationId, u32>,
 }
 
-impl State {
-    pub async fn initialize(deps: &RegistryDeps) -> Result<Self, RegistryError> {
+impl Plugins {
+    pub async fn initialize(
+        deps: &RegistryDeps,
+        records: crate::RegistryState,
+    ) -> Result<Self, RegistryError> {
         let names = deps.store.plugin_names().await?;
         for name in names.keys() {
             validate_name(name)?;
@@ -20,7 +23,6 @@ impl State {
                 return Err(RegistryError::FactoryIdentity(factory.name.clone()));
             }
         }
-        let records = deps.store.registry().await?;
         for record in &records.generations {
             if !names.values().any(|id| *id == record.plugin) {
                 return Err(RegistryError::UnknownPlugin(record.plugin.to_string()));
@@ -158,6 +160,65 @@ impl State {
                     )
                 })
                 .collect(),
+        }
+    }
+}
+
+pub(super) struct State {
+    pub plugins: Plugins,
+    pub configs: BTreeMap<GenerationId, ConfigGeneration>,
+    pub config: ActiveConfig,
+}
+
+impl State {
+    pub async fn initialize(deps: &RegistryDeps) -> Result<Self, RegistryError> {
+        let mut records = deps.store.registry().await?;
+        let mut configs: BTreeMap<_, _> = std::mem::take(&mut records.config_generations)
+            .into_iter()
+            .map(|record| (record.id, record))
+            .collect();
+        let active = records.active_config;
+        let mut plugins = Plugins::initialize(deps, records).await?;
+        activation::restore(deps, &mut plugins).await?;
+        let config = match active {
+            // Restoration is mechanical: it reports what this host cannot honor and keeps running.
+            Some(id) => {
+                let record = configs
+                    .get(&id)
+                    .ok_or(RegistryError::UnknownGeneration(id))?;
+                let declaration = configuration::declare(&record.document, &deps.owners)
+                    .map_err(RegistryError::Config)?;
+                if let Err(error) = check_uses(&plugins, &declaration.uses) {
+                    tracing::warn!(%error, "restored configuration has unavailable uses");
+                }
+                declaration.into_active(record)
+            }
+            // First registration adopts the configuration in use, so it must be fully valid.
+            None => {
+                let document = deps.bootstrap.clone().map_err(RegistryError::Bootstrap)?;
+                let declaration = configuration::declare_valid(&document, &deps.owners)?;
+                check_uses(&plugins, &declaration.uses)?;
+                let record = configuration::register(
+                    deps.store.as_ref(),
+                    &mut configs,
+                    document,
+                    deps.clock.now(),
+                )
+                .await?;
+                declaration.into_active(&record)
+            }
+        };
+        Ok(Self {
+            plugins,
+            configs,
+            config,
+        })
+    }
+
+    pub fn view(&self) -> View {
+        View {
+            exports: self.plugins.exports(),
+            config: self.config.clone(),
         }
     }
 }

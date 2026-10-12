@@ -363,7 +363,6 @@ async fn both_plugins_preserve_tool_ids_and_provider_extensions_across_rounds() 
             messages.iter().any(|m| m["role"] == "assistant"
                 && m["reasoning_content"] == "write the requested file")
         );
-        daemon.stop().await;
         if plugin == "deepseek" {
             let config_path = daemon.root.path().join("config.toml");
             let config = std::fs::read_to_string(&config_path).unwrap();
@@ -386,7 +385,12 @@ compaction = "alternate"
                 ),
             )
             .unwrap();
-            daemon.restart().await;
+            daemon
+                .connect()
+                .await
+                .request(Command::ConfigApply { generation: None })
+                .await
+                .unwrap();
             let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
                 .args(["profile", "main", "alternate"])
                 .env("ENCO_HOME", daemon.root.path())
@@ -459,8 +463,8 @@ compaction = "alternate"
                     .flat_map(|message| &message.parts)
                     .any(|part| matches!(part, Part::Extension(_)))
             );
-            daemon.stop().await;
         }
+        daemon.stop().await;
     }
 }
 

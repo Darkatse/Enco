@@ -1,4 +1,5 @@
 pub(crate) mod args;
+pub mod config;
 mod files;
 mod plugins;
 pub use plugins::plugin_tools;
@@ -20,7 +21,7 @@ pub const LIFELINE: [&str; 8] = [
     "shell_exec",
     "plugin_status",
     "plugin_deploy",
-    "plugin_rollback",
+    "config_apply",
 ];
 
 /// Native capabilities share the workspace path rules and ordinary Tool dispatch.

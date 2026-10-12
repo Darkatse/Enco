@@ -20,45 +20,11 @@ use support::*;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-async fn open(root: &Path, provider: Arc<dyn Embedding>, dimensions: usize) -> Arc<Memories> {
-    let (registry, _) = registry(
-        &root.join("embedding-registry"),
-        Loaded {
-            lifecycle: Arc::new(Probe(Ok(()))),
-            summary: "embedding".into(),
-            config_schema: serde_json::json!({}),
-            credential: None,
-            completion: None,
-            embedding: Some(provider),
-            decision: None,
-        },
-    )
-    .await;
-    Memories::open(
-        MemoryPaths {
-            db: root.join("memory.db"),
-            index: root.join("memory-index"),
-        },
-        embedding_endpoint("test-embedding", dimensions),
-        registry,
-        Arc::new(SystemClock),
-    )
-    .await
-    .unwrap()
-}
-
-async fn memory_kernel(
-    root: &Path,
-    provider: Arc<ScriptedProvider>,
-    memories: Arc<Memories>,
-) -> Kernel {
-    kernel_with(root, provider, Tz::UTC, |deps| {
-        deps.context
-            .push(Arc::new(MemoryContextSource::new(memories.clone(), None)));
-        deps.tools.extend(memory_tools(memories));
-    })
-    .await
-    .0
+/// Memory alone; the completion export only satisfies the declared reply use.
+async fn open(root: &Path, embedding: Arc<dyn Embedding>) -> Arc<Memories> {
+    let loaded = fixture(ScriptedProvider::new(vec![]), embedding);
+    let (registry, _) = registry_configured(root, loaded, configuration()).await;
+    open_memories(root, registry).await
 }
 
 async fn send(kernel: &Kernel, session: SessionId, text: &str) {
@@ -81,12 +47,12 @@ async fn send(kernel: &Kernel, session: SessionId, text: &str) {
 async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![]);
-    let memories = open(dir.path(), provider.clone(), 64).await;
+    let (kernel, memories) =
+        kernel_with_memory(dir.path(), provider.clone(), configuration(), |_| {}).await;
     let saved = memories
         .save("Owner likes coffee".into(), true)
         .await
         .unwrap();
-    let kernel = memory_kernel(dir.path(), provider.clone(), memories.clone()).await;
     let session = kernel.open_session("main").await.unwrap();
     provider.steps.lock().unwrap().extend([
         calls(vec![call(
@@ -106,13 +72,13 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
     kernel.shutdown().await.unwrap();
     drop(kernel);
     drop(memories);
-    let memories = open(dir.path(), provider.clone(), 64).await;
     provider
         .steps
         .lock()
         .unwrap()
         .push_back(reply("after restart"));
-    let kernel = memory_kernel(dir.path(), provider.clone(), memories.clone()).await;
+    let (kernel, memories) =
+        kernel_with_memory(dir.path(), provider.clone(), configuration(), |_| {}).await;
     send(&kernel, session.id, "unrelated topic").await;
     assert!(
         provider
@@ -156,7 +122,8 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
 async fn recalled_sources_keep_corrections_and_deduplicate_after_restart() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new((0..4).map(|_| reply("recalled")).collect());
-    let memories = open(dir.path(), provider.clone(), 64).await;
+    let (kernel, memories) =
+        kernel_with_memory(dir.path(), provider.clone(), configuration(), |_| {}).await;
     let first = "Owner likes tea";
     let second = "Owner likes coffee";
     let memory = memories.save(first.into(), false).await.unwrap();
@@ -164,7 +131,6 @@ async fn recalled_sources_keep_corrections_and_deduplicate_after_restart() {
         "memory_update",
         &serde_json::json!({ "id": memory.id, "text": second }).to_string(),
     )]));
-    let kernel = memory_kernel(dir.path(), provider.clone(), memories.clone()).await;
     let session = kernel.open_session("main").await.unwrap();
     send(&kernel, session.id, "What drink do I like?").await;
     send(&kernel, session.id, "What drink do I like now?").await;
@@ -177,8 +143,8 @@ async fn recalled_sources_keep_corrections_and_deduplicate_after_restart() {
     drop(kernel);
     drop(memories);
 
-    let memories = open(dir.path(), provider.clone(), 64).await;
-    let kernel = memory_kernel(dir.path(), provider, memories).await;
+    let (kernel, _memories) =
+        kernel_with_memory(dir.path(), provider, configuration(), |_| {}).await;
     send(&kernel, session.id, "What drink do I like?").await;
     let inspection = kernel.inspect(session.id, None).await.unwrap();
     let source_id = format!("memory:{}", memory.id);
@@ -202,7 +168,7 @@ async fn recalled_sources_keep_corrections_and_deduplicate_after_restart() {
 async fn recall_uses_current_records_during_embedding_failure_and_rebuilds_derived_data() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![]);
-    let memories = open(dir.path(), provider.clone(), 64).await;
+    let memories = open(dir.path(), provider.clone()).await;
     let tea = memories
         .save("主人喜欢喝茉莉花茶".into(), false)
         .await
@@ -250,11 +216,7 @@ async fn recall_uses_current_records_during_embedding_failure_and_rebuilds_deriv
     assert!(memories.list().await.unwrap().unindexed.is_empty());
     drop(memories);
     std::fs::remove_dir_all(dir.path().join("memory-index")).unwrap();
-    let memories = open(dir.path(), provider.clone(), 64).await;
-    assert!(memories.list().await.unwrap().unindexed.is_empty());
-    drop(memories);
-    provider.embedding_dimensions.store(32, Ordering::SeqCst);
-    let memories = open(dir.path(), provider.clone(), 32).await;
+    let memories = open(dir.path(), provider.clone()).await;
     assert!(memories.list().await.unwrap().unindexed.is_empty());
     drop(memories);
     *provider.embedding_failure.lock().unwrap() = Some(Failure {
@@ -263,7 +225,7 @@ async fn recall_uses_current_records_during_embedding_failure_and_rebuilds_deriv
         retryable: true,
     });
     std::fs::remove_dir_all(dir.path().join("memory-index")).unwrap();
-    let memories = open(dir.path(), provider, 32).await;
+    let memories = open(dir.path(), provider).await;
     assert_eq!(memories.list().await.unwrap().unindexed.len(), 20);
     assert!(
         !memories
@@ -302,7 +264,7 @@ async fn cancellation_needs_no_dirty_state_and_writes_do_not_wait_for_embedding(
         blocked: AtomicBool::new(false),
         entered: Notify::new(),
     });
-    let memories = open(dir.path(), provider.clone(), 64).await;
+    let memories = open(dir.path(), provider.clone()).await;
     let memory = memories.save("old statement".into(), false).await.unwrap();
     provider.blocked.store(true, Ordering::SeqCst);
     let cancel = CancellationToken::new();
@@ -333,4 +295,108 @@ async fn cancellation_needs_no_dirty_state_and_writes_do_not_wait_for_embedding(
             .any(|m| m.text == "corrected statement")
     );
     assert!(memories.list().await.unwrap().unindexed.is_empty());
+}
+
+#[tokio::test]
+async fn live_memory_settings_rebuild_only_the_vector_space_and_recover_invalid_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![]);
+    // The embedding endpoint later names a credential variable.
+    let loaded = || Loaded {
+        credential: Some(Credential { required: false }),
+        ..fixture(provider.clone(), provider.clone())
+    };
+    let mut document = configuration();
+    let (registry, store) = registry_configured(dir.path(), loaded(), document.clone()).await;
+    let memories = open_memories(dir.path(), registry.clone()).await;
+    let memory = memories
+        .save("Owner likes tea".into(), false)
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    memories.recall("tea", 8, &cancel).await.unwrap();
+    assert!(memories.list().await.unwrap().unindexed.is_empty());
+
+    let offline = Failure {
+        code: code::PROVIDER_NETWORK.into(),
+        message: "offline".into(),
+        retryable: true,
+    };
+    for (field, value) in [
+        (
+            "base_url",
+            serde_json::json!("https://another-service.invalid"),
+        ),
+        ("model", serde_json::json!("another-model")),
+        ("options", serde_json::json!({"encoding": "float"})),
+        ("dimensions", serde_json::json!(32)),
+    ] {
+        if field == "dimensions" {
+            provider.embedding_dimensions.store(32, Ordering::SeqCst);
+        }
+        document["endpoint"]["embed"][field] = value.clone();
+        registry
+            .apply_config(ConfigSource::Document(document.clone()))
+            .await
+            .unwrap();
+        *provider.embedding_failure.lock().unwrap() = Some(offline.clone());
+        let recalled = memories.recall("tea", 8, &cancel).await.unwrap();
+        assert!(
+            recalled.unindexed.iter().any(|row| row.id == memory.id),
+            "{field}"
+        );
+        let identity: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("memory-index/index.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(identity[field], value);
+        *provider.embedding_failure.lock().unwrap() = None;
+        memories.recall("tea", 8, &cancel).await.unwrap();
+        assert!(memories.list().await.unwrap().unindexed.is_empty());
+    }
+
+    document["endpoint"]["embed"]["api_key_env"] = "NEW_CREDENTIAL_VARIABLE".into();
+    registry
+        .apply_config(ConfigSource::Document(document.clone()))
+        .await
+        .unwrap();
+    *provider.embedding_failure.lock().unwrap() = Some(offline);
+    assert!(
+        memories
+            .recall("tea", 8, &cancel)
+            .await
+            .unwrap()
+            .unindexed
+            .is_empty()
+    );
+    drop(memories);
+    drop(registry);
+
+    // Model a host upgrade that can no longer interpret one registered host table.
+    let mut invalid = document.clone();
+    invalid["memory"]["embedding"] = "missing".into();
+    store
+        .insert_config_generation(&invalid, Utc::now())
+        .await
+        .unwrap();
+    let (registry, _) = registry_configured(dir.path(), loaded(), document.clone()).await;
+    assert_eq!(registry.status().await.config.invalid[0].table, "memory");
+    let memories = open_memories(dir.path(), registry.clone()).await;
+    let recalled = memories.recall("tea", 8, &cancel).await.unwrap();
+    assert_eq!(recalled.lexical_only.unwrap().code, code::CONFIG_INVALID);
+    assert_eq!(recalled.unindexed[0].id, memory.id);
+    *provider.embedding_failure.lock().unwrap() = None;
+    registry
+        .apply_config(ConfigSource::Document(document))
+        .await
+        .unwrap();
+    assert!(
+        memories
+            .recall("tea", 8, &cancel)
+            .await
+            .unwrap()
+            .unindexed
+            .is_empty()
+    );
+    assert!(registry.status().await.config.invalid.is_empty());
 }

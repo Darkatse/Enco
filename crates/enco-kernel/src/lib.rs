@@ -15,6 +15,7 @@ mod registry;
 mod run;
 mod scheduler;
 mod session;
+mod settings;
 mod snapshot;
 mod transcript;
 
@@ -25,3 +26,4 @@ pub use ports::*;
 pub use profile::*;
 pub use registry::*;
 pub use scheduler::{ScheduleError, Scheduled, Schedules};
+pub use settings::*;

@@ -1,10 +1,13 @@
-//! Telegram-specific syntax, transport evidence and text limits.
+//! Telegram-specific configuration, transport evidence and text limits.
+mod supervisor;
 use crate::channel::{Action, Adapter, ChannelError, Fault, Identity, Input, Update};
 use async_trait::async_trait;
 use enco_core::Failure;
+use enco_kernel::{SettingsError, TableOwner, parse_table};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{num::NonZeroU64, time::Duration};
+pub use supervisor::TelegramChannel;
 
 use crate::limits::{TELEGRAM_MESSAGE_CHARS, TELEGRAM_POLL_SECONDS, TELEGRAM_SEND_SECONDS};
 
@@ -17,29 +20,20 @@ pub struct Telegram {
 
 impl Telegram {
     pub fn new(token: String, api_base: &str) -> Result<Self, ChannelError> {
+        Self::with_base(token, &ApiBase::try_from(api_base.to_owned())?)
+    }
+
+    fn with_base(token: String, api_base: &ApiBase) -> Result<Self, ChannelError> {
         let (account, secret) = token
             .split_once(':')
             .ok_or_else(|| ChannelError::Config("invalid bot token".into()))?;
-        if account.parse::<u64>().ok().filter(|id| *id > 0).is_none()
+        if account.parse::<NonZeroU64>().is_err()
             || secret.is_empty()
             || !secret
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
         {
             return Err(ChannelError::Config("invalid bot token".into()));
-        }
-        let url = reqwest::Url::parse(api_base)
-            .map_err(|_| ChannelError::Config("invalid channel api_base URL".into()))?;
-        if !matches!(url.scheme(), "http" | "https")
-            || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(ChannelError::Config(
-                "api_base must be an HTTP(S) URL without credentials, query or fragment".into(),
-            ));
         }
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -48,7 +42,7 @@ impl Telegram {
             .map_err(|error| ChannelError::Config(error.without_url().to_string()))?;
         Ok(Self {
             client,
-            base: api_base.trim_end_matches('/').into(),
+            base: api_base.0.clone(),
             account: account.into(),
             token,
         })
@@ -93,6 +87,81 @@ impl Telegram {
             ));
         }
         envelope.result.ok_or_else(|| invalid_response(method))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TelegramSettings {
+    token_env: String,
+    owner_user_id: NonZeroU64,
+    #[serde(default)]
+    api_base: ApiBase,
+}
+
+impl TelegramSettings {
+    fn from_document(document: &Value) -> Result<Option<Self>, SettingsError> {
+        let settings: Option<Self> = parse_table(document, "telegram")?;
+        if let Some(settings) = &settings
+            && settings.token_env.trim().is_empty()
+        {
+            return Err(SettingsError::new(
+                "telegram",
+                "token_env must not be empty",
+            ));
+        }
+        Ok(settings)
+    }
+
+    fn adapter(&self) -> Result<Telegram, ChannelError> {
+        let token = std::env::var(&self.token_env).map_err(|_| {
+            ChannelError::Config(format!(
+                "bot token environment variable {} is not set",
+                self.token_env
+            ))
+        })?;
+        Telegram::with_base(token, &self.api_base)
+    }
+}
+
+/// Telegram owns its table and declares no model endpoints.
+pub const TABLE_OWNER: TableOwner = TableOwner {
+    tables: &["telegram"],
+    declare: |document, _kernel| {
+        TelegramSettings::from_document(document)?;
+        Ok(vec![])
+    },
+};
+
+/// URL policy is established once when configuration enters the host.
+#[derive(Clone, Deserialize)]
+#[serde(try_from = "String")]
+struct ApiBase(String);
+
+impl Default for ApiBase {
+    fn default() -> Self {
+        Self("https://api.telegram.org".into())
+    }
+}
+
+impl TryFrom<String> for ApiBase {
+    type Error = ChannelError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let url = reqwest::Url::parse(&value)
+            .map_err(|_| ChannelError::Config("invalid channel api_base URL".into()))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(ChannelError::Config(
+                "api_base must be an HTTP(S) URL without credentials, query or fragment".into(),
+            ));
+        }
+        Ok(Self(url.as_str().trim_end_matches('/').into()))
     }
 }
 

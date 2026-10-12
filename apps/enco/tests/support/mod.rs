@@ -6,6 +6,8 @@
     clippy::print_stderr,
     reason = "shared test support: each test binary uses a subset of these helpers, which fail the test by panicking"
 )]
+pub mod bot;
+
 use crate::{client, protocol::ServerMessage};
 use enco_core::*;
 use serde_json::json;
@@ -18,6 +20,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
 pub struct Daemon {
     pub child: Child,
     pub root: tempfile::TempDir,
+    pub startup_log: String,
     // Keep the pipe open so the daemon can continue writing diagnostics.
     _stderr: tokio::io::Lines<BufReader<ChildStderr>>,
 }
@@ -30,7 +33,8 @@ impl Daemon {
     pub fn config(server: &MockServer, plugin: &str) -> String {
         let base_url = server.uri();
         format!(
-            r#"timezone = "UTC"
+            r#"[owner]
+timezone = "UTC"
 
 [endpoint.chat]
 plugin = {plugin:?}
@@ -44,7 +48,10 @@ max_output_tokens = 8192
 reply = 'chat'
 compaction = 'chat'
 
-[embedding]
+[memory]
+embedding = "embed"
+
+[endpoint.embed]
 plugin = "openai-compatible"
 base_url = {base_url:?}
 model = 'embed'
@@ -57,18 +64,24 @@ dimensions = 4
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join(".data")).unwrap();
         std::fs::write(root.path().join("config.toml"), config).unwrap();
-        let (child, stderr) = spawn(root.path()).await;
+        let (child, stderr, startup_log) = spawn(root.path(), &[]).await;
         Self {
             child,
             root,
+            startup_log,
             _stderr: stderr,
         }
     }
 
     pub async fn restart(&mut self) {
-        let (child, stderr) = spawn(self.root.path()).await;
+        self.restart_without(&[]).await;
+    }
+
+    pub async fn restart_without(&mut self, variables: &[&str]) {
+        let (child, stderr, startup_log) = spawn(self.root.path(), variables).await;
         self.child = child;
         self._stderr = stderr;
+        self.startup_log = startup_log;
     }
 
     pub async fn connect(&self) -> client::Client {
@@ -156,19 +169,29 @@ pub async fn embeddings(server: &MockServer) {
         .await;
 }
 
-async fn spawn(root: &Path) -> (Child, tokio::io::Lines<BufReader<ChildStderr>>) {
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+async fn spawn(
+    root: &Path,
+    absent: &[&str],
+) -> (Child, tokio::io::Lines<BufReader<ChildStderr>>, String) {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"));
+    command
         .arg("serve")
         .env("ENCO_HOME", root)
         .env("ENCO_TEST_API_KEY", "enco-test-secret")
+        .env("ENCO_TEST_TELEGRAM_TOKEN", "42:test-secret")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
+        .kill_on_drop(true);
+    for variable in absent {
+        command.env_remove(variable);
+    }
+    let mut child = command.spawn().unwrap();
+    let mut startup_log = String::new();
     let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
     tokio::time::timeout(Duration::from_secs(60), async {
         while let Some(line) = stderr.next_line().await.unwrap() {
+            startup_log.push_str(&line);
+            startup_log.push('\n');
             if line.contains("Enco ready") {
                 return;
             }
@@ -178,7 +201,7 @@ async fn spawn(root: &Path) -> (Child, tokio::io::Lines<BufReader<ChildStderr>>)
     })
     .await
     .expect("daemon startup timed out");
-    (child, stderr)
+    (child, stderr, startup_log)
 }
 
 pub fn is_reminder(entry: &Entry, id: ScheduleId) -> bool {

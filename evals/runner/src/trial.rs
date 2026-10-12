@@ -300,7 +300,9 @@ max_output_tokens = 8192
 [profile.default]
 reply = "chat"
 compaction = "chat"
-[embedding]
+[memory]
+embedding = "embed"
+[endpoint.embed]
 plugin = "openai-compatible"
 base_url = "http://{host}"
 model = "embedding"
