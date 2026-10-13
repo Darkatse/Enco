@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use cargo_metadata::DependencyKind;
 use std::{
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, ExitStatus},
 };
 
@@ -31,6 +31,7 @@ fn main() -> Result<()> {
             }
             boundaries()?;
             lints()?;
+            file_lengths()?;
             docs::generate(true)?;
             build_factory()?;
             run(
@@ -244,6 +245,65 @@ fn lints() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A reader, person or agent, takes in a file whole, and a longer one usually answers two
+/// questions. Integration tests read as scenarios, and each test file links a binary of its own.
+const SOURCE_LINES: usize = 500;
+const TEST_LINES: usize = 1200;
+
+fn file_lengths() -> Result<()> {
+    let root = std::env::current_dir()?;
+    let mut long = Vec::new();
+    for manifest in [
+        "Cargo.toml",
+        "plugins/Cargo.toml",
+        "evals/runner/Cargo.toml",
+    ] {
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .manifest_path(manifest)
+            .no_deps()
+            .exec()?;
+        for package in &metadata.packages {
+            let dir = package
+                .manifest_path
+                .parent()
+                .context("package directory")?
+                .as_std_path();
+            for path in rust_files(dir)? {
+                let limit = if path.strip_prefix(dir)?.starts_with("tests") {
+                    TEST_LINES
+                } else {
+                    SOURCE_LINES
+                };
+                let lines = std::fs::read_to_string(&path)?.lines().count();
+                if lines > limit {
+                    let path = path.strip_prefix(&root).unwrap_or(&path).display();
+                    long.push(format!("{path}: {lines} lines (limit {limit})"));
+                }
+            }
+        }
+    }
+    long.sort();
+    if !long.is_empty() {
+        bail!("split these files by responsibility:\n{}", long.join("\n"));
+    }
+    Ok(())
+}
+
+fn rust_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| name != "target") {
+                files.extend(rust_files(&path)?);
+            }
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            files.push(path);
+        }
+    }
+    Ok(files)
 }
 
 fn build_factory() -> Result<()> {

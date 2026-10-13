@@ -307,7 +307,7 @@ async fn cancellation_reaches_context_and_shutdown_waits_for_tool_settlement() {
 }
 
 #[tokio::test]
-async fn safe_mode_bypasses_broken_context_and_normal_mode_can_resume() {
+async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
     let dir = tempfile::tempdir().unwrap();
     let at = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
     let provider = ScriptedProvider::new(vec![
@@ -317,9 +317,8 @@ async fn safe_mode_bypasses_broken_context_and_normal_mode_can_resume() {
         )]),
         calls(vec![call("config_apply", "{}")]),
         reply("safe"),
-        reply("normal"),
     ]);
-    let (kernel, store) = kernel(dir.path(), provider.clone()).await;
+    let (kernel, store) = kernel(dir.path(), provider).await;
     std::fs::write(dir.path().join("AGENTS.md"), [0xff]).unwrap();
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
@@ -400,6 +399,23 @@ async fn safe_mode_bypasses_broken_context_and_normal_mode_can_resume() {
             .map(|name| (*name).to_string())
             .collect::<Vec<_>>()
     );
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn normal_mode_resumes_with_the_repaired_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![reply("safe"), reply("normal")]);
+    let (kernel, _) = kernel(dir.path(), provider.clone()).await;
+    std::fs::write(dir.path().join("AGENTS.md"), [0xff]).unwrap();
+    let session = kernel.open_session("main").await.unwrap();
+    let mut rx = kernel.subscribe(session.id).unwrap();
+    kernel.set_safe_mode(true).await.unwrap();
+    kernel
+        .submit(session.id, EventId::new(), "repair".into())
+        .await
+        .unwrap();
+    finish(&mut rx).await;
     std::fs::write(dir.path().join("AGENTS.md"), "Call the owner River.").unwrap();
     kernel.set_safe_mode(false).await.unwrap();
     kernel

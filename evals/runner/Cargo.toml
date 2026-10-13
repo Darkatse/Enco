@@ -52,3 +52,6 @@ print_stdout = "deny"
 print_stderr = "deny"
 # Every suppression states why.
 allow_attributes_without_reason = "deny"
+# A function fits in one reading; a longer one splits by responsibility, or a flat
+# dispatch states why with `expect`. Files have their own limit in `cargo xtask check`.
+too_many_lines = "deny"

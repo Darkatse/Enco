@@ -55,17 +55,7 @@ pub(super) async fn run(
     clock: Arc<dyn Clock>,
     stop: CancellationToken,
 ) -> Exit {
-    let state = match kernel.connection(&adapter.identity().key()).await {
-        Ok(Some(state)) => serde_json::from_value(state).map_err(ChannelError::from),
-        Ok(None) => Ok(State {
-            protocol: adapter.initial_state(),
-            chats: BTreeMap::new(),
-            outbound: BTreeMap::new(),
-            sending: None,
-        }),
-        Err(error) => Err(error.into()),
-    };
-    let state = match state {
+    let state = match restore(&kernel, adapter.as_ref()).await {
         Ok(state) => state,
         Err(error) => {
             return Exit {
@@ -74,8 +64,7 @@ pub(super) async fn run(
             };
         }
     };
-    let (wake, mut wakes) = mpsc::channel(crate::limits::CHANNEL_WAKE_CAPACITY);
-    let (batches, mut incoming) = mpsc::channel(1);
+    let (wake, wakes) = mpsc::channel(crate::limits::CHANNEL_WAKE_CAPACITY);
     let mut connection = Connection {
         identity: adapter.identity(),
         kernel,
@@ -92,86 +81,110 @@ pub(super) async fn run(
         in_flight: None,
     };
     // Run cleanup even if recovery, subscription or acceptance fails.
-    let result = async {
-        if let Some(delivery) = connection.state.sending.clone() {
-            connection
-                .settle(delivery, Settlement::Unknown {
+    let result = connection.serve(wakes).await;
+    connection.quiesce(result).await
+}
+
+/// The committed state, or a fresh one for a connection seen for the first time.
+async fn restore(kernel: &Kernel, adapter: &dyn Adapter) -> Result<State, ChannelError> {
+    Ok(match kernel.connection(&adapter.identity().key()).await? {
+        Some(state) => serde_json::from_value(state)?,
+        None => State {
+            protocol: adapter.initial_state(),
+            chats: BTreeMap::new(),
+            outbound: BTreeMap::new(),
+            sending: None,
+        },
+    })
+}
+
+impl Connection {
+    /// Settle a delivery the last process left in flight and follow the Sessions this
+    /// connection delivers for, then handle input, sends and wakes in order until stopped.
+    async fn serve(&mut self, mut wakes: mpsc::Receiver<SessionId>) -> Result<(), ChannelError> {
+        if let Some(delivery) = self.state.sending.clone() {
+            self.settle(
+                delivery,
+                Settlement::Unknown {
                     failure: Failure {
                         code: code::INTERRUPTED.into(),
                         message: "process stopped during delivery; it will not be resent".into(),
                         retryable: false,
                     },
-                })
-                .await?;
+                },
+            )
+            .await?;
         }
-        let sessions: Vec<_> = connection.state.outbound.keys().copied().collect();
+        let sessions: Vec<_> = self.state.outbound.keys().copied().collect();
         for session in sessions {
-            connection.follow(session)?;
+            self.follow(session)?;
         }
-        connection.readers.spawn(transport::poll(
-            connection.adapter.clone(),
-            connection.state.protocol.clone(),
+        let (batches, mut incoming) = mpsc::channel(1);
+        self.readers.spawn(transport::poll(
+            self.adapter.clone(),
+            self.state.protocol.clone(),
             batches,
-            connection.stop.clone(),
+            self.stop.clone(),
         ));
         loop {
-            if connection.stop.is_cancelled() {
+            if self.stop.is_cancelled() {
                 return Ok(());
             }
-            connection.next_delivery().await?;
+            self.next_delivery().await?;
             tokio::select! {
                 biased;
-                _ = connection.stop.cancelled() => return Ok(()),
+                _ = self.stop.cancelled() => return Ok(()),
                 result = async {
-                    match &mut connection.in_flight {
+                    match &mut self.in_flight {
                         Some(flight) => flight.task().await,
                         None => std::future::pending().await,
                     }
                 } => {
-                    let flight = connection.in_flight.take().ok_or_else(|| ChannelError::Task("send completed without an in-flight operation".into()))?;
-                    if let Some(error) = connection.sent(flight, result).await? { return Err(error.into()); }
+                    let flight = self.in_flight.take().ok_or_else(|| ChannelError::Task("send completed without an in-flight operation".into()))?;
+                    if let Some(error) = self.sent(flight, result).await? { return Err(error.into()); }
                 },
-                Some(result) = connection.readers.join_next() => {
+                Some(result) = self.readers.join_next() => {
                     result.map_err(|error| ChannelError::Task(error.to_string()))??;
                     return Err(ChannelError::Task("channel reader stopped unexpectedly".into()));
                 }
                 Some(batch) = incoming.recv() => {
-                    for update in batch.updates { connection.accept(update).await?; }
-                    let _ = batch.committed.send(connection.state.protocol.clone());
+                    for update in batch.updates { self.accept(update).await?; }
+                    let _ = batch.committed.send(self.state.protocol.clone());
                 }
-                Some(session) = wakes.recv() => { connection.dirty.insert(session); }
+                Some(session) = wakes.recv() => { self.dirty.insert(session); }
             }
         }
     }
-    .await;
-    connection.stop.cancel();
-    let mut exit = Exit {
-        stopped: result.err(),
-        shutdown: Ok(()),
-    };
-    if let Some(mut flight) = connection.in_flight.take() {
-        let result = flight.task().await;
-        match connection.sent(flight, result).await {
-            Ok(Some(error)) => {
-                exit.stopped.get_or_insert(error.into());
-            }
-            Ok(None) => {}
-            Err(error) => exit.shutdown = Err(error),
-        }
-    }
-    while let Some(result) = connection.readers.join_next().await {
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                exit.stopped.get_or_insert(error);
-            }
-            Err(error) => exit.shutdown = Err(ChannelError::Task(error.to_string())),
-        }
-    }
-    exit
-}
 
-impl Connection {
+    /// Signal stop, then wait for the send in flight and every reader to finish.
+    async fn quiesce(mut self, result: Result<(), ChannelError>) -> Exit {
+        self.stop.cancel();
+        let mut exit = Exit {
+            stopped: result.err(),
+            shutdown: Ok(()),
+        };
+        if let Some(mut flight) = self.in_flight.take() {
+            let result = flight.task().await;
+            match self.sent(flight, result).await {
+                Ok(Some(error)) => {
+                    exit.stopped.get_or_insert(error.into());
+                }
+                Ok(None) => {}
+                Err(error) => exit.shutdown = Err(error),
+            }
+        }
+        while let Some(result) = self.readers.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    exit.stopped.get_or_insert(error);
+                }
+                Err(error) => exit.shutdown = Err(ChannelError::Task(error.to_string())),
+            }
+        }
+        exit
+    }
+
     async fn commit(
         &mut self,
         state: State,

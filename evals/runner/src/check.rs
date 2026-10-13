@@ -1,3 +1,7 @@
+#![expect(
+    clippy::print_stdout,
+    reason = "the check command reports calibration results"
+)]
 use crate::{
     config::{Config, Variant},
     enco::Binary,
@@ -13,10 +17,6 @@ use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 
-#[expect(
-    clippy::print_stdout,
-    reason = "the check command reports calibration results"
-)]
 pub(crate) async fn check(repository: &Path, config: &Path, selected: Vec<String>) -> Result<bool> {
     let config = Config::read(config, repository).await?;
     let judge = judge::Client::new(config.judge.clone())?;
@@ -58,82 +58,101 @@ pub(crate) async fn check(repository: &Path, config: &Path, selected: Vec<String
     };
     for (task, cases) in prepared {
         for (case, expectation, start) in cases {
-            let name = case.file_name().context("case name")?;
-            let case_output = deps.directory.join("cases").join(&task.id).join(name);
-            let repeats = if task.definition.criteria.iter().any(|criterion| {
-                (expectation.success.is_some() || expectation.criteria.contains_key(&criterion.id))
-                    && matches!(criterion.grader, Grader::Rubric { .. })
-            }) {
-                2
-            } else {
-                1
-            };
-            let selected = expectation.criteria.keys().cloned().collect();
-            for repeat in 0..repeats {
-                let output = case_output.join(repeat.to_string());
-                let snapshot = case.join("snapshot");
-                let grading = Grading {
-                    task: &task,
-                    snapshot: &snapshot,
-                    trial: &case,
-                    output: &output,
-                    renderer: Renderer {
-                        start,
-                        timezone: task.definition.environment.timezone,
-                        mocks: task.mock_urls(),
-                    },
-                    judge: Some(&deps.judge),
-                };
-                let grades = grading
-                    .all(expectation.success.is_none().then_some(&selected))
-                    .await;
-                result::write_json(&output.join("grades.json"), &grades).await?;
-                let success = grades.values().all(|grade| grade.result == Kind::Pass);
-                let matches = expectation
-                    .success
-                    .is_none_or(|expected| expected == success)
-                    && expectation.criteria.iter().all(|(id, expected)| {
-                        grades
-                            .get(id)
-                            .is_some_and(|grade| grade.result == *expected)
-                    })
-                    && grades.values().all(|grade| grade.result != Kind::Error);
-                println!(
-                    "{}/{} [{}]: {}",
-                    task.id,
-                    name.to_string_lossy(),
-                    repeat + 1,
-                    if matches { "pass" } else { "FAIL" }
-                );
-                passed &= matches;
-            }
+            passed &= check_case(&deps, &task, &case, &expectation, start).await?;
         }
-        let empty = trial::run(&deps, &task, &variant, 0).await?;
-        // A daemon that never ran proves nothing about the task; only its criteria may fail it.
-        let facts: Facts =
-            result::read_json(&deps.directory.join(&empty.dir).join("trial.json")).await?;
-        let failed = matches!(facts.execution, Execution::Completed)
-            && empty.result == TrialOutcome::Failure;
-        println!(
-            "{}/null run: {}",
-            task.id,
-            if failed {
-                "pass".into()
-            } else {
-                format!("FAIL: {}", empty.reason)
-            }
-        );
-        result::write_json(
-            &deps
-                .directory
-                .join("null")
-                .join(format!("{}.json", task.id)),
-            &empty,
-        )
-        .await?;
-        passed &= failed;
+        passed &= null_run(&deps, &task, &variant).await?;
     }
     Ok(passed)
+}
+
+/// Grade one case as its expectation asks; a case with rubric criteria is judged twice, and
+/// both judgments must match.
+async fn check_case(
+    deps: &TrialDeps,
+    task: &Task,
+    case: &Path,
+    expectation: &Expectation,
+    start: DateTime<Utc>,
+) -> Result<bool> {
+    let name = case.file_name().context("case name")?;
+    let case_output = deps.directory.join("cases").join(&task.id).join(name);
+    let repeats = if task.definition.criteria.iter().any(|criterion| {
+        (expectation.success.is_some() || expectation.criteria.contains_key(&criterion.id))
+            && matches!(criterion.grader, Grader::Rubric { .. })
+    }) {
+        2
+    } else {
+        1
+    };
+    let selected = expectation.criteria.keys().cloned().collect();
+    let mut passed = true;
+    for repeat in 0..repeats {
+        let output = case_output.join(repeat.to_string());
+        let snapshot = case.join("snapshot");
+        let grading = Grading {
+            task,
+            snapshot: &snapshot,
+            trial: case,
+            output: &output,
+            renderer: Renderer {
+                start,
+                timezone: task.definition.environment.timezone,
+                mocks: task.mock_urls(),
+            },
+            judge: Some(&deps.judge),
+        };
+        let grades = grading
+            .all(expectation.success.is_none().then_some(&selected))
+            .await;
+        result::write_json(&output.join("grades.json"), &grades).await?;
+        let success = grades.values().all(|grade| grade.result == Kind::Pass);
+        let matches = expectation
+            .success
+            .is_none_or(|expected| expected == success)
+            && expectation.criteria.iter().all(|(id, expected)| {
+                grades
+                    .get(id)
+                    .is_some_and(|grade| grade.result == *expected)
+            })
+            && grades.values().all(|grade| grade.result != Kind::Error);
+        println!(
+            "{}/{} [{}]: {}",
+            task.id,
+            name.to_string_lossy(),
+            repeat + 1,
+            if matches { "pass" } else { "FAIL" }
+        );
+        passed &= matches;
+    }
+    Ok(passed)
+}
+
+/// Run the task against a model that answers everything with one fixed sentence: the daemon
+/// must run, and the task's criteria must fail it. A daemon that never ran proves nothing.
+async fn null_run(deps: &TrialDeps, task: &Task, variant: &trial::Variant) -> Result<bool> {
+    let empty = trial::run(deps, task, variant, 0).await?;
+    let facts: Facts =
+        result::read_json(&deps.directory.join(&empty.dir).join("trial.json")).await?;
+    let failed =
+        matches!(facts.execution, Execution::Completed) && empty.result == TrialOutcome::Failure;
+    println!(
+        "{}/null run: {}",
+        task.id,
+        if failed {
+            "pass".into()
+        } else {
+            format!("FAIL: {}", empty.reason)
+        }
+    );
+    result::write_json(
+        &deps
+            .directory
+            .join("null")
+            .join(format!("{}.json", task.id)),
+        &empty,
+    )
+    .await?;
+    Ok(failed)
 }
 
 async fn cases(task: &Task) -> Result<Vec<(std::path::PathBuf, Expectation, DateTime<Utc>)>> {

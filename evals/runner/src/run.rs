@@ -1,3 +1,7 @@
+#![expect(
+    clippy::print_stdout,
+    reason = "the evaluation CLI reports progress and the result path"
+)]
 use crate::{
     Options,
     config::{Config, Model, Variant},
@@ -6,7 +10,7 @@ use crate::{
     judge,
     render::Renderer,
     result::{
-        DeployRecord, Execution, Facts, JudgeRecord, Report, TaskRecord, TrialOutcome,
+        DeployRecord, Execution, Facts, JudgeRecord, Report, TaskRecord, Trial, TrialOutcome,
         VariantRecord,
     },
     stats,
@@ -31,10 +35,6 @@ pub(crate) async fn directory(repository: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-#[expect(
-    clippy::print_stdout,
-    reason = "the evaluation CLI reports progress and the result path"
-)]
 pub(crate) async fn evaluate(
     repository: &Path,
     options: Options,
@@ -95,10 +95,42 @@ pub(crate) async fn evaluate(
         model: Some(model),
         judge,
     });
+    let mut trials = run_trials(&deps, tasks, &prepared, options.k, options.jobs.get()).await?;
+    trials.sort_by(|a, b| (&a.task, &a.index, &a.variant).cmp(&(&b.task, &b.index, &b.variant)));
+    let mut report = Report {
+        format: 1,
+        runner: env!("CARGO_PKG_VERSION").into(),
+        started_at,
+        finished_at: Utc::now(),
+        k: options.k,
+        tasks: task_records,
+        model: model_identity,
+        judge: judge_record,
+        variants: identities,
+        trials,
+        summary: BTreeMap::new(),
+        comparison: None,
+    };
+    report.summarize();
+    if let Some(targets) = targets {
+        report.comparison = Some(stats::compare(&report, &targets)?);
+    }
+    crate::result::write_json(&deps.directory.join("result.json"), &report).await
+}
+
+/// Interleave the variants within each task and index so both see the same time window, run at
+/// most `jobs` trials at once, and stop scheduling at the first error of the runner itself.
+async fn run_trials(
+    deps: &Arc<TrialDeps>,
+    tasks: Vec<Arc<Task>>,
+    variants: &[Arc<trial::Variant>],
+    k: usize,
+    jobs: usize,
+) -> Result<Vec<Trial>> {
     let mut queue = VecDeque::new();
     for task in tasks {
-        for index in 0..options.k {
-            for variant in &prepared {
+        for index in 0..k {
+            for variant in variants {
                 queue.push_back((task.clone(), variant.clone(), index));
             }
         }
@@ -107,7 +139,7 @@ pub(crate) async fn evaluate(
     let mut failure = None;
     let mut trials = Vec::new();
     while !queue.is_empty() || !running.is_empty() {
-        while running.len() < options.jobs.get() && failure.is_none() {
+        while running.len() < jobs && failure.is_none() {
             let Some((task, variant, index)) = queue.pop_front() else {
                 break;
             };
@@ -136,29 +168,10 @@ pub(crate) async fn evaluate(
             }
         }
     }
-    if let Some(error) = failure {
-        return Err(error);
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(trials),
     }
-    trials.sort_by(|a, b| (&a.task, &a.index, &a.variant).cmp(&(&b.task, &b.index, &b.variant)));
-    let mut report = Report {
-        format: 1,
-        runner: env!("CARGO_PKG_VERSION").into(),
-        started_at,
-        finished_at: Utc::now(),
-        k: options.k,
-        tasks: task_records,
-        model: model_identity,
-        judge: judge_record,
-        variants: identities,
-        trials,
-        summary: BTreeMap::new(),
-        comparison: None,
-    };
-    report.summarize();
-    if let Some(targets) = targets {
-        report.comparison = Some(stats::compare(&report, &targets)?);
-    }
-    crate::result::write_json(&deps.directory.join("result.json"), &report).await
 }
 
 async fn identity(binary: &Binary, variant: &Variant) -> Result<VariantRecord> {

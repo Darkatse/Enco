@@ -1,3 +1,7 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions fail the test by panicking"
+)]
 #[path = "../src/client.rs"]
 mod client;
 
@@ -11,8 +15,9 @@ use serde_json::json;
 use support::*;
 use wiremock::{Mock, MockServer, matchers::path};
 
-#[tokio::test]
-async fn wasm_memory_write_is_visible_to_native_admin_and_the_next_request() {
+/// The model saves "Owner is River" as a pinned memory through the Wasm plugin; returns the
+/// subscribed client and the entries of that Run.
+async fn remember_owner() -> (MockServer, Daemon, client::Client, Vec<Entry>) {
     let server = MockServer::start().await;
     embeddings(&server).await;
     Mock::given(path("/chat/completions"))
@@ -31,7 +36,7 @@ async fn wasm_memory_write_is_visible_to_native_admin_and_the_next_request() {
         })
         .mount(&server)
         .await;
-    let mut daemon = Daemon::start(&server, "deepseek").await;
+    let daemon = Daemon::start(&server, "deepseek").await;
     let mut client = daemon.connect().await;
     client
         .request(Command::Subscribe {
@@ -48,6 +53,12 @@ async fn wasm_memory_write_is_visible_to_native_admin_and_the_next_request() {
         .await
         .unwrap();
     let entries = finish(&mut client).await;
+    (server, daemon, client, entries)
+}
+
+#[tokio::test]
+async fn wasm_memory_write_is_visible_to_native_admin_and_the_next_request() {
+    let (server, mut daemon, _client, entries) = remember_owner().await;
     assert!(matches!(
         entries.last().unwrap().body,
         EntryBody::RunEnded {
@@ -86,7 +97,12 @@ async fn wasm_memory_write_is_visible_to_native_admin_and_the_next_request() {
             .count(),
         1
     );
+    daemon.stop().await;
+}
 
+#[tokio::test]
+async fn the_next_input_indexes_a_saved_memory_and_admin_can_forget_it() {
+    let (server, mut daemon, mut client, _) = remember_owner().await;
     client
         .send(Command::Send {
             session: "main".into(),
@@ -96,12 +112,8 @@ async fn wasm_memory_write_is_visible_to_native_admin_and_the_next_request() {
         .await
         .unwrap();
     finish(&mut client).await;
-    assert!(
-        client.request(Command::Memories {}).await.unwrap()["unindexed"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    let memories = client.request(Command::Memories {}).await.unwrap();
+    assert!(memories["unindexed"].as_array().unwrap().is_empty());
     let requests = server.received_requests().await.unwrap();
     assert_eq!(
         requests
@@ -122,6 +134,7 @@ async fn wasm_memory_write_is_visible_to_native_admin_and_the_next_request() {
                     .any(|t| t == "Owner is River")
             )
     );
+    let id: MemoryId = serde_json::from_value(memories["memories"][0]["id"].clone()).unwrap();
     client
         .request(Command::ForgetMemory { memory_id: id })
         .await

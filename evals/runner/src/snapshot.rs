@@ -212,29 +212,40 @@ impl Snapshot {
                 _ => {}
             }
         }
-        for proposal in proposals {
-            let (settlement, content) = settlements
-                .remove(&proposal.call)
-                .with_context(|| format!("{session}: unsettled tool call {}", proposal.call))?;
-            let (outcome, code) = match settlement {
-                Settlement::Ok => (CallOutcome::Ok, None),
-                Settlement::Failed { failure } => (CallOutcome::Failed, Some(failure.code)),
-                Settlement::Unknown { failure } => (CallOutcome::Unknown, Some(failure.code)),
-            };
-            calls.push(Call {
-                session: session.into(),
-                proposal,
-                outcome,
-                code,
-                content,
-            });
-        }
-        ensure!(
-            settlements.is_empty(),
-            "{session}: tool settlement without proposal"
-        );
+        pair(session, proposals, settlements, calls)?;
         Ok(transcript)
     }
+}
+
+/// Every tool call a Reply proposed has exactly one settlement, and every settlement a proposal.
+fn pair(
+    session: &str,
+    proposals: Vec<Proposal>,
+    mut settlements: BTreeMap<String, (Settlement, String)>,
+    calls: &mut Vec<Call>,
+) -> Result<()> {
+    for proposal in proposals {
+        let (settlement, content) = settlements
+            .remove(&proposal.call)
+            .with_context(|| format!("{session}: unsettled tool call {}", proposal.call))?;
+        let (outcome, code) = match settlement {
+            Settlement::Ok => (CallOutcome::Ok, None),
+            Settlement::Failed { failure } => (CallOutcome::Failed, Some(failure.code)),
+            Settlement::Unknown { failure } => (CallOutcome::Unknown, Some(failure.code)),
+        };
+        calls.push(Call {
+            session: session.into(),
+            proposal,
+            outcome,
+            code,
+            content,
+        });
+    }
+    ensure!(
+        settlements.is_empty(),
+        "{session}: tool settlement without proposal"
+    );
+    Ok(())
 }
 
 fn references(arguments: &str, path: &Path) -> bool {

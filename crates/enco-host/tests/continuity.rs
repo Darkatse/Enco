@@ -9,10 +9,12 @@ use enco_host::*;
 use enco_kernel::*;
 use serde_json::json;
 use std::{
+    path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
 use support::*;
+use tokio::sync::broadcast;
 
 struct TestClock(Mutex<DateTime<Utc>>);
 
@@ -130,16 +132,14 @@ async fn requests_keep_a_stable_prefix_and_date_inputs_across_dst() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
+async fn a_one_shot_reminder_in_the_past_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(TestClock(Mutex::new(Utc::now())));
-    let provider = ScriptedProvider::new(vec![reply("first reminder"), reply("overdue reminder")]);
-    let (kernel, _) = kernel_with(dir.path(), provider.clone(), Tz::UTC, |deps| {
+    let (kernel, _) = kernel_with(dir.path(), ScriptedProvider::new(vec![]), Tz::UTC, |deps| {
         deps.clock = clock.clone()
     })
     .await;
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
     assert!(matches!(
         kernel
             .schedules()
@@ -153,6 +153,20 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
             .await,
         Err(ScheduleError::NoOccurrenceAfter(_))
     ));
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(TestClock(Mutex::new(Utc::now())));
+    let provider = ScriptedProvider::new(vec![reply("first reminder"), reply("overdue reminder")]);
+    let (kernel, _) = kernel_with(dir.path(), provider.clone(), Tz::UTC, |deps| {
+        deps.clock = clock.clone()
+    })
+    .await;
+    let session = kernel.open_session("main").await.unwrap();
+    let mut rx = kernel.subscribe(session.id).unwrap();
     let first = kernel
         .schedules()
         .create(
@@ -238,9 +252,10 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
     );
 }
 
-#[tokio::test]
-async fn small_window_compaction_preserves_context_across_restart() {
-    let dir = tempfile::tempdir().unwrap();
+/// Local arrival time of every input in the compaction scenario.
+const ARRIVAL: &str = "2026-09-29 09:00";
+
+fn compaction_provider() -> Arc<ScriptedProvider> {
     let provider = ScriptedProvider::new(
         (0..30)
             .map(|_| reply("Concise summary or reply."))
@@ -251,56 +266,63 @@ async fn small_window_compaction_preserves_context_across_restart() {
         message: "request rejected".into(),
         retryable: false,
     }));
+    provider
+}
+
+/// A New York node at a fixed instant whose compaction window holds only part of the history.
+async fn small_windows(root: &Path, provider: Arc<ScriptedProvider>) -> (Kernel, Arc<Memories>) {
     let clock = Arc::new(TestClock(Mutex::new(
         DateTime::parse_from_rfc3339("2026-09-29T09:00:00-04:00")
             .unwrap()
             .to_utc(),
     )));
-    let timestamp = "2026-09-29 09:00";
-    let compaction_window = 2500;
     let mut document = configuration();
     document["owner"]["timezone"] = serde_json::json!(Tz::America__New_York);
     document["endpoint"]["reply"]["window_tokens"] = 6000.into();
     document["endpoint"]["reply"]["max_output_tokens"] = 256.into();
-    document["endpoint"]["compaction"]["window_tokens"] = compaction_window.into();
+    document["endpoint"]["compaction"]["window_tokens"] = 2500.into();
     document["endpoint"]["compaction"]["max_output_tokens"] = 512.into();
-    let (kernel, memories) =
-        kernel_with_memory(dir.path(), provider.clone(), document.clone(), |deps| {
-            deps.clock = clock.clone();
-        })
-        .await;
+    kernel_with_memory(root, provider, document, |deps| deps.clock = clock).await
+}
+
+/// Pins a memory, then outgrows the compaction window with history that begins with a failed
+/// Run; returns the Session and how each Run ended.
+async fn outgrow_the_window(kernel: &Kernel, memories: &Memories) -> (SessionId, Vec<EntryBody>) {
     memories.save("Owner is River".into(), true).await.unwrap();
-    let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
-    kernel
-        .submit(session.id, EventId::new(), "History before failure".into())
-        .await
-        .unwrap();
+    let session = kernel.open_session("main").await.unwrap().id;
+    let mut rx = kernel.subscribe(session).unwrap();
+    let history = (0..6).map(|n| format!("History {n}: {}", "some detailed history ".repeat(150)));
+    let mut ends = vec![];
+    for text in std::iter::once("History before failure".to_owned()).chain(history) {
+        kernel.submit(session, EventId::new(), text).await.unwrap();
+        ends.push(finish(&mut rx).await.pop().unwrap().body);
+    }
+    (session, ends)
+}
+
+#[tokio::test]
+async fn compaction_requests_carry_arrival_times_and_failures_but_not_pinned_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = compaction_provider();
+    let (kernel, memories) = small_windows(dir.path(), provider.clone()).await;
+    let (session, ends) = outgrow_the_window(&kernel, &memories).await;
     assert!(matches!(
-        finish(&mut rx).await.last().unwrap().body,
+        ends[0],
         EntryBody::RunEnded {
             end: RunEnd::Failed { .. },
             ..
         }
     ));
-    for n in 0..6 {
-        kernel
-            .submit(
-                session.id,
-                EventId::new(),
-                format!("History {n}: {}", "some detailed history ".repeat(150)),
-            )
-            .await
-            .unwrap();
+    for end in &ends[1..] {
         assert!(matches!(
-            finish(&mut rx).await.last().unwrap().body,
+            end,
             EntryBody::RunEnded {
                 end: RunEnd::Completed,
                 ..
             }
         ));
     }
-    let log = kernel.log(session.id, None).await.unwrap();
+    let log = kernel.log(session, None).await.unwrap();
     let requests = provider.requests.lock().unwrap().clone();
     let attempts: Vec<_> = log
         .iter()
@@ -312,18 +334,30 @@ async fn small_window_compaction_preserves_context_across_restart() {
     assert_eq!(attempts.len(), requests.len());
     let mut summarized_outcome = false;
     for (attempt, request) in attempts.into_iter().zip(requests) {
-        let inspection = kernel.inspect(session.id, Some(attempt)).await.unwrap();
+        let inspection = kernel.inspect(session, Some(attempt)).await.unwrap();
         assert_eq!(inspection.request, request);
         if inspection.purpose == AttemptPurpose::Compaction {
             let text = request.messages[1].joined_text();
-            assert!(text.contains(timestamp));
+            assert!(text.contains(ARRIVAL));
             assert!(!text.contains("Owner is River"));
             summarized_outcome |=
                 text.contains("provider.bad_request") && text.contains("request rejected");
         }
     }
     assert!(summarized_outcome);
-    let summary = log
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn after_restart_requests_start_from_the_summary_and_pinned_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = compaction_provider();
+    let (kernel, memories) = small_windows(dir.path(), provider.clone()).await;
+    let (session, _) = outgrow_the_window(&kernel, &memories).await;
+    let summary = kernel
+        .log(session, None)
+        .await
+        .unwrap()
         .iter()
         .rev()
         .find_map(|e| match &e.body {
@@ -334,13 +368,10 @@ async fn small_window_compaction_preserves_context_across_restart() {
     kernel.shutdown().await.unwrap();
     drop(kernel);
     drop(memories);
-    let (kernel, _memories) = kernel_with_memory(dir.path(), provider.clone(), document, |deps| {
-        deps.clock = clock.clone();
-    })
-    .await;
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let (kernel, _memories) = small_windows(dir.path(), provider.clone()).await;
+    let mut rx = kernel.subscribe(session).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "What do you remember?".into())
+        .submit(session, EventId::new(), "What do you remember?".into())
         .await
         .unwrap();
     let entries = finish(&mut rx).await;
@@ -361,30 +392,37 @@ async fn small_window_compaction_preserves_context_across_restart() {
             .contains("Owner is River")
     );
     assert!(request.messages[0].joined_text().contains(&summary));
-    assert!(request.messages[1].joined_text().contains(timestamp));
+    assert!(request.messages[1].joined_text().contains(ARRIVAL));
     kernel.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
-async fn recurring_schedules_resume_from_last_delivery_and_follow_the_owner_zone() {
-    let dir = tempfile::tempdir().unwrap();
-    let clock = Arc::new(TestClock(Mutex::new(
-        "2026-03-06T13:01:00Z".parse().unwrap(),
-    )));
-    let provider = ScriptedProvider::new((0..3).map(|_| reply("reminded")).collect());
-    let (kernel, _) = kernel_with(
-        dir.path(),
-        provider.clone(),
-        Tz::America__New_York,
-        |deps| deps.clock = clock.clone(),
-    )
-    .await;
-    let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
-    let recurring = kernel
+async fn new_york(root: &Path, provider: Arc<ScriptedProvider>, clock: &Arc<TestClock>) -> Kernel {
+    let clock = clock.clone();
+    kernel_with(root, provider, Tz::America__New_York, |deps| {
+        deps.clock = clock;
+    })
+    .await
+    .0
+}
+
+fn utc(at: &str) -> DateTime<Utc> {
+    at.parse().unwrap()
+}
+
+/// Creates a daily 08:00 briefing in the owner's New York zone and delivers its first
+/// occurrence; returns the briefing as created.
+async fn deliver_first_briefing(
+    root: &Path,
+    provider: Arc<ScriptedProvider>,
+    clock: &Arc<TestClock>,
+) -> (Kernel, SessionId, Scheduled) {
+    let kernel = new_york(root, provider, clock).await;
+    let session = kernel.open_session("main").await.unwrap().id;
+    let mut rx = kernel.subscribe(session).unwrap();
+    let briefing = kernel
         .schedules()
         .create(
-            session.id,
+            session,
             ScheduleRule::Cron {
                 expr: "0 8 * * *".into(),
                 timezone: None,
@@ -393,45 +431,70 @@ async fn recurring_schedules_resume_from_last_delivery_and_follow_the_owner_zone
         )
         .await
         .unwrap();
-    let id = recurring.schedule.id;
-    assert_eq!(
-        recurring.next_due,
-        "2026-03-07T13:00:00Z".parse::<DateTime<Utc>>().unwrap()
-    );
-    *clock.0.lock().unwrap() = recurring.next_due;
+    *clock.0.lock().unwrap() = briefing.next_due;
     tokio::time::advance(Duration::from_secs(1)).await;
     finish(&mut rx).await;
-    let next = kernel.schedules().list(None).await.unwrap().remove(0);
-    assert_eq!(
-        next.next_due,
-        "2026-03-08T12:00:00Z".parse::<DateTime<Utc>>().unwrap()
-    );
+    (kernel, session, briefing)
+}
+
+/// Stops the node over three missed local mornings, including the DST change, and restarts it
+/// on 2026-03-10 once the catch-up Run has ended.
+async fn restart_after_missed_mornings(
+    root: &Path,
+    provider: Arc<ScriptedProvider>,
+    clock: &Arc<TestClock>,
+    kernel: Kernel,
+    session: SessionId,
+) -> (Kernel, broadcast::Receiver<Entry>) {
     kernel.shutdown().await.unwrap();
     drop(kernel);
-
-    // Three missed local mornings, including the DST change, become one input.
-    *clock.0.lock().unwrap() = "2026-03-10T12:01:00Z".parse().unwrap();
-    let (kernel, _) = kernel_with(
-        dir.path(),
-        provider.clone(),
-        Tz::America__New_York,
-        |deps| deps.clock = clock.clone(),
-    )
-    .await;
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    *clock.0.lock().unwrap() = utc("2026-03-10T12:01:00Z");
+    let kernel = new_york(root, provider, clock).await;
+    let mut rx = kernel.subscribe(session).unwrap();
     finish(&mut rx).await;
-    let log = kernel.log(session.id, None).await.unwrap();
-    let reminders: Vec<_> = log.iter().filter(|entry| is_reminder(entry, id)).collect();
+    (kernel, rx)
+}
+
+#[tokio::test(start_paused = true)]
+async fn recurring_schedules_resume_from_their_last_delivery_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(TestClock(Mutex::new(utc("2026-03-06T13:01:00Z"))));
+    let provider = ScriptedProvider::new((0..3).map(|_| reply("reminded")).collect());
+    let (kernel, session, briefing) =
+        deliver_first_briefing(dir.path(), provider.clone(), &clock).await;
+    assert_eq!(briefing.next_due, utc("2026-03-07T13:00:00Z"));
+    let next = kernel.schedules().list(None).await.unwrap().remove(0);
+    assert_eq!(next.next_due, utc("2026-03-08T12:00:00Z"));
+    let (kernel, _) =
+        restart_after_missed_mornings(dir.path(), provider, &clock, kernel, session).await;
+    let log = kernel.log(session, None).await.unwrap();
+    let reminders: Vec<_> = log
+        .iter()
+        .filter(|entry| is_reminder(entry, briefing.schedule.id))
+        .collect();
     assert_eq!(reminders.len(), 2);
+    // The three missed mornings become one input.
     assert!(
         matches!(&reminders[1].body, EntryBody::EventConsumed { event: Event { body: EventBody::Reminder { skipped: 2, due_at, .. }, .. } }
-        if *due_at == "2026-03-10T12:00:00Z".parse::<DateTime<Utc>>().unwrap())
+        if *due_at == utc("2026-03-10T12:00:00Z"))
     );
-    let inspection = kernel.inspect(session.id, None).await.unwrap();
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn owner_zone_changes_renarrate_times_and_move_only_floating_schedules() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(TestClock(Mutex::new(utc("2026-03-06T13:01:00Z"))));
+    let provider = ScriptedProvider::new((0..3).map(|_| reply("reminded")).collect());
+    let (kernel, session, briefing) =
+        deliver_first_briefing(dir.path(), provider.clone(), &clock).await;
+    let (kernel, mut rx) =
+        restart_after_missed_mornings(dir.path(), provider, &clock, kernel, session).await;
+    let inspection = kernel.inspect(session, None).await.unwrap();
     let fixed = kernel
         .schedules()
         .create(
-            session.id,
+            session,
             ScheduleRule::Cron {
                 expr: "0 8 * * *".into(),
                 timezone: Some(Tz::America__New_York),
@@ -441,7 +504,7 @@ async fn recurring_schedules_resume_from_last_delivery_and_follow_the_owner_zone
         .await
         .unwrap();
     // A live westward change uses the same catch-up rule; an explicit zone stays fixed.
-    *clock.0.lock().unwrap() = "2026-03-10T16:00:00Z".parse().unwrap();
+    *clock.0.lock().unwrap() = utc("2026-03-10T16:00:00Z");
     let mut document = kernel.registry().view().config.document.clone();
     document["owner"]["timezone"] = json!(Tz::America__Los_Angeles);
     kernel
@@ -452,13 +515,13 @@ async fn recurring_schedules_resume_from_last_delivery_and_follow_the_owner_zone
     finish(&mut rx).await;
     assert_eq!(
         kernel
-            .inspect(session.id, Some(inspection.attempt))
+            .inspect(session, Some(inspection.attempt))
             .await
             .unwrap()
             .request,
         inspection.request
     );
-    let current = kernel.inspect(session.id, None).await.unwrap().request;
+    let current = kernel.inspect(session, None).await.unwrap().request;
     assert!(
         current.messages[0]
             .joined_text()
@@ -477,11 +540,11 @@ async fn recurring_schedules_resume_from_last_delivery_and_follow_the_owner_zone
             .any(|text| text.contains("2026-03-07 08:00"))
     );
     let active = kernel.schedules().list(None).await.unwrap();
-    let following = active.iter().find(|s| s.schedule.id == id).unwrap();
-    assert_eq!(
-        following.next_due,
-        "2026-03-11T15:00:00Z".parse::<DateTime<Utc>>().unwrap()
-    );
+    let following = active
+        .iter()
+        .find(|s| s.schedule.id == briefing.schedule.id)
+        .unwrap();
+    assert_eq!(following.next_due, utc("2026-03-11T15:00:00Z"));
     assert_eq!(
         active
             .iter()

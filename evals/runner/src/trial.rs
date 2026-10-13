@@ -67,24 +67,7 @@ pub(crate) async fn run(
     };
     let mut home = Home::new(&deps.config.trial);
     let mut services = Services::default();
-    let prepared = async {
-        let (model, address) = services.start(task, &renderer, deps.model.as_ref()).await?;
-        home.prepare(
-            task,
-            &model,
-            &renderer,
-            &format!("http://{address}"),
-            &services.hosts,
-        )
-        .await?;
-        Ok::<_, anyhow::Error>(
-            tokio::fs::File::create(directory.join("daemon.log"))
-                .await?
-                .into_std()
-                .await,
-        )
-    }
-    .await;
+    let prepared = prepare(deps, task, &renderer, &mut home, &mut services, &directory).await;
     let executed = match prepared {
         Ok(log) => {
             execute(
@@ -157,6 +140,30 @@ pub(crate) async fn run(
         generations: snapshot.metrics.generations,
         network_violations: violations,
     })
+}
+
+/// Start the mocks, the proxy and the model, then build the home; returns the daemon's log file.
+async fn prepare(
+    deps: &TrialDeps,
+    task: &Task,
+    renderer: &Renderer,
+    home: &mut Home,
+    services: &mut Services,
+    directory: &Path,
+) -> Result<std::fs::File> {
+    let (model, address) = services.start(task, renderer, deps.model.as_ref()).await?;
+    home.prepare(
+        task,
+        &model,
+        renderer,
+        &format!("http://{address}"),
+        &services.hosts,
+    )
+    .await?;
+    Ok(tokio::fs::File::create(directory.join("daemon.log"))
+        .await?
+        .into_std()
+        .await)
 }
 
 /// Only a failed variant deployment returns an error; it aborts the run.

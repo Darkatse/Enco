@@ -132,36 +132,6 @@ impl Plugins {
         }
         candidates
     }
-
-    pub fn exports(&self) -> Exports {
-        Exports {
-            generations: self
-                .generations
-                .iter()
-                .map(|(id, record)| (*id, record.plugin))
-                .collect(),
-            plugins: self
-                .names
-                .iter()
-                .map(|(name, plugin)| {
-                    let export = |generation: GenerationId| {
-                        self.loaded.get(&generation).map(|loaded| LoadedGeneration {
-                            plugin: *plugin,
-                            generation,
-                            loaded: loaded.clone(),
-                        })
-                    };
-                    (
-                        name.clone(),
-                        Routes {
-                            active: self.active.get(plugin).copied().and_then(export),
-                            factory: self.factory.get(plugin).copied().and_then(export),
-                        },
-                    )
-                })
-                .collect(),
-        }
-    }
 }
 
 pub(super) struct State {

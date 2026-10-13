@@ -1,3 +1,7 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions fail the test by panicking"
+)]
 mod support;
 
 use async_trait::async_trait;
@@ -48,8 +52,84 @@ fn configured() -> serde_json::Value {
     document
 }
 
+/// Holds a long conversation on `main` and, while its first compaction is in flight, either
+/// assigns `main` the alternate profile or redefines its default one; returns that Round.
+async fn change_profile_during_compaction(
+    kernel: &Kernel,
+    provider: &PausedCompaction,
+    main: SessionId,
+    update_definition: bool,
+) -> RoundId {
+    let mut rx = kernel.subscribe(main).unwrap();
+    let conversation = async {
+        for n in 0..6 {
+            kernel
+                .submit(
+                    main,
+                    EventId::new(),
+                    format!("History {n}: {}", "some detailed history ".repeat(150)),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                finish(&mut rx).await.last().unwrap().body,
+                EntryBody::RunEnded {
+                    end: RunEnd::Completed,
+                    ..
+                }
+            ));
+        }
+    };
+    let switch = async {
+        provider.entered.notified().await;
+        let log = kernel.log(main, None).await.unwrap();
+        let round = log
+            .iter()
+            .rev()
+            .find_map(|entry| match entry.body {
+                EntryBody::AttemptStarted { round, .. } => Some(round),
+                _ => None,
+            })
+            .unwrap();
+        if update_definition {
+            let mut document = configured();
+            document["profile"]["default"] = document["profile"]["alternate"].clone();
+            kernel
+                .registry()
+                .apply_config(ConfigSource::Document(document))
+                .await
+                .unwrap();
+        } else {
+            kernel.set_profile(main, "alternate").await.unwrap();
+        }
+        let status = kernel.status().await.unwrap();
+        assert_eq!(
+            status
+                .sessions
+                .iter()
+                .find(|s| s.session.id == main)
+                .unwrap()
+                .session
+                .profile,
+            if update_definition {
+                "default"
+            } else {
+                "alternate"
+            }
+        );
+        provider.resume.notify_one();
+        round
+    };
+    let (_, round) = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        tokio::join!(conversation, switch)
+    })
+    .await
+    .unwrap();
+    round
+}
+
 #[tokio::test]
-async fn profile_changes_bind_at_round_boundaries_and_missing_profiles_remain_recoverable() {
+async fn profile_changes_bind_at_round_boundaries() {
     for update_definition in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let scripted = ScriptedProvider::new((0..30).map(|_| reply("summary or reply")).collect());
@@ -61,88 +141,10 @@ async fn profile_changes_bind_at_round_boundaries_and_missing_profiles_remain_re
         });
         let (kernel, _) =
             kernel_configured(dir.path(), provider.clone(), configured(), |_| {}).await;
-        let mut earlier = configured();
-        earlier["profile"]
-            .as_object_mut()
-            .unwrap()
-            .remove("alternate");
-        kernel
-            .registry()
-            .apply_config(ConfigSource::Document(earlier))
-            .await
-            .unwrap();
-        kernel
-            .registry()
-            .apply_config(ConfigSource::Document(configured()))
-            .await
-            .unwrap();
         let main = kernel.open_session("main").await.unwrap();
         let other = kernel.open_session("other").await.unwrap();
-        let mut rx = kernel.subscribe(main.id).unwrap();
-        let conversation = async {
-            for n in 0..6 {
-                kernel
-                    .submit(
-                        main.id,
-                        EventId::new(),
-                        format!("History {n}: {}", "some detailed history ".repeat(150)),
-                    )
-                    .await
-                    .unwrap();
-                assert!(matches!(
-                    finish(&mut rx).await.last().unwrap().body,
-                    EntryBody::RunEnded {
-                        end: RunEnd::Completed,
-                        ..
-                    }
-                ));
-            }
-        };
-        let switch = async {
-            provider.entered.notified().await;
-            let log = kernel.log(main.id, None).await.unwrap();
-            let round = log
-                .iter()
-                .rev()
-                .find_map(|entry| match entry.body {
-                    EntryBody::AttemptStarted { round, .. } => Some(round),
-                    _ => None,
-                })
-                .unwrap();
-            if update_definition {
-                let mut document = configured();
-                document["profile"]["default"] = document["profile"]["alternate"].clone();
-                kernel
-                    .registry()
-                    .apply_config(ConfigSource::Document(document))
-                    .await
-                    .unwrap();
-            } else {
-                kernel.set_profile(main.id, "alternate").await.unwrap();
-            }
-            let status = kernel.status().await.unwrap();
-            assert_eq!(
-                status
-                    .sessions
-                    .iter()
-                    .find(|s| s.session.id == main.id)
-                    .unwrap()
-                    .session
-                    .profile,
-                if update_definition {
-                    "default"
-                } else {
-                    "alternate"
-                }
-            );
-            provider.resume.notify_one();
-            round
-        };
-        let (_, round) = tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            tokio::join!(conversation, switch)
-        })
-        .await
-        .unwrap();
+        let round =
+            change_profile_during_compaction(&kernel, &provider, main.id, update_definition).await;
         let log = kernel.log(main.id, None).await.unwrap();
         let models: Vec<_> = log
             .iter()
@@ -178,64 +180,86 @@ async fn profile_changes_bind_at_round_boundaries_and_missing_profiles_remain_re
             kernel.inspect(main.id, None).await.unwrap().settings.model,
             "new-reply"
         );
-        if update_definition {
-            kernel.shutdown().await.unwrap();
-            continue;
-        }
-        kernel.registry().rollback_config().await.unwrap();
-        kernel.shutdown().await.unwrap();
-        drop(kernel);
-
-        // Mechanical rollback can remove an in-use name; restarting still restores that generation.
-        let (kernel, _) = support::kernel(dir.path(), scripted.clone()).await;
-        let mut rx = kernel.subscribe(main.id).unwrap();
-        kernel
-            .submit(main.id, EventId::new(), "continue".into())
-            .await
-            .unwrap();
-        assert!(matches!(&finish(&mut rx).await.last().unwrap().body,
-        EntryBody::RunEnded { end: RunEnd::Failed { failure }, .. } if failure.code == code::PROFILE_UNKNOWN));
-        let mut other_rx = kernel.subscribe(other.id).unwrap();
-        kernel
-            .submit(other.id, EventId::new(), "still works".into())
-            .await
-            .unwrap();
-        assert!(matches!(
-            finish(&mut other_rx).await.last().unwrap().body,
-            EntryBody::RunEnded {
-                end: RunEnd::Completed,
-                ..
-            }
-        ));
-        assert!(matches!(
-            kernel.set_profile(main.id, "missing").await,
-            Err(KernelError::UnknownProfile(_))
-        ));
-        kernel.set_profile(main.id, "default").await.unwrap();
-        kernel
-            .submit(main.id, EventId::new(), "recovered".into())
-            .await
-            .unwrap();
-        assert!(matches!(
-            finish(&mut rx).await.last().unwrap().body,
-            EntryBody::RunEnded {
-                end: RunEnd::Completed,
-                ..
-            }
-        ));
-        assert!(
-            scripted
-                .requests
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .messages
-                .iter()
-                .any(|m| m.joined_text().contains("unknown profile alternate"))
-        );
         kernel.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn a_session_whose_profile_was_rolled_back_away_remains_recoverable() {
+    let dir = tempfile::tempdir().unwrap();
+    let scripted = ScriptedProvider::new((0..30).map(|_| reply("summary or reply")).collect());
+    let (kernel, _) = kernel_configured(dir.path(), scripted.clone(), configured(), |_| {}).await;
+    let mut earlier = configured();
+    earlier["profile"]
+        .as_object_mut()
+        .unwrap()
+        .remove("alternate");
+    kernel
+        .registry()
+        .apply_config(ConfigSource::Document(earlier))
+        .await
+        .unwrap();
+    kernel
+        .registry()
+        .apply_config(ConfigSource::Document(configured()))
+        .await
+        .unwrap();
+    let main = kernel.open_session("main").await.unwrap();
+    let other = kernel.open_session("other").await.unwrap();
+    kernel.set_profile(main.id, "alternate").await.unwrap();
+    kernel.registry().rollback_config().await.unwrap();
+    kernel.shutdown().await.unwrap();
+    drop(kernel);
+
+    // Mechanical rollback can remove an in-use name; restarting still restores that generation.
+    let (kernel, _) = support::kernel(dir.path(), scripted.clone()).await;
+    let mut rx = kernel.subscribe(main.id).unwrap();
+    kernel
+        .submit(main.id, EventId::new(), "continue".into())
+        .await
+        .unwrap();
+    assert!(matches!(&finish(&mut rx).await.last().unwrap().body,
+    EntryBody::RunEnded { end: RunEnd::Failed { failure }, .. } if failure.code == code::PROFILE_UNKNOWN));
+    let mut other_rx = kernel.subscribe(other.id).unwrap();
+    kernel
+        .submit(other.id, EventId::new(), "still works".into())
+        .await
+        .unwrap();
+    assert!(matches!(
+        finish(&mut other_rx).await.last().unwrap().body,
+        EntryBody::RunEnded {
+            end: RunEnd::Completed,
+            ..
+        }
+    ));
+    assert!(matches!(
+        kernel.set_profile(main.id, "missing").await,
+        Err(KernelError::UnknownProfile(_))
+    ));
+    kernel.set_profile(main.id, "default").await.unwrap();
+    kernel
+        .submit(main.id, EventId::new(), "recovered".into())
+        .await
+        .unwrap();
+    assert!(matches!(
+        finish(&mut rx).await.last().unwrap().body,
+        EntryBody::RunEnded {
+            end: RunEnd::Completed,
+            ..
+        }
+    ));
+    assert!(
+        scripted
+            .requests
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .messages
+            .iter()
+            .any(|m| m.joined_text().contains("unknown profile alternate"))
+    );
+    kernel.shutdown().await.unwrap();
 }
 
 #[tokio::test]

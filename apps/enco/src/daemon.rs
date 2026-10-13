@@ -211,6 +211,10 @@ async fn existing_session(kernel: &Kernel, name: &str) -> Result<SessionRecord, 
         })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per protocol command, so the dispatch reads as the protocol's table"
+)]
 async fn process(
     application: &compose_root::Application,
     command: Command,
@@ -280,22 +284,7 @@ async fn process(
                 .map_err(memory_error)?;
             json!({ "forgotten": forgotten })
         }
-        Command::Status {} => {
-            let mut status = json!(kernel.status().await?);
-            status["channels"] = json!(application.channels.status().await?);
-            status["config"] = json!(kernel.registry().status().await.config);
-            status["config"]["divergence"] = json!(
-                kernel
-                    .registry()
-                    .config_divergence(
-                        config::document(&application.paths.config())
-                            .await
-                            .map_err(|error| error.to_string())
-                    )
-                    .await
-            );
-            status
-        }
+        Command::Status {} => status(application).await?,
         Command::Sessions {} => json!(kernel.sessions().await?),
         Command::Log {
             session: name,
@@ -305,24 +294,13 @@ async fn process(
             json!(kernel.log(session.id, after).await?)
         }
         Command::PluginStatus {} => json!(kernel.registry().status().await.plugins),
-        Command::PluginDeploy { name, source } => {
-            let source = match source {
-                DeploySource::Path(path) => enco_kernel::PluginSource::Artifact(
-                    tokio::fs::read(&path).await.map_err(|error| CommandError {
-                        code: "bad_request",
-                        message: format!("{}: {error}", path.display()),
-                    })?,
-                ),
-                DeploySource::Generation(id) => enco_kernel::PluginSource::Generation(id),
-            };
-            json!(
-                kernel
-                    .registry()
-                    .deploy(&name, source)
-                    .await
-                    .map_err(KernelError::from)?
-            )
-        }
+        Command::PluginDeploy { name, source } => json!(
+            kernel
+                .registry()
+                .deploy(&name, plugin_source(source).await?)
+                .await
+                .map_err(KernelError::from)?
+        ),
         Command::ConfigApply { generation } => {
             config::apply(&application.paths.config(), kernel.registry(), generation)
                 .await
@@ -364,5 +342,39 @@ async fn process(
             kernel.set_safe_mode(enabled).await?;
             json!({ "enabled": enabled })
         }
+    })
+}
+
+/// The kernel's status with what only the daemon knows: channels and the intent file.
+async fn status(application: &compose_root::Application) -> Result<Value, CommandError> {
+    let kernel = &application.kernel;
+    let mut status = json!(kernel.status().await?);
+    status["channels"] = json!(application.channels.status().await?);
+    status["config"] = json!(kernel.registry().status().await.config);
+    status["config"]["divergence"] = json!(
+        kernel
+            .registry()
+            .config_divergence(
+                config::document(&application.paths.config())
+                    .await
+                    .map_err(|error| error.to_string())
+            )
+            .await
+    );
+    Ok(status)
+}
+
+/// The daemon reads a component file, so the registry receives bytes or a generation number.
+async fn plugin_source(source: DeploySource) -> Result<enco_kernel::PluginSource, CommandError> {
+    Ok(match source {
+        DeploySource::Path(path) => {
+            enco_kernel::PluginSource::Artifact(tokio::fs::read(&path).await.map_err(|error| {
+                CommandError {
+                    code: "bad_request",
+                    message: format!("{}: {error}", path.display()),
+                }
+            })?)
+        }
+        DeploySource::Generation(id) => enco_kernel::PluginSource::Generation(id),
     })
 }

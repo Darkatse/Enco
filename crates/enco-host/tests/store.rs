@@ -1,15 +1,17 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions fail the test by panicking"
+)]
 mod support;
 use chrono::SubsecRound;
 use enco_core::*;
 use enco_host::SqliteStore;
 use enco_kernel::{Accepted, Commit, ConnectionWrite, Store, StoreError};
+use std::path::Path;
 
-#[tokio::test]
-async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::open(support::store_paths(dir.path()))
-        .await
-        .unwrap();
+/// A store holding the `main` Session, with a user message for it that is not yet accepted.
+async fn main_session(root: &Path) -> (SqliteStore, Event) {
+    let store = SqliteStore::open(support::store_paths(root)).await.unwrap();
     let session = store
         .ensure_session("main", Utc::now().trunc_subsecs(3))
         .await
@@ -23,6 +25,27 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
         },
         received_at: Utc::now().trunc_subsecs(3),
     };
+    (store, event)
+}
+
+/// The first Log entry of the Session, consuming `event`.
+fn consumed(event: &Event) -> Entry {
+    Entry {
+        pos: LogPos {
+            epoch: Epoch(1),
+            seq: Seq(1),
+        },
+        at: Utc::now().trunc_subsecs(3),
+        body: EntryBody::EventConsumed {
+            event: event.clone(),
+        },
+    }
+}
+
+#[tokio::test]
+async fn accepting_an_event_again_reports_a_duplicate() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, event) = main_session(dir.path()).await;
     assert_eq!(
         store
             .accept(std::slice::from_ref(&event), None)
@@ -37,6 +60,16 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
             .unwrap(),
         vec![Accepted::Duplicate]
     );
+}
+
+#[tokio::test]
+async fn a_failed_acceptance_discards_its_connection_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, event) = main_session(dir.path()).await;
+    store
+        .accept(std::slice::from_ref(&event), None)
+        .await
+        .unwrap();
     let write = ConnectionWrite {
         key: "channel:account".into(),
         state: serde_json::json!({"offset": 1}),
@@ -66,26 +99,24 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
         store.connection(&write.key).await.unwrap(),
         Some(write.state)
     );
-    assert_eq!(
-        store.pending(session.id).await.unwrap(),
-        vec![event.clone()]
-    );
-    let entry = Entry {
-        pos: LogPos {
-            epoch: Epoch(1),
-            seq: Seq(1),
-        },
-        at: Utc::now().trunc_subsecs(3),
-        body: EntryBody::EventConsumed {
-            event: event.clone(),
-        },
-    };
+    assert_eq!(store.pending(event.session).await.unwrap(), vec![event]);
+}
+
+#[tokio::test]
+async fn commits_must_continue_the_log_within_the_current_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, event) = main_session(dir.path()).await;
+    store
+        .accept(std::slice::from_ref(&event), None)
+        .await
+        .unwrap();
+    let entry = consumed(&event);
     let mut bad = entry.clone();
     bad.pos.seq = Seq(2);
     assert!(matches!(
         store
             .commit(
-                session.id,
+                event.session,
                 Commit {
                     entries: vec![bad],
                     consumed: vec![event.id]
@@ -94,12 +125,12 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
             .await,
         Err(StoreError::OutOfOrder { .. })
     ));
-    let mut bad = entry.clone();
+    let mut bad = entry;
     bad.pos.epoch = Epoch(2);
     assert!(matches!(
         store
             .commit(
-                session.id,
+                event.session,
                 Commit {
                     entries: vec![bad],
                     consumed: vec![event.id]
@@ -108,6 +139,17 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
             .await,
         Err(StoreError::Fenced { .. })
     ));
+}
+
+#[tokio::test]
+async fn a_commit_consuming_an_unaccepted_event_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, event) = main_session(dir.path()).await;
+    store
+        .accept(std::slice::from_ref(&event), None)
+        .await
+        .unwrap();
+    let entry = consumed(&event);
     let missing = Event {
         id: EventId::new(),
         ..event.clone()
@@ -126,23 +168,31 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
     assert!(
         store
             .commit(
-                session.id,
+                event.session,
                 Commit {
-                    entries: vec![entry.clone(), second],
+                    entries: vec![entry, second],
                     consumed: vec![event.id, missing.id]
                 }
             )
             .await
             .is_err()
     );
-    assert!(store.log(session.id, None).await.unwrap().is_empty());
-    assert_eq!(
-        store.pending(session.id).await.unwrap(),
-        vec![event.clone()]
-    );
+    assert!(store.log(event.session, None).await.unwrap().is_empty());
+    assert_eq!(store.pending(event.session).await.unwrap(), vec![event]);
+}
+
+#[tokio::test]
+async fn committed_entries_consume_their_events_and_survive_reopening() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, event) = main_session(dir.path()).await;
+    store
+        .accept(std::slice::from_ref(&event), None)
+        .await
+        .unwrap();
+    let entry = consumed(&event);
     store
         .commit(
-            session.id,
+            event.session,
             Commit {
                 entries: vec![entry.clone()],
                 consumed: vec![event.id],
@@ -150,9 +200,9 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
         )
         .await
         .unwrap();
-    assert!(store.pending(session.id).await.unwrap().is_empty());
+    assert!(store.pending(event.session).await.unwrap().is_empty());
     assert_eq!(
-        store.log(session.id, None).await.unwrap(),
+        store.log(event.session, None).await.unwrap(),
         vec![entry.clone()]
     );
     let node = store.node().await.unwrap().id;
@@ -161,7 +211,10 @@ async fn acceptance_and_log_commit_are_atomic_and_structurally_ordered() {
         .await
         .unwrap();
     assert_eq!(reopened.node().await.unwrap().id, node);
-    assert_eq!(reopened.log(session.id, None).await.unwrap(), vec![entry]);
+    assert_eq!(
+        reopened.log(event.session, None).await.unwrap(),
+        vec![entry]
+    );
     assert_eq!(
         reopened
             .accept(std::slice::from_ref(&event), None)

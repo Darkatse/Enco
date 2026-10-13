@@ -1,16 +1,22 @@
 //! The single committer of plugin identities, generation history and published exports.
 mod activation;
+mod admission;
 mod configuration;
+mod exports;
 mod health;
 mod state;
+mod status;
 
 use crate::{
     Clock, Credential, Decision, Embedding, Endpoint, KernelSettings, Loaded, NewGeneration,
     Provider, Runtime, SettingsError, Store, StoreError,
 };
 use activation::ActivationReason;
+use admission::{admit, check_uses, users, validate_name, wiring_error};
 use enco_core::*;
+pub use exports::{Export, Exports};
 use state::State;
+pub use status::{ConfigStatus, PluginStatus, RegistryStatus};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{Mutex, watch};
 
@@ -127,111 +133,6 @@ pub struct Registry {
     views: watch::Sender<Arc<View>>,
 }
 
-/// An invocation's immutable association between code and registry identity.
-pub struct Export<T: ?Sized> {
-    /// Plugin owning the generation.
-    pub plugin: PluginId,
-    /// Exact generation used for this invocation.
-    pub generation: GenerationId,
-    /// Compiled adapter retained until this invocation ends.
-    pub adapter: Arc<T>,
-}
-
-struct LoadedGeneration {
-    plugin: PluginId,
-    generation: GenerationId,
-    loaded: Loaded,
-}
-
-/// Derived routing view. Holding it does not prevent the registry from publishing a new view.
-pub struct Exports {
-    plugins: BTreeMap<String, Routes>,
-    generations: BTreeMap<GenerationId, PluginId>,
-}
-
-struct Routes {
-    active: Option<LoadedGeneration>,
-    factory: Option<LoadedGeneration>,
-}
-
-impl Exports {
-    /// Look up any recorded generation, including failed or unloaded history.
-    pub fn plugin_of(&self, generation: GenerationId) -> Option<PluginId> {
-        self.generations.get(&generation).copied()
-    }
-
-    fn routes(&self, plugin: &str) -> Result<&Routes, Failure> {
-        self.plugins
-            .get(plugin)
-            .ok_or_else(|| unavailable(plugin, "name is not registered"))
-    }
-
-    /// Resolve completion at the start of an Attempt using the Round's fixed mode.
-    pub fn completion(
-        &self,
-        plugin: &str,
-        safe_mode: bool,
-    ) -> Result<Export<dyn Provider>, Failure> {
-        let routes = self.routes(plugin)?;
-        let selected = if safe_mode {
-            routes.factory.as_ref().or(routes.active.as_ref())
-        } else {
-            routes.active.as_ref()
-        }
-        .ok_or_else(|| unavailable(plugin, "no active generation"))?;
-        selected.export(plugin, "completion", |loaded| loaded.completion.clone())
-    }
-
-    /// Resolve embedding at the start of one synchronization call.
-    pub fn embedding(&self, plugin: &str) -> Result<Export<dyn Embedding>, Failure> {
-        self.active(plugin)?
-            .export(plugin, "embedding", |loaded| loaded.embedding.clone())
-    }
-
-    /// Resolve decision at the start of one policy evaluation.
-    pub fn decision(&self, plugin: &str) -> Result<Export<dyn Decision>, Failure> {
-        self.active(plugin)?
-            .export(plugin, "decision", |loaded| loaded.decision.clone())
-    }
-
-    fn active(&self, plugin: &str) -> Result<&LoadedGeneration, Failure> {
-        self.routes(plugin)?
-            .active
-            .as_ref()
-            .ok_or_else(|| unavailable(plugin, "no active generation"))
-    }
-}
-
-impl LoadedGeneration {
-    /// Bind one interface of this generation to the invocation that will record it.
-    fn export<T: ?Sized>(
-        &self,
-        plugin: &str,
-        interface: &str,
-        adapter: impl FnOnce(&Loaded) -> Option<Arc<T>>,
-    ) -> Result<Export<T>, Failure> {
-        let adapter = adapter(&self.loaded).ok_or_else(|| {
-            unavailable(
-                plugin,
-                &format!("generation {} does not export {interface}", self.generation),
-            )
-        })?;
-        Ok(Export {
-            plugin: self.plugin,
-            generation: self.generation,
-            adapter,
-        })
-    }
-}
-
-fn unavailable(plugin: &str, reason: &str) -> Failure {
-    Failure {
-        code: code::PLUGIN_UNAVAILABLE.into(),
-        message: format!("plugin {plugin}: {reason}"),
-        retryable: false,
-    }
-}
-
 /// One completed invocation's verdict, before caller-specific result handling.
 pub enum Verdict {
     /// A valid plugin result, regardless of the caller's subsequent policy checks.
@@ -247,27 +148,6 @@ pub struct Deployed {
     pub generation: GenerationRecord,
     /// Configured callers affected by the change.
     pub users: Vec<String>,
-}
-
-/// Inspectable identity, history and routing for one registered name.
-#[derive(serde::Serialize)]
-pub struct PluginStatus {
-    /// Human-facing name.
-    pub name: String,
-    /// Stable identity from plugins.lock.
-    pub id: PluginId,
-    /// Current generation, if available.
-    pub active: Option<GenerationRecord>,
-    /// Description of the active component, if loaded.
-    pub summary: Option<String>,
-    /// First recovery candidate, including the current factory fallback.
-    pub rollback_target: Option<GenerationId>,
-    /// Configured users of this plugin.
-    pub users: Vec<String>,
-    /// Configured users whose requirements the active generation cannot satisfy.
-    pub unavailable: Vec<String>,
-    /// Complete history in registry sequence order.
-    pub generations: Vec<GenerationRecord>,
 }
 
 /// Result of applying configuration content.
@@ -292,28 +172,6 @@ pub struct Probe {
     pub user: String,
     /// Endpoint that was checked.
     pub endpoint: String,
-}
-
-/// Plugin and configuration histories from the same committer snapshot.
-#[derive(serde::Serialize)]
-pub struct RegistryStatus {
-    /// Registered plugin identities and histories.
-    pub plugins: Vec<PluginStatus>,
-    /// Active configuration and its history.
-    pub config: ConfigStatus,
-}
-
-/// Configuration history and current host interpretation failures.
-#[derive(serde::Serialize)]
-pub struct ConfigStatus {
-    /// Active generation.
-    pub active: GenerationId,
-    /// Earlier configuration selected by mechanical rollback.
-    pub rollback_target: Option<GenerationId>,
-    /// Generation numbers and observation times in commit order.
-    pub generations: Vec<(GenerationId, DateTime<Utc>)>,
-    /// Tables the current host cannot interpret.
-    pub invalid: Vec<SettingsError>,
 }
 
 /// How the current intent file relates to registered configuration content.
@@ -531,76 +389,6 @@ impl Registry {
             .ok_or_else(|| RegistryError::NoRollbackTarget(name.into()))
     }
 
-    /// Read the registry's single owned state without maintaining a second status cache.
-    pub async fn status(&self) -> RegistryStatus {
-        let state = self.state.lock().await;
-        let plugins = state
-            .plugins
-            .names
-            .iter()
-            .map(|(name, id)| {
-                let active = state
-                    .plugins
-                    .active
-                    .get(id)
-                    .copied()
-                    .and_then(|id| state.plugins.generations.get(&id));
-                PluginStatus {
-                    name: name.clone(),
-                    id: *id,
-                    summary: active
-                        .and_then(|record| state.plugins.loaded.get(&record.id))
-                        .map(|loaded| loaded.summary.clone()),
-                    rollback_target: active.and_then(|record| {
-                        state
-                            .plugins
-                            .candidates(*id, record.id)
-                            .first()
-                            .map(|record| record.id)
-                    }),
-                    active: active.cloned(),
-                    users: users(&state.config.uses, name),
-                    unavailable: state
-                        .config
-                        .uses
-                        .iter()
-                        .filter(|usage| usage.endpoint.plugin == *name)
-                        .filter_map(|usage| {
-                            match active.and_then(|record| state.plugins.loaded.get(&record.id)) {
-                                Some(loaded) => wiring_error(usage, loaded),
-                                None => Some(format!("{}: no active generation", usage.user)),
-                            }
-                        })
-                        .collect(),
-                    generations: state
-                        .plugins
-                        .generations
-                        .values()
-                        .filter(|record| record.plugin == *id)
-                        .cloned()
-                        .collect(),
-                }
-            })
-            .collect();
-        RegistryStatus {
-            plugins,
-            config: ConfigStatus {
-                active: state.config.generation,
-                rollback_target: state
-                    .configs
-                    .range(..state.config.generation)
-                    .next_back()
-                    .map(|(id, _)| *id),
-                generations: state
-                    .configs
-                    .values()
-                    .map(|record| (record.id, record.created_at))
-                    .collect(),
-                invalid: state.config.invalid.clone(),
-            },
-        }
-    }
-
     fn publish(&self, state: &mut State) {
         state.plugins.loaded.retain(|id, _| {
             state.plugins.active.values().any(|active| active == id)
@@ -618,94 +406,9 @@ impl Registry {
     }
 }
 
-fn validate_name(name: &str) -> Result<(), RegistryError> {
-    if name.split('-').all(|part| {
-        !part.is_empty()
-            && part
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-    }) {
-        Ok(())
-    } else {
-        Err(RegistryError::Rejected {
-            name: name.into(),
-            reason: "name must use lowercase letters, digits and single hyphens".into(),
-        })
-    }
-}
-
-/// Why a caller cannot use a loaded generation: the interface it imports is missing, or the
-/// credential the endpoint names does not match what the generation declares.
-fn wiring_error(usage: &Use, loaded: &Loaded) -> Option<String> {
-    let (exported, interface) = match usage.need {
-        Need::Completion { .. } => (loaded.completion.is_some(), "completion"),
-        Need::Embedding { .. } => (loaded.embedding.is_some(), "embedding"),
-        Need::Decision => (loaded.decision.is_some(), "decision"),
-    };
-    if !exported {
-        return Some(format!("{} requires {interface}", usage.user));
-    }
-    let mismatch = match (
-        loaded.credential,
-        usage.endpoint.settings.api_key_env.is_some(),
-    ) {
-        (None, true) => "sets api_key_env, but the artifact declares no credential",
-        (Some(Credential { required: true }), false) => {
-            "has no api_key_env, but the artifact requires a credential"
-        }
-        _ => return None,
-    };
-    Some(format!("{} {mismatch}", usage.user))
-}
-
 fn rejected(name: &str, reason: impl ToString) -> RegistryError {
     RegistryError::Rejected {
         name: name.into(),
         reason: reason.to_string(),
     }
-}
-
-fn users(uses: &[Use], name: &str) -> Vec<String> {
-    uses.iter()
-        .filter(|usage| usage.endpoint.plugin == name)
-        .map(|usage| usage.user.clone())
-        .collect()
-}
-
-fn admit(uses: &[Use], name: &str, loaded: &Loaded) -> Result<(), RegistryError> {
-    let errors: Vec<_> = uses
-        .iter()
-        .filter(|usage| usage.endpoint.plugin == name)
-        .filter_map(|usage| wiring_error(usage, loaded))
-        .collect();
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(rejected(name, errors.join(", ")))
-    }
-}
-
-fn check_uses(plugins: &state::Plugins, uses: &[Use]) -> Result<(), RegistryError> {
-    for usage in uses {
-        let plugin = plugins.names.get(&usage.endpoint.plugin).ok_or_else(|| {
-            rejected(
-                &usage.endpoint.plugin,
-                format!("used by {}; name is not registered", usage.user),
-            )
-        })?;
-        let loaded = plugins
-            .active
-            .get(plugin)
-            .and_then(|id| plugins.loaded.get(id))
-            .ok_or_else(|| {
-                rejected(
-                    &usage.endpoint.plugin,
-                    format!("used by {}; no active generation", usage.user),
-                )
-            })?;
-        if let Some(reason) = wiring_error(usage, loaded) {
-            return Err(rejected(&usage.endpoint.plugin, reason));
-        }
-    }
-    Ok(())
 }

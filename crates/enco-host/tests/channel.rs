@@ -3,10 +3,13 @@ mod support;
 
 use async_trait::async_trait;
 use enco_core::*;
-use enco_host::channel::{Action, Adapter, Channel, Fault, Identity, Input, Update};
-use enco_kernel::{ConnectionWrite, Store};
+use enco_host::{
+    SqliteStore,
+    channel::{Action, Adapter, Channel, Fault, Identity, Input, Update},
+};
+use enco_kernel::{ConnectionWrite, Kernel, Store};
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 use support::*;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -53,6 +56,45 @@ impl Adapter for ControlledChannel {
     }
 }
 
+/// A node with a controlled adapter: the test feeds its updates and observes its polls and sends.
+struct Harness {
+    kernel: Arc<Kernel>,
+    store: Arc<SqliteStore>,
+    adapter: Arc<ControlledChannel>,
+    updates: mpsc::Sender<Vec<Update>>,
+    polling: mpsc::UnboundedReceiver<Value>,
+    sending: mpsc::UnboundedReceiver<Send>,
+}
+
+async fn harness(root: &Path, provider: Arc<ScriptedProvider>) -> Harness {
+    let (kernel, store) = kernel(root, provider).await;
+    let (updates, rx) = mpsc::channel(4);
+    let (polls, polling) = mpsc::unbounded_channel();
+    let (sends, sending) = mpsc::unbounded_channel();
+    let adapter = Arc::new(ControlledChannel {
+        updates: Mutex::new(rx),
+        polls,
+        sends,
+    });
+    Harness {
+        kernel: Arc::new(kernel),
+        store,
+        adapter,
+        updates,
+        polling,
+        sending,
+    }
+}
+
+fn start(kernel: &Arc<Kernel>, adapter: &Arc<ControlledChannel>) -> Channel {
+    Channel::start(
+        kernel.clone(),
+        adapter.clone(),
+        "owner".into(),
+        Arc::new(enco_host::SystemClock),
+    )
+}
+
 async fn receive<T>(receiver: &mut mpsc::UnboundedReceiver<T>) -> T {
     tokio::time::timeout(Duration::from_secs(10), receiver.recv())
         .await
@@ -73,27 +115,34 @@ fn update(offset: u32, action: Action) -> Update {
     }
 }
 
+/// A send whose response was lost, so the service may or may not have delivered it.
+fn lost_response() -> Fault {
+    Fault {
+        failure: Failure {
+            code: "connection_lost".into(),
+            message: "response was lost".into(),
+            retryable: true,
+        },
+        unknown: true,
+        fatal: false,
+        retry_after: None,
+    }
+}
+
 #[tokio::test]
 async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_restart() {
     let dir = tempfile::tempdir().unwrap();
     let markdown = "```rust\nlet x = 1;\n```\n\n# Second";
     let provider = ScriptedProvider::new(vec![reply("first"), reply(markdown), reply("cli only")]);
-    let (kernel, store) = kernel(dir.path(), provider.clone()).await;
-    let kernel = Arc::new(kernel);
-    let (updates, rx) = mpsc::channel(4);
-    let (polls, mut polling) = mpsc::unbounded_channel();
-    let (sends, mut sending) = mpsc::unbounded_channel();
-    let adapter = Arc::new(ControlledChannel {
-        updates: Mutex::new(rx),
-        polls,
-        sends,
-    });
-    let channel = Channel::start(
-        kernel.clone(),
-        adapter.clone(),
-        "owner".into(),
-        Arc::new(enco_host::SystemClock),
-    );
+    let Harness {
+        kernel,
+        adapter,
+        updates,
+        mut polling,
+        mut sending,
+        ..
+    } = harness(dir.path(), provider.clone()).await;
+    let channel = start(&kernel, &adapter);
     assert_eq!(receive(&mut polling).await, json!(0));
     let mut foreign = update(0, Action::Message("unauthorized".into()));
     foreign.input.as_mut().unwrap().sender = Some("another user".into());
@@ -123,19 +172,7 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
         .await
         .unwrap();
     assert_eq!(receive(&mut polling).await, json!(2));
-    first
-        .result
-        .send(Err(Fault {
-            failure: Failure {
-                code: "connection_lost".into(),
-                message: "response was lost".into(),
-                retryable: true,
-            },
-            unknown: true,
-            fatal: false,
-            retry_after: None,
-        }))
-        .unwrap();
+    first.result.send(Err(lost_response())).unwrap();
     let switched = receive(&mut sending).await;
     assert_eq!(switched.text, "Switched to work.");
     switched.result.send(Ok(())).unwrap();
@@ -167,12 +204,7 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
     assert_eq!(provider.requests.lock().unwrap().len(), 2);
 
     // Reopening retains the failure while processed replies are not sent again.
-    let channel = Channel::start(
-        kernel.clone(),
-        adapter.clone(),
-        "owner".into(),
-        Arc::new(enco_host::SystemClock),
-    );
+    let channel = start(&kernel, &adapter);
     assert_eq!(receive(&mut polling).await, json!(3));
     let mut entries = kernel.subscribe(session.id).unwrap();
     kernel
@@ -190,6 +222,42 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
     receipt.result.send(Ok(())).unwrap();
     channel.shutdown().await.unwrap();
     assert_eq!(channel.status().await.unwrap().recent_failures, failures);
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_delivery_left_unsettled_by_a_crash_is_recorded_as_unknown_on_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![reply("first"), reply("cli only")]);
+    let Harness {
+        kernel,
+        store,
+        adapter,
+        updates,
+        mut polling,
+        mut sending,
+    } = harness(dir.path(), provider).await;
+    // An earlier delivery whose outcome is unknown; shutdown settles it.
+    let channel = start(&kernel, &adapter);
+    receive(&mut polling).await;
+    updates
+        .send(vec![update(1, Action::Message("hello".into()))])
+        .await
+        .unwrap();
+    receive(&mut polling).await;
+    receive(&mut sending)
+        .await
+        .result
+        .send(Err(lost_response()))
+        .unwrap();
+    channel.shutdown().await.unwrap();
+    let session = kernel.open_session("main").await.unwrap();
+    let mut entries = kernel.subscribe(session.id).unwrap();
+    kernel
+        .submit(session.id, EventId::new(), "local".into())
+        .await
+        .unwrap();
+    finish(&mut entries).await;
 
     // Seed the exact durable start left by a process that died before a final receipt.
     let pos = kernel
@@ -217,24 +285,36 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
         )
         .await
         .unwrap();
-    let channel = Channel::start(
-        kernel.clone(),
-        adapter,
-        "owner".into(),
-        Arc::new(enco_host::SystemClock),
-    );
-    assert_eq!(receive(&mut polling).await, json!(4));
+    let channel = start(&kernel, &adapter);
+    assert_eq!(receive(&mut polling).await, json!(1));
     let status = channel.status().await.unwrap();
     assert_eq!(status.recent_failures.len(), 2);
     assert!(
         matches!(&status.recent_failures[0].outcome, Settlement::Unknown { failure } if failure.code == code::INTERRUPTED)
     );
+    channel.shutdown().await.unwrap();
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_fatal_send_failure_stops_the_connection_as_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let Harness {
+        kernel,
+        adapter,
+        updates,
+        mut polling,
+        mut sending,
+        ..
+    } = harness(dir.path(), ScriptedProvider::new(vec![])).await;
+    let channel = start(&kernel, &adapter);
+    receive(&mut polling).await;
     // An operational failure, whether observed before or during shutdown, is status, not a shutdown error.
     updates
-        .send(vec![update(5, Action::Sessions)])
+        .send(vec![update(1, Action::Sessions)])
         .await
         .unwrap();
-    assert_eq!(receive(&mut polling).await, json!(5));
+    assert_eq!(receive(&mut polling).await, json!(1));
     receive(&mut sending)
         .await
         .result
@@ -253,6 +333,6 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
     let status = channel.status().await.unwrap();
     assert!(!status.running);
     assert!(status.stopped.unwrap().contains("channel.http.401"));
-    assert_eq!(status.recent_failures.len(), 2); // Command receipts never become Log deliveries.
+    assert!(status.recent_failures.is_empty()); // Command receipts never become Log deliveries.
     kernel.shutdown().await.unwrap();
 }

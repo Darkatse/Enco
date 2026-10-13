@@ -1,4 +1,5 @@
 use super::{backend, encode, rows};
+use crate::sqlite::timestamp;
 use enco_core::*;
 use enco_kernel::{Commit, StoreError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -65,7 +66,7 @@ pub(super) fn commit(
                 session.to_string(),
                 super::signed(entry.pos.epoch.0)?,
                 super::signed(entry.pos.seq.0)?,
-                super::timestamp(entry.at),
+                timestamp(entry.at),
                 encode(&entry.body)?
             ],
         )

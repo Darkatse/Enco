@@ -73,6 +73,10 @@ async fn graceful_stop(daemon: &mut Daemon) {
 
 #[tokio::test]
 #[ignore = "calls DeepSeek and Gemini; set DEEPSEEK_KEY and GEMINI_KEY explicitly"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one paid run carries the scenario across restart; splitting it would repeat real API calls"
+)]
 async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
     for name in ["DEEPSEEK_KEY", "GEMINI_KEY"] {
         assert!(

@@ -190,17 +190,47 @@ impl Registry {
             .map(|usage| {
                 (
                     usage.endpoint.plugin.clone(),
-                    view.exports
-                        .plugins
-                        .get(&usage.endpoint.plugin)
-                        .and_then(|routes| routes.active.as_ref())
-                        .map(|loaded| loaded.generation),
+                    view.exports.active_generation(&usage.endpoint.plugin),
                 )
             })
             .collect();
+        let probes = self.probe_new_uses(&view, &declaration.uses).await?;
+        let mut state = self.state.lock().await;
+        if state.config.generation != previous
+            || expected.iter().any(|(name, expected)| {
+                state
+                    .plugins
+                    .names
+                    .get(name)
+                    .and_then(|id| state.plugins.active.get(id))
+                    != expected.as_ref()
+            })
+        {
+            return Err(RegistryError::Conflict("config".into()));
+        }
+        check_uses(&state.plugins, &declaration.uses)?;
+        self.check_profiles_in_use(&declaration.kernel).await?;
+        let record = register(
+            self.store.as_ref(),
+            &mut state.configs,
+            document,
+            self.clock.now(),
+        )
+        .await?;
+        state.config = declaration.into_active(&record);
+        self.publish(&mut state);
+        Ok(Applied::Registered {
+            generation: record.id,
+            previous,
+            probes,
+        })
+    }
+
+    /// One real call for each use the active configuration does not already make.
+    async fn probe_new_uses(&self, view: &View, uses: &[Use]) -> Result<Vec<Probe>, RegistryError> {
         let mut probed: Vec<&Use> = Vec::new();
         let mut probes = Vec::new();
-        for usage in &declaration.uses {
+        for usage in uses {
             if view
                 .config
                 .uses
@@ -226,26 +256,17 @@ impl Registry {
             });
             probed.push(usage);
         }
-        let mut state = self.state.lock().await;
-        if state.config.generation != previous
-            || expected.iter().any(|(name, expected)| {
-                state
-                    .plugins
-                    .names
-                    .get(name)
-                    .and_then(|id| state.plugins.active.get(id))
-                    != expected.as_ref()
-            })
-        {
-            return Err(RegistryError::Conflict("config".into()));
-        }
-        check_uses(&state.plugins, &declaration.uses)?;
+        Ok(probes)
+    }
+
+    /// A Session's profile is wiring too, so new content must still define every one in use.
+    async fn check_profiles_in_use(&self, kernel: &KernelSettings) -> Result<(), RegistryError> {
         let invalid_sessions: Vec<_> = self
             .store
             .sessions()
             .await?
             .into_iter()
-            .filter(|session| !declaration.kernel.profiles.contains_key(&session.profile))
+            .filter(|session| !kernel.profiles.contains_key(&session.profile))
             .map(|session| {
                 format!(
                     "{} ({}, profile {})",
@@ -253,29 +274,16 @@ impl Registry {
                 )
             })
             .collect();
-        if !invalid_sessions.is_empty() {
-            return Err(rejected(
-                "config",
-                format!(
-                    "profiles are still used by Sessions: {}",
-                    invalid_sessions.join(", ")
-                ),
-            ));
+        if invalid_sessions.is_empty() {
+            return Ok(());
         }
-        let record = register(
-            self.store.as_ref(),
-            &mut state.configs,
-            document,
-            self.clock.now(),
-        )
-        .await?;
-        state.config = declaration.into_active(&record);
-        self.publish(&mut state);
-        Ok(Applied::Registered {
-            generation: record.id,
-            previous,
-            probes,
-        })
+        Err(rejected(
+            "config",
+            format!(
+                "profiles are still used by Sessions: {}",
+                invalid_sessions.join(", ")
+            ),
+        ))
     }
 
     /// Session profile assignment and configuration admission share the same committer.

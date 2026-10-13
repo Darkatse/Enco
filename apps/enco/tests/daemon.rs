@@ -1,3 +1,7 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions fail the test by panicking"
+)]
 #[path = "../src/client.rs"]
 mod client;
 
@@ -18,8 +22,8 @@ mod support;
 
 use support::*;
 
-#[tokio::test]
-async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
+/// A service that embeds and answers every chat request with "hello".
+async fn hello_service() -> MockServer {
     let server = MockServer::start().await;
     embeddings(&server).await;
     Mock::given(path("/chat/completions"))
@@ -29,6 +33,32 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         ))
         .mount(&server)
         .await;
+    server
+}
+
+/// Sends `text` to `session` and returns the entries of the Run it starts.
+async fn submit(daemon: &Daemon, session: &str, text: &str) -> Vec<Entry> {
+    let mut client = daemon.connect().await;
+    client
+        .request(Command::Subscribe {
+            session: session.into(),
+        })
+        .await
+        .unwrap();
+    client
+        .send(Command::Send {
+            session: session.into(),
+            text: text.into(),
+            event_id: EventId::new(),
+        })
+        .await
+        .unwrap();
+    finish(&mut client).await
+}
+
+#[tokio::test]
+async fn cli_to_wasm_to_http_records_a_reply() {
+    let server = hello_service().await;
     let mut daemon = Daemon::start(&server, "openai-compatible").await;
     let mut client = daemon.connect().await;
     client
@@ -64,7 +94,6 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         .unwrap();
     assert!(output.status.success());
     let inspection: Inspection = serde_json::from_slice(&output.stdout).unwrap();
-    let generation = inspection.provider;
     let plugins = client.request(Command::PluginStatus {}).await.unwrap();
     let active = plugins
         .as_array()
@@ -72,16 +101,7 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         .iter()
         .find(|plugin| plugin["name"] == "openai-compatible")
         .unwrap();
-    assert_eq!(active["active"]["id"], json!(generation));
-    let hash = active["active"]["artifact"].as_str().unwrap();
-    let bytes = std::fs::read(
-        daemon
-            .root
-            .path()
-            .join(".data/artifacts")
-            .join(format!("{hash}.wasm")),
-    )
-    .unwrap();
+    assert_eq!(active["active"]["id"], json!(inspection.provider));
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
         .arg("log")
         .env("ENCO_HOME", daemon.root.path())
@@ -101,6 +121,36 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         .await
         .unwrap();
     assert_eq!(by_id, json!(log));
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn cli_deploys_a_caller_relative_artifact_that_survives_restart_and_rolls_back() {
+    let server = hello_service().await;
+    let mut daemon = Daemon::start(&server, "openai-compatible").await;
+    let plugins = daemon
+        .connect()
+        .await
+        .request(Command::PluginStatus {})
+        .await
+        .unwrap();
+    let active = &plugins
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|plugin| plugin["name"] == "openai-compatible")
+        .unwrap()["active"];
+    let generation = active["id"].clone();
+    let hash = active["artifact"].as_str().unwrap();
+    // The registry records the active code as a content-addressed artifact.
+    let bytes = std::fs::read(
+        daemon
+            .root
+            .path()
+            .join(".data/artifacts")
+            .join(format!("{hash}.wasm")),
+    )
+    .unwrap();
     // CLI deployment resolves a caller-relative path and uses the daemon's registry.
     std::fs::write(daemon.root.path().join("replacement.wasm"), bytes).unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
@@ -116,7 +166,7 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         String::from_utf8_lossy(&output.stderr)
     );
     let deployed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_ne!(deployed["generation"]["id"], json!(generation));
+    assert_ne!(deployed["generation"]["id"], generation);
     daemon.stop().await;
     daemon.restart().await;
     let mut client = daemon.connect().await;
@@ -138,7 +188,7 @@ async fn cli_to_wasm_to_http_records_a_reply_and_its_artifact() {
         .unwrap();
     assert!(output.status.success());
     let restored: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(restored["id"], json!(generation));
+    assert_eq!(restored["id"], generation);
     daemon.stop().await;
 }
 
@@ -299,42 +349,7 @@ async fn unusable_completions_fail_the_run_and_an_empty_reply_replays_as_empty_t
 #[tokio::test]
 async fn both_plugins_preserve_tool_ids_and_provider_extensions_across_rounds() {
     for plugin in ["openai-compatible", "deepseek"] {
-        let server = MockServer::start().await;
-        embeddings(&server).await;
-        Mock::given(path("/chat/completions"))
-            .respond_with(|request: &wiremock::Request| {
-                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-                let messages = body["messages"].as_array().unwrap();
-                if messages.iter().any(|message| message["role"] == "tool") {
-                    return response(json!({ "role": "assistant", "content": "done" }), "stop");
-                }
-                let mut message = tool_message(
-                    "service-call-1",
-                    "fs_write",
-                    json!({ "path": "written.txt", "content": "from wasm" }),
-                );
-                message["reasoning_content"] = json!("write the requested file");
-                response(message, "tool_calls")
-            })
-            .mount(&server)
-            .await;
-        let mut daemon = Daemon::start(&server, plugin).await;
-        let mut client = daemon.connect().await;
-        client
-            .request(Command::Subscribe {
-                session: "main".into(),
-            })
-            .await
-            .unwrap();
-        client
-            .send(Command::Send {
-                session: "main".into(),
-                text: "write a file".into(),
-                event_id: EventId::new(),
-            })
-            .await
-            .unwrap();
-        let entries = finish(&mut client).await;
+        let (server, mut daemon, entries) = write_a_file(plugin).await;
         assert!(matches!(
             entries.last().unwrap().body,
             EntryBody::RunEnded {
@@ -363,13 +378,45 @@ async fn both_plugins_preserve_tool_ids_and_provider_extensions_across_rounds() 
             messages.iter().any(|m| m["role"] == "assistant"
                 && m["reasoning_content"] == "write the requested file")
         );
-        if plugin == "deepseek" {
-            let config_path = daemon.root.path().join("config.toml");
-            let config = std::fs::read_to_string(&config_path).unwrap();
-            std::fs::write(
-                &config_path,
-                format!(
-                    r#"{config}
+        daemon.stop().await;
+    }
+}
+
+/// Runs one write through `plugin`, whose service proposes the tool call with reasoning.
+async fn write_a_file(plugin: &str) -> (MockServer, Daemon, Vec<Entry>) {
+    let server = MockServer::start().await;
+    embeddings(&server).await;
+    Mock::given(path("/chat/completions"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let messages = body["messages"].as_array().unwrap();
+            if messages.iter().any(|message| message["role"] == "tool") {
+                return response(json!({ "role": "assistant", "content": "done" }), "stop");
+            }
+            let mut message = tool_message(
+                "service-call-1",
+                "fs_write",
+                json!({ "path": "written.txt", "content": "from wasm" }),
+            );
+            message["reasoning_content"] = json!("write the requested file");
+            response(message, "tool_calls")
+        })
+        .mount(&server)
+        .await;
+    let daemon = Daemon::start(&server, plugin).await;
+    let entries = submit(&daemon, "main", "write a file").await;
+    (server, daemon, entries)
+}
+
+#[tokio::test]
+async fn another_plugin_receives_no_foreign_extensions_while_the_record_keeps_them() {
+    let (server, mut daemon, entries) = write_a_file("deepseek").await;
+    let config_path = daemon.root.path().join("config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"{config}
 [endpoint.alternate]
 plugin = "openai-compatible"
 base_url = {:?}
@@ -381,91 +428,74 @@ max_output_tokens = 4096
 reply = "alternate"
 compaction = "alternate"
 "#,
-                    server.uri()
-                ),
-            )
-            .unwrap();
-            daemon
-                .connect()
-                .await
-                .request(Command::ConfigApply { generation: None })
-                .await
-                .unwrap();
-            let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
-                .args(["profile", "main", "alternate"])
-                .env("ENCO_HOME", daemon.root.path())
-                .output()
-                .await
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let mut client = daemon.connect().await;
-            client
-                .request(Command::Subscribe {
-                    session: "main".into(),
-                })
-                .await
-                .unwrap();
-            client
-                .send(Command::Send {
-                    session: "main".into(),
-                    text: "continue with another plugin".into(),
-                    event_id: EventId::new(),
-                })
-                .await
-                .unwrap();
-            finish(&mut client).await;
-            let requests = server.received_requests().await.unwrap();
-            let chat = requests
-                .iter()
-                .rev()
-                .find(|request| request.url.path() == "/chat/completions")
-                .unwrap();
-            let body: serde_json::Value = serde_json::from_slice(&chat.body).unwrap();
-            assert!(
-                body["messages"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|message| message.get("reasoning_content").is_none())
-            );
-            daemon.stop().await;
-            daemon.restart().await;
-            let mut client = daemon.connect().await;
-            let status = client.request(Command::Status {}).await.unwrap();
-            assert_eq!(status["sessions"][0]["session"]["profile"], "alternate");
-            let attempt = entries
-                .iter()
-                .rev()
-                .find_map(|entry| match entry.body {
-                    EntryBody::AttemptStarted { attempt, .. } => Some(attempt),
-                    _ => None,
-                })
-                .unwrap();
-            let inspection: Inspection = serde_json::from_value(
-                client
-                    .request(Command::Inspect {
-                        session: "main".into(),
-                        attempt_id: Some(attempt),
-                    })
-                    .await
-                    .unwrap(),
-            )
-            .unwrap();
-            assert!(
-                inspection
-                    .request
-                    .messages
-                    .iter()
-                    .flat_map(|message| &message.parts)
-                    .any(|part| matches!(part, Part::Extension(_)))
-            );
-        }
-        daemon.stop().await;
-    }
+            server.uri()
+        ),
+    )
+    .unwrap();
+    daemon
+        .connect()
+        .await
+        .request(Command::ConfigApply { generation: None })
+        .await
+        .unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+        .args(["profile", "main", "alternate"])
+        .env("ENCO_HOME", daemon.root.path())
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    submit(&daemon, "main", "continue with another plugin").await;
+    let requests = server.received_requests().await.unwrap();
+    let chat = requests
+        .iter()
+        .rev()
+        .find(|request| request.url.path() == "/chat/completions")
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&chat.body).unwrap();
+    assert!(
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|message| message.get("reasoning_content").is_none())
+    );
+    daemon.stop().await;
+    daemon.restart().await;
+    let mut client = daemon.connect().await;
+    let status = client.request(Command::Status {}).await.unwrap();
+    assert_eq!(status["sessions"][0]["session"]["profile"], "alternate");
+    let attempt = entries
+        .iter()
+        .rev()
+        .find_map(|entry| match entry.body {
+            EntryBody::AttemptStarted { attempt, .. } => Some(attempt),
+            _ => None,
+        })
+        .unwrap();
+    let inspection: Inspection = serde_json::from_value(
+        client
+            .request(Command::Inspect {
+                session: "main".into(),
+                attempt_id: Some(attempt),
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        inspection
+            .request
+            .messages
+            .iter()
+            .flat_map(|message| &message.parts)
+            .any(|part| matches!(part, Part::Extension(_)))
+    );
+    daemon.stop().await;
 }
 
 #[tokio::test]

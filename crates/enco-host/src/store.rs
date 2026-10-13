@@ -1,15 +1,17 @@
 mod accept;
 mod commit;
+mod connections;
 mod content;
 mod lock;
 mod registry;
 mod rows;
+mod schedules;
+mod sessions;
 
-use crate::{limits::RECENT_DELIVERY_FAILURES, sqlite::timestamp};
 use async_trait::async_trait;
 use enco_core::*;
 use enco_kernel::*;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, TransactionBehavior};
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -18,16 +20,6 @@ use std::{
 /// `PRAGMA user_version` covers SQLite and its referenced plans. Until P4, persistent
 /// format changes bump it and existing databases are migrated by hand.
 const SCHEMA_VERSION: u32 = 5;
-const SESSION_COLUMNS: &str = "id,name,created_at,binding_node,binding_epoch,profile";
-const SCHEDULE_COLUMNS: &str = "id,session_id,rule,message,created_at,state,last_due,last_event_id";
-
-fn schedule_state(state: ScheduleState) -> &'static str {
-    match state {
-        ScheduleState::Active => "active",
-        ScheduleState::Done => "done",
-        ScheduleState::Cancelled => "cancelled",
-    }
-}
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -171,65 +163,24 @@ impl Store for SqliteStore {
     }
 
     async fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError> {
-        self.run(|connection| {
-            let mut query = connection
-                .prepare(&format!(
-                    "SELECT {SESSION_COLUMNS} FROM sessions ORDER BY name"
-                ))
-                .map_err(backend)?;
-            query
-                .query_map([], rows::session)
-                .map_err(backend)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(backend)
-        })
-        .await
+        self.run(|connection| sessions::all(connection)).await
     }
 
     async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError> {
         let name = name.to_owned();
-        self.run(move |connection| {
-            connection
-                .query_row(
-                    &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE name=?"),
-                    [name],
-                    rows::session,
-                )
-                .optional()
-                .map_err(backend)
-        })
-        .await
+        self.run(move |connection| sessions::named(connection, &name))
+            .await
     }
 
     async fn session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError> {
-        self.run(move |connection| {
-            connection
-                .query_row(
-                    &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id=?"),
-                    [id.to_string()],
-                    rows::session,
-                )
-                .optional()
-                .map_err(backend)
-        })
-        .await
+        self.run(move |connection| sessions::get(connection, id))
+            .await
     }
 
     async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError> {
         let profile = profile.to_owned();
-        self.run(move |connection| {
-            let changed = connection
-                .execute(
-                    "UPDATE sessions SET profile=? WHERE id=?",
-                    params![profile, id.to_string()],
-                )
-                .map_err(backend)?;
-            if changed == 0 {
-                return Err(StoreError::UnknownSession(id));
-            }
-            Ok(())
-        })
-        .await
+        self.run(move |connection| sessions::set_profile(connection, id, &profile))
+            .await
     }
 
     async fn ensure_session(
@@ -239,33 +190,8 @@ impl Store for SqliteStore {
     ) -> Result<SessionRecord, StoreError> {
         let name = name.to_owned();
         let node = self.node;
-        self.run(move |connection| {
-            let tx = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(backend)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO sessions VALUES (?,?,?,?,?,?)",
-                params![
-                    SessionId::new().to_string(),
-                    name,
-                    timestamp(created_at),
-                    node.to_string(),
-                    1,
-                    DEFAULT_PROFILE
-                ],
-            )
-            .map_err(backend)?;
-            let result = tx
-                .query_row(
-                    &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE name=?"),
-                    [name],
-                    rows::session,
-                )
-                .map_err(backend)?;
-            tx.commit().map_err(backend)?;
-            Ok(result)
-        })
-        .await
+        self.run(move |connection| sessions::ensure(connection, node, &name, created_at))
+            .await
     }
 
     async fn log(
@@ -273,33 +199,8 @@ impl Store for SqliteStore {
         session: SessionId,
         after: Option<LogPos>,
     ) -> Result<Vec<Entry>, StoreError> {
-        self.run(move |connection| {
-            let position = after.unwrap_or(LogPos {
-                epoch: Epoch(0),
-                seq: Seq(0),
-            });
-            let mut query = connection
-                .prepare(
-                    "SELECT epoch,seq,at,body
-                     FROM log
-                     WHERE session_id=? AND (epoch,seq)>(?,?)
-                     ORDER BY epoch,seq",
-                )
-                .map_err(backend)?;
-            query
-                .query_map(
-                    params![
-                        session.to_string(),
-                        signed(position.epoch.0)?,
-                        signed(position.seq.0)?
-                    ],
-                    rows::entry,
-                )
-                .map_err(backend)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(backend)
-        })
-        .await
+        self.run(move |connection| sessions::log(connection, session, after))
+            .await
     }
 
     async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreError> {
@@ -321,101 +222,35 @@ impl Store for SqliteStore {
 
     async fn connection(&self, key: &str) -> Result<Option<serde_json::Value>, StoreError> {
         let key = key.to_owned();
-        self.run(move |connection| {
-            connection
-                .query_row("SELECT state FROM connections WHERE key=?", [key], |r| {
-                    rows::document(r, 0)
-                })
-                .optional()
-                .map_err(backend)
-        })
-        .await
+        self.run(move |connection| connections::state(connection, &key))
+            .await
     }
 
     async fn delivery_failures(&self, key: &str) -> Result<Vec<DeliverySettlement>, StoreError> {
         let key = key.to_owned();
-        self.run(move |connection| {
-            let mut query = connection.prepare(
-                "SELECT body FROM deliveries WHERE connection=? AND outcome IN ('failed', 'unknown') ORDER BY order_no DESC LIMIT ?"
-            ).map_err(backend)?;
-            query.query_map(params![key, RECENT_DELIVERY_FAILURES], |r| rows::document(r, 0))
-                .map_err(backend)?.collect::<Result<Vec<_>, _>>().map_err(backend)
-        }).await
+        self.run(move |connection| connections::recent_failures(connection, &key))
+            .await
     }
 
     async fn pending(&self, session: SessionId) -> Result<Vec<Event>, StoreError> {
-        self.run(move |connection| {
-            let mut query = connection
-                .prepare(
-                    "SELECT event
-                     FROM inbox
-                     WHERE session_id=? AND consumed_seq IS NULL
-                     ORDER BY order_no",
-                )
-                .map_err(backend)?;
-            query
-                .query_map([session.to_string()], |r| rows::document(r, 0))
-                .map_err(backend)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(backend)
-        })
-        .await
+        self.run(move |connection| sessions::pending(connection, session))
+            .await
     }
 
     async fn insert_schedule(&self, schedule: &Schedule) -> Result<(), StoreError> {
         let schedule = schedule.clone();
-        self.run(move |connection| {
-            connection
-                .execute(
-                    "INSERT INTO schedules VALUES (?,?,?,?,?,?,?,?)",
-                    params![
-                        schedule.id.to_string(),
-                        schedule.session.to_string(),
-                        encode(&schedule.rule)?,
-                        schedule.message,
-                        timestamp(schedule.created_at),
-                        schedule_state(schedule.state),
-                        schedule.last.map(|last| timestamp(last.due_at)),
-                        schedule.last.map(|last| last.event.to_string()),
-                    ],
-                )
-                .map_err(backend)?;
-            Ok(())
-        })
-        .await
+        self.run(move |connection| schedules::insert(connection, &schedule))
+            .await
     }
 
     async fn cancel_schedule(&self, id: ScheduleId) -> Result<bool, StoreError> {
-        self.run(move |connection| {
-            connection
-                .execute(
-                    "UPDATE schedules SET state='cancelled' WHERE id=? AND state='active'",
-                    [id.to_string()],
-                )
-                .map(|n| n > 0)
-                .map_err(backend)
-        })
-        .await
+        self.run(move |connection| schedules::cancel(connection, id))
+            .await
     }
 
     async fn schedules(&self, state: Option<ScheduleState>) -> Result<Vec<Schedule>, StoreError> {
-        self.run(move |connection| {
-            let filter = state.map(schedule_state);
-            let mut query = connection
-                .prepare(&format!(
-                    "SELECT {SCHEDULE_COLUMNS}
-                     FROM schedules
-                     WHERE (? IS NULL OR state=?)
-                     ORDER BY created_at,id"
-                ))
-                .map_err(backend)?;
-            query
-                .query_map(params![filter, filter], rows::schedule)
-                .map_err(backend)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(backend)
-        })
-        .await
+        self.run(move |connection| schedules::list(connection, state))
+            .await
     }
 
     async fn fire_schedule(
@@ -425,50 +260,8 @@ impl Store for SqliteStore {
         event: &Event,
     ) -> Result<(), StoreError> {
         let event = event.clone();
-        self.run(move |connection| {
-            let (id, due_at) = match &event.body {
-                EventBody::Reminder {
-                    schedule, due_at, ..
-                } => (*schedule, *due_at),
-                _ => {
-                    return Err(StoreError::Inbox("event is not a Reminder".into()));
-                }
-            };
-            let tx = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(backend)?;
-            let inserted = tx
-                .execute(
-                    "UPDATE schedules SET last_due=?,last_event_id=?,state=?
-                     WHERE id=? AND state='active' AND last_due IS ?",
-                    params![
-                        timestamp(due_at),
-                        event.id.to_string(),
-                        schedule_state(if done {
-                            ScheduleState::Done
-                        } else {
-                            ScheduleState::Active
-                        }),
-                        id.to_string(),
-                        expected_last.map(timestamp),
-                    ],
-                )
-                .map_err(backend)?;
-            if inserted == 0 {
-                return Err(StoreError::ScheduleNotActive(id));
-            }
-            tx.execute(
-                "INSERT INTO inbox(event_id,session_id,event) VALUES (?,?,?)",
-                params![
-                    event.id.to_string(),
-                    event.session.to_string(),
-                    encode(&event)?
-                ],
-            )
-            .map_err(backend)?;
-            tx.commit().map_err(backend)
-        })
-        .await
+        self.run(move |connection| schedules::fire(connection, expected_last, done, &event))
+            .await
     }
 
     async fn plugin_names(

@@ -140,8 +140,9 @@ async fn ask(daemon: &Daemon, session: &str, text: &str) -> Inspection {
     .unwrap()
 }
 
-#[tokio::test]
-async fn relevance_filters_new_recall_and_service_failure_keeps_it() {
+/// A daemon whose memory judges relevance through the `relevance` endpoint on `server`, after a
+/// separate Session saved the drink and editor memories; returns its configuration document.
+async fn seeded() -> (MockServer, Daemon, serde_json::Value) {
     let server = MockServer::start().await;
     embeddings(&server).await;
     Mock::given(path("/chat/completions"))
@@ -175,10 +176,26 @@ async fn relevance_filters_new_recall_and_service_failure_keeps_it() {
         toml::from_str(&Daemon::config(&server, "openai-compatible")).unwrap();
     document["endpoint"]["relevance"] = json!({"plugin": "typesafe", "base_url": server.uri(), "model": "mock", "api_key_env": "ENCO_TEST_API_KEY"});
     document["memory"]["relevance"] = "relevance".into();
-    let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
+    let daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
     // Seed in a separate Session so tool arguments do not become the query's history.
     ask(&daemon, "seed", "seed").await;
-    let decision_response = Mock::given(path("/systemone"))
+    (server, daemon, document)
+}
+
+fn request_text(inspection: &Inspection) -> String {
+    inspection
+        .request
+        .messages
+        .iter()
+        .map(Message::joined_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn relevance_filters_new_recall() {
+    let (server, mut daemon, _) = seeded().await;
+    Mock::given(path("/systemone"))
         .respond_with(|request: &wiremock::Request| {
             let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
             let answers: serde_json::Map<_, _> = body["questions"]
@@ -196,16 +213,10 @@ async fn relevance_filters_new_recall_and_service_failure_keeps_it() {
                 .collect();
             ResponseTemplate::new(200).set_body_json(json!({ "answers": answers }))
         })
-        .mount_as_scoped(&server)
+        .mount(&server)
         .await;
     let filtered = ask(&daemon, "filtered", QUERY).await;
-    let text = filtered
-        .request
-        .messages
-        .iter()
-        .map(Message::joined_text)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = request_text(&filtered);
     assert!(text.contains(DRINK));
     assert!(!text.contains(EDITOR));
     assert!(
@@ -215,7 +226,12 @@ async fn relevance_filters_new_recall_and_service_failure_keeps_it() {
             .iter()
             .any(|o| o.reason.starts_with("judged irrelevant to the input"))
     );
+    daemon.stop().await;
+}
 
+#[tokio::test]
+async fn relevance_follows_the_configured_endpoint() {
+    let (server, mut daemon, mut document) = seeded().await;
     let replacement = MockServer::start().await;
     Mock::given(path("/systemone"))
         .respond_with(|request: &wiremock::Request| {
@@ -250,13 +266,7 @@ async fn relevance_filters_new_recall_and_service_failure_keeps_it() {
         .filter(|r| r.url.path() == "/systemone")
         .count();
     let switched = ask(&daemon, "switched", QUERY).await;
-    let text = switched
-        .request
-        .messages
-        .iter()
-        .map(Message::joined_text)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = request_text(&switched);
     assert!(!text.contains(DRINK) && !text.contains(EDITOR));
     assert_eq!(
         server
@@ -268,29 +278,19 @@ async fn relevance_filters_new_recall_and_service_failure_keeps_it() {
             .count(),
         previous_calls
     );
-    document["memory"]["relevance"] = "relevance".into();
-    std::fs::write(&config_path, toml::to_string(&document).unwrap()).unwrap();
-    daemon
-        .connect()
-        .await
-        .request(Command::ConfigApply { generation: None })
-        .await
-        .unwrap();
+    daemon.stop().await;
+}
 
-    drop(decision_response);
+#[tokio::test]
+async fn relevance_service_failure_keeps_recall() {
+    let (server, mut daemon, _) = seeded().await;
     Mock::given(path("/systemone"))
         .respond_with(ResponseTemplate::new(500))
         .expect(1)
         .mount(&server)
         .await;
     let fallback = ask(&daemon, "fallback", QUERY).await;
-    let text = fallback
-        .request
-        .messages
-        .iter()
-        .map(Message::joined_text)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = request_text(&fallback);
     assert!(text.contains(DRINK) && text.contains(EDITOR));
     assert!(
         fallback
