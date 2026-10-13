@@ -2,13 +2,14 @@ use super::*;
 
 impl Registry {
     /// Observe one settled call. Only the current trial generation can change health.
-    /// A Session notice, when requested, commits together with automatic recovery.
+    /// A Session notice, when requested, commits together with automatic recovery; callers
+    /// see a rollback as a changed view, not as a return value.
     pub async fn report(
         &self,
         generation: GenerationId,
         verdict: Verdict,
         session: Option<SessionId>,
-    ) -> Result<Option<RolledBack>, RegistryError> {
+    ) -> Result<(), RegistryError> {
         let (name, plugin, candidates, failure) = {
             let mut state = self.state.lock().await;
             let record = state
@@ -20,7 +21,7 @@ impl Registry {
             if record.status != GenerationStatus::Trial
                 || state.plugins.active.get(&plugin) != Some(&generation)
             {
-                return Ok(None);
+                return Ok(());
             }
             let failure = match verdict {
                 Verdict::Ok => {
@@ -41,7 +42,7 @@ impl Registry {
                     } else {
                         state.plugins.trial_successes.insert(generation, successes);
                     }
-                    return Ok(None);
+                    return Ok(());
                 }
                 Verdict::Failed(failure)
                     if matches!(
@@ -51,7 +52,7 @@ impl Registry {
                 {
                     failure
                 }
-                Verdict::Failed(_) => return Ok(None),
+                Verdict::Failed(_) => return Ok(()),
             };
             let name = state.plugins.name_of(plugin)?.to_owned();
             (
@@ -71,9 +72,8 @@ impl Registry {
             )
             .await
         {
-            Ok(activation) => Ok(activation.rollback),
             // Deployment or promotion won while the fallback was being loaded.
-            Err(RegistryError::Conflict(_)) => Ok(None),
+            Ok(_) | Err(RegistryError::Conflict(_)) => Ok(()),
             Err(error) => Err(error),
         }
     }

@@ -1,5 +1,4 @@
 use crate::{Budget, Endpoint};
-use enco_core::AttemptPurpose;
 
 /// A profile's endpoint with the context limits required by completion.
 #[derive(Clone)]
@@ -13,20 +12,38 @@ pub struct CompletionEndpoint {
 /// Session policy sampled once at the start of a Round.
 #[derive(Clone)]
 pub struct Profile {
-    /// Endpoint used for ordinary replies.
-    pub reply: CompletionEndpoint,
-    /// Endpoint used for summarizing history.
-    pub compaction: CompletionEndpoint,
+    /// Ordered candidates for ordinary replies.
+    pub reply: Endpoints,
+    /// Ordered candidates for summarizing history.
+    pub compaction: Endpoints,
     /// Whether every reply plan must disclose all lifeline tools.
     pub requires_lifeline: bool,
 }
 
-impl Profile {
-    /// Resolve the endpoint for this Attempt without consulting mutable routing.
-    pub fn endpoint(&self, purpose: AttemptPurpose) -> &CompletionEndpoint {
-        match purpose {
-            AttemptPurpose::Reply => &self.reply,
-            AttemptPurpose::Compaction => &self.compaction,
-        }
+/// An ordered, nonempty set of completion candidates accepted by configuration parsing.
+#[derive(Clone)]
+pub struct Endpoints {
+    first: CompletionEndpoint,
+    rest: Vec<CompletionEndpoint>,
+}
+
+impl Endpoints {
+    pub(crate) fn new(first: CompletionEndpoint, rest: Vec<CompletionEndpoint>) -> Self {
+        Self { first, rest }
+    }
+
+    /// The configured first choice, irrespective of its current availability.
+    pub fn first(&self) -> &CompletionEndpoint {
+        &self.first
+    }
+
+    /// The fallbacks after the first choice, in configured order.
+    pub fn rest(&self) -> &[CompletionEndpoint] {
+        &self.rest
+    }
+
+    /// Candidates in the owner's configured order.
+    pub fn iter(&self) -> impl Iterator<Item = &CompletionEndpoint> {
+        std::iter::once(&self.first).chain(&self.rest)
     }
 }

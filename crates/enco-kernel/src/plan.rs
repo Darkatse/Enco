@@ -11,6 +11,7 @@ pub(crate) fn validate(
     input: &ComposeInput,
     purpose: AttemptPurpose,
     lifeline: &[CapabilityId],
+    requires_lifeline: bool,
 ) -> Result<(), PlanError> {
     if plan.items.is_empty() {
         return Err(PlanError("no messages".into()));
@@ -33,7 +34,7 @@ pub(crate) fn validate(
         return Err(PlanError("compaction must not disclose tools".into()));
     }
     if purpose == AttemptPurpose::Reply
-        && input.profile.requires_lifeline
+        && requires_lifeline
         && lifeline
             .iter()
             .any(|id| !plan.tools.iter().any(|(given, _)| given == id))

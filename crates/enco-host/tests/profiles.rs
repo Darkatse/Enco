@@ -48,7 +48,7 @@ fn configured() -> serde_json::Value {
     document["endpoint"]["alternate-reply"]["model"] = "new-reply".into();
     document["endpoint"]["alternate-compaction"]["model"] = "new-compaction".into();
     document["profile"]["alternate"] =
-        serde_json::json!({"reply": "alternate-reply", "compaction": "alternate-compaction"});
+        serde_json::json!({"reply": ["alternate-reply"], "compaction": ["alternate-compaction"]});
     document
 }
 

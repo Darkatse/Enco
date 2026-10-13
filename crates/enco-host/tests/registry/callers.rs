@@ -90,6 +90,7 @@ impl ToolDeployment {
             .generation;
         let settings = registry.view().config.kernel.profiles["default"]
             .reply
+            .first()
             .endpoint
             .settings
             .clone();
@@ -251,6 +252,7 @@ impl Callers {
         let trial = deploy_artifact(&registry, "fixture", b"working").await.id;
         let settings = registry.view().config.kernel.profiles["default"]
             .reply
+            .first()
             .endpoint
             .settings
             .clone();

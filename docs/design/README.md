@@ -137,7 +137,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | 要找的东西 | 位置 |
 |---|---|
 | 领域类型：ID、Event、Log 条目、ContextPlan、代际 | `crates/enco-core` |
-| Session actor、Run 与 Round、Attempt、计划校验、工具分派 | `crates/enco-kernel/src/` 的 `session`、`run`、`attempt`、`plan`、`dispatch` |
+| Session actor、Run 与 Round、Attempt、计划校验、工具分派 | `crates/enco-kernel/src/` 的 `session`、`run`、`round/`、`attempt`、`plan`、`dispatch` |
 | Transcript、崩溃恢复、定时、请求查看 | `crates/enco-kernel/src/` 的 `transcript`、`recovery`、`scheduler`、`inspect` |
 | 注册表、内核的配置表与 profile | `crates/enco-kernel/src/` 的 `registry/`、`settings`、`profile` |
 | 内核与外界的边界（端口）、上限常量 | `crates/enco-kernel/src/ports/`、各 crate 的 `limits.rs` |

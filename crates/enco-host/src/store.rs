@@ -19,7 +19,7 @@ use std::{
 
 /// `PRAGMA user_version` covers SQLite and its referenced plans. Until P4, persistent
 /// format changes bump it and existing databases are migrated by hand.
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {

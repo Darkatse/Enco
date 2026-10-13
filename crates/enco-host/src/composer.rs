@@ -1,4 +1,5 @@
 mod compaction;
+mod recovery;
 
 use crate::limits::*;
 use chrono::{Offset, Timelike};
@@ -36,7 +37,7 @@ impl Composer for FactoryComposer {
     }
 
     fn compose(&self, input: &ComposeInput) -> Result<Composition, ComposeError> {
-        let budget = input.profile.reply.budget;
+        let budget = input.reply.budget;
         let mut omitted = input.context.omitted.clone();
         let mut memory_budget = budget.context_tokens.get().saturating_mul(MEMORY_PERCENT) / 100;
         let pinned = select_memories(
@@ -48,7 +49,7 @@ impl Composer for FactoryComposer {
             &mut memory_budget,
             &mut omitted,
         );
-        let (system, sources) = self.system(input, &pinned, &mut omitted);
+        let (system, sources) = self.system(input, budget, &pinned, &mut omitted);
         let system_tokens = estimate_tokens(&system);
         let history = annotated_history(input);
         let items = reply_items(
@@ -70,9 +71,11 @@ impl Composer for FactoryComposer {
             .saturating_add(budget.max_output_tokens.get());
         let window = budget.context_tokens.get();
         if total > window.saturating_mul(COMPACTION_TRIGGER_PERCENT) / 100 {
-            if input.compactions_left > 0 {
+            if input.compactions_left > 0
+                && let Some(budget) = input.compaction
+            {
                 let keep = window.saturating_mul(COMPACTION_TAIL_PERCENT) / 100;
-                let compaction = Compaction::new(input, &history);
+                let compaction = Compaction::new(input, &history, budget);
                 if let Some(upto) = compaction.boundary(input, &sizes, history_tokens, keep) {
                     return Ok(Composition::Compact {
                         upto,
@@ -81,9 +84,12 @@ impl Composer for FactoryComposer {
                 }
             }
             if total > window {
-                return Err(ComposeError::ContextOverflow {
-                    needed: total,
-                    window,
+                return Err(match input.compaction {
+                    None => ComposeError::CompactionUnavailable,
+                    Some(_) => ComposeError::ContextOverflow {
+                        needed: total,
+                        window,
+                    },
                 });
             }
         }
@@ -100,10 +106,11 @@ impl FactoryComposer {
     fn system(
         &self,
         input: &ComposeInput,
+        budget: Budget,
         pinned: &[&Candidate],
         omitted: &mut Vec<Omission>,
     ) -> (String, Vec<Source>) {
-        let mut text = if input.safe_mode {
+        let mut text = if input.safe_mode.is_some() {
             include_str!("prompts/safe_mode.md")
         } else {
             include_str!("prompts/system.md")
@@ -116,7 +123,14 @@ impl FactoryComposer {
             input.timezone, input.now.with_timezone(&input.timezone).format("%:z")
         ));
         let mut sources = Vec::new();
-        append_instructions(&mut text, &mut sources, omitted, input);
+        recovery::append(&mut text, input);
+        append_instructions(
+            &mut text,
+            &mut sources,
+            omitted,
+            input,
+            budget.context_tokens.get(),
+        );
         append_memories(&mut text, &mut sources, pinned, "## Your pinned memories");
         if let Some(summary) = &input.transcript.summary {
             section(
@@ -337,6 +351,7 @@ fn append_instructions(
     sources: &mut Vec<Source>,
     omitted: &mut Vec<Omission>,
     input: &ComposeInput,
+    window: u32,
 ) {
     let instructions: Vec<_> = input
         .context
@@ -345,14 +360,7 @@ fn append_instructions(
         .filter(|c| c.kind == CandidateKind::Instruction && c.standing)
         .collect();
     let size: u32 = instructions.iter().map(|c| estimate_tokens(&c.text)).sum();
-    let budget = input
-        .profile
-        .reply
-        .budget
-        .context_tokens
-        .get()
-        .saturating_mul(INSTRUCTION_PERCENT)
-        / 100;
+    let budget = window.saturating_mul(INSTRUCTION_PERCENT) / 100;
     if size <= budget {
         let body = instructions
             .iter()

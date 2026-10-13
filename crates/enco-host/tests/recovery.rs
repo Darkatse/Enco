@@ -322,17 +322,6 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
     std::fs::write(dir.path().join("AGENTS.md"), [0xff]).unwrap();
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
-    kernel
-        .submit(session.id, EventId::new(), "hello".into())
-        .await
-        .unwrap();
-    assert!(matches!(
-        finish(&mut rx).await.last().unwrap().body,
-        EntryBody::RunEnded {
-            end: RunEnd::Failed { .. },
-            ..
-        }
-    ));
     let mut document = configuration();
     document["run"] = serde_json::json!({"max_rounds": 30});
     std::fs::write(
@@ -340,12 +329,18 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
         toml::to_string(&document).unwrap(),
     )
     .unwrap();
-    kernel.set_safe_mode(true).await.unwrap();
     kernel
-        .submit(session.id, EventId::new(), "repair".into())
+        .submit(session.id, EventId::new(), "hello".into())
         .await
         .unwrap();
     let log = finish(&mut rx).await;
+    assert!(matches!(
+        log.last().unwrap().body,
+        EntryBody::RunEnded {
+            end: RunEnd::Completed,
+            ..
+        }
+    ));
     assert!(log.iter().any(|e| {
         matches!(
             e.body,

@@ -8,7 +8,7 @@ pub trait Composer: Send + Sync {
     fn compose(&self, input: &ComposeInput) -> Result<Composition, ComposeError>;
 }
 
-/// Current state sampled once for this Round; only Transcript changes after compaction.
+/// Fixed Round inputs, with the selected budgets and recorded recovery facts for this composition.
 #[derive(Clone)]
 pub struct ComposeInput {
     /// UTC instant sampled once for this Round.
@@ -26,12 +26,41 @@ pub struct ComposeInput {
     pub context: Contribution,
     /// All capabilities which may be disclosed this Round.
     pub tools: Vec<(CapabilityId, ToolSpec)>,
-    /// Whether only factory instructions and lifeline tools may be used.
-    pub safe_mode: bool,
-    /// Endpoints, budgets and requirements selected for this Round.
-    pub profile: crate::Profile,
+    /// Why this Round uses factory instructions and lifeline tools, if applicable.
+    pub safe_mode: Option<SafeMode>,
+    /// The reply model this composition is for.
+    pub reply: ReplyTarget,
+    /// The summarizing model's limits; absent when no compaction candidate is usable.
+    pub compaction: Option<Budget>,
     /// Compactions this Round still allows; at zero the composer must return a plan or fail.
     pub compactions_left: u32,
+}
+
+/// The reason for the Round's fixed recovery mode.
+#[derive(Clone)]
+pub enum SafeMode {
+    /// The owner explicitly enabled the switch; only disabling it permits normal operation.
+    Owner,
+    /// This Run failed against the same registered behavior.
+    Failed(Failure),
+}
+
+/// The reply model the kernel selected, and why earlier candidates were passed over.
+#[derive(Clone)]
+pub struct ReplyTarget {
+    /// Limits of the selected model.
+    pub budget: Budget,
+    /// Candidates before it that are unavailable or exhausted in this Run, in configured order.
+    pub skipped: Vec<EndpointFailure>,
+}
+
+/// A candidate and the reason the kernel passed it over.
+#[derive(Clone)]
+pub struct EndpointFailure {
+    /// Configured name, for diagnostics rather than combination identity.
+    pub endpoint: String,
+    /// Current unavailability or the last recorded failure of this combination.
+    pub failure: Failure,
 }
 
 /// Context limits supplied by configuration.
@@ -85,6 +114,9 @@ pub enum Composition {
 /// A policy could not produce a valid request.
 #[derive(Debug, thiserror::Error)]
 pub enum ComposeError {
+    /// The request fits only after compaction, and no compaction candidate is usable.
+    #[error("compaction is required but no compaction model is usable")]
+    CompactionUnavailable,
     /// Even the smallest valid request exceeds the model's window.
     #[error("context overflow: need {needed} tokens, window is {window}")]
     ContextOverflow {

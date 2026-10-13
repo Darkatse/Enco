@@ -112,7 +112,7 @@ async fn automatic_rollback_discards_preparation_after_deployment_or_promotion()
             deploy_artifact(&registry, "fixture", b"trial").await.id
         };
         runtime.resume.notify_one();
-        assert!(report.await.unwrap().unwrap().is_none());
+        report.await.unwrap().unwrap();
         assert_eq!(
             registry
                 .view()

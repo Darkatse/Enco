@@ -62,12 +62,18 @@ async fn trial_promotion_counts_successes_since_opening_and_ignores_environment_
         GenerationStatus::Healthy
     );
     // A promoted generation is no longer rolled back by its own failures.
-    assert!(
+    registry
+        .report(trial.id, Verdict::Failed(fault(code::PLUGIN_TRAP)), None)
+        .await
+        .unwrap();
+    assert_eq!(
         registry
-            .report(trial.id, Verdict::Failed(fault(code::PLUGIN_TRAP)), None)
-            .await
+            .view()
+            .exports
+            .completion("custom", false)
             .unwrap()
-            .is_none()
+            .generation,
+        trial.id
     );
 }
 
@@ -107,27 +113,32 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
     );
     assert!(store.pending(session.id).await.unwrap().is_empty());
     sql.execute_batch("DROP TRIGGER reject_notice").unwrap();
-    let rollback = registry
-        .report(
-            next.id,
-            Verdict::Failed(fault(code::PLUGIN_TRAP)),
-            Some(session.id),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(rollback.to, Some(healthy.id));
-    assert!(
+    // The second report concerns a generation that is no longer active, so it changes nothing.
+    for _ in 0..2 {
         registry
             .report(
                 next.id,
                 Verdict::Failed(fault(code::PLUGIN_TRAP)),
-                Some(session.id)
+                Some(session.id),
             )
             .await
+            .unwrap();
+    }
+    assert_eq!(
+        registry
+            .view()
+            .exports
+            .completion("custom", false)
             .unwrap()
-            .is_none()
+            .generation,
+        healthy.id
     );
+    let rollback = RolledBack {
+        plugin: "custom".into(),
+        from: next.id,
+        to: Some(healthy.id),
+        failure: fault(code::PLUGIN_TRAP),
+    };
     drop(registry);
     drop(store);
     let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
@@ -164,19 +175,14 @@ async fn a_failing_only_generation_leaves_its_plugin_unavailable() {
     let (store, runtime) = factory_only(dir.path()).await;
     let registry = open(&store, runtime).await;
     let alone = deploy_artifact(&registry, "alone", FACTORY_BYTES).await;
-    assert_eq!(
-        registry
-            .report(
-                alone.id,
-                Verdict::Failed(fault(code::PLUGIN_CONTRACT)),
-                None
-            )
-            .await
-            .unwrap()
-            .unwrap()
-            .to,
-        None
-    );
+    registry
+        .report(
+            alone.id,
+            Verdict::Failed(fault(code::PLUGIN_CONTRACT)),
+            None,
+        )
+        .await
+        .unwrap();
     assert_eq!(
         registry
             .view()

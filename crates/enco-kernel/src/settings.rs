@@ -1,5 +1,5 @@
 //! The kernel-owned configuration tables and their declared uses.
-use crate::{Budget, CompletionEndpoint, Need, Profile, Use};
+use crate::{Budget, CompletionEndpoint, Endpoints, Need, Profile, Use};
 use enco_core::{DEFAULT_PROFILE, ProviderSettings, Tz};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -114,8 +114,8 @@ fn requires_lifeline() -> bool {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawProfile {
-    reply: String,
-    compaction: String,
+    reply: Vec<String>,
+    compaction: Vec<String>,
     #[serde(default = "requires_lifeline")]
     requires_lifeline: bool,
 }
@@ -179,35 +179,25 @@ impl KernelSettings {
             let table = format!("profile.{name}");
             let raw: RawProfile =
                 serde_json::from_value(value).map_err(|error| SettingsError::new(&table, error))?;
-            let endpoint = |name: &str| -> Result<CompletionEndpoint, SettingsError> {
-                let spec = settings.endpoint(name, &table)?;
-                let (Some(context_tokens), Some(max_output_tokens)) =
-                    (spec.window_tokens, spec.max_output_tokens)
-                else {
-                    return Err(SettingsError::new(
+            let endpoints = |purpose: &str, names: &[String]| {
+                let (first, rest) = names.split_first().ok_or_else(|| {
+                    SettingsError::new(
                         &table,
-                        format!("endpoint {name} needs window_tokens and max_output_tokens"),
-                    ));
-                };
-                if max_output_tokens >= context_tokens {
-                    return Err(SettingsError::new(
-                        &table,
-                        format!("endpoint {name}: output must be smaller than the window"),
-                    ));
-                }
-                Ok(CompletionEndpoint {
-                    endpoint: spec.endpoint.clone(),
-                    budget: Budget {
-                        context_tokens,
-                        max_output_tokens,
-                    },
-                })
+                        format!("{purpose} must contain at least one endpoint"),
+                    )
+                })?;
+                Ok::<_, SettingsError>(Endpoints::new(
+                    settings.completion(first, &table)?,
+                    rest.iter()
+                        .map(|name| settings.completion(name, &table))
+                        .collect::<Result<_, _>>()?,
+                ))
             };
             settings.profiles.insert(
                 name,
                 Profile {
-                    reply: endpoint(&raw.reply)?,
-                    compaction: endpoint(&raw.compaction)?,
+                    reply: endpoints("reply", &raw.reply)?,
+                    compaction: endpoints("compaction", &raw.compaction)?,
                     requires_lifeline: raw.requires_lifeline,
                 },
             );
@@ -222,6 +212,32 @@ impl KernelSettings {
             .ok_or_else(|| SettingsError::new(table, format!("unknown endpoint {name}")))
     }
 
+    /// Apply the profile's completion requirements to the endpoint's declared facts.
+    fn completion(&self, name: &str, table: &str) -> Result<CompletionEndpoint, SettingsError> {
+        let spec = self.endpoint(name, table)?;
+        let (Some(context_tokens), Some(max_output_tokens)) =
+            (spec.window_tokens, spec.max_output_tokens)
+        else {
+            return Err(SettingsError::new(
+                table,
+                format!("endpoint {name} needs window_tokens and max_output_tokens"),
+            ));
+        };
+        if max_output_tokens >= context_tokens {
+            return Err(SettingsError::new(
+                table,
+                format!("endpoint {name}: output must be smaller than the window"),
+            ));
+        }
+        Ok(CompletionEndpoint {
+            endpoint: spec.endpoint.clone(),
+            budget: Budget {
+                context_tokens,
+                max_output_tokens,
+            },
+        })
+    }
+
     /// Project each profile's requirements from its parsed endpoints.
     pub fn uses(&self) -> Vec<Use> {
         self.profiles
@@ -231,10 +247,13 @@ impl KernelSettings {
                     ("reply", &profile.reply, true),
                     ("compaction", &profile.compaction, false),
                 ]
-                .map(|(purpose, endpoint, tools)| Use {
-                    user: format!("profile {name}.{purpose}"),
-                    endpoint: endpoint.endpoint.clone(),
-                    need: Need::Completion { tools },
+                .into_iter()
+                .flat_map(move |(purpose, endpoints, tools)| {
+                    endpoints.iter().map(move |endpoint| Use {
+                        user: format!("profile {name}.{purpose}"),
+                        endpoint: endpoint.endpoint.clone(),
+                        need: Need::Completion { tools },
+                    })
                 })
             })
             .collect()

@@ -12,7 +12,6 @@ pub(super) enum ActivationReason {
 
 pub(super) struct Activated {
     pub target: Option<GenerationRecord>,
-    pub rollback: Option<RolledBack>,
 }
 
 struct Prepared {
@@ -182,27 +181,31 @@ async fn commit(
         None if matches!(reason, ActivationReason::Manual) => Some(expected),
         None => None,
     };
-    let (rollback, event) = match reason {
-        ActivationReason::TrialFailure { failure, session } => {
+    let event = match reason {
+        ActivationReason::TrialFailure {
+            failure,
+            session: Some(session),
+        } => {
             let rollback = RolledBack {
                 plugin: name.clone(),
                 from: expected,
                 to,
                 failure,
             };
-            let event = session.map(|session| Event {
+            Some(Event {
                 id: EventId::new(),
                 session,
                 source: EventSource::Registry,
                 body: EventBody::GenerationRolledBack {
-                    rollback: rollback.clone(),
                     text: notice(&rollback),
+                    rollback,
                 },
                 received_at: clock.now(),
-            });
-            (Some(rollback), event)
+            })
         }
-        ActivationReason::Manual | ActivationReason::Recovery(_) => (None, None),
+        ActivationReason::TrialFailure { session: None, .. }
+        | ActivationReason::Manual
+        | ActivationReason::Recovery(_) => None,
     };
     store.activate(plugin, to, &failed, event.as_ref()).await?;
     for (id, failure) in failed {
@@ -224,7 +227,7 @@ async fn commit(
         plugins.loaded.insert(record.id, loaded);
         record
     });
-    Ok(Activated { target, rollback })
+    Ok(Activated { target })
 }
 
 fn load_failure(error: RegistryError) -> Result<Failure, RegistryError> {

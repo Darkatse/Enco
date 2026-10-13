@@ -128,7 +128,7 @@ pub fn configuration() -> serde_json::Value {
             "compaction": {"plugin": "fixture", "base_url": "https://fixture.invalid", "model": "fixture", "window_tokens": 128000, "max_output_tokens": 8192},
             "embed": {"plugin": "fixture", "base_url": "https://fixture.invalid", "model": "fixture", "dimensions": 64}
         },
-        "profile": {"default": {"reply": "reply", "compaction": "compaction"}},
+        "profile": {"default": {"reply": ["reply"], "compaction": ["compaction"]}},
         "memory": {"embedding": "embed"}
     })
 }

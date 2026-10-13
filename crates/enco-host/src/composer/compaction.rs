@@ -10,6 +10,7 @@ const COMPACTION_FOOTER: &str = "\nWrite the summary now.";
 /// The history as the summarizer reads it. Choosing the boundary and building the plan share
 /// one rendering, so the plan fits the window the boundary was chosen for.
 pub(super) struct Compaction {
+    window: u32,
     header: String,
     /// One rendered chunk per Transcript item, in Log order.
     chunks: Vec<(LogPos, String)>,
@@ -19,7 +20,11 @@ pub(super) struct Compaction {
 }
 
 impl Compaction {
-    pub(super) fn new(input: &ComposeInput, history: &[(&TranscriptItem, String)]) -> Self {
+    pub(super) fn new(
+        input: &ComposeInput,
+        history: &[(&TranscriptItem, String)],
+        budget: Budget,
+    ) -> Self {
         let mut header = String::new();
         if let Some(summary) = &input.transcript.summary {
             header.push_str(&format!("Previous summary:\n{summary}\n\n"));
@@ -63,19 +68,14 @@ impl Compaction {
                 (item.pos, chunk)
             })
             .collect();
-        let max_output_tokens = input
-            .profile
-            .compaction
-            .budget
-            .max_output_tokens
-            .get()
-            .min(COMPACTION_OUTPUT_TOKENS);
+        let max_output_tokens = budget.max_output_tokens.get().min(COMPACTION_OUTPUT_TOKENS);
         // Estimating parts separately never undercounts their concatenation.
         let overhead = estimate_tokens(COMPACTION_PROMPT)
             .saturating_add(estimate_tokens(&header))
             .saturating_add(estimate_tokens(COMPACTION_FOOTER))
             .saturating_add(max_output_tokens);
         Self {
+            window: budget.context_tokens.get(),
             header,
             chunks,
             max_output_tokens,
@@ -93,7 +93,7 @@ impl Compaction {
         history_tokens: u32,
         keep: u32,
     ) -> Option<LogPos> {
-        let window = input.profile.compaction.budget.context_tokens.get();
+        let window = self.window;
         let mut tail = history_tokens;
         let mut needed = self.overhead;
         let mut sizes = sizes.iter().peekable();

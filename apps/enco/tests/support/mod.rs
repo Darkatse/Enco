@@ -45,8 +45,8 @@ window_tokens = 128000
 max_output_tokens = 8192
 
 [profile.default]
-reply = 'chat'
-compaction = 'chat'
+reply = ['chat']
+compaction = ['chat']
 
 [memory]
 embedding = "embed"

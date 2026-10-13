@@ -148,7 +148,7 @@ async fn applying_calls_only_the_changed_endpoint_once() {
     let mut candidate = configuration(&server);
     candidate["endpoint"]["cheap"] = candidate["endpoint"]["chat"].clone();
     candidate["endpoint"]["cheap"]["model"] = "cheap".into();
-    candidate["profile"]["default"]["compaction"] = "cheap".into();
+    candidate["profile"]["default"]["compaction"] = json!(["cheap"]);
     let applied = apply(&daemon, &candidate).await.unwrap();
     assert_eq!(
         applied["probes"],

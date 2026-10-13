@@ -40,7 +40,7 @@ impl Exports {
             .ok_or_else(|| unavailable(plugin, "name is not registered"))
     }
 
-    /// Resolve completion at the start of an Attempt using the Round's fixed mode.
+    /// Resolve the completion code currently behind a name, using the Round's fixed mode.
     pub fn completion(
         &self,
         plugin: &str,
@@ -145,5 +145,14 @@ impl Plugins {
                 })
                 .collect(),
         }
+    }
+}
+
+impl Exports {
+    /// The active generation behind every name, in name order.
+    pub(super) fn active_generations(&self) -> impl Iterator<Item = GenerationId> + '_ {
+        self.plugins
+            .values()
+            .filter_map(|routes| routes.active.as_ref().map(|active| active.generation))
     }
 }

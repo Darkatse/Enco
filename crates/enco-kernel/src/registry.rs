@@ -123,6 +123,20 @@ pub struct ActiveConfig {
     invalid: Vec<SettingsError>,
 }
 
+impl View {
+    /// The registered behavior a failure is recorded against: the active configuration and
+    /// plugin generations, in ascending order. Trial promotion leaves them unchanged.
+    pub(crate) fn active_generations(&self) -> Vec<GenerationId> {
+        let mut generations: Vec<_> = self
+            .exports
+            .active_generations()
+            .chain([self.config.generation])
+            .collect();
+        generations.sort_unstable();
+        generations
+    }
+}
+
 /// Routing is published only after the durable mutation commits.
 pub struct Registry {
     store: Arc<dyn Store>,

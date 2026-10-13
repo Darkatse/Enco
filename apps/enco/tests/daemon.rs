@@ -273,7 +273,7 @@ async fn credentials_stay_at_the_service_origin_and_out_of_recorded_results() {
 }
 
 #[tokio::test]
-async fn unusable_completions_fail_the_run_and_an_empty_reply_replays_as_empty_text() {
+async fn unusable_completions_fail_the_run_and_stay_out_of_later_requests() {
     let server = MockServer::start().await;
     embeddings(&server).await;
     let responses = [
@@ -339,10 +339,15 @@ async fn unusable_completions_fail_the_run_and_an_empty_reply_replays_as_empty_t
         .filter(|r| r.url.path() == "/chat/completions")
         .collect();
     assert_eq!(chat.len(), 3);
+    // Neither unusable completion becomes part of the conversation.
     let body: serde_json::Value = serde_json::from_slice(&chat[2].body).unwrap();
-    assert!(body["messages"].as_array().unwrap().iter().any(|m| {
-        m["role"] == "assistant" && m["content"] == "" && m.get("tool_calls").is_none()
-    }));
+    assert!(
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["role"] != "assistant")
+    );
     daemon.stop().await;
 }
 
@@ -425,8 +430,8 @@ window_tokens = 128000
 max_output_tokens = 4096
 
 [profile.alternate]
-reply = "alternate"
-compaction = "alternate"
+reply = ["alternate"]
+compaction = ["alternate"]
 "#,
             server.uri()
         ),

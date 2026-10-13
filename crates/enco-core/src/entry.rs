@@ -183,6 +183,8 @@ pub enum RoundEnd {
     Failed {
         /// Classification and details of the failure.
         failure: Failure,
+        /// Active configuration and plugin generations when this Round failed, in ascending order.
+        generations: Vec<GenerationId>,
     },
 }
 
@@ -215,10 +217,15 @@ impl EntryBody {
     ) -> Option<Message> {
         match self {
             Self::EventConsumed { event } => Some(event.canonical_message()),
+            // An unusable reply stays in the Log but is not part of the conversation.
             Self::AttemptSettled {
-                result: AttemptResult::Completed { message, .. },
+                result: result @ AttemptResult::Completed { message, .. },
                 ..
-            } if purpose == Some(AttemptPurpose::Reply) => Some(message.clone()),
+            } if purpose == Some(AttemptPurpose::Reply)
+                && result.failure(AttemptPurpose::Reply).is_none() =>
+            {
+                Some(message.clone())
+            }
             Self::ToolCallSettled {
                 call: id,
                 outcome,
@@ -238,17 +245,31 @@ impl EntryBody {
     }
 }
 
-impl RoundEnd {
-    /// Map a terminal Round outcome to its Run outcome.
-    /// Replies and settled tools require the Run loop to inspect the Inbox or continue.
-    pub fn terminal_run_end(&self) -> Option<RunEnd> {
+impl AttemptResult {
+    /// The failure of this invocation for its purpose, retaining successful wire results as facts.
+    pub fn failure(&self, purpose: AttemptPurpose) -> Option<Failure> {
         match self {
-            Self::Interrupted => Some(RunEnd::Interrupted),
-            Self::Cancelled => Some(RunEnd::Cancelled),
-            Self::Failed { failure } => Some(RunEnd::Failed {
-                failure: failure.clone(),
-            }),
-            Self::Replied | Self::ToolsSettled => None,
+            Self::Failed { failure } => Some(failure.clone()),
+            Self::Completed { message, stop, .. } => {
+                if purpose == AttemptPurpose::Reply && message.tool_calls().next().is_some() {
+                    return None;
+                }
+                if !message.joined_text().trim().is_empty() {
+                    return None;
+                }
+                let missing = match purpose {
+                    AttemptPurpose::Reply => "no text or tool calls",
+                    AttemptPurpose::Compaction => "an empty summary",
+                };
+                Some(Failure {
+                    code: crate::code::PROVIDER_BAD_RESPONSE.into(),
+                    message: format!(
+                        "provider returned {missing}; stop: {}",
+                        serde_json::json!(stop)
+                    ),
+                    retryable: false,
+                })
+            }
         }
     }
 }
