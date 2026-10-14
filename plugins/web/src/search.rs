@@ -1,0 +1,99 @@
+use crate::{
+    bad,
+    config::{Config, Engine, Service},
+    http,
+    types::Failure,
+};
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+pub(crate) const MAX_RESULTS: u32 = 10;
+pub(crate) const DEFAULT_RESULTS: u32 = 5;
+
+#[derive(Deserialize)]
+struct Input {
+    query: String,
+    engine: Option<Engine>,
+    limit: Option<u32>,
+    since: Option<String>,
+}
+
+pub(crate) async fn search(config: &Config, input: &str) -> Result<Value, Failure> {
+    let input: Input =
+        serde_json::from_str(input).map_err(|error| bad(format!("arguments: {error}")))?;
+    // The declaration only offers web_search when at least one engine is configured.
+    let engine = input.engine.unwrap_or(config.search[0]);
+    if input.query.trim().is_empty() {
+        return Err(bad("query must not be empty"));
+    }
+    let limit = input.limit.unwrap_or(DEFAULT_RESULTS);
+    if !(1..=MAX_RESULTS).contains(&limit) {
+        return Err(bad(format!("limit must be between 1 and {MAX_RESULTS}")));
+    }
+    if let Some(since) = &input.since {
+        let date = chrono::NaiveDate::parse_from_str(since, "%Y-%m-%d")
+            .map_err(|_| bad("since must be a calendar date in YYYY-MM-DD format"))?;
+        if date.to_string() != *since {
+            return Err(bad("since must use YYYY-MM-DD format"));
+        }
+    }
+    let response = match engine {
+        Engine::Exa => {
+            let mut request = json!({"query": input.query, "numResults": limit, "contents": {"highlights": true}});
+            if let Some(since) = &input.since {
+                request["startPublishedDate"] = format!("{since}T00:00:00Z").into();
+            }
+            http::json(
+                "POST",
+                format!("{}/search", config.url(Service::Exa)),
+                Some(request),
+            )
+            .await?
+        }
+        Engine::Tinyfish => {
+            let mut url = url::Url::parse(config.url(Service::Tinyfish))
+                .map_err(|error| bad(format!("TinyFish URL: {error}")))?;
+            url.query_pairs_mut().append_pair("query", &input.query);
+            if let Some(since) = &input.since {
+                url.query_pairs_mut().append_pair("after_date", since);
+            }
+            http::json("GET", url.into(), None).await?
+        }
+    };
+    let results = response["results"]
+        .as_array()
+        .ok_or_else(|| bad("search response has no results array"))?;
+    let results = results
+        .iter()
+        .take(limit as usize)
+        .map(|result| normalize(engine, result))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(json!({"source": engine.name(), "results": results}))
+}
+
+fn normalize(engine: Engine, result: &Value) -> Result<Value, Failure> {
+    let title = http::text(result, "title")?;
+    let url = http::text(result, "url")?;
+    let (date, summary) = match engine {
+        Engine::Exa => {
+            let highlights = result["highlights"]
+                .as_array()
+                .ok_or_else(|| bad("Exa result has no highlights"))?;
+            let text = highlights
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .ok_or_else(|| bad("Exa highlight is not text"))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join("\n");
+            (result.get("publishedDate"), text)
+        }
+        Engine::Tinyfish => (
+            result.get("date"),
+            http::text(result, "snippet")?.to_owned(),
+        ),
+    };
+    Ok(json!({"title": title, "url": url, "published": date, "summary": summary}))
+}

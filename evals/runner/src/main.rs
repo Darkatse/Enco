@@ -7,6 +7,7 @@ mod judge;
 mod limits;
 mod mock;
 mod proxy;
+mod reader;
 mod render;
 mod result;
 mod run;

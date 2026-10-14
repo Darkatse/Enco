@@ -1,20 +1,17 @@
+use super::probe;
 use super::*;
-use crate::{
-    ProviderRequest, Question, QuestionKind,
-    limits::{
-        CONFIG_PROBE_MAX_TOKENS, CONFIG_PROBE_PROMPT, CONFIG_PROBE_QUESTION, CONFIG_PROBE_TOOL,
-    },
-};
 
 pub(super) struct Declaration {
     pub kernel: KernelSettings,
     pub uses: Vec<Use>,
     pub invalid: Vec<SettingsError>,
+    pub plugins: BTreeMap<String, PluginSettings>,
 }
 
 /// Ownership is a property of the composition, independent of any document.
 pub(super) fn check_owners(owners: &[TableOwner]) -> Result<(), RegistryError> {
     let mut tables = std::collections::BTreeSet::from(KernelSettings::TABLES);
+    tables.insert("plugin");
     for table in owners.iter().flat_map(|owner| owner.tables) {
         if !tables.insert(*table) {
             return Err(RegistryError::TableOwner((*table).into()));
@@ -35,7 +32,8 @@ pub(super) fn declare(
     let mut invalid = tables
         .keys()
         .filter(|table| {
-            !KernelSettings::TABLES.contains(&table.as_str())
+            table.as_str() != "plugin"
+                && !KernelSettings::TABLES.contains(&table.as_str())
                 && !owners
                     .iter()
                     .any(|owner| owner.tables.contains(&table.as_str()))
@@ -53,6 +51,13 @@ pub(super) fn declare(
         kernel,
         uses,
         invalid,
+        plugins: document.get("plugin").map_or_else(
+            || Ok(BTreeMap::new()),
+            |value| {
+                serde_json::from_value(value.clone())
+                    .map_err(|error| SettingsError::new("plugin", error.to_string()))
+            },
+        )?,
     })
 }
 
@@ -69,6 +74,24 @@ pub(super) fn declare_valid(
 }
 
 impl Declaration {
+    /// Validate changed content and new imports against the final composition under the committer.
+    fn admit(
+        &self,
+        state: &State,
+        host_tool_names: &[String],
+        prepared: &BTreeMap<String, registration::Prepared>,
+    ) -> Result<admission::Admission, RegistryError> {
+        let candidates = prepared
+            .iter()
+            .map(|(name, prepared)| (name.clone(), prepared.loaded.clone()))
+            .collect();
+        let before = admission::evaluate(&state.plugins, host_tool_names, &BTreeMap::new());
+        let admission = admission::evaluate(&state.plugins, host_tool_names, &candidates);
+        let changed: Vec<_> = prepared.keys().cloned().collect();
+        admission.accept_change(&before, &changed, &self.uses, &state.config.uses)?;
+        Ok(admission)
+    }
+
     /// The only way to activate content: with the declarations evaluated from it.
     pub fn into_active(self, record: &ConfigGeneration) -> ActiveConfig {
         ActiveConfig {
@@ -77,6 +100,7 @@ impl Declaration {
             kernel: self.kernel,
             uses: self.uses,
             invalid: self.invalid,
+            plugins: self.plugins,
         }
     }
 }
@@ -85,17 +109,26 @@ impl Declaration {
 pub(super) async fn register(
     store: &dyn Store,
     configs: &mut BTreeMap<GenerationId, ConfigGeneration>,
+    plugins: &mut state::Plugins,
+    prepared: BTreeMap<String, registration::Prepared>,
     document: serde_json::Value,
     created_at: DateTime<Utc>,
 ) -> Result<ConfigGeneration, RegistryError> {
-    let id = store
-        .insert_config_generation(&document, created_at)
+    let pending: Vec<_> = prepared
+        .values()
+        .map(|candidate| candidate.generation.clone())
+        .collect();
+    let (id, ids) = store
+        .insert_config_generation(&document, created_at, &pending)
         .await?;
     let record = ConfigGeneration {
         id,
         document,
         created_at,
     };
+    for (candidate, id) in prepared.into_values().zip(ids) {
+        plugins.registered(candidate.generation.numbered(id), candidate.loaded);
+    }
     configs.insert(id, record.clone());
     Ok(record)
 }
@@ -130,7 +163,12 @@ impl Registry {
         };
         let state = self.state.lock().await;
         if document == state.config.document {
-            return ConfigDivergence::None;
+            let active = state.settings_divergence();
+            return if active.is_empty() {
+                ConfigDivergence::None
+            } else {
+                ConfigDivergence::PluginSettings { active }
+            };
         }
         let Some(matching) = state
             .configs
@@ -160,7 +198,7 @@ impl Registry {
 
     /// Validate new uses outside the committer, then atomically register and publish content.
     pub async fn apply_config(&self, source: ConfigSource) -> Result<Applied, RegistryError> {
-        let (view, document) = {
+        let (view, document, active) = {
             let state = self.state.lock().await;
             let document = match source {
                 ConfigSource::Document(document) => document,
@@ -177,14 +215,23 @@ impl Registry {
                     .document
                     .clone(),
             };
-            (self.view(), document)
+            (self.view(), document, state.plugins.active_records())
         };
         let previous = view.config.generation;
         if document == view.config.document {
             return Ok(Applied::Unchanged(previous));
         }
         let declaration = declare_valid(&document, &self.owners)?;
-        let expected: BTreeMap<_, _> = declaration
+        let prepared = registration::settings(
+            self.store.as_ref(),
+            self.runtime.as_ref(),
+            &view.config.plugins,
+            &declaration.plugins,
+            &active,
+            self.clock.now(),
+        )
+        .await?;
+        let mut expected: BTreeMap<_, _> = declaration
             .uses
             .iter()
             .map(|usage| {
@@ -194,7 +241,12 @@ impl Registry {
                 )
             })
             .collect();
-        let probes = self.probe_new_uses(&view, &declaration.uses).await?;
+        for name in prepared.keys() {
+            expected.insert(name.clone(), active.get(name).map(|record| record.id));
+        }
+        let probes = self
+            .probe_new_uses(&view, &declaration.uses, &prepared)
+            .await?;
         let mut state = self.state.lock().await;
         if state.config.generation != previous
             || expected.iter().any(|(name, expected)| {
@@ -208,17 +260,22 @@ impl Registry {
         {
             return Err(RegistryError::Conflict("config".into()));
         }
-        check_uses(&state.plugins, &declaration.uses)?;
+        let admission = declaration.admit(&state, &self.host_tool_names, &prepared)?;
         self.check_profiles_in_use(&declaration.kernel).await?;
+        let State {
+            plugins, configs, ..
+        } = &mut *state;
         let record = register(
             self.store.as_ref(),
-            &mut state.configs,
+            configs,
+            plugins,
+            prepared,
             document,
             self.clock.now(),
         )
         .await?;
         state.config = declaration.into_active(&record);
-        self.publish(&mut state);
+        self.publish(&mut state, Some(admission));
         Ok(Applied::Registered {
             generation: record.id,
             previous,
@@ -227,7 +284,12 @@ impl Registry {
     }
 
     /// One real call for each use the active configuration does not already make.
-    async fn probe_new_uses(&self, view: &View, uses: &[Use]) -> Result<Vec<Probe>, RegistryError> {
+    async fn probe_new_uses(
+        &self,
+        view: &View,
+        uses: &[Use],
+        prepared: &BTreeMap<String, registration::Prepared>,
+    ) -> Result<Vec<Probe>, RegistryError> {
         let mut probed: Vec<&Use> = Vec::new();
         let mut probes = Vec::new();
         for usage in uses {
@@ -236,11 +298,29 @@ impl Registry {
                 .uses
                 .iter()
                 .chain(probed.iter().copied())
-                .any(|previous| same_call(previous, usage))
+                .any(|previous| previous.same_call(usage))
             {
                 continue;
             }
-            let outcome = self.probe(&view.exports, usage).await?;
+            let (candidate, generation) = match prepared.get(&usage.endpoint.plugin) {
+                Some(candidate) => (&candidate.loaded, None),
+                None => {
+                    let (generation, loaded) = view
+                        .exports
+                        .loaded(&usage.endpoint.plugin)
+                        .map_err(|failure| rejected(&usage.endpoint.plugin, failure.message))?;
+                    (loaded, Some(generation))
+                }
+            };
+            let outcome = match probe::call(candidate, usage).await {
+                Ok(probed) => {
+                    if let Some(generation) = generation {
+                        self.report(generation, probed.verdict, None).await?;
+                    }
+                    probed.outcome
+                }
+                Err(failure) => Err(failure),
+            };
             if let Err(failure) = &outcome {
                 return Err(rejected(
                     "config",
@@ -300,7 +380,7 @@ impl Registry {
         Ok(())
     }
 
-    /// Mechanical recovery uses registered content without probes or admission.
+    /// Mechanical recovery publishes registered content even when some uses are unavailable.
     pub async fn rollback_config(&self) -> Result<ConfigGeneration, RegistryError> {
         let mut state = self.state.lock().await;
         let record = state
@@ -312,100 +392,7 @@ impl Registry {
         let declaration = declare(&record.document, &self.owners).map_err(RegistryError::Config)?;
         self.store.activate_config(record.id).await?;
         state.config = declaration.into_active(&record);
-        self.publish(&mut state);
+        self.publish(&mut state, None);
         Ok(record)
-    }
-
-    async fn probe(
-        &self,
-        exports: &Exports,
-        usage: &Use,
-    ) -> Result<Result<(), Failure>, RegistryError> {
-        let (generation, outcome) = match usage.need {
-            Need::Completion { tools } => {
-                let export = match exports.completion(&usage.endpoint.plugin, false) {
-                    Ok(export) => export,
-                    Err(failure) => return Ok(Err(failure)),
-                };
-                let request = ProviderRequest {
-                    messages: vec![Message::text(Role::User, CONFIG_PROBE_PROMPT)],
-                    tools: if tools {
-                        vec![CONFIG_PROBE_TOOL.clone()]
-                    } else {
-                        vec![]
-                    },
-                    max_output_tokens: Some(CONFIG_PROBE_MAX_TOKENS),
-                };
-                (
-                    export.generation,
-                    export
-                        .adapter
-                        .complete(&usage.endpoint.settings, request)
-                        .await
-                        .map(|_| ()),
-                )
-            }
-            Need::Embedding { dimensions } => {
-                let export = match exports.embedding(&usage.endpoint.plugin) {
-                    Ok(export) => export,
-                    Err(failure) => return Ok(Err(failure)),
-                };
-                let outcome = export
-                    .adapter
-                    .embed(&usage.endpoint.settings, vec![CONFIG_PROBE_PROMPT.into()])
-                    .await;
-                self.report(export.generation, verdict(&outcome), None)
-                    .await?;
-                // Width is the caller's requirement, not a plugin health failure.
-                return Ok(outcome.and_then(|vectors| {
-                    if vectors.len() == 1 && vectors[0].len() == dimensions.get() {
-                        Ok(())
-                    } else {
-                        Err(Failure {
-                            code: code::PROVIDER_BAD_RESPONSE.into(),
-                            message: format!("expected one embedding of width {dimensions}"),
-                            retryable: false,
-                        })
-                    }
-                }));
-            }
-            Need::Decision => {
-                let export = match exports.decision(&usage.endpoint.plugin) {
-                    Ok(export) => export,
-                    Err(failure) => return Ok(Err(failure)),
-                };
-                let questions = vec![Question {
-                    instructions: CONFIG_PROBE_QUESTION.into(),
-                    kind: QuestionKind::Predicate,
-                }];
-                (
-                    export.generation,
-                    export
-                        .adapter
-                        .decide(
-                            &usage.endpoint.settings,
-                            CONFIG_PROBE_PROMPT.into(),
-                            questions,
-                        )
-                        .await
-                        .map(|_| ()),
-                )
-            }
-        };
-        self.report(generation, verdict(&outcome), None).await?;
-        Ok(outcome)
-    }
-}
-
-fn same_call(left: &Use, right: &Use) -> bool {
-    left.endpoint.plugin == right.endpoint.plugin
-        && left.endpoint.settings == right.endpoint.settings
-        && left.need == right.need
-}
-
-fn verdict<T>(outcome: &Result<T, Failure>) -> Verdict {
-    match outcome {
-        Ok(_) => Verdict::Ok,
-        Err(failure) => Verdict::Failed(failure.clone()),
     }
 }

@@ -100,7 +100,7 @@ impl ScriptedRuntime {
 
 #[async_trait]
 impl Runtime for ScriptedRuntime {
-    async fn load(&self, bytes: &[u8], _config: &serde_json::Value) -> Result<Loaded, LoadError> {
+    async fn load(&self, bytes: &[u8], _config: &PluginSettings) -> Result<Loaded, LoadError> {
         self.exports
             .lock()
             .unwrap()
@@ -133,6 +133,18 @@ pub fn configuration() -> serde_json::Value {
     })
 }
 
+pub fn fixture_endpoint(plugin: &str) -> Endpoint {
+    let mut endpoint = KernelSettings::from_document(&configuration())
+        .unwrap()
+        .profiles["default"]
+        .reply
+        .first()
+        .endpoint
+        .clone();
+    endpoint.plugin = plugin.into();
+    endpoint
+}
+
 /// Exports of the factory fixture, which serves every configured use.
 pub fn fixture(completion: Arc<dyn Provider>, embedding: Arc<dyn Embedding>) -> Loaded {
     Loaded {
@@ -140,13 +152,16 @@ pub fn fixture(completion: Arc<dyn Provider>, embedding: Arc<dyn Embedding>) -> 
         summary: "fixture".into(),
         config_schema: serde_json::json!({}),
         credential: None,
+        unavailable: None,
+        tools: None,
         completion: Some(completion),
         embedding: Some(embedding),
         decision: None,
     }
 }
 
-/// The registry as the composition root assembles it, over a scripted runtime.
+/// The registry over a scripted runtime, declaring the host tools every test kernel builds;
+/// tests that also build memory tools add their names through `registry_configured`.
 pub fn registry_deps(
     store: Arc<SqliteStore>,
     runtime: Arc<dyn Runtime>,
@@ -154,6 +169,14 @@ pub fn registry_deps(
     document: serde_json::Value,
 ) -> RegistryDeps {
     RegistryDeps {
+        host_tool_names: native_tools(Default::default())
+            .iter()
+            .map(|tool| tool.spec())
+            .chain(plugin_tool_specs())
+            .chain(config::config_tool_specs(Path::new("config.toml")))
+            .chain(builtin_tool_specs())
+            .map(|spec| spec.name)
+            .collect(),
         store,
         runtime,
         factory: vec![FactoryPlugin {
@@ -171,18 +194,15 @@ pub async fn registry_configured(
     root: &Path,
     loaded: Loaded,
     document: serde_json::Value,
+    extra_tools: Vec<ToolSpec>,
 ) -> (Arc<Registry>, Arc<SqliteStore>) {
     let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
     let runtime = Arc::new(ScriptedRuntime::default());
     runtime.insert(FACTORY_BYTES, loaded);
-    let registry = Registry::open(registry_deps(
-        store.clone(),
-        runtime,
-        FACTORY_BYTES,
-        document,
-    ))
-    .await
-    .unwrap();
+    let mut deps = registry_deps(store.clone(), runtime, FACTORY_BYTES, document);
+    deps.host_tool_names
+        .extend(extra_tools.into_iter().map(|spec| spec.name));
+    let registry = Registry::open(deps).await.unwrap();
     (registry, store)
 }
 
@@ -279,19 +299,22 @@ pub async fn kernel_with(
 ) -> (Kernel, Arc<SqliteStore>) {
     let mut document = configuration();
     document["owner"]["timezone"] = serde_json::json!(timezone);
-    kernel_configured(root, provider, document, configure).await
+    kernel_configured(root, provider, document, vec![], configure).await
 }
 
 pub async fn kernel_configured(
     root: &Path,
     provider: Arc<dyn Provider>,
     document: serde_json::Value,
+    tools: Vec<Arc<dyn Tool>>,
     configure: impl FnOnce(&mut KernelDeps),
 ) -> (Kernel, Arc<SqliteStore>) {
     // Without memory nothing recalls; the export only satisfies memory's declared use.
     let loaded = fixture(provider, ScriptedProvider::new(vec![]));
-    let (registry, store) = registry_configured(root, loaded, document).await;
+    let extra = tools.iter().map(|tool| tool.spec()).collect();
+    let (registry, store) = registry_configured(root, loaded, document, extra).await;
     let mut deps = kernel_deps(root, store.clone(), registry, None);
+    deps.tools.extend(tools);
     configure(&mut deps);
     (Kernel::start(deps).await.unwrap(), store)
 }
@@ -304,7 +327,7 @@ pub async fn kernel_with_memory(
     configure: impl FnOnce(&mut KernelDeps),
 ) -> (Kernel, Arc<Memories>) {
     let loaded = fixture(provider.clone(), provider);
-    let (registry, store) = registry_configured(root, loaded, document).await;
+    let (registry, store) = registry_configured(root, loaded, document, memory_tool_specs()).await;
     let memories = open_memories(root, registry.clone()).await;
     let mut deps = kernel_deps(root, store, registry, Some(memories.clone()));
     configure(&mut deps);

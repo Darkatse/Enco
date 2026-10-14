@@ -2,6 +2,7 @@ use crate::{
     config::{Model, Trial},
     render::Renderer,
     task::{self, Task},
+    trial::Variant,
 };
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -41,6 +42,7 @@ impl Home {
         renderer: &Renderer,
         proxy: &str,
         mock_hosts: &BTreeSet<String>,
+        variant: &Variant,
     ) -> Result<()> {
         let enco = self.path.join(".enco");
         tokio::fs::create_dir_all(enco.join(".data")).await?;
@@ -53,9 +55,11 @@ impl Home {
         let source = model.configuration(
             task.definition.environment.timezone,
             task.definition.budget.max_rounds,
+            &variant.plugin,
         )?;
         tokio::fs::write(enco.join("config.toml"), source).await?;
         self.environment.extend(model.variables.clone());
+        self.environment.extend(variant.variables.clone());
         for name in ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"] {
             self.environment.insert(name.into(), proxy.into());
         }

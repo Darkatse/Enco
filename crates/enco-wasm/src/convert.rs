@@ -15,6 +15,11 @@ pub(crate) fn request(request: ProviderRequest) -> wire::Request {
                 name: tool.name,
                 description: tool.description,
                 input_schema: tool.input_schema.to_string(),
+                effect: match tool.effect {
+                    Effect::ReadOnly => wit::Effect::ReadOnly,
+                    Effect::Idempotent => wit::Effect::Idempotent,
+                    Effect::SideEffect => wit::Effect::SideEffect,
+                },
             })
             .collect(),
         max_output_tokens: request.max_output_tokens,
@@ -192,4 +197,13 @@ fn distribution(probabilities: &[f64], count: usize) -> bool {
     probabilities.len() == count
         && probabilities.iter().all(|p| (0.0..=1.0).contains(p))
         && (probabilities.iter().sum::<f64>() - 1.0).abs() <= DECISION_SUM_TOLERANCE
+}
+
+/// Mutation semantics declared by a tool at the component boundary.
+pub(crate) fn effect(effect: wit::Effect) -> Effect {
+    match effect {
+        wit::Effect::ReadOnly => Effect::ReadOnly,
+        wit::Effect::Idempotent => Effect::Idempotent,
+        wit::Effect::SideEffect => Effect::SideEffect,
+    }
 }

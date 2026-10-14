@@ -15,7 +15,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 pub(crate) async fn check(repository: &Path, config: &Path, selected: Vec<String>) -> Result<bool> {
     let config = Config::read(config, repository).await?;
@@ -55,6 +55,8 @@ pub(crate) async fn check(repository: &Path, config: &Path, selected: Vec<String
         name: "null".into(),
         binary,
         deploy: Vec::new(),
+        plugin: crate::config::default_plugins(),
+        variables: BTreeMap::new(),
     };
     for (task, cases) in prepared {
         for (case, expectation, start) in cases {

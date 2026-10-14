@@ -1,7 +1,9 @@
 mod support;
 
 use enco_core::*;
-use enco_kernel::Store;
+use enco_host::SqliteStore;
+use enco_kernel::{Kernel, Registry, Store};
+use std::sync::Arc;
 use support::*;
 
 #[tokio::test]
@@ -318,4 +320,32 @@ async fn changed_tool_definitions_are_rejected_before_any_provider_request() {
         } if failure.code == code::PLAN_INVALID
     ));
     kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn startup_requires_host_tool_declarations_to_match_handlers() {
+    for missing in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(SqliteStore::open(store_paths(root.path())).await.unwrap());
+        let runtime = Arc::new(ScriptedRuntime::default());
+        let provider = ScriptedProvider::new(vec![]);
+        runtime.insert(FACTORY_BYTES, fixture(provider.clone(), provider));
+        let mut declared = registry_deps(store.clone(), runtime, FACTORY_BYTES, configuration());
+        if missing {
+            declared.host_tool_names.retain(|name| name != "fs_read");
+        } else {
+            declared.host_tool_names.push("absent_handler".into());
+        }
+        let registry = Registry::open(declared).await.unwrap();
+        let error = Kernel::start(kernel_deps(root.path(), store, registry, None))
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(&error, enco_kernel::KernelError::Config(_)));
+        assert!(
+            error
+                .to_string()
+                .contains(if missing { "fs_read" } else { "absent_handler" })
+        );
+    }
 }

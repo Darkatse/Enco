@@ -53,6 +53,7 @@ impl SessionActor {
             transcript: crate::transcript::project(&self.entries),
             previous_plan,
             context,
+            unavailable: snapshot.unavailable.clone(),
             tools,
             safe_mode,
             reply,

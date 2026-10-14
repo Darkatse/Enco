@@ -63,7 +63,7 @@ impl SessionActor {
                 .registry
                 .view()
                 .exports
-                .completion(&endpoint.plugin, safe_mode)
+                .completion(endpoint, safe_mode)
                 .map(|current| current.generation);
             if current != Ok(export.generation) {
                 return Err(RoundError::Failed(failure));

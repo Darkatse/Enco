@@ -140,7 +140,7 @@ async fn profile_changes_bind_at_round_boundaries() {
             resume: Notify::new(),
         });
         let (kernel, _) =
-            kernel_configured(dir.path(), provider.clone(), configured(), |_| {}).await;
+            kernel_configured(dir.path(), provider.clone(), configured(), vec![], |_| {}).await;
         let main = kernel.open_session("main").await.unwrap();
         let other = kernel.open_session("other").await.unwrap();
         let round =
@@ -188,7 +188,8 @@ async fn profile_changes_bind_at_round_boundaries() {
 async fn a_session_whose_profile_was_rolled_back_away_remains_recoverable() {
     let dir = tempfile::tempdir().unwrap();
     let scripted = ScriptedProvider::new((0..30).map(|_| reply("summary or reply")).collect());
-    let (kernel, _) = kernel_configured(dir.path(), scripted.clone(), configured(), |_| {}).await;
+    let (kernel, _) =
+        kernel_configured(dir.path(), scripted.clone(), configured(), vec![], |_| {}).await;
     let mut earlier = configured();
     earlier["profile"]
         .as_object_mut()
@@ -269,7 +270,8 @@ async fn history_too_large_for_the_compaction_window_fails_only_when_the_reply_n
     let mut document = configured();
     document["endpoint"]["compaction"]["window_tokens"] = 100.into();
     document["endpoint"]["compaction"]["max_output_tokens"] = 10.into();
-    let (kernel, _) = kernel_configured(dir.path(), provider.clone(), document, |_| {}).await;
+    let (kernel, _) =
+        kernel_configured(dir.path(), provider.clone(), document, vec![], |_| {}).await;
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     let mut overflow = None;
@@ -316,7 +318,8 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
         entered: Notify::new(),
         resume: Notify::new(),
     });
-    let (kernel, _) = kernel_configured(dir.path(), provider.clone(), configured(), |_| {}).await;
+    let (kernel, _) =
+        kernel_configured(dir.path(), provider.clone(), configured(), vec![], |_| {}).await;
     let session = kernel.open_session("main").await.unwrap();
     let before = kernel.registry().view().config.generation;
     let mut document = configured();
@@ -369,12 +372,12 @@ async fn configuration_probes_conflict_with_deployment_but_not_trial_promotion()
             resume: Notify::new(),
         });
         let (kernel, _) =
-            kernel_configured(dir.path(), provider.clone(), configured(), |_| {}).await;
+            kernel_configured(dir.path(), provider.clone(), configured(), vec![], |_| {}).await;
         let registry = kernel.registry();
         let factory = registry
             .view()
             .exports
-            .completion("fixture", true)
+            .completion(&fixture_endpoint("fixture"), true)
             .unwrap()
             .generation;
         let trial = registry

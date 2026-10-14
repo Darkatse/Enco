@@ -4,7 +4,7 @@ use crate::{
         lifecycle,
     },
     convert,
-    credentials::{CallCredential, Placement},
+    credentials::{self, CallCredential, Placement},
     engine::WasmEngine,
     host_imports::HostState,
     limits,
@@ -24,21 +24,24 @@ pub(super) struct WasmPlugin {
     pub completion: Option<CompletionPluginPre<HostState>>,
     pub embedding: Option<EmbeddingPluginPre<HostState>>,
     pub decision: Option<DecisionPluginPre<HostState>>,
+    pub settings: PluginSettings,
     pub engine: Arc<WasmEngine>,
     pub http: reqwest::Client,
     pub name: String,
-    pub placement: Option<Placement>,
+    pub placements: Vec<Placement>,
 }
 
 impl WasmPlugin {
     /// Every logical call owns a fresh Store and shares the same limits and failure boundary.
-    async fn invoke<T>(
+    pub(super) async fn invoke<T>(
         &self,
-        credential: Option<CallCredential>,
+        credentials: Vec<CallCredential>,
+        cancel: tokio_util::sync::CancellationToken,
         call: impl AsyncFnOnce(Store<HostState>) -> wasmtime::Result<Result<T, types::Failure>>,
     ) -> Result<T, Failure> {
         let state = HostState {
-            credential: credential.map(Arc::new),
+            credentials: Arc::new(credentials),
+            config: self.settings.config.to_string(),
             wasi: WasiCtx::builder().inherit_stderr().build(),
             table: ResourceTable::new(),
             http: self.http.clone(),
@@ -50,8 +53,17 @@ impl WasmPlugin {
         let mut store = Store::new(&self.engine.engine, state);
         store.limiter(|state| &mut state.limits);
         store.epoch_deadline_async_yield_and_update(1);
-        tokio::time::timeout(limits::PLUGIN_CALL_TIMEOUT, call(store))
-            .await
+        let invoke = tokio::time::timeout(limits::PLUGIN_CALL_TIMEOUT, call(store));
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(Failure {
+                code: code::CANCELLED.into(),
+                message: "plugin invocation cancelled".into(),
+                retryable: false,
+            }),
+            result = invoke => result,
+        };
+        result
             .map_err(|_| Failure {
                 code: code::TIMEOUT.into(),
                 message: "plugin invocation timed out".into(),
@@ -66,7 +78,7 @@ impl WasmPlugin {
         config: &serde_json::Value,
     ) -> Result<lifecycle::Description, Failure> {
         let config = config.to_string();
-        self.invoke(None, async |mut store| {
+        self.invoke(Vec::new(), Default::default(), async |mut store| {
             let plugin = self.lifecycle.instantiate_async(&mut store).await?;
             plugin
                 .enco_plugin_lifecycle()
@@ -96,7 +108,7 @@ fn trap(message: impl Into<String>) -> Failure {
 #[async_trait]
 impl Lifecycle for WasmPlugin {
     async fn probe(&self) -> Result<(), Failure> {
-        self.invoke(None, async |mut store| {
+        self.invoke(Vec::new(), Default::default(), async |mut store| {
             let plugin = self.lifecycle.instantiate_async(&mut store).await?;
             store
                 .run_concurrent(async move |accessor| {
@@ -121,9 +133,9 @@ impl Provider for WasmPlugin {
             .ok_or_else(|| trap("completion export is missing"))?;
         let request = convert::request(request);
         let settings = settings(params);
-        let credential = CallCredential::resolve(self.placement.as_ref(), params)?;
+        let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
         let result = self
-            .invoke(credential, async move |mut store| {
+            .invoke(credentials, Default::default(), async move |mut store| {
                 let plugin = pre.instantiate_async(&mut store).await?;
                 store
                     .run_concurrent(async move |accessor| {
@@ -152,9 +164,9 @@ impl Embedding for WasmPlugin {
             .ok_or_else(|| trap("embedding export is missing"))?;
         let count = inputs.len();
         let settings = settings(params);
-        let credential = CallCredential::resolve(self.placement.as_ref(), params)?;
+        let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
         let vectors = self
-            .invoke(credential, async move |mut store| {
+            .invoke(credentials, Default::default(), async move |mut store| {
                 let plugin = pre.instantiate_async(&mut store).await?;
                 store
                     .run_concurrent(async move |accessor| {
@@ -184,9 +196,9 @@ impl Decision for WasmPlugin {
             .ok_or_else(|| trap("decision export is missing"))?;
         let wire_questions = questions.iter().map(convert::question).collect();
         let settings = settings(params);
-        let credential = CallCredential::resolve(self.placement.as_ref(), params)?;
+        let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
         let answers = self
-            .invoke(credential, async move |mut store| {
+            .invoke(credentials, Default::default(), async move |mut store| {
                 let plugin = pre.instantiate_async(&mut store).await?;
                 store
                     .run_concurrent(async move |accessor| {

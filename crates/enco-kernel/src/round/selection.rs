@@ -127,7 +127,7 @@ fn assess<'p>(
     safe_mode: bool,
 ) -> Result<Choice<'p>, (Option<LogPos>, Failure)> {
     let export = exports
-        .completion(&endpoint.endpoint.plugin, safe_mode)
+        .completion(&endpoint.endpoint, safe_mode)
         .map_err(|failure| (None, failure))?;
     let combination = Combination {
         purpose,

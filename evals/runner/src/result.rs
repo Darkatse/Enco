@@ -32,6 +32,7 @@ pub(crate) struct Report {
 pub(crate) struct VariantRecord {
     pub(crate) enco: Binary,
     pub(crate) deploy: Vec<DeployRecord>,
+    pub(crate) plugin: toml::Table,
 }
 
 #[derive(Serialize, Deserialize)]

@@ -19,7 +19,7 @@ use std::{
 
 /// `PRAGMA user_version` covers SQLite and its referenced plans. Until P4, persistent
 /// format changes bump it and existing databases are migrated by hand.
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -295,10 +295,12 @@ impl Store for SqliteStore {
         &self,
         document: &serde_json::Value,
         created_at: DateTime<Utc>,
-    ) -> Result<GenerationId, StoreError> {
+        plugins: &[NewGeneration],
+    ) -> Result<(GenerationId, Vec<GenerationId>), StoreError> {
         let document = document.clone();
+        let plugins = plugins.to_vec();
         self.run(move |connection| {
-            registry::insert_config_generation(connection, &document, created_at)
+            registry::insert_config_generation(connection, &document, created_at, &plugins)
         })
         .await
     }

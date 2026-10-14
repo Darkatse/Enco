@@ -11,12 +11,12 @@ mod bindings {
         path: "../../wit",
         world: "completion-plugin",
         with: {
-            "enco:plugin/host@0.3.0": provider_protocol::host,
-            "enco:plugin/types@0.3.0": provider_protocol::types,
-            "enco:plugin/completion@0.3.0/request": provider_protocol::Request,
-            "enco:plugin/completion@0.3.0/completion": provider_protocol::Completion,
-            "enco:plugin/completion@0.3.0/usage": provider_protocol::Usage,
-            "enco:plugin/completion@0.3.0/stop-reason": provider_protocol::StopReason,
+            "enco:plugin/host@0.4.0": provider_protocol::host,
+            "enco:plugin/types@0.4.0": provider_protocol::types,
+            "enco:plugin/completion@0.4.0/request": provider_protocol::Request,
+            "enco:plugin/completion@0.4.0/completion": provider_protocol::Completion,
+            "enco:plugin/completion@0.4.0/usage": provider_protocol::Usage,
+            "enco:plugin/completion@0.4.0/stop-reason": provider_protocol::StopReason,
         },
     });
     use super::Plugin;
@@ -31,11 +31,13 @@ impl lifecycle::Guest for Plugin {
         Ok(lifecycle::Description {
             summary: "DeepSeek Chat Completions".into(),
             config_schema: r#"{"type":"object","additionalProperties":false}"#.into(),
-            credential: Some(lifecycle::Credential {
+            credentials: vec![lifecycle::Credential {
+                name: "api-key".into(),
+                origin: None,
                 header: "authorization".into(),
                 prefix: "Bearer ".into(),
                 required: true,
-            }),
+            }],
         })
     }
 

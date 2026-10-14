@@ -521,7 +521,10 @@ async fn wasm_embedding_preserves_batch_order_and_rejects_reserved_options() {
         options: json!({}),
     };
     let provider = runtime
-        .load(include_bytes!(env!("ENCO_FACTORY_OPENAI")), &json!({}))
+        .load(
+            include_bytes!(env!("ENCO_FACTORY_OPENAI")),
+            &enco_core::PluginSettings::default(),
+        )
         .await
         .unwrap()
         .embedding
@@ -666,4 +669,18 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
         }
         drop(guard);
     }
+}
+
+#[tokio::test]
+async fn completion_imports_are_rejected_before_linking_a_plugin() {
+    let runtime = WasmRuntime::new().unwrap();
+    let error = runtime
+        .load(
+            br#"(component (import "enco:plugin/completion@0.4.0" (instance)))"#,
+            &PluginSettings::default(),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("Attempts by the kernel"));
 }

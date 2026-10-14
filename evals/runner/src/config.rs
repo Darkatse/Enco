@@ -132,9 +132,7 @@ impl Model {
                 .with_context(|| format!("{name}.base_url"))?;
             hosts.insert(url.host_str().context("endpoint has no host")?.to_owned());
             if let Some(key) = endpoint.get("api_key_env").and_then(toml::Value::as_str) {
-                let value = std::env::var_os(key)
-                    .with_context(|| format!("model key variable {key} is not set"))?;
-                variables.insert(key.to_owned(), value);
+                pass(&mut variables, key).with_context(|| format!("{name}.api_key_env"))?;
             }
             endpoints.insert(name, record);
         }
@@ -159,7 +157,12 @@ impl Model {
             .collect())
     }
 
-    pub(crate) fn configuration(&self, timezone: chrono_tz::Tz, max_rounds: u32) -> Result<String> {
+    pub(crate) fn configuration(
+        &self,
+        timezone: chrono_tz::Tz,
+        max_rounds: u32,
+        plugins: &toml::Table,
+    ) -> Result<String> {
         let mut document = self.document.clone();
         document.insert(
             "owner".into(),
@@ -175,16 +178,43 @@ impl Model {
                 toml::Value::Integer(i64::from(max_rounds)),
             )])),
         );
+        if !plugins.is_empty() {
+            document.insert("plugin".into(), toml::Value::Table(plugins.clone()));
+        }
         Ok(toml::to_string(&document)?)
     }
 }
 
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Variant {
     pub(crate) enco: Option<PathBuf>,
     #[serde(default)]
     pub(crate) deploy: Vec<Deploy>,
+    #[serde(default = "default_plugins")]
+    pub(crate) plugin: toml::Table,
+    /// The variables named by `plugin.*.secrets`.
+    #[serde(skip)]
+    pub(crate) variables: BTreeMap<String, OsString>,
+}
+
+impl Default for Variant {
+    fn default() -> Self {
+        Self {
+            enco: None,
+            deploy: Vec::new(),
+            plugin: default_plugins(),
+            variables: BTreeMap::new(),
+        }
+    }
+}
+
+/// Ordinary runs can use web without leaving the trial's network.
+pub(crate) fn default_plugins() -> toml::Table {
+    let urls = toml::Table::from_iter([("jina".into(), crate::reader::URL.into())]);
+    let config = toml::Table::from_iter([("urls".into(), toml::Value::Table(urls))]);
+    let web = toml::Table::from_iter([("config".into(), toml::Value::Table(config))]);
+    toml::Table::from_iter([("web".into(), toml::Value::Table(web))])
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -210,6 +240,31 @@ impl Variant {
                 .await
                 .with_context(|| format!("artifact for {}", deploy.plugin))?;
         }
+        let plugins: BTreeMap<String, PluginSecrets> = toml::Value::Table(variant.plugin.clone())
+            .try_into()
+            .context("variant plugin")?;
+        for (plugin, settings) in plugins {
+            for (secret, name) in settings.secrets {
+                pass(&mut variant.variables, &name)
+                    .with_context(|| format!("plugin.{plugin}.secrets.{secret}"))?;
+            }
+        }
         Ok(variant)
     }
+}
+
+/// The part of a plugin's settings the runner reads; the daemon validates the rest.
+#[derive(Deserialize)]
+struct PluginSecrets {
+    #[serde(default)]
+    secrets: BTreeMap<String, String>,
+}
+
+/// Configuration names environment variables instead of holding secrets: a named variable must be
+/// set for the runner, and it is passed to the daemon, whose environment is otherwise the trial's.
+fn pass(variables: &mut BTreeMap<String, OsString>, name: &str) -> Result<()> {
+    let value = std::env::var_os(name)
+        .with_context(|| format!("environment variable {name} is not set"))?;
+    variables.insert(name.to_owned(), value);
+    Ok(())
 }

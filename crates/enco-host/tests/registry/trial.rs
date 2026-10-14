@@ -70,7 +70,7 @@ async fn trial_promotion_counts_successes_since_opening_and_ignores_environment_
         registry
             .view()
             .exports
-            .completion("custom", false)
+            .completion(&fixture_endpoint("custom"), false)
             .unwrap()
             .generation,
         trial.id
@@ -102,7 +102,7 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
         registry
             .view()
             .exports
-            .completion("custom", false)
+            .completion(&fixture_endpoint("custom"), false)
             .unwrap()
             .generation,
         next.id
@@ -128,7 +128,7 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
         registry
             .view()
             .exports
-            .completion("custom", false)
+            .completion(&fixture_endpoint("custom"), false)
             .unwrap()
             .generation,
         healthy.id
@@ -147,7 +147,7 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
         registry
             .view()
             .exports
-            .completion("custom", false)
+            .completion(&fixture_endpoint("custom"), false)
             .unwrap()
             .generation,
         healthy.id
@@ -187,7 +187,7 @@ async fn a_failing_only_generation_leaves_its_plugin_unavailable() {
         registry
             .view()
             .exports
-            .completion("alone", false)
+            .completion(&fixture_endpoint("alone"), false)
             .err()
             .unwrap()
             .code,
@@ -206,7 +206,7 @@ async fn configuration_probes_report_trial_health_even_when_configuration_is_rej
     let factory = registry
         .view()
         .exports
-        .completion("fixture", true)
+        .completion(&fixture_endpoint("fixture"), true)
         .unwrap()
         .generation;
     let trial = registry
@@ -258,7 +258,7 @@ async fn configuration_probes_report_trial_health_even_when_configuration_is_rej
         registry
             .view()
             .exports
-            .completion("fixture", false)
+            .completion(&fixture_endpoint("fixture"), false)
             .unwrap()
             .generation,
         trial

@@ -113,6 +113,17 @@ impl Kernel {
     pub async fn start(mut deps: KernelDeps) -> Result<Self, KernelError> {
         let (schedules, scheduler) = crate::scheduler::Scheduler::channel();
         deps.tools.extend(crate::builtin::tools(schedules.clone()));
+        let declared: std::collections::BTreeSet<_> =
+            deps.registry.host_tool_names.iter().cloned().collect();
+        let actual: std::collections::BTreeSet<_> =
+            deps.tools.iter().map(|tool| tool.spec().name).collect();
+        if declared != actual {
+            return Err(KernelError::Config(format!(
+                "host tool declarations differ from handlers: missing handlers {:?}; undeclared handlers {:?}",
+                declared.difference(&actual).collect::<Vec<_>>(),
+                actual.difference(&declared).collect::<Vec<_>>()
+            )));
+        }
         let node = deps.store.node().await?;
         let snapshot = Arc::new(Snapshot::new(node.id, &deps)?);
         let kernel = Self {

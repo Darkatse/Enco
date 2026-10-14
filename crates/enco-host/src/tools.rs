@@ -2,7 +2,7 @@ pub(crate) mod args;
 pub mod config;
 mod files;
 mod plugins;
-pub use plugins::plugin_tools;
+pub use plugins::{plugin_tool_specs, plugin_tools};
 mod shell;
 
 use enco_core::CodeRef;

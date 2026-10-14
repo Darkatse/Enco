@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.3.0;
+package enco:plugin@0.4.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -28,7 +28,16 @@ interface types {
     record message { role: role, parts: list<part> }
 
     /// A tool disclosed to the model. `input-schema` describes its arguments as JSON Schema.
-    record tool-spec { name: string, description: string, input-schema: json }
+    /// Names use ASCII letters, digits, underscores or hyphens; tools.list names are unique within the plugin.
+    /// Completion adapters ignore effect; the host uses it when dispatching tools.
+    record tool-spec { name: string, description: string, input-schema: json, effect: effect }
+
+    /// Mutation semantics used to order calls and settle interrupted work.
+    enum effect { read-only, idempotent, side-effect }
+
+    /// A known result, a known failure, or an external effect that cannot be confirmed.
+    /// An unknown outcome must never be retried automatically.
+    variant outcome { ok(json), failed(failure), unknown(failure) }
 
     /// Endpoint, model and adapter options supplied by the caller for this call.
     record settings { base-url: string, model: string, options: json }
@@ -36,6 +45,10 @@ interface types {
 
 /// Host-owned logging and transport available to plugins.
 interface host {
+    use types.{json};
+
+    /// The configuration of this invocation's generation, excluding credential mappings.
+    config: func() -> json;
     /// Severity attached to a plugin diagnostic.
     enum log-level { trace, debug, info, warn, error }
 
@@ -67,6 +80,18 @@ interface host {
     /// bodies and failures are replaced with [redacted:<environment variable name>].
     /// Encoded forms of a credential (such as base64) are not redacted.
     http: async func(request: http-request) -> result<http-response, http-failure>;
+}
+
+/// Model-facing tools whose definitions are fixed with their generation.
+interface tools {
+    use types.{json, tool-spec, outcome};
+
+    /// Project tool definitions from configuration already accepted by `lifecycle.describe`.
+    %list: func(config: json) -> list<tool-spec>;
+
+    /// Execute one tool. Validate the argument values this tool consumes.
+    /// Return an unknown outcome when an external effect may have occurred but is unconfirmed.
+    call: async func(name: string, input: json) -> outcome;
 }
 
 /// Adapts canonical requests to a model service protocol.
@@ -135,13 +160,15 @@ interface decision {
 interface lifecycle {
     use types.{json, failure};
 
-    /// Credential attached by the host to the caller-selected service's origin.
+    /// Named credential attached to `origin`, or to the caller-selected service when absent.
+    /// A fixed origin uses the generation's secret mapping; an absent origin uses the endpoint's.
+    /// Names and origins must be unique, including at most one absent origin.
     /// The host sets `header` to `prefix` followed by the credential value; plugins never see it.
-    record credential { header: string, prefix: string, required: bool }
+    record credential { name: string, origin: option<string>, header: string, prefix: string, required: bool }
 
     /// Plugin-wide facts and requirements. `config-schema` documents configuration as JSON Schema;
     /// configuration validation belongs to `describe`, not to a second host-side schema validator.
-    record description { summary: string, config-schema: json, credential: option<credential> }
+    record description { summary: string, config-schema: json, credentials: list<credential> }
 
     /// Describe the component or reject its configuration. An empty object must be accepted
     /// and provide the plugin's minimum capabilities. Declarations are fixed with the generation.
@@ -180,4 +207,10 @@ world embedding-plugin {
 world decision-plugin {
     include base;
     export decision;
+}
+
+/// A plugin exposing model-facing tools.
+world tool-plugin {
+    include base;
+    export tools;
 }

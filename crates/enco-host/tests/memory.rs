@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 /// Memory alone; the completion export only satisfies the declared reply use.
 async fn open(root: &Path, embedding: Arc<dyn Embedding>) -> Arc<Memories> {
     let loaded = fixture(ScriptedProvider::new(vec![]), embedding);
-    let (registry, _) = registry_configured(root, loaded, configuration()).await;
+    let (registry, _) = registry_configured(root, loaded, configuration(), vec![]).await;
     open_memories(root, registry).await
 }
 
@@ -307,7 +307,8 @@ async fn live_memory_settings_rebuild_only_the_vector_space_and_recover_invalid_
         ..fixture(provider.clone(), provider.clone())
     };
     let mut document = configuration();
-    let (registry, store) = registry_configured(dir.path(), loaded(), document.clone()).await;
+    let (registry, store) =
+        registry_configured(dir.path(), loaded(), document.clone(), vec![]).await;
     let memories = open_memories(dir.path(), registry.clone()).await;
     let memory = memories
         .save("Owner likes tea".into(), false)
@@ -376,10 +377,10 @@ async fn live_memory_settings_rebuild_only_the_vector_space_and_recover_invalid_
     let mut invalid = document.clone();
     invalid["memory"]["embedding"] = "missing".into();
     store
-        .insert_config_generation(&invalid, Utc::now())
+        .insert_config_generation(&invalid, Utc::now(), &[])
         .await
         .unwrap();
-    let (registry, _) = registry_configured(dir.path(), loaded(), document.clone()).await;
+    let (registry, _) = registry_configured(dir.path(), loaded(), document.clone(), vec![]).await;
     assert_eq!(registry.status().await.config.invalid[0].table, "memory");
     let memories = open_memories(dir.path(), registry.clone()).await;
     let recalled = memories.recall("tea", 8, &cancel).await.unwrap();

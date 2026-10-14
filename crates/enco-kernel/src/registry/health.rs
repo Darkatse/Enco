@@ -38,7 +38,7 @@ impl Registry {
                         if let Some(record) = state.plugins.generations.get_mut(&generation) {
                             record.status = GenerationStatus::Healthy;
                         }
-                        self.publish(&mut state);
+                        self.publish(&mut state, None);
                     } else {
                         state.plugins.trial_successes.insert(generation, successes);
                     }

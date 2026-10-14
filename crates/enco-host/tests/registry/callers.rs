@@ -85,7 +85,7 @@ impl ToolDeployment {
         let factory = registry
             .view()
             .exports
-            .completion("fixture", false)
+            .completion(&fixture_endpoint("fixture"), false)
             .unwrap()
             .generation;
         let settings = registry.view().config.kernel.profiles["default"]
@@ -130,7 +130,7 @@ async fn deployment_tool_moves_the_next_attempt_and_memory_call_to_the_new_code(
             .registry()
             .view()
             .exports
-            .completion("fixture", false)
+            .completion(&fixture_endpoint("fixture"), false)
             .unwrap()
             .generation
     );
@@ -246,7 +246,7 @@ impl Callers {
         let factory_id = registry
             .view()
             .exports
-            .completion("fixture", true)
+            .completion(&fixture_endpoint("fixture"), true)
             .unwrap()
             .generation;
         let trial = deploy_artifact(&registry, "fixture", b"working").await.id;
@@ -402,7 +402,7 @@ async fn a_failed_memory_call_rolls_back_without_a_session_notice() {
             .registry
             .view()
             .exports
-            .embedding("fixture")
+            .embedding(&fixture_endpoint("fixture"))
             .unwrap()
             .generation,
         callers.trial
@@ -516,4 +516,95 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
         .find(|record| record.id == broken_id)
         .unwrap();
     assert_eq!(generation.failure, Some(fault(code::PLUGIN_TRAP)));
+}
+
+#[tokio::test]
+async fn safe_mode_replies_when_another_use_needs_an_interface_absent_from_factory() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let runtime = Arc::new(ScriptedRuntime::default());
+    let factory_provider = ScriptedProvider::new(vec![reply("factory repair reply")]);
+    let active_provider = ScriptedProvider::new(vec![]);
+    let mut factory = loaded(factory_provider.clone());
+    factory.embedding = None;
+    runtime.insert(FACTORY_BYTES, factory);
+    runtime.insert(b"multi-export", loaded(active_provider.clone()));
+    runtime.insert(b"embedding", loaded(active_provider.clone()));
+    let mut document = configuration();
+    document["endpoint"]["embed"]["plugin"] = "embedder".into();
+    let mut deps = registry_deps(store.clone(), runtime, FACTORY_BYTES, document.clone());
+    deps.factory.push(FactoryPlugin {
+        name: "embedder".into(),
+        id: PluginId::new(),
+        artifact: b"embedding".to_vec(),
+    });
+    let registry = Registry::open(deps).await.unwrap();
+    let factory = registry
+        .view()
+        .exports
+        .completion(&fixture_endpoint("fixture"), true)
+        .unwrap()
+        .generation;
+    deploy_artifact(&registry, "fixture", b"multi-export").await;
+    document["endpoint"]["embed"]["plugin"] = "fixture".into();
+    registry
+        .apply_config(ConfigSource::Document(document))
+        .await
+        .unwrap();
+    let mut node = Node::start(dir.path(), store, registry).await;
+    node.kernel.set_safe_mode(true).await.unwrap();
+    let log = node.run("repair").await;
+    assert!(log.iter().any(|entry| matches!(&entry.body,
+        EntryBody::AttemptStarted { provider, .. } if *provider == factory
+    )));
+    assert!(matches!(
+        log.last().unwrap().body,
+        EntryBody::RunEnded {
+            end: RunEnd::Completed,
+            ..
+        }
+    ));
+    assert_eq!(factory_provider.requests.lock().unwrap().len(), 1);
+    assert!(active_provider.requests.lock().unwrap().is_empty());
+    node.kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn safe_mode_keeps_the_active_generation_of_a_plugin_without_factory_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let runtime = Arc::new(ScriptedRuntime::default());
+    // The first step answers the configuration probe for the new reply use.
+    let custom = ScriptedProvider::new(vec![reply("probe"), reply("custom repair reply")]);
+    runtime.insert(FACTORY_BYTES, loaded(ScriptedProvider::new(vec![])));
+    runtime.insert(b"custom", loaded(custom.clone()));
+    let registry = Registry::open(registry_deps(
+        store.clone(),
+        runtime,
+        FACTORY_BYTES,
+        configuration(),
+    ))
+    .await
+    .unwrap();
+    let deployed = deploy_artifact(&registry, "custom", b"custom").await;
+    let mut document = configuration();
+    document["endpoint"]["reply"]["plugin"] = "custom".into();
+    registry
+        .apply_config(ConfigSource::Document(document))
+        .await
+        .unwrap();
+    let mut node = Node::start(dir.path(), store, registry).await;
+    node.kernel.set_safe_mode(true).await.unwrap();
+    let log = node.run("repair").await;
+    assert!(log.iter().any(|entry| matches!(&entry.body,
+        EntryBody::AttemptStarted { provider, .. } if *provider == deployed.id
+    )));
+    assert!(matches!(
+        log.last().unwrap().body,
+        EntryBody::RunEnded {
+            end: RunEnd::Completed,
+            ..
+        }
+    ));
+    node.kernel.shutdown().await.unwrap();
 }

@@ -175,7 +175,8 @@ async fn exhausted_combinations_survive_other_deployments_and_reset_with_the_run
             ("primary", primary.clone() as Arc<dyn Provider>),
             ("backup", backup.clone() as Arc<dyn Provider>),
         ])));
-        let (kernel, _) = kernel_configured(dir.path(), provider, candidates(), |_| {}).await;
+        let (kernel, _) =
+            kernel_configured(dir.path(), provider, candidates(), vec![], |_| {}).await;
         std::fs::write(dir.path().join("workspace/unrelated.wasm"), FACTORY_BYTES).unwrap();
         backup.steps.lock().unwrap().extend([
             calls(vec![call(
@@ -257,7 +258,7 @@ async fn registry_node(
     let original = registry
         .view()
         .exports
-        .completion("fixture", true)
+        .completion(&fixture_endpoint("fixture"), true)
         .unwrap()
         .generation;
     let trial = registry
@@ -458,7 +459,7 @@ async fn reply_exhaustion_leaves_the_same_service_available_for_compaction() {
         narrow(&mut document["endpoint"][endpoint], 6000);
     }
     document["endpoint"]["compaction"]["model"] = "primary".into();
-    let (kernel, _) = kernel_configured(dir.path(), provider, document, |_| {}).await;
+    let (kernel, _) = kernel_configured(dir.path(), provider, document, vec![], |_| {}).await;
     write_history(dir.path());
     let log = send(&kernel, "read and summarize").await;
     assert!(matches!(
@@ -502,7 +503,7 @@ async fn a_failed_round_ends_the_run_when_no_safe_mode_round_may_follow() {
         if !switch {
             document["run"] = json!({"max_rounds": 1});
         }
-        let (kernel, _) = kernel_configured(dir.path(), provider, document, |_| {}).await;
+        let (kernel, _) = kernel_configured(dir.path(), provider, document, vec![], |_| {}).await;
         kernel.set_safe_mode(switch).await.unwrap();
         let log = send(&kernel, "hello").await;
         assert_eq!(modes(&log), [switch]);
@@ -519,6 +520,7 @@ async fn applying_calls_every_candidate_once_and_a_failing_backup_rejects_it() {
         dir.path(),
         fixture(provider.clone(), provider.clone()),
         configuration(),
+        vec![],
     )
     .await;
     let before = registry.view().config.generation;
@@ -550,6 +552,7 @@ async fn a_profile_without_candidates_is_rejected() {
         dir.path(),
         fixture(provider.clone(), provider),
         configuration(),
+        vec![],
     )
     .await;
     for field in ["reply", "compaction"] {
@@ -588,7 +591,7 @@ async fn safe_mode_keeps_factory_combinations_exhausted_and_context_is_sampled_o
         ("backup", backup as Arc<dyn Provider>),
     ])));
     let context = Arc::new(FailingSecondContext(std::sync::atomic::AtomicUsize::new(0)));
-    let (kernel, _) = kernel_configured(dir.path(), provider, candidates(), |deps| {
+    let (kernel, _) = kernel_configured(dir.path(), provider, candidates(), vec![], |deps| {
         deps.context.push(context.clone())
     })
     .await;
@@ -619,7 +622,7 @@ async fn compaction_fallback_recomposes_for_its_own_budget() {
     document["endpoint"]["backup"]["window_tokens"] = 4000.into();
     document["endpoint"]["backup"]["max_output_tokens"] = 256.into();
     document["profile"]["default"]["compaction"] = json!(["compaction", "backup"]);
-    let (kernel, _) = kernel_configured(dir.path(), provider, document, |_| {}).await;
+    let (kernel, _) = kernel_configured(dir.path(), provider, document, vec![], |_| {}).await;
     write_history(dir.path());
     let log = send(&kernel, "read and summarize").await;
     assert!(matches!(
@@ -664,7 +667,7 @@ async fn without_a_compaction_model_only_a_reply_that_fits_proceeds() {
     // After one read the reply is due for compaction but still fits; after two it does not.
     narrow(&mut document["endpoint"]["reply"], 7000);
     document["endpoint"]["compaction"]["model"] = "summary".into();
-    let (kernel, _) = kernel_configured(dir.path(), provider, document, |_| {}).await;
+    let (kernel, _) = kernel_configured(dir.path(), provider, document, vec![], |_| {}).await;
     write_history(dir.path());
     let log = send(&kernel, "read the history twice").await;
     // Neither the third Round nor its safe-mode successor makes a request.

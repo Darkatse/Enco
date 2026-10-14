@@ -24,6 +24,8 @@ pub struct ComposeInput {
     /// Candidate content from the configured sources, in priority order, plus omissions the
     /// kernel records itself, such as an unreadable previous plan.
     pub context: Contribution,
+    /// Published plugins excluded from the Round's capabilities and their current reasons.
+    pub unavailable: Vec<(String, Failure)>,
     /// All capabilities which may be disclosed this Round.
     pub tools: Vec<(CapabilityId, ToolSpec)>,
     /// Why this Round uses factory instructions and lifeline tools, if applicable.

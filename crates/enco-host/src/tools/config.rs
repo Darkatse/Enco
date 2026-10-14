@@ -86,18 +86,8 @@ impl Tool for ConfigApply {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "config_apply".into(),
-            description: format!(
-                "Edit {} then apply it, probing newly used model endpoints with a fixed prompt. Changes commit as one configuration generation. Supply the previous generation number to undo changes by registering its content again. This leaves config.toml unchanged: restore that file too, or applying it again will reintroduce the undone changes. A conflict means another registry change won; inspect status and retry.",
-                self.path.display()
-            ),
-            input_schema: closed_object_schema(
-                json!({"generation": {"type": "integer", "minimum": 1}}),
-                &[],
-            ),
-            effect: Effect::SideEffect,
-        }
+        let [spec] = config_tool_specs(&self.path);
+        spec
     }
 
     async fn call(&self, _context: CallContext, args: Map<String, Value>) -> Outcome {
@@ -131,4 +121,20 @@ impl Tool for ConfigApply {
             }
         }
     }
+}
+
+/// Native declaration available before the registry is constructed.
+pub fn config_tool_specs(path: &Path) -> [ToolSpec; 1] {
+    [ToolSpec {
+        name: "config_apply".into(),
+        description: format!(
+            "Edit {} then apply it, probing newly used model endpoints with a fixed prompt. The configuration and changed plugin sections commit together; each changed plugin section registers the active artifact with its new config and secret mappings. Tool changes take effect at the next Round. Unchanged plugin sections keep any rollback in effect. Supply a previous configuration generation number to re-register its document. This leaves config.toml unchanged: restore that file too, or applying it again will reintroduce the undone changes. A conflict means another registry change won; inspect status and retry.",
+            path.display()
+        ),
+        input_schema: closed_object_schema(
+            json!({"generation": {"type": "integer", "minimum": 1}}),
+            &[],
+        ),
+        effect: Effect::SideEffect,
+    }]
 }

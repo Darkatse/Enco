@@ -66,6 +66,8 @@ pub(crate) async fn evaluate(
             name: name.into(),
             binary,
             deploy: variant.deploy,
+            plugin: variant.plugin,
+            variables: variant.variables,
         }));
     }
     let judge = judge::Client::new(config.judge.clone())?;
@@ -187,6 +189,7 @@ async fn identity(binary: &Binary, variant: &Variant) -> Result<VariantRecord> {
     Ok(VariantRecord {
         enco: binary.clone(),
         deploy,
+        plugin: variant.plugin.clone(),
     })
 }
 

@@ -191,7 +191,7 @@ async fn recovery_distinguishes_started_effects_from_calls_never_dispatched() {
         let (old, _, session) = worker
             .spawn(async move {
                 let (kernel, store) =
-                    kernel_with(&path, provider, Tz::UTC, |deps| deps.tools.push(remote)).await;
+                    kernel_configured(&path, provider, configuration(), vec![remote], |_| {}).await;
                 let session = kernel.open_session("main").await.unwrap();
                 (kernel, store, session)
             })
@@ -272,11 +272,12 @@ async fn cancellation_reaches_context_and_shutdown_waits_for_tool_settlement() {
         dropped: Notify::new(),
         finished: AtomicBool::new(false),
     });
-    let (kernel, _) = kernel_with(
+    let (kernel, _) = kernel_configured(
         dir.path(),
         ScriptedProvider::new(vec![calls(vec![call("gated", "{}")])]),
-        Tz::UTC,
-        |deps| deps.tools.push(tool.clone()),
+        configuration(),
+        vec![tool.clone()],
+        |_| {},
     )
     .await;
     let session = kernel.open_session("main").await.unwrap();

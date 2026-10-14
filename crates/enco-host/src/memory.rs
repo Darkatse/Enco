@@ -16,7 +16,7 @@ use settings::{EmbeddingEndpoint, SettingsCache};
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
-pub use tools::memory_tools;
+pub use tools::{memory_tool_specs, memory_tools};
 
 /// Authority and derived-index locations, both owned by Memories.
 pub struct MemoryPaths {
@@ -297,7 +297,7 @@ impl Memories {
 
         let result = reported_call(
             &self.registry,
-            view.exports.embedding(&endpoint.endpoint.plugin),
+            view.exports.embedding(&endpoint.endpoint),
             cancel,
             |adapter| async move { adapter.embed(&endpoint.endpoint.settings, inputs).await },
         )

@@ -10,7 +10,6 @@ use crate::{
 };
 use enco_core::*;
 use selection::{Choice, Selection};
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 impl SessionActor {
@@ -25,7 +24,6 @@ impl SessionActor {
         let round = RoundId::new();
         let (session, view) = self.deps.registry.session_view(self.session.id).await?;
         self.session = session;
-        let snapshot = self.deps.snapshot.clone();
         let mode = safe_mode(
             &self.entries,
             run,
@@ -46,10 +44,7 @@ impl SessionActor {
             safe_mode,
         });
         self.commit(prefix, consumed).await?;
-        let end = match self
-            .execute_round(round, snapshot, &view.config.kernel, mode, token)
-            .await
-        {
+        let end = match self.execute_round(round, &view, mode, token).await {
             Ok(end) => end,
             Err(RoundError::Cancelled) => RoundEnd::Cancelled,
             // Health reports have settled, so an automatic rollback counts before this failure.
@@ -73,11 +68,12 @@ impl SessionActor {
     async fn execute_round(
         &mut self,
         round: RoundId,
-        snapshot: Arc<Snapshot>,
-        settings: &KernelSettings,
+        view: &View,
         mode: Option<SafeMode>,
         token: &CancellationToken,
     ) -> Result<RoundEnd, RoundError> {
+        let snapshot = self.deps.snapshot.for_round(&view.exports, mode.is_some());
+        let settings = &view.config.kernel;
         let profile = settings
             .profiles
             .get(&self.session.profile)
@@ -126,10 +122,9 @@ impl SessionActor {
                 selection = self.retarget(profile, safe_mode, &mut input)?;
                 continue;
             }
-            for call in completion.message.tool_calls() {
-                self.dispatch(round, &snapshot, &planned.plan, call, token)
-                    .await?;
-            }
+            let calls: Vec<_> = completion.message.tool_calls().collect();
+            self.dispatch(round, &snapshot, &planned.plan, &calls, token)
+                .await?;
             cancelled(token)?;
             return Ok(if completion.message.tool_calls().next().is_some() {
                 RoundEnd::ToolsSettled

@@ -344,11 +344,12 @@ async fn trials_past_their_deadline_cancel_the_run_and_fail() {
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     evaluation.model_at(&format!("http://{}", listener.local_addr().unwrap()));
+    // Allow cold Wasm startup, while keeping this deliberate timeout off the gate's critical path.
     let task = evaluation.root.join("evals/tasks/mail/task.toml");
     let source = std::fs::read_to_string(&task).unwrap();
     write(
         &task,
-        &source.replace("timeout_secs = 30", "timeout_secs = 3"),
+        &source.replace("timeout_secs = 30", "timeout_secs = 8"),
     );
     // This endpoint never responds. Its socket closes when Enco settles cancellation.
     let mut stalled = tokio::spawn(async move {

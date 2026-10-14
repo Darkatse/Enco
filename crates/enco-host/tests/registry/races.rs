@@ -17,7 +17,7 @@ struct PausedLoad {
 
 #[async_trait]
 impl Runtime for PausedLoad {
-    async fn load(&self, artifact: &[u8], config: &serde_json::Value) -> Result<Loaded, LoadError> {
+    async fn load(&self, artifact: &[u8], config: &PluginSettings) -> Result<Loaded, LoadError> {
         let result = self.runtime.load(artifact, config).await;
         let pause = self
             .pause
@@ -117,7 +117,7 @@ async fn automatic_rollback_discards_preparation_after_deployment_or_promotion()
             registry
                 .view()
                 .exports
-                .completion("fixture", false)
+                .completion(&fixture_endpoint("fixture"), false)
                 .unwrap()
                 .generation,
             expected

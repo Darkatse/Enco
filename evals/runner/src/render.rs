@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use chrono::{DateTime, Datelike, Duration, TimeZone, Utc, Weekday};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::Tz;
 use std::collections::BTreeMap;
 
@@ -10,6 +10,18 @@ pub(crate) struct Renderer {
 }
 
 impl Renderer {
+    pub(crate) fn for_trial(task: &crate::task::Task) -> Result<Self> {
+        let start = Utc::now()
+            .with_second(0)
+            .and_then(|time| time.with_nanosecond(0))
+            .context("trial start time")?;
+        Ok(Self {
+            start,
+            timezone: task.definition.environment.timezone,
+            mocks: task.mock_urls(),
+        })
+    }
+
     pub(crate) fn text(&self, input: &str) -> Result<String> {
         let mut output = String::with_capacity(input.len());
         let mut rest = input;

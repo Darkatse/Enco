@@ -9,7 +9,8 @@ pub(crate) struct HostState {
     pub http: reqwest::Client,
     pub name: String,
     pub limits: wasmtime::StoreLimits,
-    pub credential: Option<Arc<CallCredential>>,
+    pub credentials: Arc<Vec<CallCredential>>,
+    pub config: String,
 }
 
 impl WasiView for HostState {
@@ -22,6 +23,10 @@ impl WasiView for HostState {
 }
 
 impl host::Host for HostState {
+    fn config(&mut self) -> String {
+        self.config.clone()
+    }
+
     fn log(&mut self, level: host::LogLevel, message: String) {
         match level {
             host::LogLevel::Trace => {
@@ -48,11 +53,11 @@ impl<U> host::HostWithStore<U> for HasSelf<HostState> {
         accessor: &Accessor<U, Self>,
         request: host::HttpRequest,
     ) -> Result<host::HttpResponse, host::HttpFailure> {
-        let (client, credential) = accessor.with(|mut access| {
+        let (client, credentials) = accessor.with(|mut access| {
             let state = access.get();
-            (state.http.clone(), state.credential.clone())
+            (state.http.clone(), state.credentials.clone())
         });
-        http(&client, credential.as_deref(), request).await
+        http(&client, &credentials, request).await
     }
 }
 
@@ -72,15 +77,15 @@ fn failure(
 /// and redacted from whatever comes back.
 async fn http(
     client: &reqwest::Client,
-    credential: Option<&CallCredential>,
+    credentials: &[CallCredential],
     request: host::HttpRequest,
 ) -> Result<host::HttpResponse, host::HttpFailure> {
     let mut request = build_request(client, request)?;
-    if let Some(credential) = credential {
+    for credential in credentials {
         credential.attach(&mut request);
     }
     let mut result = send(client, request).await;
-    if let Some(credential) = credential {
+    for credential in credentials {
         credential.redact(&mut result);
     }
     result
@@ -126,7 +131,10 @@ async fn send(
         if body.len() + chunk.len() > limits::HTTP_MAX_BODY_BYTES {
             return Err(failure(
                 host::HttpErrorKind::TooLarge,
-                "HTTP response exceeds 32 MiB",
+                format!(
+                    "HTTP response exceeds {} MiB",
+                    limits::HTTP_MAX_BODY_BYTES / (1024 * 1024)
+                ),
                 true,
             ));
         }

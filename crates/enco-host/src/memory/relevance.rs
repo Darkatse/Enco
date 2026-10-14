@@ -59,7 +59,7 @@ impl Memories {
             .collect();
         let result = reported_call(
             &self.registry,
-            view.exports.decision(&endpoint.plugin),
+            view.exports.decision(endpoint),
             cancel,
             |adapter| async move {
                 adapter

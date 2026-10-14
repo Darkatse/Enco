@@ -1,4 +1,5 @@
 use super::*;
+use admission::Admission;
 use state::Plugins;
 
 /// An invocation's immutable association between code and registry identity.
@@ -14,13 +15,13 @@ pub struct Export<T: ?Sized> {
 struct LoadedGeneration {
     plugin: PluginId,
     generation: GenerationId,
-    loaded: Loaded,
+    loaded: Result<Loaded, Failure>,
 }
 
 /// Derived routing view. Holding it does not prevent the registry from publishing a new view.
 pub struct Exports {
     plugins: BTreeMap<String, Routes>,
-    generations: BTreeMap<GenerationId, PluginId>,
+    generations: BTreeMap<GenerationId, GenerationRecord>,
 }
 
 struct Routes {
@@ -29,85 +30,149 @@ struct Routes {
 }
 
 impl Exports {
+    /// The recorded failure and current active generation for a bound invocation.
+    pub(crate) fn failed(
+        &self,
+        generation: GenerationId,
+    ) -> Option<(&Failure, Option<GenerationId>)> {
+        let record = self.generations.get(&generation)?;
+        let failure = record.failure.as_ref()?;
+        let current = self
+            .plugins
+            .values()
+            .filter_map(|routes| routes.active.as_ref())
+            .find(|active| active.plugin == record.plugin)
+            .map(|active| active.generation);
+        Some((failure, current))
+    }
+
+    pub(crate) fn tools(&self) -> Vec<(ToolSpec, Export<dyn crate::Tools>)> {
+        let mut tools = Vec::new();
+        for name in self.plugins.keys() {
+            if let Ok((active, loaded)) = self.selected(name, false)
+                && let Some(exported) = &loaded.tools
+            {
+                tools.extend(exported.specs.iter().map(|spec| {
+                    (
+                        spec.clone(),
+                        Export {
+                            plugin: active.plugin,
+                            generation: active.generation,
+                            adapter: exported.adapter.clone(),
+                        },
+                    )
+                }));
+            }
+        }
+        tools
+    }
+
+    pub(crate) fn unavailable(&self) -> Vec<(String, Failure)> {
+        self.plugins
+            .keys()
+            .filter_map(|name| {
+                self.selected(name, false)
+                    .err()
+                    .map(|failure| (name.clone(), failure))
+            })
+            .collect()
+    }
+
+    pub(super) fn loaded(&self, plugin: &str) -> Result<(GenerationId, &Loaded), Failure> {
+        self.selected(plugin, false)
+            .map(|(generation, loaded)| (generation.generation, loaded))
+    }
+
+    pub(super) fn check_use(&self, usage: &Use) -> Result<(), Failure> {
+        let (_, loaded) = self.loaded(&usage.endpoint.plugin)?;
+        usage.check(loaded)
+    }
+
     /// Look up any recorded generation, including failed or unloaded history.
     pub fn plugin_of(&self, generation: GenerationId) -> Option<PluginId> {
-        self.generations.get(&generation).copied()
+        self.generations
+            .get(&generation)
+            .map(|record| record.plugin)
     }
 
-    fn routes(&self, plugin: &str) -> Result<&Routes, Failure> {
-        self.plugins
-            .get(plugin)
-            .ok_or_else(|| unavailable(plugin, "name is not registered"))
-    }
-
-    /// Resolve the completion code currently behind a name, using the Round's fixed mode.
+    /// Resolve a completion use, using the Round's fixed mode.
     pub fn completion(
+        &self,
+        endpoint: &Endpoint,
+        safe_mode: bool,
+    ) -> Result<Export<dyn Provider>, Failure> {
+        self.export(endpoint, safe_mode, "completion", |loaded| {
+            loaded.completion.clone()
+        })
+    }
+
+    /// Resolve embedding at the start of one synchronization call.
+    pub fn embedding(&self, endpoint: &Endpoint) -> Result<Export<dyn Embedding>, Failure> {
+        self.export(endpoint, false, "embedding", |loaded| {
+            loaded.embedding.clone()
+        })
+    }
+
+    /// Resolve decision at the start of one policy evaluation.
+    pub fn decision(&self, endpoint: &Endpoint) -> Result<Export<dyn Decision>, Failure> {
+        self.export(endpoint, false, "decision", |loaded| {
+            loaded.decision.clone()
+        })
+    }
+
+    /// Identity remains visible even when this generation cannot be admitted.
+    pub(super) fn active_generation(&self, plugin: &str) -> Option<GenerationId> {
+        self.plugins
+            .get(plugin)?
+            .active
+            .as_ref()
+            .map(|active| active.generation)
+    }
+
+    fn selected(
         &self,
         plugin: &str,
         safe_mode: bool,
-    ) -> Result<Export<dyn Provider>, Failure> {
-        let routes = self.routes(plugin)?;
+    ) -> Result<(&LoadedGeneration, &Loaded), Failure> {
+        let routes = self
+            .plugins
+            .get(plugin)
+            .ok_or_else(|| unavailable(plugin, "name is not registered"))?;
+        // Safe mode replaces only what the host ships; a plugin without factory code keeps its own.
         let selected = if safe_mode {
             routes.factory.as_ref().or(routes.active.as_ref())
         } else {
             routes.active.as_ref()
         }
         .ok_or_else(|| unavailable(plugin, "no active generation"))?;
-        selected.export(plugin, "completion", |loaded| loaded.completion.clone())
+        Ok((selected, selected.loaded.as_ref().map_err(Clone::clone)?))
     }
 
-    /// Resolve embedding at the start of one synchronization call.
-    pub fn embedding(&self, plugin: &str) -> Result<Export<dyn Embedding>, Failure> {
-        self.active(plugin)?
-            .export(plugin, "embedding", |loaded| loaded.embedding.clone())
-    }
-
-    /// Resolve decision at the start of one policy evaluation.
-    pub fn decision(&self, plugin: &str) -> Result<Export<dyn Decision>, Failure> {
-        self.active(plugin)?
-            .export(plugin, "decision", |loaded| loaded.decision.clone())
-    }
-
-    /// The active generation behind a name, which a commit expects to be unchanged.
-    pub(super) fn active_generation(&self, plugin: &str) -> Option<GenerationId> {
-        self.plugins
-            .get(plugin)?
-            .active
-            .as_ref()
-            .map(|loaded| loaded.generation)
-    }
-
-    fn active(&self, plugin: &str) -> Result<&LoadedGeneration, Failure> {
-        self.routes(plugin)?
-            .active
-            .as_ref()
-            .ok_or_else(|| unavailable(plugin, "no active generation"))
-    }
-}
-
-impl LoadedGeneration {
-    /// Bind one interface of this generation to the invocation that will record it.
     fn export<T: ?Sized>(
         &self,
-        plugin: &str,
+        endpoint: &Endpoint,
+        safe_mode: bool,
         interface: &str,
         adapter: impl FnOnce(&Loaded) -> Option<Arc<T>>,
     ) -> Result<Export<T>, Failure> {
-        let adapter = adapter(&self.loaded).ok_or_else(|| {
-            unavailable(
-                plugin,
-                &format!("generation {} does not export {interface}", self.generation),
-            )
-        })?;
+        let (selected, loaded) = self.selected(&endpoint.plugin, safe_mode)?;
+        let adapter = endpoint.export(loaded, adapter(loaded), interface)?;
         Ok(Export {
-            plugin: self.plugin,
-            generation: self.generation,
+            plugin: selected.plugin,
+            generation: selected.generation,
             adapter,
         })
     }
+
+    /// The active generation behind every name, in name order.
+    pub(super) fn active_generations(&self) -> impl Iterator<Item = GenerationId> + '_ {
+        self.plugins
+            .values()
+            .filter_map(|routes| routes.active.as_ref().map(|active| active.generation))
+    }
 }
 
-fn unavailable(plugin: &str, reason: &str) -> Failure {
+pub(super) fn unavailable(plugin: &str, reason: &str) -> Failure {
     Failure {
         code: code::PLUGIN_UNAVAILABLE.into(),
         message: format!("plugin {plugin}: {reason}"),
@@ -116,43 +181,29 @@ fn unavailable(plugin: &str, reason: &str) -> Failure {
 }
 
 impl Plugins {
-    /// Derive the routes a published view carries from the committer's state.
-    pub fn exports(&self) -> Exports {
-        Exports {
-            generations: self
-                .generations
-                .iter()
-                .map(|(id, record)| (*id, record.plugin))
-                .collect(),
-            plugins: self
-                .names
-                .iter()
-                .map(|(name, plugin)| {
-                    let export = |generation: GenerationId| {
-                        self.loaded.get(&generation).map(|loaded| LoadedGeneration {
-                            plugin: *plugin,
-                            generation,
-                            loaded: loaded.clone(),
-                        })
-                    };
-                    (
-                        name.clone(),
-                        Routes {
-                            active: self.active.get(plugin).copied().and_then(export),
-                            factory: self.factory.get(plugin).copied().and_then(export),
-                        },
-                    )
-                })
-                .collect(),
+    /// Bind one already computed admission result to the identities assigned by the commit.
+    pub fn exports(&self, admission: Admission) -> Exports {
+        let mut plugins = BTreeMap::new();
+        for (name, plugin) in &self.names {
+            plugins.insert(
+                name.clone(),
+                Routes {
+                    active: self.active.get(plugin).map(|generation| LoadedGeneration {
+                        plugin: *plugin,
+                        generation: *generation,
+                        loaded: admission.get(name).cloned(),
+                    }),
+                    factory: self.factory.get(plugin).map(|generation| LoadedGeneration {
+                        plugin: *plugin,
+                        generation: *generation,
+                        loaded: Ok(self.loaded[generation].clone()),
+                    }),
+                },
+            );
         }
-    }
-}
-
-impl Exports {
-    /// The active generation behind every name, in name order.
-    pub(super) fn active_generations(&self) -> impl Iterator<Item = GenerationId> + '_ {
-        self.plugins
-            .values()
-            .filter_map(|routes| routes.active.as_ref().map(|active| active.generation))
+        Exports {
+            plugins,
+            generations: self.generations.clone(),
+        }
     }
 }

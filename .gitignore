@@ -23,5 +23,8 @@ target
 # Local develop documents, and accepted milestone plans with their real run data and personal configs
 .archived_docs
 
+# Local test results and reproducibility backups
+/.local_data/
+
 # Local desktop metadata
 .DS_Store

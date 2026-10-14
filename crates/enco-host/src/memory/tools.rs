@@ -12,34 +12,10 @@ enum Kind {
     Search,
 }
 
-struct MemoryTool {
-    memories: Arc<Memories>,
-    kind: Kind,
-}
-
-pub fn memory_tools(memories: Arc<Memories>) -> Vec<Arc<dyn Tool>> {
-    [Kind::Save, Kind::Update, Kind::Forget, Kind::Search]
-        .into_iter()
-        .map(|kind| {
-            Arc::new(MemoryTool {
-                memories: memories.clone(),
-                kind,
-            }) as Arc<dyn Tool>
-        })
-        .collect()
-}
-
-#[async_trait]
-impl Tool for MemoryTool {
-    fn code(&self) -> CodeRef {
-        CodeRef::Native {
-            name: "host-memory".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-        }
-    }
-
+impl Kind {
+    const ALL: [Self; 4] = [Self::Save, Self::Update, Self::Forget, Self::Search];
     fn spec(&self) -> ToolSpec {
-        let (name, description, effect, properties, required) = match self.kind {
+        let (name, description, effect, properties, required) = match self {
             Kind::Save => (
                 "memory_save",
                 format!(
@@ -97,6 +73,42 @@ impl Tool for MemoryTool {
             effect,
             input_schema: closed_object_schema(properties, &required),
         }
+    }
+}
+
+/// Native declarations available before their stateful handlers are constructed.
+pub fn memory_tool_specs() -> Vec<ToolSpec> {
+    Kind::ALL.iter().map(Kind::spec).collect()
+}
+
+struct MemoryTool {
+    memories: Arc<Memories>,
+    kind: Kind,
+}
+
+pub fn memory_tools(memories: Arc<Memories>) -> Vec<Arc<dyn Tool>> {
+    Kind::ALL
+        .into_iter()
+        .map(|kind| {
+            Arc::new(MemoryTool {
+                memories: memories.clone(),
+                kind,
+            }) as Arc<dyn Tool>
+        })
+        .collect()
+}
+
+#[async_trait]
+impl Tool for MemoryTool {
+    fn code(&self) -> CodeRef {
+        CodeRef::Native {
+            name: "host-memory".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        }
+    }
+
+    fn spec(&self) -> ToolSpec {
+        self.kind.spec()
     }
 
     async fn call(&self, ctx: CallContext, args: Map<String, Value>) -> Outcome {

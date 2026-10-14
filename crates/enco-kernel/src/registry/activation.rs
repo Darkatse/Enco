@@ -49,7 +49,7 @@ impl Registry {
             reason,
         )
         .await?;
-        self.publish(&mut state);
+        self.publish(&mut state, None);
         Ok(activated)
     }
 }
@@ -109,7 +109,7 @@ async fn load(
 ) -> Result<Loaded, RegistryError> {
     let bytes = store.artifact(&record.artifact).await?;
     runtime
-        .load(&bytes, &record.config)
+        .load(&bytes, &record.settings)
         .await
         .map_err(|error| RegistryError::Rejected {
             name: name.into(),

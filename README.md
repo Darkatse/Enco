@@ -90,7 +90,7 @@ Requirements: Rust 1.99.0 with the `wasm32-wasip2` target. The versions are pinn
 ```bash
 git clone https://github.com/Darkatse/Enco.git
 cd Enco
-cargo xtask build-factory      # build the bundled provider plugins
+cargo xtask build-factory      # build the bundled plugins
 cargo run -p enco -- init      # create ~/.enco and a config template
 ```
 

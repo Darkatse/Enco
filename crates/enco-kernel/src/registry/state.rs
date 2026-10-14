@@ -1,5 +1,11 @@
 use super::*;
 
+enum Follow {
+    Unchanged,
+    Factory,
+    Trial,
+}
+
 pub(super) struct Plugins {
     pub names: BTreeMap<String, PluginId>,
     pub generations: BTreeMap<GenerationId, GenerationRecord>,
@@ -13,6 +19,7 @@ impl Plugins {
     pub async fn initialize(
         deps: &RegistryDeps,
         records: crate::RegistryState,
+        uses: &[Use],
     ) -> Result<Self, RegistryError> {
         let names = deps.store.plugin_names().await?;
         for name in names.keys() {
@@ -41,7 +48,7 @@ impl Plugins {
             trial_successes: BTreeMap::new(),
         };
         for factory in &deps.factory {
-            state.register_factory(deps, factory).await?;
+            state.register_factory(deps, factory, uses).await?;
         }
         Ok(state)
     }
@@ -50,6 +57,7 @@ impl Plugins {
         &mut self,
         deps: &RegistryDeps,
         factory: &FactoryPlugin,
+        uses: &[Use],
     ) -> Result<(), RegistryError> {
         if !self.names.contains_key(&factory.name) {
             deps.store
@@ -58,12 +66,8 @@ impl Plugins {
             self.names.insert(factory.name.clone(), factory.id);
         }
         let hash = deps.store.put_artifact(&factory.artifact).await?;
-        let active = self
-            .active
-            .get(&factory.id)
-            .copied()
-            .and_then(|id| self.generations.get(&id));
-        let activate = active.is_none_or(|record| record.origin == Origin::Factory);
+        let follow = self.follow_factory(deps, factory, hash, uses).await?;
+        let activate = matches!(follow, Follow::Factory) || !self.active.contains_key(&factory.id);
         let existing = self
             .generations
             .values()
@@ -86,7 +90,7 @@ impl Plugins {
                 let record = NewGeneration {
                     plugin: factory.id,
                     artifact: hash,
-                    config: serde_json::json!({}),
+                    settings: PluginSettings::default(),
                     origin: Origin::Factory,
                     status: GenerationStatus::Healthy,
                     created_at: deps.clock.now(),
@@ -101,6 +105,65 @@ impl Plugins {
         }
         self.factory.insert(factory.id, id);
         Ok(())
+    }
+
+    async fn follow_factory(
+        &mut self,
+        deps: &RegistryDeps,
+        factory: &FactoryPlugin,
+        artifact: ContentHash,
+        uses: &[Use],
+    ) -> Result<Follow, RegistryError> {
+        let previous_factory = self
+            .generations
+            .values()
+            .rev()
+            .find(|record| record.plugin == factory.id && record.origin == Origin::Factory);
+        let active = self
+            .active
+            .get(&factory.id)
+            .and_then(|id| self.generations.get(id));
+        let Some((previous, active)) = previous_factory.zip(active) else {
+            return Ok(Follow::Unchanged);
+        };
+        if active.artifact != previous.artifact || active.artifact == artifact {
+            return Ok(Follow::Unchanged);
+        }
+        if active.settings == PluginSettings::default() {
+            return Ok(Follow::Factory);
+        }
+        let generation = NewGeneration {
+            plugin: factory.id,
+            artifact,
+            settings: active.settings.clone(),
+            origin: Origin::Deployed,
+            status: GenerationStatus::Trial,
+            created_at: deps.clock.now(),
+        };
+        let candidate = registration::load(
+            deps.runtime.as_ref(),
+            &factory.name,
+            &factory.artifact,
+            &generation.settings,
+        )
+        .await;
+        let loaded = match candidate.and_then(|loaded| {
+            let before = admission::evaluate(self, &deps.host_tool_names, &BTreeMap::new());
+            let candidates = BTreeMap::from([(factory.name.clone(), loaded.clone())]);
+            let after = admission::evaluate(self, &deps.host_tool_names, &candidates);
+            after.accept_change(&before, std::slice::from_ref(&factory.name), uses, uses)?;
+            Ok(loaded)
+        }) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                tracing::warn!(plugin = factory.name, %error, "factory upgrade rejected; keeping registered content");
+                return Ok(Follow::Unchanged);
+            }
+        };
+        // Register the trial before the new recovery floor, so older healthy settings come first.
+        let id = deps.store.insert_generation(&generation, true).await?;
+        self.registered(generation.numbered(id), loaded);
+        Ok(Follow::Trial)
     }
 
     pub fn name_of(&self, plugin: PluginId) -> Result<&str, RegistryError> {
@@ -141,53 +204,97 @@ pub(super) struct State {
 }
 
 impl State {
-    pub async fn initialize(deps: &RegistryDeps) -> Result<Self, RegistryError> {
+    pub fn settings_divergence(&self) -> BTreeMap<String, GenerationId> {
+        self.plugins
+            .active_records()
+            .into_iter()
+            .filter_map(|(name, record)| {
+                (self.config.plugins.get(&name).cloned().unwrap_or_default() != record.settings)
+                    .then_some((name, record.id))
+            })
+            .collect()
+    }
+
+    pub async fn initialize(
+        deps: &RegistryDeps,
+    ) -> Result<(Self, admission::Admission), RegistryError> {
         let mut records = deps.store.registry().await?;
         let mut configs: BTreeMap<_, _> = std::mem::take(&mut records.config_generations)
             .into_iter()
             .map(|record| (record.id, record))
             .collect();
         let active = records.active_config;
-        let mut plugins = Plugins::initialize(deps, records).await?;
+        let document = match active {
+            Some(id) => configs
+                .get(&id)
+                .ok_or(RegistryError::UnknownGeneration(id))?
+                .document
+                .clone(),
+            None => deps.bootstrap.clone().map_err(RegistryError::Bootstrap)?,
+        };
+        let declaration = if active.is_some() {
+            configuration::declare(&document, &deps.owners).map_err(RegistryError::Config)?
+        } else {
+            configuration::declare_valid(&document, &deps.owners)?
+        };
+        let mut plugins = Plugins::initialize(deps, records, &declaration.uses).await?;
         activation::restore(deps, &mut plugins).await?;
-        let config = match active {
-            // Restoration is mechanical: it reports what this host cannot honor and keeps running.
+        let (config, admission) = match active {
             Some(id) => {
-                let record = configs
-                    .get(&id)
-                    .ok_or(RegistryError::UnknownGeneration(id))?;
-                let declaration = configuration::declare(&record.document, &deps.owners)
-                    .map_err(RegistryError::Config)?;
-                if let Err(error) = check_uses(&plugins, &declaration.uses) {
-                    tracing::warn!(%error, "restored configuration has unavailable uses");
-                }
-                declaration.into_active(record)
+                let admission =
+                    admission::evaluate(&plugins, &deps.host_tool_names, &BTreeMap::new());
+                (
+                    declaration.into_active(
+                        configs
+                            .get(&id)
+                            .ok_or(RegistryError::UnknownGeneration(id))?,
+                    ),
+                    admission,
+                )
             }
-            // First registration adopts the configuration in use, so it must be fully valid.
             None => {
-                let document = deps.bootstrap.clone().map_err(RegistryError::Bootstrap)?;
-                let declaration = configuration::declare_valid(&document, &deps.owners)?;
-                check_uses(&plugins, &declaration.uses)?;
+                let prepared = registration::settings(
+                    deps.store.as_ref(),
+                    deps.runtime.as_ref(),
+                    &BTreeMap::new(),
+                    &declaration.plugins,
+                    &plugins.active_records(),
+                    deps.clock.now(),
+                )
+                .await?;
+                let candidates = prepared
+                    .iter()
+                    .map(|(name, prepared)| (name.clone(), prepared.loaded.clone()))
+                    .collect();
+                let admission = admission::evaluate(&plugins, &deps.host_tool_names, &candidates);
+                // First registration adopts everything in use, so every plugin and use must work.
+                let names: Vec<_> = plugins.names.keys().cloned().collect();
+                admission.accept_change(&Default::default(), &names, &declaration.uses, &[])?;
                 let record = configuration::register(
                     deps.store.as_ref(),
                     &mut configs,
+                    &mut plugins,
+                    prepared,
                     document,
                     deps.clock.now(),
                 )
                 .await?;
-                declaration.into_active(&record)
+                (declaration.into_active(&record), admission)
             }
         };
-        Ok(Self {
-            plugins,
-            configs,
-            config,
-        })
+        Ok((
+            Self {
+                plugins,
+                configs,
+                config,
+            },
+            admission,
+        ))
     }
 
-    pub fn view(&self) -> View {
+    pub fn view(&self, admission: admission::Admission) -> View {
         View {
-            exports: self.plugins.exports(),
+            exports: self.plugins.exports(admission),
             config: self.config.clone(),
         }
     }

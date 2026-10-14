@@ -13,8 +13,8 @@ mod bindings {
         path: "../../wit",
         world: "decision-plugin",
         with: {
-            "enco:plugin/host@0.3.0": provider_protocol::host,
-            "enco:plugin/types@0.3.0": provider_protocol::types,
+            "enco:plugin/host@0.4.0": provider_protocol::host,
+            "enco:plugin/types@0.4.0": provider_protocol::types,
         },
     });
     use super::Plugin;
@@ -29,11 +29,13 @@ impl lifecycle::Guest for Plugin {
         Ok(lifecycle::Description {
             summary: "TypeSafe decisions over shared text evidence".into(),
             config_schema: r#"{"type":"object","additionalProperties":false}"#.into(),
-            credential: Some(lifecycle::Credential {
+            credentials: vec![lifecycle::Credential {
+                name: "api-key".into(),
+                origin: None,
                 header: "authorization".into(),
                 prefix: "Bearer ".into(),
                 required: true,
-            }),
+            }],
         })
     }
 

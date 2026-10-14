@@ -1,15 +1,15 @@
 use crate::{
     bindings::{
         BasePre, CONTRACT_VERSION, CompletionPluginPre, DecisionPluginPre, EmbeddingPluginPre,
-        enco::plugin::host,
+        ToolPluginPre, enco::plugin::host,
     },
-    credentials::Placement,
+    credentials,
     engine::WasmEngine,
     host_imports::HostState,
     plugin::WasmPlugin,
 };
 use async_trait::async_trait;
-use enco_core::ContentHash;
+use enco_core::{ContentHash, Failure, PluginSettings};
 use enco_kernel::{Credential, Decision, Embedding, LoadError, Loaded, Provider, Runtime};
 use std::sync::Arc;
 use wasmtime::component::{Component, HasSelf, Linker};
@@ -68,7 +68,7 @@ fn same_major(version: &str) -> bool {
 
 #[async_trait]
 impl Runtime for WasmRuntime {
-    async fn load(&self, artifact: &[u8], config: &serde_json::Value) -> Result<Loaded, LoadError> {
+    async fn load(&self, artifact: &[u8], settings: &PluginSettings) -> Result<Loaded, LoadError> {
         let hash = ContentHash::of(artifact);
         let bytes = artifact.to_vec();
         let engine = self.engine.engine.clone();
@@ -76,15 +76,7 @@ impl Runtime for WasmRuntime {
             .await
             .map_err(load_error)?
             .map_err(load_error)?;
-        for (name, _) in component.component_type().imports(&self.engine.engine) {
-            if let Some(version) = name.strip_prefix("enco:plugin/host@")
-                && !same_major(version)
-            {
-                return Err(LoadError(format!(
-                    "built against enco:plugin@{version}; this host links enco:plugin@{CONTRACT_VERSION}, rebuild the plugin"
-                )));
-            }
-        }
+        check_imports(&component, &self.engine.engine)?;
         let mut linker = Linker::new(&self.engine.engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(load_error)?;
         host::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |s| s).map_err(load_error)?;
@@ -105,12 +97,16 @@ impl Runtime for WasmRuntime {
             .transpose()
             .map_err(load_error)?;
         let decision = exports("decision")
-            .then(|| DecisionPluginPre::new(pre))
+            .then(|| DecisionPluginPre::new(pre.clone()))
             .transpose()
             .map_err(load_error)?;
-        if completion.is_none() && embedding.is_none() && decision.is_none() {
+        let tools = exports("tools")
+            .then(|| ToolPluginPre::new(pre))
+            .transpose()
+            .map_err(load_error)?;
+        if completion.is_none() && embedding.is_none() && decision.is_none() && tools.is_none() {
             return Err(LoadError(
-                "component exports none of completion, embedding or decision".into(),
+                "component exports none of completion, embedding, decision or tools".into(),
             ));
         }
         let mut plugin = WasmPlugin {
@@ -121,26 +117,38 @@ impl Runtime for WasmRuntime {
             engine: self.engine.clone(),
             http: self.http.clone(),
             name: hash.to_string()[..8].into(),
-            placement: None,
+            settings: settings.clone(),
+            placements: Vec::new(),
         };
         let description = plugin
-            .describe(config)
+            .describe(&settings.config)
             .await
-            .map_err(|failure| LoadError(format!("{}: {}", failure.code, failure.message)))?;
+            .map_err(failure_load_error)?;
         let config_schema = serde_json::from_str(&description.config_schema)
             .map_err(|e| LoadError(format!("configuration schema is not JSON: {e}")))?;
-        plugin.placement = description
-            .credential
-            .as_ref()
-            .map(Placement::new)
-            .transpose()?;
+        plugin.placements = credentials::placements(&description.credentials, settings)?;
+        let unavailable = credentials::resolve(&plugin.placements, settings, None).err();
         let plugin = Arc::new(plugin);
+        let tools = match tools {
+            Some(pre) => Some(
+                crate::tools::load(plugin.clone(), pre)
+                    .await
+                    .map_err(failure_load_error)?,
+            ),
+            None => None,
+        };
         Ok(Loaded {
             summary: description.summary,
             config_schema,
-            credential: description.credential.map(|credential| Credential {
-                required: credential.required,
-            }),
+            credential: description
+                .credentials
+                .into_iter()
+                .find(|credential| credential.origin.is_none())
+                .map(|credential| Credential {
+                    required: credential.required,
+                }),
+            unavailable,
+            tools,
             lifecycle: plugin.clone(),
             completion: plugin
                 .completion
@@ -158,6 +166,33 @@ impl Runtime for WasmRuntime {
     }
 }
 
+fn failure_load_error(failure: Failure) -> LoadError {
+    LoadError(format!("{}: {}", failure.code, failure.message))
+}
+
 fn load_error(error: impl std::fmt::Display) -> LoadError {
     LoadError(error.to_string())
+}
+
+fn check_imports(component: &Component, engine: &wasmtime::Engine) -> Result<(), LoadError> {
+    for (name, _) in component.component_type().imports(engine) {
+        if name.starts_with("enco:plugin/completion@") {
+            return Err(LoadError("plugins cannot import completion; model calls must be recorded as Attempts by the kernel".into()));
+        }
+        if let Some(version) = name
+            .strip_prefix("enco:plugin/host@")
+            .or_else(|| name.strip_prefix("enco:plugin/types@"))
+        {
+            if !same_major(version) {
+                return Err(LoadError(format!(
+                    "built against enco:plugin@{version}; this host links enco:plugin@{CONTRACT_VERSION}, rebuild the plugin"
+                )));
+            }
+        } else if !name.starts_with("wasi:") {
+            return Err(LoadError(format!(
+                "unsupported plugin import {name}; only host interfaces are available"
+            )));
+        }
+    }
+    Ok(())
 }

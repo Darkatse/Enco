@@ -2,8 +2,8 @@ use crate::paths::Paths;
 use anyhow::Result;
 use enco_host::{
     FactoryComposer, InstructionsContextSource, LIFELINE, Memories, MemoryContextSource,
-    MemoryPaths, SqliteStore, StorePaths, SystemClock, config, memory_tools, native_tools,
-    plugin_tools,
+    MemoryPaths, SqliteStore, StorePaths, SystemClock, config, memory_tool_specs, memory_tools,
+    native_tools, plugin_tool_specs, plugin_tools,
 };
 use enco_kernel::{FactoryPlugin, Kernel, KernelDeps, Registry, RegistryDeps};
 use enco_wasm::WasmRuntime;
@@ -12,11 +12,13 @@ use std::sync::Arc;
 static OPENAI: &[u8] = include_bytes!(env!("ENCO_FACTORY_OPENAI"));
 static DEEPSEEK: &[u8] = include_bytes!(env!("ENCO_FACTORY_DEEPSEEK"));
 static TYPESAFE: &[u8] = include_bytes!(env!("ENCO_FACTORY_TYPESAFE"));
+static WEB: &[u8] = include_bytes!(env!("ENCO_FACTORY_WEB"));
 
-const FACTORY: [(&str, &str, &[u8]); 3] = [
+const FACTORY: [(&str, &str, &[u8]); 4] = [
     ("openai-compatible", "01M3X4HYHSE2M3523YK35VX60W", OPENAI),
     ("deepseek", "01M3X4HYHSRXVVQYXVDK5WQ9D3", DEEPSEEK),
     ("typesafe", "01M4EQVYF70Z6WGYFDKD20QF8S", TYPESAFE),
+    ("web", "01K7BH08Y1C0E40KZ27QNVC89W", WEB),
 ];
 
 pub(crate) struct Application {
@@ -48,7 +50,18 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let mut tools = native_tools(paths.workspace());
+    let host_tool_names = tools
+        .iter()
+        .map(|tool| tool.spec())
+        .chain(memory_tool_specs())
+        .chain(plugin_tool_specs())
+        .chain(config::config_tool_specs(&paths.config()))
+        .chain(enco_kernel::builtin_tool_specs())
+        .map(|spec| spec.name)
+        .collect();
     let registry = Registry::open(RegistryDeps {
+        host_tool_names,
         store: store.clone(),
         runtime: Arc::new(WasmRuntime::new()?),
         factory,
@@ -78,7 +91,6 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
         clock.clone(),
     )
     .await?;
-    let mut tools = native_tools(paths.workspace());
     tools.extend(memory_tools(memories.clone()));
     tools.extend(plugin_tools(registry.clone(), paths.workspace()));
     tools.extend(config::tools(paths.config(), registry.clone()));

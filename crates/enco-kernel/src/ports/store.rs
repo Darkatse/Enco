@@ -80,12 +80,14 @@ pub trait Store: Send + Sync {
         generation: &NewGeneration,
         activate: bool,
     ) -> Result<GenerationId, StoreError>;
-    /// Register and activate a configuration document in one transaction.
+    /// Register and activate a configuration and its changed plugin settings atomically.
+    /// Returns the configuration ID and plugin IDs in input order.
     async fn insert_config_generation(
         &self,
         document: &serde_json::Value,
         created_at: DateTime<Utc>,
-    ) -> Result<GenerationId, StoreError>;
+        plugins: &[NewGeneration],
+    ) -> Result<(GenerationId, Vec<GenerationId>), StoreError>;
     /// Activate a previously registered configuration.
     async fn activate_config(&self, generation: GenerationId) -> Result<(), StoreError>;
     /// Promote a trial generation after successful observation.
@@ -140,8 +142,8 @@ pub struct NewGeneration {
     pub plugin: PluginId,
     /// Component content address.
     pub artifact: ContentHash,
-    /// Configuration of this generation, not model invocation settings.
-    pub config: serde_json::Value,
+    /// Complete plugin settings, not model invocation parameters.
+    pub settings: PluginSettings,
     /// Factory registration or explicit deployment.
     pub origin: Origin,
     /// Initial eligibility: trial or healthy; failures are committed through activate.
@@ -157,7 +159,7 @@ impl NewGeneration {
             id,
             plugin: self.plugin,
             artifact: self.artifact,
-            config: self.config,
+            settings: self.settings,
             origin: self.origin,
             status: self.status,
             failure: None,

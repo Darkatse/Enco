@@ -73,21 +73,7 @@ fn main() -> Result<()> {
             )?;
             // The evaluation tests drive the enco binary, so it must be built before they start.
             run("cargo", &["test", "--workspace", "--no-run"])?;
-            let metadata = cargo_metadata::MetadataCommand::new().no_deps().exec()?;
-            let mut workspace = Command::new("cargo");
-            workspace.args(["test", "--workspace"]);
-            let mut plugins = Command::new("cargo");
-            plugins.args(["test", "--manifest-path", "plugins/Cargo.toml"]);
-            let mut evaluation = Command::new("cargo");
-            evaluation
-                .args(["test", "--manifest-path", "evals/runner/Cargo.toml"])
-                .env("ENCO_BIN", metadata.target_directory.join("debug/enco"));
-            // The three workspaces have separate build directories, so their suites run side by side.
-            concurrently([
-                ("workspace tests", workspace),
-                ("plugin tests", plugins),
-                ("evaluation tests", evaluation),
-            ])
+            tests()
         }
         _ => bail!("usage: cargo xtask <check|boundaries|docs [--check]|build-factory>"),
     }
@@ -102,6 +88,46 @@ fn run(program: &str, args: &[&str]) -> Result<()> {
         bail!("{program} {} failed ({status})", args.join(" "));
     }
     Ok(())
+}
+
+fn tests() -> Result<()> {
+    let metadata = cargo_metadata::MetadataCommand::new().no_deps().exec()?;
+    let app = metadata
+        .packages
+        .iter()
+        .find(|package| package.name == "enco")
+        .context("application package")?;
+    // Cargo runs test executables sequentially; two groups overlap independent application targets.
+    let mut application = [Command::new("cargo"), Command::new("cargo")];
+    for command in &mut application {
+        command.args(["test", "-p", "enco"]);
+    }
+    application[0].arg("--bins");
+    for (index, target) in app
+        .targets
+        .iter()
+        .filter(|target| target.is_test())
+        .enumerate()
+    {
+        let group = index % application.len();
+        application[group].args(["--test", &target.name]);
+    }
+    let [first, second] = application;
+    let mut workspace = Command::new("cargo");
+    workspace.args(["test", "--workspace", "--exclude", "enco"]);
+    let mut plugins = Command::new("cargo");
+    plugins.args(["test", "--manifest-path", "plugins/Cargo.toml"]);
+    let mut evaluation = Command::new("cargo");
+    evaluation
+        .args(["test", "--manifest-path", "evals/runner/Cargo.toml"])
+        .env("ENCO_BIN", metadata.target_directory.join("debug/enco"));
+    concurrently([
+        ("application tests (1/2)", first),
+        ("application tests (2/2)", second),
+        ("workspace tests", workspace),
+        ("plugin tests", plugins),
+        ("evaluation tests", evaluation),
+    ])
 }
 
 /// Run each command to completion on its own thread, then print the outputs in order.
@@ -324,7 +350,7 @@ fn build_factory() -> Result<()> {
         .no_deps()
         .exec()?;
     std::fs::create_dir_all("target/factory")?;
-    for name in ["openai-compatible", "deepseek", "typesafe"] {
+    for name in ["openai-compatible", "deepseek", "typesafe", "web"] {
         let source = metadata
             .target_directory
             .join("wasm32-wasip2/release")

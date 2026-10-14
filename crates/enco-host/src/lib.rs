@@ -15,11 +15,12 @@ pub use clock::SystemClock;
 pub use composer::FactoryComposer;
 pub use context::InstructionsContextSource;
 pub use memory::{
-    Memories, MemoryContextSource, MemoryError, MemoryList, MemoryPaths, Recall, memory_tools,
+    Memories, MemoryContextSource, MemoryError, MemoryList, MemoryPaths, Recall, memory_tool_specs,
+    memory_tools,
 };
 pub use store::{SqliteStore, StorePaths};
 pub use telegram::Telegram;
-pub use tools::{LIFELINE, config, native_tools, plugin_tools};
+pub use tools::{LIFELINE, config, native_tools, plugin_tool_specs, plugin_tools};
 
 /// Configuration ownership for the host components assembled by the application.
 pub const TABLE_OWNERS: [enco_kernel::TableOwner; 2] = [memory::TABLE_OWNER, telegram::TABLE_OWNER];

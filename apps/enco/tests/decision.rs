@@ -34,7 +34,10 @@ async fn decision_plugin_maps_distributions_and_reports_bad_responses() {
         .await;
     let loaded = WasmRuntime::new()
         .unwrap()
-        .load(include_bytes!(env!("ENCO_FACTORY_TYPESAFE")), &json!({}))
+        .load(
+            include_bytes!(env!("ENCO_FACTORY_TYPESAFE")),
+            &enco_core::PluginSettings::default(),
+        )
         .await
         .unwrap();
     let decision = loaded.decision.unwrap();

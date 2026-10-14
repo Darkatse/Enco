@@ -9,34 +9,10 @@ enum Kind {
     Cancel,
 }
 
-struct ScheduleTool {
-    schedules: Schedules,
-    kind: Kind,
-}
-
-pub(crate) fn tools(schedules: Schedules) -> Vec<Arc<dyn Tool>> {
-    [Kind::Create, Kind::List, Kind::Cancel]
-        .into_iter()
-        .map(|kind| {
-            Arc::new(ScheduleTool {
-                schedules: schedules.clone(),
-                kind,
-            }) as Arc<dyn Tool>
-        })
-        .collect()
-}
-
-#[async_trait]
-impl Tool for ScheduleTool {
-    fn code(&self) -> CodeRef {
-        CodeRef::Native {
-            name: "kernel-builtin".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-        }
-    }
-
+impl Kind {
+    const ALL: [Self; 3] = [Self::Create, Self::List, Self::Cancel];
     fn spec(&self) -> ToolSpec {
-        let (name, description, effect, properties, required) = match self.kind {
+        let (name, description, effect, properties, required) = match self {
             Kind::Create => (
                 "schedule_create",
                 format!("Create a reminder delivered to this Session, even if Enco restarts. Give either \
@@ -75,6 +51,42 @@ impl Tool for ScheduleTool {
             effect,
             input_schema: closed_object_schema(properties, &required),
         }
+    }
+}
+
+/// Native declarations available before their stateful handlers are constructed.
+pub fn builtin_tool_specs() -> Vec<ToolSpec> {
+    Kind::ALL.iter().map(Kind::spec).collect()
+}
+
+struct ScheduleTool {
+    schedules: Schedules,
+    kind: Kind,
+}
+
+pub(crate) fn tools(schedules: Schedules) -> Vec<Arc<dyn Tool>> {
+    Kind::ALL
+        .into_iter()
+        .map(|kind| {
+            Arc::new(ScheduleTool {
+                schedules: schedules.clone(),
+                kind,
+            }) as Arc<dyn Tool>
+        })
+        .collect()
+}
+
+#[async_trait]
+impl Tool for ScheduleTool {
+    fn code(&self) -> CodeRef {
+        CodeRef::Native {
+            name: "kernel-builtin".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        }
+    }
+
+    fn spec(&self) -> ToolSpec {
+        self.kind.spec()
     }
 
     async fn call(&self, ctx: CallContext, args: Map<String, Value>) -> Outcome {

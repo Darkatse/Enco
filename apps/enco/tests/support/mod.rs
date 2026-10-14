@@ -17,6 +17,8 @@ use tokio::{
     process::{Child, ChildStderr},
 };
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+pub const UNSET_API_KEY_ENV: &str = "ENCO_TEST_UNSET_API_KEY";
+
 pub struct Daemon {
     pub child: Child,
     pub root: tempfile::TempDir,
@@ -178,6 +180,8 @@ async fn spawn(
         .arg("serve")
         .env("ENCO_HOME", root)
         .env("ENCO_TEST_API_KEY", "enco-test-secret")
+        .env_remove(UNSET_API_KEY_ENV)
+        .env("ENCO_TEST_SECOND_API_KEY", "enco-second-test-secret")
         .env("ENCO_TEST_TELEGRAM_TOKEN", "42:test-secret")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

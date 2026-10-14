@@ -1,13 +1,13 @@
-use crate::{Decision, Embedding, Provider};
+use crate::{CallContext, Decision, Embedding, Provider};
 use async_trait::async_trait;
-use enco_core::Failure;
+use enco_core::{Failure, Outcome, PluginSettings, ToolSpec};
 use std::sync::Arc;
 
 /// Compile and describe component bytes without knowing registry identities or routing.
 #[async_trait]
 pub trait Runtime: Send + Sync {
     /// Load the component and validate its imports and configuration.
-    async fn load(&self, artifact: &[u8], config: &serde_json::Value) -> Result<Loaded, LoadError>;
+    async fn load(&self, artifact: &[u8], settings: &PluginSettings) -> Result<Loaded, LoadError>;
 }
 
 /// Exports returned by loading a component. Each invocation owns its own runtime state.
@@ -17,8 +17,10 @@ pub struct Loaded {
     pub summary: String,
     /// Plugin-owned configuration documentation, retained with the loaded generation.
     pub config_schema: serde_json::Value,
-    /// Credential requirement used to check the caller's wiring.
+    /// Credential requirement for the service selected by the caller.
     pub credential: Option<Credential>,
+    /// A missing environment requirement; the code still loads and retains its health.
+    pub unavailable: Option<Failure>,
     /// Self-check required before a deployment is admitted.
     pub lifecycle: Arc<dyn Lifecycle>,
     /// Completion interface when supplied by the component.
@@ -27,12 +29,35 @@ pub struct Loaded {
     pub embedding: Option<Arc<dyn Embedding>>,
     /// Decision interface when supplied by the component.
     pub decision: Option<Arc<dyn Decision>>,
+    /// Declared tool definitions and their common invocation interface.
+    pub tools: Option<LoadedTools>,
+}
+
+/// Tool declarations are evaluated once with the generation's accepted configuration.
+#[derive(Clone)]
+pub struct LoadedTools {
+    /// Model-facing definitions fixed with this generation.
+    pub specs: Vec<ToolSpec>,
+    /// Executes a tool with the definition supplied by its caller.
+    pub adapter: Arc<dyn Tools>,
+}
+
+/// A plugin's tools interface, independent of the registry-assigned code identity.
+#[async_trait]
+pub trait Tools: Send + Sync {
+    /// Execute a declared tool and wait for any started work to become quiescent on cancellation.
+    async fn call(
+        &self,
+        ctx: CallContext,
+        spec: &ToolSpec,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Outcome;
 }
 
 /// Credential placement belongs to the transport; wiring only needs this requirement.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Credential {
-    /// The caller's endpoint must name a credential environment variable.
+    /// The selected mapping must name a credential environment variable.
     pub required: bool,
 }
 

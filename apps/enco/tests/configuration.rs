@@ -93,7 +93,7 @@ async fn each_owner_rejects_its_invalid_table_without_registering() {
     invalid["owner"] = json!({});
     cases.push((invalid, vec!["[owner]", "timezone"]));
     let mut invalid = original.clone();
-    invalid["plugin"] = json!({"web": {"config": {}}});
+    invalid["plugin"] = json!({"web": {"unsupported": true}});
     cases.push((invalid, vec!["[plugin]"]));
     for (endpoint, field, table) in [
         ("chat", "window_tokens", "[profile.default]"),

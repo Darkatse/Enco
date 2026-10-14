@@ -80,7 +80,7 @@ CREATE TABLE plugin_generations (
   id         INTEGER PRIMARY KEY REFERENCES generations(id),
   plugin_id  TEXT NOT NULL REFERENCES plugins(id),
   artifact   TEXT NOT NULL,
-  config     TEXT NOT NULL,
+  settings   TEXT NOT NULL,
   origin     TEXT NOT NULL CHECK (origin IN ('factory', 'deployed')),
   status     TEXT NOT NULL CHECK (status IN ('trial', 'healthy', 'failed')),
   failure    TEXT,

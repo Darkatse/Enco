@@ -5,14 +5,14 @@ use enco_kernel::{NewGeneration, RegistryState, StoreError};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 pub(super) fn read(connection: &Connection) -> Result<RegistryState, StoreError> {
-    let mut generations = connection.prepare("SELECT g.id,p.plugin_id,p.artifact,p.config,p.origin,p.status,COALESCE(p.failure,'null'),g.created_at FROM plugin_generations p JOIN generations g ON g.id=p.id ORDER BY g.id").map_err(backend)?;
+    let mut generations = connection.prepare("SELECT g.id,p.plugin_id,p.artifact,p.settings,p.origin,p.status,COALESCE(p.failure,'null'),g.created_at FROM plugin_generations p JOIN generations g ON g.id=p.id ORDER BY g.id").map_err(backend)?;
     let generations = generations
         .query_map([], |row| {
             Ok(GenerationRecord {
                 id: GenerationId(rows::unsigned(row, 0)?),
                 plugin: rows::text(row, 1)?,
                 artifact: rows::text(row, 2)?,
-                config: rows::document(row, 3)?,
+                settings: rows::document(row, 3)?,
                 origin: rows::text(row, 4)?,
                 status: rows::text(row, 5)?,
                 failure: rows::document(row, 6)?,
@@ -66,6 +66,16 @@ pub(super) fn insert(
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
+    let id = insert_in(&tx, generation, activate)?;
+    tx.commit().map_err(backend)?;
+    Ok(id)
+}
+
+fn insert_in(
+    tx: &Connection,
+    generation: &NewGeneration,
+    activate: bool,
+) -> Result<GenerationId, StoreError> {
     let plugin = generation.plugin.to_string();
     tx.execute(
         "INSERT INTO plugins(id,active) VALUES (?,NULL) ON CONFLICT(id) DO NOTHING",
@@ -87,7 +97,7 @@ pub(super) fn insert(
     )
     .map_err(backend)?;
     let id = tx.last_insert_rowid();
-    tx.execute("INSERT INTO plugin_generations(id,plugin_id,artifact,config,origin,status) VALUES (?,?,?,?,?,?)", params![id, plugin, generation.artifact.to_string(), encode(&generation.config)?, origin, status]).map_err(backend)?;
+    tx.execute("INSERT INTO plugin_generations(id,plugin_id,artifact,settings,origin,status) VALUES (?,?,?,?,?,?)", params![id, plugin, generation.artifact.to_string(), encode(&generation.settings)?, origin, status]).map_err(backend)?;
     if activate {
         tx.execute(
             "UPDATE plugins SET active=? WHERE id=?",
@@ -95,7 +105,6 @@ pub(super) fn insert(
         )
         .map_err(backend)?;
     }
-    tx.commit().map_err(backend)?;
     Ok(GenerationId(u64::try_from(id).map_err(backend)?))
 }
 
@@ -154,7 +163,8 @@ pub(super) fn insert_config_generation(
     connection: &mut Connection,
     document: &serde_json::Value,
     created_at: DateTime<Utc>,
-) -> Result<GenerationId, StoreError> {
+    plugins: &[NewGeneration],
+) -> Result<(GenerationId, Vec<GenerationId>), StoreError> {
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
@@ -170,8 +180,12 @@ pub(super) fn insert_config_generation(
     )
     .map_err(backend)?;
     activate_config(&tx, id)?;
+    let plugins = plugins
+        .iter()
+        .map(|generation| insert_in(&tx, generation, true))
+        .collect::<Result<Vec<_>, _>>()?;
     tx.commit().map_err(backend)?;
-    Ok(id)
+    Ok((id, plugins))
 }
 
 pub(super) fn activate_config(

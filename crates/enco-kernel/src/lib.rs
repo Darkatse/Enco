@@ -20,6 +20,7 @@ mod settings;
 mod snapshot;
 mod transcript;
 
+pub use builtin::builtin_tool_specs;
 pub use inspect::Inspection;
 pub use kernel::*;
 pub use limits::TRIAL_CALLS;

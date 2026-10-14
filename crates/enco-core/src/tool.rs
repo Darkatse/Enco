@@ -131,6 +131,8 @@ pub mod code {
 
     /// No active generation exports the caller's required interface.
     pub const PLUGIN_UNAVAILABLE: &str = "plugin.unavailable";
+    /// The Round's bound generation has been marked failed.
+    pub const PLUGIN_ROLLED_BACK: &str = "plugin.rolled_back";
     /// An explicit deployment or rollback could not be accepted.
     pub const PLUGIN_REJECTED: &str = "plugin.rejected";
     /// A registered component could not be read or loaded by the runtime.

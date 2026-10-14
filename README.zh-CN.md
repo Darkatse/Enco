@@ -90,7 +90,7 @@ P0 在 macOS 和 Linux 上以后台服务加命令行客户端的形式运行，
 ```bash
 git clone https://github.com/Darkatse/Enco.git
 cd Enco
-cargo xtask build-factory      # 构建内置的 Provider 插件
+cargo xtask build-factory      # 构建内置插件
 cargo run -p enco -- init      # 创建 ~/.enco 与配置模板
 ```
 

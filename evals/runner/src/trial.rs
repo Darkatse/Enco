@@ -12,8 +12,7 @@ use crate::{
     snapshot::{self, Snapshot},
     task::Task,
 };
-use anyhow::{Context, Result};
-use chrono::{Timelike, Utc};
+use anyhow::Result;
 use http_body_util::BodyExt;
 use hyper::{
     StatusCode,
@@ -22,6 +21,7 @@ use hyper::{
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -40,6 +40,8 @@ pub(crate) struct Variant {
     pub(crate) name: String,
     pub(crate) binary: Binary,
     pub(crate) deploy: Vec<Deploy>,
+    pub(crate) plugin: toml::Table,
+    pub(crate) variables: BTreeMap<String, OsString>,
 }
 
 pub(crate) async fn run(
@@ -49,10 +51,8 @@ pub(crate) async fn run(
     index: usize,
 ) -> Result<Trial> {
     let began = Instant::now();
-    let start = Utc::now()
-        .with_second(0)
-        .and_then(|t| t.with_nanosecond(0))
-        .context("trial start time")?;
+    let renderer = Renderer::for_trial(task)?;
+    let start = renderer.start;
     let relative = PathBuf::from("trials")
         .join(&task.id)
         .join(&variant.name)
@@ -60,14 +60,18 @@ pub(crate) async fn run(
     let directory = deps.directory.join(&relative);
     let snapshot_dir = directory.join("snapshot");
     tokio::fs::create_dir_all(&snapshot_dir).await?;
-    let renderer = Renderer {
-        start,
-        timezone: task.definition.environment.timezone,
-        mocks: task.mock_urls(),
-    };
     let mut home = Home::new(&deps.config.trial);
     let mut services = Services::default();
-    let prepared = prepare(deps, task, &renderer, &mut home, &mut services, &directory).await;
+    let prepared = prepare(
+        deps,
+        task,
+        &renderer,
+        &mut home,
+        &mut services,
+        &directory,
+        variant,
+    )
+    .await;
     let executed = match prepared {
         Ok(log) => {
             execute(
@@ -150,6 +154,7 @@ async fn prepare(
     home: &mut Home,
     services: &mut Services,
     directory: &Path,
+    variant: &Variant,
 ) -> Result<std::fs::File> {
     let (model, address) = services.start(task, renderer, deps.model.as_ref()).await?;
     home.prepare(
@@ -158,6 +163,7 @@ async fn prepare(
         renderer,
         &format!("http://{address}"),
         &services.hosts,
+        variant,
     )
     .await?;
     Ok(tokio::fs::File::create(directory.join("daemon.log"))
@@ -257,6 +263,10 @@ impl Services {
                 null_configuration(host)?
             }
         };
+        if !routes.contains_key(crate::reader::HOST) {
+            let address = crate::reader::start(&mut self.servers, routes.clone()).await?;
+            routes.insert(crate::reader::HOST.into(), address);
+        }
         self.hosts = routes.keys().cloned().collect();
         let proxy = Proxy::start(&mut self.servers, routes).await?;
         let address = proxy.address;

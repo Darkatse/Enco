@@ -4,15 +4,18 @@ mod admission;
 mod configuration;
 mod exports;
 mod health;
+mod probe;
+mod registration;
 mod state;
 mod status;
+mod wiring;
 
 use crate::{
     Clock, Credential, Decision, Embedding, Endpoint, KernelSettings, Loaded, NewGeneration,
     Provider, Runtime, SettingsError, Store, StoreError,
 };
 use activation::ActivationReason;
-use admission::{admit, check_uses, users, validate_name, wiring_error};
+use admission::{users, validate_name};
 use enco_core::*;
 pub use exports::{Export, Exports};
 use state::State;
@@ -32,6 +35,8 @@ pub struct RegistryDeps {
     pub owners: Vec<TableOwner>,
     /// Initial intent, used only when no configuration generation exists.
     pub bootstrap: Result<serde_json::Value, String>,
+    /// Names from the native tool declarations assembled by the composition root.
+    pub host_tool_names: Vec<String>,
     /// Observation time, never generation ordering.
     pub clock: Arc<dyn Clock>,
 }
@@ -65,7 +70,7 @@ pub struct Use {
     pub need: Need,
 }
 
-/// Requirements used for both admission and real configuration probes.
+/// A use's interface and behavior requirements, shared by wiring checks and real probes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Need {
     /// A completion endpoint, optionally with tool definitions.
@@ -84,7 +89,7 @@ pub enum Need {
 
 /// Plugin content to register, including when undoing an earlier change.
 pub enum PluginSource {
-    /// New component bytes; inherit the active generation's configuration.
+    /// New component bytes; inherit the active generation's complete settings.
     Artifact(Vec<u8>),
     /// All content of an existing plugin generation.
     Generation(GenerationId),
@@ -121,6 +126,8 @@ pub struct ActiveConfig {
     uses: Vec<Use>,
     /// Tables the current host cannot interpret; empty after any intentional registration.
     invalid: Vec<SettingsError>,
+    /// Plugin settings requested by this configuration; active plugin content may have rolled back.
+    plugins: BTreeMap<String, PluginSettings>,
 }
 
 impl View {
@@ -143,6 +150,7 @@ pub struct Registry {
     runtime: Arc<dyn Runtime>,
     clock: Arc<dyn Clock>,
     owners: Vec<TableOwner>,
+    pub(crate) host_tool_names: Vec<String>,
     state: Mutex<State>,
     views: watch::Sender<Arc<View>>,
 }
@@ -194,6 +202,11 @@ pub struct Probe {
 pub enum ConfigDivergence {
     /// Intent equals the active configuration.
     None,
+    /// The document is registered, but these active plugin generations use different settings.
+    PluginSettings {
+        /// Current plugin generations, each differing from its section in the active document.
+        active: BTreeMap<String, GenerationId>,
+    },
     /// Intent has never been registered, or cannot be read.
     Unapplied {
         /// Read or parse error, when present.
@@ -255,13 +268,14 @@ impl Registry {
     /// Restore persisted routing, register embedded artifacts and validate configured uses.
     pub async fn open(deps: RegistryDeps) -> Result<Arc<Self>, RegistryError> {
         configuration::check_owners(&deps.owners)?;
-        let state = State::initialize(&deps).await?;
-        let (views, _) = watch::channel(Arc::new(state.view()));
+        let (state, admission) = State::initialize(&deps).await?;
+        let (views, _) = watch::channel(Arc::new(state.view(admission)));
         Ok(Arc::new(Self {
             store: deps.store,
             runtime: deps.runtime,
             clock: deps.clock,
             owners: deps.owners,
+            host_tool_names: deps.host_tool_names,
             state: Mutex::new(state),
             views,
         }))
@@ -292,14 +306,14 @@ impl Registry {
             .and_then(|id| state.plugins.active.get(id))
             .copied();
         let expected_config = state.config.generation;
-        let (artifact, hash, config) = match source {
+        let (artifact, hash, settings) = match source {
             PluginSource::Artifact(bytes) => {
-                let config = expected_plugin
+                let settings = expected_plugin
                     .and_then(|id| state.plugins.generations.get(&id))
-                    .map_or_else(|| serde_json::json!({}), |record| record.config.clone());
+                    .map_or_else(PluginSettings::default, |record| record.settings.clone());
                 drop(state);
                 let hash = self.store.put_artifact(&bytes).await?;
-                (bytes, hash, config)
+                (bytes, hash, settings)
             }
             PluginSource::Generation(id) => {
                 let record = state.plugins.generations.get(&id).ok_or_else(|| {
@@ -317,26 +331,11 @@ impl Registry {
                 (
                     self.store.artifact(&record.artifact).await?,
                     record.artifact,
-                    record.config,
+                    record.settings,
                 )
             }
         };
-        let loaded = self
-            .runtime
-            .load(&artifact, &config)
-            .await
-            .map_err(|error| RegistryError::Rejected {
-                name: name.into(),
-                reason: error.to_string(),
-            })?;
-        loaded
-            .lifecycle
-            .probe()
-            .await
-            .map_err(|failure| RegistryError::Rejected {
-                name: name.into(),
-                reason: format!("probe failed: {}: {}", failure.code, failure.message),
-            })?;
+        let loaded = registration::load(self.runtime.as_ref(), name, &artifact, &settings).await?;
         let mut state = self.state.lock().await;
         let current = state
             .plugins
@@ -347,7 +346,15 @@ impl Registry {
         if current != expected_plugin || state.config.generation != expected_config {
             return Err(RegistryError::Conflict(name.into()));
         }
-        admit(&state.config.uses, name, &loaded)?;
+        let candidates = BTreeMap::from([(name.to_owned(), loaded.clone())]);
+        let before = admission::evaluate(&state.plugins, &self.host_tool_names, &BTreeMap::new());
+        let admission = admission::evaluate(&state.plugins, &self.host_tool_names, &candidates);
+        admission.accept_change(
+            &before,
+            &[name.into()],
+            &state.config.uses,
+            &state.config.uses,
+        )?;
         let plugin = match state.plugins.names.get(name) {
             Some(id) => *id,
             None => {
@@ -360,17 +367,15 @@ impl Registry {
         let generation = NewGeneration {
             plugin,
             artifact: hash,
-            config,
+            settings,
             origin: Origin::Deployed,
             status: GenerationStatus::Trial,
             created_at: self.clock.now(),
         };
         let id = self.store.insert_generation(&generation, true).await?;
         let record = generation.numbered(id);
-        state.plugins.generations.insert(id, record.clone());
-        state.plugins.active.insert(plugin, id);
-        state.plugins.loaded.insert(id, loaded);
-        self.publish(&mut state);
+        state.plugins.registered(record.clone(), loaded);
+        self.publish(&mut state, Some(admission));
         Ok(Deployed {
             generation: record,
             users: users(&state.config.uses, name),
@@ -403,7 +408,7 @@ impl Registry {
             .ok_or_else(|| RegistryError::NoRollbackTarget(name.into()))
     }
 
-    fn publish(&self, state: &mut State) {
+    fn publish(&self, state: &mut State, admission: Option<admission::Admission>) {
         state.plugins.loaded.retain(|id, _| {
             state.plugins.active.values().any(|active| active == id)
                 || state.plugins.factory.values().any(|factory| factory == id)
@@ -416,7 +421,10 @@ impl Registry {
                     .get(id)
                     .is_some_and(|record| record.status == GenerationStatus::Trial)
         });
-        self.views.send_replace(Arc::new(state.view()));
+        let admission = admission.unwrap_or_else(|| {
+            admission::evaluate(&state.plugins, &self.host_tool_names, &BTreeMap::new())
+        });
+        self.views.send_replace(Arc::new(state.view(admission)));
     }
 }
 

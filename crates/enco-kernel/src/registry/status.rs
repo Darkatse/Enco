@@ -15,8 +15,12 @@ pub struct PluginStatus {
     pub rollback_target: Option<GenerationId>,
     /// Configured users of this plugin.
     pub users: Vec<String>,
-    /// Configured users whose requirements the active generation cannot satisfy.
-    pub unavailable: Vec<String>,
+    /// Why the active generation cannot run on this node, if it cannot.
+    pub unavailable: Option<String>,
+    /// Configured uses this plugin cannot serve, each identified by its user.
+    pub unavailable_uses: Vec<String>,
+    /// Whether active settings match the registered document; absent without an active generation.
+    pub settings_match: Option<bool>,
     /// Complete history in registry sequence order.
     pub generations: Vec<GenerationRecord>,
 }
@@ -41,12 +45,27 @@ pub struct ConfigStatus {
     pub generations: Vec<(GenerationId, DateTime<Utc>)>,
     /// Tables the current host cannot interpret.
     pub invalid: Vec<SettingsError>,
+    /// Configured uses that cannot be served, each identified by its user.
+    pub unavailable_uses: Vec<String>,
 }
 
 impl Registry {
     /// Read the registry's single owned state without maintaining a second status cache.
     pub async fn status(&self) -> RegistryStatus {
         let state = self.state.lock().await;
+        let divergent = state.settings_divergence();
+        let view = self.view();
+        let unavailable_uses: Vec<_> = state
+            .config
+            .uses
+            .iter()
+            .filter_map(|usage| {
+                view.exports
+                    .check_use(usage)
+                    .err()
+                    .map(|failure| (usage, format!("{}: {}", usage.user, failure.message)))
+            })
+            .collect();
         let plugins = state
             .plugins
             .names
@@ -61,6 +80,7 @@ impl Registry {
                 PluginStatus {
                     name: name.clone(),
                     id: *id,
+                    settings_match: active.map(|_| !divergent.contains_key(name)),
                     summary: active
                         .and_then(|record| state.plugins.loaded.get(&record.id))
                         .map(|loaded| loaded.summary.clone()),
@@ -73,17 +93,15 @@ impl Registry {
                     }),
                     active: active.cloned(),
                     users: users(&state.config.uses, name),
-                    unavailable: state
-                        .config
-                        .uses
+                    unavailable: view
+                        .exports
+                        .loaded(name)
+                        .err()
+                        .map(|failure| failure.message),
+                    unavailable_uses: unavailable_uses
                         .iter()
-                        .filter(|usage| usage.endpoint.plugin == *name)
-                        .filter_map(|usage| {
-                            match active.and_then(|record| state.plugins.loaded.get(&record.id)) {
-                                Some(loaded) => wiring_error(usage, loaded),
-                                None => Some(format!("{}: no active generation", usage.user)),
-                            }
-                        })
+                        .filter(|(usage, _)| usage.endpoint.plugin == *name)
+                        .map(|(_, reason)| reason.clone())
                         .collect(),
                     generations: state
                         .plugins
@@ -110,6 +128,10 @@ impl Registry {
                     .map(|record| (record.id, record.created_at))
                     .collect(),
                 invalid: state.config.invalid.clone(),
+                unavailable_uses: unavailable_uses
+                    .into_iter()
+                    .map(|(_, reason)| reason)
+                    .collect(),
             },
         }
     }

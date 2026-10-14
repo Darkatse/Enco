@@ -10,8 +10,8 @@ pub struct GenerationRecord {
     pub plugin: PluginId,
     /// Content-addressed component bytes.
     pub artifact: ContentHash,
-    /// Plugin configuration, separate from per-call model settings.
-    pub config: serde_json::Value,
+    /// Owner-selected plugin configuration and credential names, fixed together with the code.
+    pub settings: PluginSettings,
     /// How this generation entered the registry.
     pub origin: Origin,
     /// Whether this generation remains eligible for use.
@@ -20,6 +20,25 @@ pub struct GenerationRecord {
     pub failure: Option<Failure>,
     /// Observation time for display, never ordering.
     pub created_at: DateTime<Utc>,
+}
+
+/// The complete `[plugin.<name>]` table. Only `config` is visible to the plugin.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PluginSettings {
+    /// Plugin-owned configuration, accepted by its declaration function.
+    pub config: serde_json::Value,
+    /// Credential names mapped to environment variable names, never their values.
+    pub secrets: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for PluginSettings {
+    fn default() -> Self {
+        Self {
+            config: serde_json::json!({}),
+            secrets: std::collections::BTreeMap::new(),
+        }
+    }
 }
 
 /// Source of a registered generation.

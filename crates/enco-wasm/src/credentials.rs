@@ -1,29 +1,156 @@
-//! A generation declares where its credential goes; each invocation attaches the caller's secret.
+//! A generation declares credential placement; only its invocation transport reads secret values.
 use crate::bindings::{enco::plugin::host, lifecycle};
-use enco_core::{Failure, ProviderSettings, code};
+use enco_core::{Failure, PluginSettings, ProviderSettings, code};
 use enco_kernel::LoadError;
 use reqwest::{
     Url,
     header::{HeaderName, HeaderValue},
 };
 
-/// Where a generation places the caller's credential, validated once when the generation loads.
+/// A credential's destination and header, validated once when the generation loads.
 pub(crate) struct Placement {
+    name: String,
+    origin: Option<Url>,
+    required: bool,
     header: HeaderName,
     prefix: String,
 }
 
 impl Placement {
     pub fn new(credential: &lifecycle::Credential) -> Result<Self, LoadError> {
-        let header = HeaderName::from_bytes(credential.header.as_bytes())
-            .map_err(|e| LoadError(format!("credential header: {e}")))?;
+        let name = &credential.name;
+        let header = HeaderName::from_bytes(credential.header.as_bytes()).map_err(|e| {
+            LoadError(format!(
+                "credential {name} header {}: {e}",
+                credential.header
+            ))
+        })?;
         HeaderValue::from_str(&credential.prefix)
-            .map_err(|e| LoadError(format!("credential prefix: {e}")))?;
+            .map_err(|e| LoadError(format!("credential {name} prefix: {e}")))?;
         Ok(Self {
+            name: name.clone(),
+            origin: credential
+                .origin
+                .as_deref()
+                .map(|declared| {
+                    origin(declared).map_err(|error| {
+                        LoadError(format!(
+                            "credential {name} origin {declared}: {}",
+                            error.message
+                        ))
+                    })
+                })
+                .transpose()?,
+            required: credential.required,
             header,
             prefix: credential.prefix.clone(),
         })
     }
+}
+
+/// Accept declarations once, including the one-credential-per-origin rule.
+pub(crate) fn placements(
+    declared: &[lifecycle::Credential],
+    settings: &PluginSettings,
+) -> Result<Vec<Placement>, LoadError> {
+    let mut names = std::collections::HashSet::new();
+    let mut origins = std::collections::HashMap::new();
+    let mut placements = Vec::new();
+    for credential in declared {
+        if credential.name.is_empty() {
+            return Err(LoadError(format!(
+                "credential name is empty (origin {})",
+                origin_text(credential.origin.as_deref())
+            )));
+        }
+        if !names.insert(&credential.name) {
+            return Err(LoadError(format!(
+                "duplicate credential name {}",
+                credential.name
+            )));
+        }
+        let placement = Placement::new(credential)?;
+        if let Some(previous) =
+            origins.insert(placement.origin.as_ref().map(Url::origin), &credential.name)
+        {
+            let origin = placement
+                .origin
+                .as_ref()
+                .map(|url| url.origin().ascii_serialization());
+            return Err(LoadError(format!(
+                "credentials {previous} and {} both bind origin {}",
+                credential.name,
+                origin_text(origin.as_deref())
+            )));
+        }
+        placements.push(placement);
+    }
+    for name in settings.secrets.keys() {
+        if !placements
+            .iter()
+            .any(|placement| placement.name == *name && placement.origin.is_some())
+        {
+            return Err(LoadError(format!(
+                "secret {name} has no declared plugin-owned origin"
+            )));
+        }
+    }
+    for placement in &placements {
+        if placement.origin.is_some()
+            && placement.required
+            && !settings.secrets.contains_key(&placement.name)
+        {
+            return Err(LoadError(format!(
+                "required credential {} has no secret mapping",
+                placement.name
+            )));
+        }
+    }
+    Ok(placements)
+}
+
+/// Values live only for an invocation. A fixed origin reads the generation's mapping; an
+/// unbound declaration reads the endpoint selected by its caller.
+pub(crate) fn resolve(
+    placements: &[Placement],
+    settings: &PluginSettings,
+    endpoint: Option<&ProviderSettings>,
+) -> Result<Vec<CallCredential>, Failure> {
+    let mut credentials = Vec::new();
+    for placement in placements {
+        let (origin, name) = match &placement.origin {
+            Some(origin) => (origin.clone(), settings.secrets.get(&placement.name)),
+            None => {
+                let Some(endpoint) = endpoint else { continue };
+                (origin(&endpoint.base_url)?, endpoint.api_key_env.as_ref())
+            }
+        };
+        if let Some(name) = name {
+            credentials.push(CallCredential::resolve(placement, origin, name)?);
+        }
+    }
+    Ok(credentials)
+}
+
+/// How load errors name an origin; an absent one follows the endpoint its caller selects.
+fn origin_text(origin: Option<&str>) -> &str {
+    origin.unwrap_or("caller-selected service")
+}
+
+fn origin(url: &str) -> Result<Url, Failure> {
+    let parsed = Url::parse(url).map_err(|error| {
+        failure(
+            code::PROVIDER_BAD_REQUEST,
+            format!("invalid service URL: {error}"),
+        )
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(failure(
+            code::PROVIDER_BAD_REQUEST,
+            "service URL requires an HTTP origin",
+        ));
+    }
+    Ok(parsed)
 }
 
 /// One invocation's credential. It exists only in the call's transport state, never in the guest
@@ -37,16 +164,7 @@ pub(crate) struct CallCredential {
 }
 
 impl CallCredential {
-    /// Attach a credential when the plugin declares a placement and the endpoint names a variable.
-    /// Whether the two match is checked when a generation is admitted; a call made after
-    /// mechanical recovery simply uses what both sides supply.
-    pub fn resolve(
-        placement: Option<&Placement>,
-        settings: &ProviderSettings,
-    ) -> Result<Option<Self>, Failure> {
-        let (Some(placement), Some(name)) = (placement, &settings.api_key_env) else {
-            return Ok(None);
-        };
+    fn resolve(placement: &Placement, origin: Url, name: &str) -> Result<Self, Failure> {
         let unavailable = |reason: &str| {
             failure(
                 code::CREDENTIAL_UNAVAILABLE,
@@ -61,18 +179,16 @@ impl CallCredential {
         let mut value = HeaderValue::from_str(&format!("{}{secret}", placement.prefix))
             .map_err(|_| unavailable("not valid in an HTTP header"))?;
         value.set_sensitive(true);
-        let origin = Url::parse(&settings.base_url)
-            .map_err(|e| failure(code::PROVIDER_BAD_REQUEST, format!("invalid base_url: {e}")))?;
-        Ok(Some(Self {
+        Ok(Self {
             origin,
             header: placement.header.clone(),
             value,
             secret,
             replacement: format!("[redacted:{name}]"),
-        }))
+        })
     }
 
-    /// Attach to requests bound for the caller-selected origin, replacing the plugin's header.
+    /// Attach to requests bound for this credential's origin, replacing the plugin's header.
     pub fn attach(&self, request: &mut reqwest::Request) {
         if request.url().origin() == self.origin.origin() {
             request

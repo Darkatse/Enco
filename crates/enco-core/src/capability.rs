@@ -10,11 +10,15 @@ pub struct CapabilityId {
     pub name: String,
 }
 
-/// Identifies the exact code used by an invocation. Tagged so that plugin composers and tools
-/// can add a generation variant without changing recorded entries.
+/// Identifies the exact code used by an invocation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CodeRef {
+    /// Code and settings registered together as a plugin generation.
+    Generation {
+        /// Immutable registry identity.
+        id: crate::GenerationId,
+    },
     /// Code linked into the host binary.
     Native {
         /// Identity of the linked native capability or policy.

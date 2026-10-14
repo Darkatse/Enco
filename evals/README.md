@@ -48,7 +48,7 @@ path = "/usr/local/bin:/usr/bin:/bin"  # 被测守护进程 PATH 中 bin/ 之后
 
 - 运行器在被测模型的配置中加入题目的时区与预算，写成被测 home 的 `config.toml`。其中的 `api_key_env` 进入环境变量白名单，`base_url` 的主机进入 `NO_PROXY`。
 - 评判模型与被测模型应属于不同的家族，避免评判偏袒自己一家的回答。评判的 key 只由运行器读取，不进入被测的环境。
-- 配置不合法（包括缺少 key 变量）时退出码为 2，不开始任何试验。
+- 配置或变体不合法（包括缺少 key 变量）时退出码为 2，不开始任何试验。
 
 变体（`--variant`、`--base`、`--candidate`）：
 
@@ -58,9 +58,14 @@ enco = "target/release/enco"     # 可选；默认 PATH 中的 enco
 [[deploy]]                       # 可选：在每个被测 home 中部署的代际
 plugin = "openai-compatible"
 artifact = "plugin.wasm"
+
+[plugin.web.config.urls]          # 可选；省略 plugin 时默认使用这一节
+jina = "http://r.jina.ai"
 ```
 
-省略 `--variant` 时，变体是 PATH 中的 `enco`，运行的是出厂代际。变体的身份是二进制与各制品的 blake3 哈希，写进 `result.json`。部署失败说明变体本身有问题，整次运行停止，退出码为 2。
+省略 `--variant` 时，变体是 PATH 中的 `enco`，运行的是出厂制品与上述 web 设置。变体的身份包含二进制与各制品的 blake3 哈希以及 `plugin` 设置，写进 `result.json`。部署失败说明变体本身有问题，整次运行停止，退出码为 2。
+
+变体的 `plugin` 整节写入被测配置，`secrets` 指名的变量与模型的 `api_key_env` 一样必须存在，并进入环境变量白名单；比较尚不支持插件设置的旧版二进制时，在它的变体中显式写空的 `[plugin]`，运行器便不向被测配置添加这一节。两个变体各自使用有效的配置，不按二进制版本推断设置。
 
 ## 评测对进化的意义
 
@@ -140,7 +145,8 @@ trials/<题>/<变体>/<i>/
   "judge": { "base_url": "…", "model": "…", "api_key_env": "…", "temperature": 0, "prompt": "<blake3>" },
   "variants": {
     "base": { "enco": { "path": "…", "hash": "<blake3>", "version": "…" },
-              "deploy": [ { "plugin": "…", "artifact": "…", "hash": "<blake3>" } ] }
+              "deploy": [ { "plugin": "…", "artifact": "…", "hash": "<blake3>" } ],
+              "plugin": { "web": { "config": { "urls": { "jina": "http://r.jina.ai" } } } } }
   },
   "trials": [ {
     "task": "…", "variant": "base", "index": 0, "dir": "trials/…/0",
@@ -245,6 +251,8 @@ body = "hidden/mocks/techdaily/feed.atom"   # 默认状态码 200
 name = "inbox"
 data = "hidden/mocks/mail/inbox.json"  # 初始数据；省略时为空
 ```
+
+运行器默认在 `r.jina.ai` 提供 Jina JSON 形状的读取服务，只读取当前题目中已登记的 mock 页面，并保留页面状态；未知主机不访问外网。题目可以用同名主机的 mock 替换它，以模拟 Jina 的具体结果。
 
 - 集合按 REST 的习惯访问：`GET /<名字>` 列出，查询参数按字段过滤（值按字符串比较），`fields=a,b` 只返回这些字段；`GET`、`PATCH`、`DELETE /<名字>/<id>` 读取、合并、删除；`POST /<名字>` 追加，正文可以是 JSON 或表单，没有 `id` 时依次分配。
 - 收到的每个请求记入 `requests.jsonl`，结束时全部集合写入 `state.json`。
