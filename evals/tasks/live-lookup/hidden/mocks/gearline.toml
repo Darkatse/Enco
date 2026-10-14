@@ -1,0 +1,33 @@
+# Gearline, a consumer tech news site: its recall story reports the original notice only.
+
+host = "gearline.news"
+
+[[route]]
+method = "GET"
+path = "/news/ampvale-pocket-10k-recall"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/gearline/pocket-10k-recall.html"
+
+[[route]]
+method = "GET"
+path = "/news/ampvale-drivecharge-car-charger-recall"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/gearline/drivecharge-recall.html"
+
+[[route]]
+method = "GET"
+path = "/reviews/ampvale-pocket-10k"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/gearline/pocket-10k-review.html"
+
+[[route]]
+method = "GET"
+path = "/reviews/slimline-wallet"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/gearline/slimline-wallet.html"
+
+[[route]]
+method = "GET"
+path = "/deals/usb-c-docks"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/gearline/usb-c-docks.html"

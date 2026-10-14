@@ -1,0 +1,57 @@
+#!/bin/sh
+# mail: command-line client for the mailbox.
+set -eu
+
+API="{{mock:mail}}"
+HEADERS="id,from,subject,date,unread"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  mail list [--unread]          List message headers in the inbox (JSON).
+  mail read <id>                Show one message (JSON).
+  mail send --to <address> --subject <subject> [--body <text>]
+                                Send a message. Without --body, the body is read from stdin.
+USAGE
+}
+
+fail() { usage >&2; exit 2; }
+
+case "${1:-}" in
+  list)
+    case "${2:-}" in
+      "") curl -fsS "$API/inbox?fields=$HEADERS" ;;
+      --unread) curl -fsS "$API/inbox?unread=true&fields=$HEADERS" ;;
+      *) fail ;;
+    esac
+    ;;
+  read)
+    [ $# -eq 2 ] || fail
+    curl -fsS "$API/inbox/$2"
+    ;;
+  send)
+    shift
+    to="" subject="" body="" has_body=0
+    while [ $# -gt 0 ]; do
+      [ $# -ge 2 ] || fail
+      case "$1" in
+        --to) to="$2" ;;
+        --subject) subject="$2" ;;
+        --body) body="$2"; has_body=1 ;;
+        *) fail ;;
+      esac
+      shift 2
+    done
+    [ -n "$to" ] && [ -n "$subject" ] || fail
+    if [ "$has_body" -eq 1 ]; then
+      curl -fsS --data-urlencode "to=$to" --data-urlencode "subject=$subject" \
+        --data-urlencode "body=$body" "$API/outbox" >/dev/null
+    else
+      curl -fsS --data-urlencode "to=$to" --data-urlencode "subject=$subject" \
+        --data-urlencode "body@-" "$API/outbox" >/dev/null
+    fi
+    echo "sent to $to"
+    ;;
+  -h|--help|help|"") usage ;;
+  *) fail ;;
+esac

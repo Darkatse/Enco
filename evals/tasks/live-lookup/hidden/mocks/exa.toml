@@ -1,0 +1,16 @@
+# Exa: search returns the same results for every query, and contents returns Ampvale's recall page
+# for every URL, since mock routes match only the method and path.
+
+host = "api.exa.ai"
+
+[[route]]
+method = "POST"
+path = "/search"
+content_type = "application/json"
+body = "hidden/mocks/exa/search.json"
+
+[[route]]
+method = "POST"
+path = "/contents"
+content_type = "application/json"
+body = "hidden/mocks/exa/contents.json"

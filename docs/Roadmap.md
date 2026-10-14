@@ -35,7 +35,7 @@ P2、Session 监督树、P3、P4 四个方向互不依赖，先做哪个取决�
 - 披露策略被改坏后，安全模式仍能调用文件、Shell 和部署管理（M26）。
 - `plugin_rename` 之后，插件的代际历史与设置不变；只执行 `git mv` 时构建被拦下，并提示改用 `plugin_rename` 或 `plugin_remove`；复制出的目录在首次构建时得到新身份（M24）。
 - 插件导入 `completion` 在准入时被拒绝（M23）。
-- `evals/` 的六道题都能端到端运行，基线写入运行结果；`adapter-drift` 经正式路径通过，让第一条验收可以重复检验（M19、M23、M25）。M23 的 `live-lookup` 紧接着补上：答案只在一个 mock 页面上，mock 的 Jina 返回 200 而 `data.httpStatus` 为 403，mock 的 Exa 返回正文，Log 中的结果写明 Exa 来源与 Jina 失败的原因；web 的插件设置是变体的属性。
+- `evals/` 的六道题都能端到端运行，基线写入运行结果；`adapter-drift` 经正式路径通过，让第一条验收可以重复检验（M19、M23、M25）。M23 的 `live-lookup` 已加入：答案只在拦截读取的官网上，经 Exa 回退才读得到，只查回答；web 的插件设置是变体的属性。
 - 各里程碑推迟到阶段结束时一起做的手动核对：在 Telegram 中经 `config_apply` 换一次压缩模型并对话，再撤销（M21）。
 
 **脚本调用（工具多到逐个调用的代价明显时实施）**：宿主的脚本沙箱（QuickJS 编译为 Wasm）、嵌套调用的分派与记录、脚本内的 `capability_search` 与 `manual_read`，以及 composer 的披露形态选择（上下文专题）。

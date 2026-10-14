@@ -1,0 +1,58 @@
+{
+ "requestId": "5e9d1f2a7b3c4d8e9f0a1b2c3d4e5f60",
+ "resolvedSearchType": "neural",
+ "results": [
+  {
+   "id": "https://gearline.news/news/ampvale-pocket-10k-recall",
+   "title": "Ampvale recalls 210,000 Pocket 10K power banks over fire risk",
+   "url": "https://gearline.news/news/ampvale-pocket-10k-recall",
+   "publishedDate": "{{time:-11d}}",
+   "author": null,
+   "highlights": [
+    "Ampvale is recalling about 210,000 Pocket 10K power banks in Graphite and Midnight Blue, sold from {{date:-430d|en}} through {{date:-260d|en}}, after reports of units overheating while charging.",
+    "Ampvale says other colors and its MagDock magnetic power banks are not part of the recall."
+   ]
+  },
+  {
+   "id": "https://www.ampvale.com/recall",
+   "title": "Pocket 10K Power Bank Recall | Ampvale",
+   "url": "https://www.ampvale.com/recall",
+   "publishedDate": "{{time:-12d}}",
+   "author": null,
+   "highlights": [
+    "The recall covers Ampvale Pocket 10K power banks, model AV-P10, in Graphite and Midnight Blue, sold from {{date:-430d|en}} through {{date:-260d|en}}.",
+    "Stop using the recalled power bank and file a claim at ampvale.com/recall for a free replacement or a refund."
+   ]
+  },
+  {
+   "id": "https://chargebench.com/forum/t/magdock-5k-hot-pocket-10k-recall/18842",
+   "title": "MagDock 5K got really hot today, is it part of the Pocket 10K recall?",
+   "url": "https://chargebench.com/forum/t/magdock-5k-hot-pocket-10k-recall/18842",
+   "publishedDate": "{{time:-5d}}",
+   "author": null,
+   "highlights": [
+    "Pretty sure the whole lineup from last year is included, MagDock too. Ampvale just isn't saying it yet."
+   ]
+  },
+  {
+   "id": "https://gearline.news/news/ampvale-drivecharge-car-charger-recall",
+   "title": "Ampvale recalls DriveCharge 45W car chargers",
+   "url": "https://gearline.news/news/ampvale-drivecharge-car-charger-recall",
+   "publishedDate": "{{time:-700d}}",
+   "author": null,
+   "highlights": [
+    "Ampvale is recalling about 64,000 DriveCharge 45W car chargers because the plug can overheat in the 12V socket."
+   ]
+  },
+  {
+   "id": "https://gearline.news/reviews/ampvale-pocket-10k",
+   "title": "Ampvale Pocket 10K review: a small power bank that charges fast",
+   "url": "https://gearline.news/reviews/ampvale-pocket-10k",
+   "publishedDate": "{{time:-380d}}",
+   "author": null,
+   "highlights": [
+    "At 180 grams, the Pocket 10K fits in a jeans pocket and refills a phone about twice."
+   ]
+  }
+ ]
+}

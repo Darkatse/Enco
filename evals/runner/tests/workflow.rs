@@ -113,9 +113,12 @@ api_key_env = "EVAL_JUDGE_KEY"
 
     async fn command(&self, args: &[&str], key: bool) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_eval-runner"));
+        // The default variant's web settings name these; only mocks ever receive them.
         command
             .args(args)
             .current_dir(&self.root)
+            .env("EXA_API_KEY", "test-search-key")
+            .env("TINYFISH_API_KEY", "test-search-key")
             .env_remove("EVAL_JUDGE_KEY");
         if key {
             command.env("EVAL_JUDGE_KEY", "test-credential");

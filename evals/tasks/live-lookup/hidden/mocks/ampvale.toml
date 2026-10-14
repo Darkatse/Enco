@@ -1,0 +1,17 @@
+# Ampvale's site sits behind bot protection: readers and scripts get a challenge page.
+
+host = "www.ampvale.com"
+
+[[route]]
+method = "GET"
+path = "/recall"
+status = 403
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/ampvale/blocked.html"
+
+[[route]]
+method = "GET"
+path = "/"
+status = 403
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/ampvale/blocked.html"

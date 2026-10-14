@@ -1,0 +1,4 @@
+# The updated notice applied correctly, but the Frost White gift is never mentioned.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+answer = "fail"

@@ -1,0 +1,10 @@
+# The owner's personal mailbox: `mail` lists and reads the inbox and posts to the outbox.
+
+host = "mail.northpost.com"
+
+[[collection]]
+name = "inbox"
+data = "hidden/mocks/mail/inbox.json"
+
+[[collection]]
+name = "outbox"

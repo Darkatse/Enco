@@ -1,0 +1,3 @@
+# Each purchase named by product, color and whose it is, with no order numbers quoted: the task passes.
+start = 2026-10-11T09:00:00-04:00
+success = true

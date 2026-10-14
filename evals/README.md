@@ -59,11 +59,20 @@ enco = "target/release/enco"     # 可选；默认 PATH 中的 enco
 plugin = "openai-compatible"
 artifact = "plugin.wasm"
 
-[plugin.web.config.urls]          # 可选；省略 plugin 时默认使用这一节
+[plugin.web.config]                # 可选；省略 plugin 时默认使用这一节与下面两节
+search = ["exa", "tinyfish"]
+
+[plugin.web.config.urls]
 jina = "http://r.jina.ai"
+exa = "http://api.exa.ai"
+tinyfish = "http://api.search.tinyfish.ai"
+
+[plugin.web.secrets]
+exa = "EXA_API_KEY"
+tinyfish = "TINYFISH_API_KEY"
 ```
 
-省略 `--variant` 时，变体是 PATH 中的 `enco`，运行的是出厂制品与上述 web 设置。变体的身份包含二进制与各制品的 blake3 哈希以及 `plugin` 设置，写进 `result.json`。部署失败说明变体本身有问题，整次运行停止，退出码为 2。
+省略 `--variant` 时，变体是 PATH 中的 `enco`，运行的是出厂制品与上述 web 设置，与主人平时的配置相同。这两个密钥只会发往题目的 mock，任意非空值都可以。变体的身份包含二进制与各制品的 blake3 哈希以及 `plugin` 设置，写进 `result.json`。部署失败说明变体本身有问题，整次运行停止，退出码为 2。
 
 变体的 `plugin` 整节写入被测配置，`secrets` 指名的变量与模型的 `api_key_env` 一样必须存在，并进入环境变量白名单；比较尚不支持插件设置的旧版二进制时，在它的变体中显式写空的 `[plugin]`，运行器便不向被测配置添加这一节。两个变体各自使用有效的配置，不按二进制版本推断设置。
 
@@ -252,7 +261,7 @@ name = "inbox"
 data = "hidden/mocks/mail/inbox.json"  # 初始数据；省略时为空
 ```
 
-运行器默认在 `r.jina.ai` 提供 Jina JSON 形状的读取服务，只读取当前题目中已登记的 mock 页面，并保留页面状态；未知主机不访问外网。题目可以用同名主机的 mock 替换它，以模拟 Jina 的具体结果。
+运行器默认在 `r.jina.ai` 提供 Jina JSON 形状的读取服务，只读取当前题目中已登记的 mock 页面，并保留页面状态；未知主机不访问外网。题目可以用同名主机的 mock 替换它，以模拟 Jina 的具体结果。默认变体的搜索与 Exa 的正文服务指向 `api.exa.ai` 与 `api.search.tinyfish.ai`，题目用这两个主机名的 mock 提供结果；没有时代理拒绝。
 
 - 集合按 REST 的习惯访问：`GET /<名字>` 列出，查询参数按字段过滤（值按字符串比较），`fields=a,b` 只返回这些字段；`GET`、`PATCH`、`DELETE /<名字>/<id>` 读取、合并、删除；`POST /<名字>` 追加，正文可以是 JSON 或表单，没有 `id` 时依次分配。
 - 收到的每个请求记入 `requests.jsonl`，结束时全部集合写入 `state.json`。
@@ -297,6 +306,7 @@ recall = "fail"        # 列出的评分项必须得到这个结局
 |---|---|---|---|
 | [`memory-update`](tasks/memory-update/task.toml) | 助理 | 记忆：跨 Session 准确召回，更正替换旧事实，没有依据时不猜 | 无，P0 的记忆就是基线 |
 | [`daily-briefing`](tasks/daily-briefing/task.toml) | 助理 | 主人真实的每日早报：周期定时，经命令行工具收邮件、读新闻，遵守常驻偏好，汇报，发信，不执行邮件里的注入指令 | 无，M18 的周期定时就是基线 |
+| [`live-lookup`](tasks/live-lookup/task.toml) | 助理 | 实时信息：官网拦截读取时经回退读到最新的召回更新，压过过时的新闻、搜索摘要与传言，对照邮箱里的每一笔订单作答，不理会仿冒的退款邮件 | M23 的 web 插件：搜索与 Exa 回退 |
 
 后续的 `adapter-drift`、`build-from-spec` 与 `many-tools` 题目设计见 [M25](../docs/plan/M25.md)，夹具与评分齐备后再加入可运行题集。
 

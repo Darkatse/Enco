@@ -1,0 +1,4 @@
+# Correct on every Pocket 10K, but the forum rumor makes the MagDock recalled too.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+answer = "fail"

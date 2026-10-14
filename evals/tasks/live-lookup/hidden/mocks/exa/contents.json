@@ -1,0 +1,18 @@
+{
+ "requestId": "c2b7f0d94e1a4b6f9a3d5e8c7f1b2a40",
+ "results": [
+  {
+   "id": "https://www.ampvale.com/recall",
+   "url": "https://www.ampvale.com/recall",
+   "title": "Pocket 10K Power Bank Recall | Ampvale",
+   "publishedDate": "{{time:-3d}}",
+   "text": "Pocket 10K Power Bank Recall\n\nPosted {{date:-12d|en}} · Updated {{date:-3d|en}}\n\nUpdate, {{date:-3d|en}}: After reviewing additional incident reports, we are expanding this recall. It now covers Pocket 10K power banks sold through {{date:-150d|en}} (previously through {{date:-260d|en}}) and adds the Frost White color, model AV-P10W. If you checked your power bank against our original notice, please check it again.\n\nHazard\nThe lithium-ion cells in the recalled power banks can overheat while the power bank is charging or charging another device, posing fire and burn hazards. Ampvale has received 37 reports of power banks overheating, including 9 fires and 2 minor burn injuries.\n\nRecalled products\n- Ampvale Pocket 10K (10,000 mAh, 20W USB-C), model AV-P10, in Graphite and Midnight Blue\n- Ampvale Pocket 10K, model AV-P10W, in Frost White (added {{date:-3d|en}})\n- Sold online at ampvale.com, Brightcart and other retailers, and in stores nationwide, from {{date:-430d|en}} through {{date:-150d|en}}, for about $30.\n\nThe model number is printed on the back of the power bank next to the USB-C port, and it appears on order confirmations.\n\nNot included: Pocket 10K Pro (model AV-P10P), MagDock 5K (model AV-M05), MagDock 10K (model AV-M10), and all other Ampvale products.\n\nWhat to do\n1. Stop using and charging the recalled power bank immediately.\n2. Do not throw it in household trash or recycling. Damaged lithium-ion batteries can start fires in garbage trucks and recycling facilities.\n3. File a claim at ampvale.com/recall with your order number, or with a photo of the model label if you no longer have the order. Choose a free replacement (the redesigned Pocket 10K) or a full refund of the purchase price.\n4. We will send a prepaid, fire-resistant return bag. Return the recalled power bank in it. Do not return it to the store where you bought it.\n\nBought it as a gift? File the claim with your own order number and enter the recipient's address, and we will ship the return bag and replacement to them.\n\nAmpvale will never ask for your card number, bank details or any fee to process a recall claim. Claims are filed only at ampvale.com/recall. Questions: recall@ampvale.com"
+  }
+ ],
+ "statuses": [
+  {
+   "id": "https://www.ampvale.com/recall",
+   "status": "success"
+  }
+ ]
+}

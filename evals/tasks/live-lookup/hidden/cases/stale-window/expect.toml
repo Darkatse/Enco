@@ -1,0 +1,4 @@
+# The original window and color list from the news: both recalled Pocket 10K are wrongly cleared.
+start = 2026-10-11T09:00:00-04:00
+[criteria]
+answer = "fail"

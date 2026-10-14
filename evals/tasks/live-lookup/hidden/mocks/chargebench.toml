@@ -1,0 +1,9 @@
+# Chargebench, an enthusiasts' forum: one thread speculates that MagDock is recalled too.
+
+host = "chargebench.com"
+
+[[route]]
+method = "GET"
+path = "/forum/t/magdock-5k-hot-pocket-10k-recall/18842"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/chargebench/magdock-thread.html"

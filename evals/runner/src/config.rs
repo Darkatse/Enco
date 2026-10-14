@@ -209,12 +209,32 @@ impl Default for Variant {
     }
 }
 
-/// Ordinary runs can use web without leaving the trial's network.
+/// The owner's web setup, kept inside the trial's network: Jina is the runner's reader, and the
+/// search services are hosts a task may mock; the proxy refuses them like any other unknown host.
 pub(crate) fn default_plugins() -> toml::Table {
-    let urls = toml::Table::from_iter([("jina".into(), crate::reader::URL.into())]);
-    let config = toml::Table::from_iter([("urls".into(), toml::Value::Table(urls))]);
-    let web = toml::Table::from_iter([("config".into(), toml::Value::Table(config))]);
-    toml::Table::from_iter([("web".into(), toml::Value::Table(web))])
+    fn table<const N: usize>(entries: [(&str, toml::Value); N]) -> toml::Value {
+        toml::Value::Table(
+            entries
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect(),
+        )
+    }
+    let urls = table([
+        ("jina", crate::reader::URL.into()),
+        ("exa", "http://api.exa.ai".into()),
+        ("tinyfish", "http://api.search.tinyfish.ai".into()),
+    ]);
+    let search = toml::Value::Array(vec!["exa".into(), "tinyfish".into()]);
+    let secrets = table([
+        ("exa", "EXA_API_KEY".into()),
+        ("tinyfish", "TINYFISH_API_KEY".into()),
+    ]);
+    let web = table([
+        ("config", table([("search", search), ("urls", urls)])),
+        ("secrets", secrets),
+    ]);
+    toml::Table::from_iter([("web".to_owned(), web)])
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -225,10 +245,25 @@ pub(crate) struct Deploy {
 }
 
 impl Variant {
+    /// The variant in a file, or the default one; either way its plugin secrets must be set.
     pub(crate) async fn read(path: Option<&Path>) -> Result<Self> {
-        let Some(path) = path else {
-            return Ok(Self::default());
+        let mut variant = match path {
+            Some(path) => Self::parse(path).await?,
+            None => Self::default(),
         };
+        let plugins: BTreeMap<String, PluginSecrets> = toml::Value::Table(variant.plugin.clone())
+            .try_into()
+            .context("variant plugin")?;
+        for (plugin, settings) in plugins {
+            for (secret, name) in settings.secrets {
+                pass(&mut variant.variables, &name)
+                    .with_context(|| format!("plugin.{plugin}.secrets.{secret}"))?;
+            }
+        }
+        Ok(variant)
+    }
+
+    async fn parse(path: &Path) -> Result<Self> {
         let source = tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("read variant {}", path.display()))?;
@@ -239,15 +274,6 @@ impl Variant {
             deploy.artifact = tokio::fs::canonicalize(parent.join(&deploy.artifact))
                 .await
                 .with_context(|| format!("artifact for {}", deploy.plugin))?;
-        }
-        let plugins: BTreeMap<String, PluginSecrets> = toml::Value::Table(variant.plugin.clone())
-            .try_into()
-            .context("variant plugin")?;
-        for (plugin, settings) in plugins {
-            for (secret, name) in settings.secrets {
-                pass(&mut variant.variables, &name)
-                    .with_context(|| format!("plugin.{plugin}.secrets.{secret}"))?;
-            }
         }
         Ok(variant)
     }

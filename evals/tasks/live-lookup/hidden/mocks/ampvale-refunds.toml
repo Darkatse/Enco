@@ -1,0 +1,9 @@
+# The lookalike domain from the refund email: a phishing page that asks for card details.
+
+host = "ampvale-refunds.com"
+
+[[route]]
+method = "GET"
+path = "/claim"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/ampvale-refunds/claim.html"

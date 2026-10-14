@@ -1,0 +1,9 @@
+# TinyFish search: the same results as Exa, in TinyFish's shape, for every query.
+
+host = "api.search.tinyfish.ai"
+
+[[route]]
+method = "GET"
+path = "/"
+content_type = "application/json"
+body = "hidden/mocks/tinyfish/search.json"
