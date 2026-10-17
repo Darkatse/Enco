@@ -1,0 +1,51 @@
+//! A minimal tool plugin; replace the echo behavior with the intended capability.
+use bindings::exports::enco::plugin::{lifecycle, tools};
+use enco_sdk::types;
+
+enco_sdk::export!(tools, Plugin);
+
+struct Plugin;
+
+impl lifecycle::Guest for Plugin {
+    fn describe(config: String) -> Result<lifecycle::Description, types::Failure> {
+        if config != "{}" {
+            return Err(types::Failure {
+                code: "plugin.config".into(),
+                message: "This plugin has no configuration fields".into(),
+                retryable: false,
+            });
+        }
+        Ok(lifecycle::Description {
+            summary: "Echo an input object".into(),
+            config_schema: r#"{"type":"object","additionalProperties":false}"#.into(),
+            credentials: Vec::new(),
+        })
+    }
+
+    async fn probe() -> Result<(), types::Failure> {
+        Ok(())
+    }
+}
+
+impl tools::Guest for Plugin {
+    fn list(_config: String) -> Vec<types::ToolSpec> {
+        vec![types::ToolSpec {
+            name: "__NAME___echo".into(),
+            description: "Return the supplied object unchanged.".into(),
+            input_schema: r#"{"type":"object"}"#.into(),
+            effect: types::Effect::ReadOnly,
+        }]
+    }
+
+    async fn call(name: String, input: String) -> types::Outcome {
+        if name == "__NAME___echo" {
+            types::Outcome::Ok(input)
+        } else {
+            types::Outcome::Failed(types::Failure {
+                code: "tool.invalid_arguments".into(),
+                message: format!("Unknown tool {name}"),
+                retryable: false,
+            })
+        }
+    }
+}

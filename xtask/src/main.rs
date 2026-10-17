@@ -1,12 +1,29 @@
 mod docs;
+mod testing;
+
+#[path = "../../plugins/factory.rs"]
+mod factory;
 
 use anyhow::{Context, Result, bail};
-use cargo_metadata::DependencyKind;
+use cargo_metadata::{DependencyKind, Metadata};
 use std::{
-    io::{Read, Write},
+    ffi::OsStr,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus},
+    process::Command,
 };
+
+fn workspaces() -> Vec<String> {
+    [
+        "Cargo.toml",
+        "sdk/Cargo.toml",
+        "evals/runner/Cargo.toml",
+        "plugins/test-fixture/Cargo.toml",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .chain(factory::PLUGINS.map(|(name, _)| format!("plugins/{name}/Cargo.toml")))
+    .collect()
+}
 
 fn main() -> Result<()> {
     std::env::set_current_dir(
@@ -15,72 +32,30 @@ fn main() -> Result<()> {
             .context("workspace root")?,
     )?;
     match std::env::args().nth(1).as_deref() {
-        Some("boundaries") => boundaries(),
+        Some("boundaries") => boundaries(&metadata()?),
         Some("docs") => docs::generate(std::env::args().any(|a| a == "--check")),
         Some("build-factory") => build_factory(),
         Some("check") => {
-            for manifest in [
-                "Cargo.toml",
-                "plugins/Cargo.toml",
-                "evals/runner/Cargo.toml",
-            ] {
+            in_workspaces(|manifest| {
                 run(
                     "cargo",
-                    &["fmt", "--all", "--check", "--manifest-path", manifest],
-                )?;
-            }
-            boundaries()?;
-            lints()?;
-            file_lengths()?;
+                    &["fmt", "--all", "--check", "--manifest-path", &manifest],
+                )
+            })?;
+            let metadata = metadata()?;
+            boundaries(&metadata)?;
+            lints(&metadata)?;
+            file_lengths(&metadata)?;
             docs::generate(true)?;
             build_factory()?;
-            run(
-                "cargo",
-                &[
-                    "clippy",
-                    "--workspace",
-                    "--all-targets",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-            )?;
-            run(
-                "cargo",
-                &[
-                    "clippy",
-                    "--manifest-path",
-                    "plugins/Cargo.toml",
-                    "--target",
-                    "wasm32-wasip2",
-                    "--all-targets",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-            )?;
-            run(
-                "cargo",
-                &[
-                    "clippy",
-                    "--manifest-path",
-                    "evals/runner/Cargo.toml",
-                    "--all-targets",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-            )?;
-            // The evaluation tests drive the enco binary, so it must be built before they start.
-            run("cargo", &["test", "--workspace", "--no-run"])?;
-            tests()
+            testing::run(&metadata)
         }
         _ => bail!("usage: cargo xtask <check|boundaries|docs [--check]|build-factory>"),
     }
 }
 
 fn run(program: &str, args: &[&str]) -> Result<()> {
-    let status = Command::new(program)
+    let status = command(program)
         .args(args)
         .status()
         .with_context(|| format!("running {program}"))?;
@@ -90,82 +65,53 @@ fn run(program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn tests() -> Result<()> {
-    let metadata = cargo_metadata::MetadataCommand::new().no_deps().exec()?;
-    let app = metadata
-        .packages
-        .iter()
-        .find(|package| package.name == "enco")
-        .context("application package")?;
-    // Cargo runs test executables sequentially; two groups overlap independent application targets.
-    let mut application = [Command::new("cargo"), Command::new("cargo")];
-    for command in &mut application {
-        command.args(["test", "-p", "enco"]);
-    }
-    application[0].arg("--bins");
-    for (index, target) in app
-        .targets
-        .iter()
-        .filter(|target| target.is_test())
-        .enumerate()
-    {
-        let group = index % application.len();
-        application[group].args(["--test", &target.name]);
-    }
-    let [first, second] = application;
-    let mut workspace = Command::new("cargo");
-    workspace.args(["test", "--workspace", "--exclude", "enco"]);
-    let mut plugins = Command::new("cargo");
-    plugins.args(["test", "--manifest-path", "plugins/Cargo.toml"]);
-    let mut evaluation = Command::new("cargo");
-    evaluation
-        .args(["test", "--manifest-path", "evals/runner/Cargo.toml"])
-        .env("ENCO_BIN", metadata.target_directory.join("debug/enco"));
-    concurrently([
-        ("application tests (1/2)", first),
-        ("application tests (2/2)", second),
-        ("workspace tests", workspace),
-        ("plugin tests", plugins),
-        ("evaluation tests", evaluation),
-    ])
+/// Compiler commands and tests which invoke Cargo share the gate's offline policy.
+fn command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    command.env("CARGO_NET_OFFLINE", "true");
+    command
 }
 
-/// Run each command to completion on its own thread, then print the outputs in order.
-fn concurrently<const N: usize>(commands: [(&str, Command); N]) -> Result<()> {
-    let outputs = std::thread::scope(|scope| {
-        commands
-            .map(|(name, command)| (name, scope.spawn(move || interleaved(command))))
-            .map(|(name, handle)| (name, handle.join()))
-    });
-    let mut failed = Vec::new();
-    for (name, output) in outputs {
-        let (status, output) = output
-            .map_err(|_| anyhow::anyhow!("{name}: thread panicked"))?
-            .with_context(|| format!("running {name}"))?;
-        std::io::stdout().write_all(&output)?;
-        if !status.success() {
-            failed.push(name);
+fn metadata() -> Result<Vec<Metadata>> {
+    in_workspaces(|manifest| {
+        let output = command("cargo")
+            .args([
+                "metadata",
+                "--format-version=1",
+                "--no-deps",
+                "--manifest-path",
+                &manifest,
+            ])
+            .output()
+            .with_context(|| format!("reading metadata for {manifest}"))?;
+        if !output.status.success() {
+            bail!("{manifest}: {}", String::from_utf8_lossy(&output.stderr));
         }
-    }
-    if !failed.is_empty() {
-        bail!("{} failed", failed.join(", "));
-    }
-    Ok(())
+        serde_json::from_slice(&output.stdout).map_err(Into::into)
+    })
 }
 
-/// One pipe for both streams keeps cargo's progress next to the results it introduces.
-fn interleaved(mut command: Command) -> std::io::Result<(ExitStatus, Vec<u8>)> {
-    let (mut reader, writer) = std::io::pipe()?;
-    let mut child = command.stdout(writer.try_clone()?).stderr(writer).spawn()?;
-    // Our copies of the write end must close, or the read below never reaches the end.
-    drop(command);
-    let mut output = Vec::new();
-    reader.read_to_end(&mut output)?;
-    Ok((child.wait()?, output))
+/// Workspace checks are independent; preserve manifest order in their results.
+fn in_workspaces<T: Send>(operation: impl Fn(String) -> Result<T> + Sync) -> Result<Vec<T>> {
+    std::thread::scope(|scope| {
+        let operation = &operation;
+        let checks: Vec<_> = workspaces()
+            .into_iter()
+            .map(|manifest| scope.spawn(move || operation(manifest)))
+            .collect();
+        checks
+            .into_iter()
+            .map(|check| {
+                check
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("workspace check panicked"))?
+            })
+            .collect()
+    })
 }
 
-fn boundaries() -> Result<()> {
-    let metadata = cargo_metadata::MetadataCommand::new().no_deps().exec()?;
+fn boundaries(workspace_metadata: &[Metadata]) -> Result<()> {
+    let metadata = &workspace_metadata[0];
     for package in &metadata.packages {
         // Allowed workspace dependencies, and whether the crate is an application boundary,
         // the only place `anyhow` may appear; library crates define errors with thiserror.
@@ -198,14 +144,12 @@ fn boundaries() -> Result<()> {
             }
         }
     }
-    for (manifest, boundary) in [
-        ("plugins/Cargo.toml", "plugins use WIT only"),
-        ("evals/runner/Cargo.toml", "the evaluator uses the CLI only"),
-    ] {
-        let workspace = cargo_metadata::MetadataCommand::new()
-            .manifest_path(manifest)
-            .no_deps()
-            .exec()?;
+    for (manifest, workspace) in workspaces().iter().zip(workspace_metadata).skip(1) {
+        let boundary = if manifest.starts_with("evals/") {
+            "the evaluator uses the CLI only"
+        } else {
+            "plugins and SDK use WIT only"
+        };
         for package in &workspace.packages {
             for dep in &package.dependencies {
                 if metadata.packages.iter().any(|p| p.name == dep.name) {
@@ -221,52 +165,40 @@ fn boundaries() -> Result<()> {
     Ok(())
 }
 
-/// All workspaces enforce one lint table, except that plugins deny rather than forbid
-/// `unsafe_code`: the Wasm sandbox protects the host, and the generated export glue is
-/// accepted with `expect`. The plugin workspace cannot inherit across workspaces, so it
-/// keeps a copy, and every member of either workspace must opt in with
-/// `[lints] workspace = true`.
-fn lints() -> Result<()> {
+/// Every independently built plugin carries the same lint policy as the host, with ABI glue allowed.
+fn lints(workspace_metadata: &[Metadata]) -> Result<()> {
     fn manifest(path: &str) -> Result<toml::Table> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
         toml::from_str(&text).with_context(|| format!("parsing {path}"))
     }
-    let workspace_lints = |table: &toml::Table| table.get("workspace")?.get("lints").cloned();
-    let mut expected = workspace_lints(&manifest("Cargo.toml")?);
-    if workspace_lints(&manifest("evals/runner/Cargo.toml")?) != expected {
-        bail!("[workspace.lints] in evals/runner/Cargo.toml must equal the root table");
-    }
-    if let Some(level) = expected
-        .as_mut()
-        .and_then(|lints| lints.get_mut("rust")?.get_mut("unsafe_code"))
-    {
-        *level = "deny".into();
-    }
-    if workspace_lints(&manifest("plugins/Cargo.toml")?) != expected {
-        bail!(
-            "[workspace.lints] in plugins/Cargo.toml must equal the root table with `unsafe_code = \"deny\"`"
-        );
-    }
-    for root in [
-        "Cargo.toml",
-        "plugins/Cargo.toml",
-        "evals/runner/Cargo.toml",
-    ] {
-        let metadata = cargo_metadata::MetadataCommand::new()
-            .manifest_path(root)
-            .no_deps()
-            .exec()?;
-        for package in &metadata.packages {
-            let member = manifest(package.manifest_path.as_str())?;
-            let inherits = member
-                .get("lints")
-                .and_then(|lints| lints.get("workspace"))
-                .and_then(toml::Value::as_bool);
-            if inherits != Some(true) {
-                bail!(
-                    "{} does not inherit the workspace lints; add `[lints] workspace = true`",
-                    package.name
-                );
+    let root = manifest("Cargo.toml")?;
+    let expected = root["workspace"]["lints"].clone();
+    for (path, metadata) in workspaces().iter().zip(workspace_metadata) {
+        let table = manifest(path)?;
+        let independent_plugin = path.starts_with("plugins/") || path.starts_with("sdk/");
+        let mut wanted = expected.clone();
+        if independent_plugin {
+            wanted["rust"]["unsafe_code"] = "deny".into();
+        }
+        let actual = if independent_plugin {
+            table.get("lints")
+        } else {
+            table.get("workspace").and_then(|v| v.get("lints"))
+        };
+        if actual != Some(&wanted) {
+            bail!("{path}: lint table differs from the root policy");
+        }
+        if !independent_plugin {
+            for package in &metadata.packages {
+                let member = manifest(package.manifest_path.as_str())?;
+                if member
+                    .get("lints")
+                    .and_then(|v| v.get("workspace"))
+                    .and_then(toml::Value::as_bool)
+                    != Some(true)
+                {
+                    bail!("{} must inherit workspace lints", package.name);
+                }
             }
         }
     }
@@ -278,18 +210,10 @@ fn lints() -> Result<()> {
 const SOURCE_LINES: usize = 500;
 const TEST_LINES: usize = 1200;
 
-fn file_lengths() -> Result<()> {
+fn file_lengths(workspace_metadata: &[Metadata]) -> Result<()> {
     let root = std::env::current_dir()?;
     let mut long = Vec::new();
-    for manifest in [
-        "Cargo.toml",
-        "plugins/Cargo.toml",
-        "evals/runner/Cargo.toml",
-    ] {
-        let metadata = cargo_metadata::MetadataCommand::new()
-            .manifest_path(manifest)
-            .no_deps()
-            .exec()?;
+    for metadata in workspace_metadata {
         for package in &metadata.packages {
             let dir = package
                 .manifest_path
@@ -333,30 +257,85 @@ fn rust_files(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn build_factory() -> Result<()> {
+    std::fs::create_dir_all("target/factory")?;
+    for (name, _) in factory::PLUGINS {
+        run(
+            "cargo",
+            &[
+                "build",
+                "--manifest-path",
+                &format!("plugins/{name}/Cargo.toml"),
+                "--target",
+                "wasm32-wasip2",
+                "--release",
+                "--target-dir",
+                "target/plugin-build",
+            ],
+        )?;
+        let source = format!(
+            "target/plugin-build/wasm32-wasip2/release/{}.wasm",
+            name.replace('-', "_")
+        );
+        let destination = format!("target/factory/{name}.wasm");
+        let bytes = std::fs::read(&source).with_context(|| format!("reading {source}"))?;
+        let unchanged = match std::fs::read(&destination) {
+            Ok(previous) => previous == bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error).with_context(|| format!("reading {destination}")),
+        };
+        // Identical embedded bytes must not force every application test executable to relink.
+        if !unchanged {
+            std::fs::write(&destination, bytes)
+                .with_context(|| format!("writing {destination}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn clippy() -> Result<()> {
     run(
         "cargo",
         &[
-            "build",
-            "--manifest-path",
-            "plugins/Cargo.toml",
+            "clippy",
             "--workspace",
-            "--target",
-            "wasm32-wasip2",
-            "--release",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
         ],
     )?;
-    let metadata = cargo_metadata::MetadataCommand::new()
-        .manifest_path("plugins/Cargo.toml")
-        .no_deps()
-        .exec()?;
-    std::fs::create_dir_all("target/factory")?;
-    for name in ["openai-compatible", "deepseek", "typesafe", "web"] {
-        let source = metadata
-            .target_directory
-            .join("wasm32-wasip2/release")
-            .join(format!("{}.wasm", name.replace('-', "_")));
-        std::fs::copy(&source, format!("target/factory/{name}.wasm"))
-            .with_context(|| format!("copying {source}"))?;
+    for manifest in workspaces()
+        .into_iter()
+        .filter(|path| path.starts_with("sdk/") || path.starts_with("plugins/"))
+    {
+        run(
+            "cargo",
+            &[
+                "clippy",
+                "--manifest-path",
+                &manifest,
+                "--target",
+                "wasm32-wasip2",
+                "--target-dir",
+                "target/plugin-build",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
+        )?;
     }
+    run(
+        "cargo",
+        &[
+            "clippy",
+            "--manifest-path",
+            "evals/runner/Cargo.toml",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )?;
     Ok(())
 }

@@ -3,21 +3,28 @@ mod activation;
 mod admission;
 mod configuration;
 mod exports;
+mod factory;
 mod health;
+mod intent;
 mod probe;
 mod registration;
+mod request;
+mod startup;
 mod state;
 mod status;
 mod wiring;
 
 use crate::{
-    Clock, Credential, Decision, Embedding, Endpoint, KernelSettings, Loaded, NewGeneration,
-    Provider, Runtime, SettingsError, Store, StoreError,
+    Clock, Credential, Decision, Embedding, Endpoint, KernelSettings, Loaded, Provider, Runtime,
+    SettingsError, Store, StoreError,
 };
-use activation::ActivationReason;
 use admission::{users, validate_name};
 use enco_core::*;
 pub use exports::{Export, Exports};
+pub use intent::{
+    FactoryStatus, RegisteredIntent, RegisteredPlugin, RegisteredSource, RegistrationBase,
+};
+pub use request::{ArtifactSource, PluginChange, Registered, RegistrationRequest, Rollback};
 use state::State;
 pub use status::{ConfigStatus, PluginStatus, RegistryStatus};
 use std::{collections::BTreeMap, sync::Arc};
@@ -25,7 +32,7 @@ use tokio::sync::{Mutex, watch};
 
 /// Durable registry dependencies assembled by the application.
 pub struct RegistryDeps {
-    /// Sole persistence port, including plugins.lock and immutable artifacts.
+    /// Sole persistence port for registry facts and component artifacts.
     pub store: Arc<dyn Store>,
     /// Component compilation and export discovery.
     pub runtime: Arc<dyn Runtime>,
@@ -33,8 +40,6 @@ pub struct RegistryDeps {
     pub factory: Vec<FactoryPlugin>,
     /// Host-owned tables and their declaration functions.
     pub owners: Vec<TableOwner>,
-    /// Initial intent, used only when no configuration generation exists.
-    pub bootstrap: Result<serde_json::Value, String>,
     /// Names from the native tool declarations assembled by the composition root.
     pub host_tool_names: Vec<String>,
     /// Observation time, never generation ordering.
@@ -42,8 +47,9 @@ pub struct RegistryDeps {
 }
 
 /// A plugin supplied with the host binary.
+#[derive(Clone)]
 pub struct FactoryPlugin {
-    /// Reserved name in plugins.lock.
+    /// Host-reserved routing name.
     pub name: String,
     /// Stable host-assigned identity, independent of component self-description.
     pub id: PluginId,
@@ -85,22 +91,6 @@ pub enum Need {
     },
     /// Typed judgments for host policies.
     Decision,
-}
-
-/// Plugin content to register, including when undoing an earlier change.
-pub enum PluginSource {
-    /// New component bytes; inherit the active generation's complete settings.
-    Artifact(Vec<u8>),
-    /// All content of an existing plugin generation.
-    Generation(GenerationId),
-}
-
-/// Configuration content to register.
-pub enum ConfigSource {
-    /// A complete document from the intent file.
-    Document(serde_json::Value),
-    /// The document of an existing configuration generation.
-    Generation(GenerationId),
 }
 
 /// The one published snapshot of routing and registered configuration.
@@ -146,11 +136,7 @@ impl View {
 
 /// Routing is published only after the durable mutation commits.
 pub struct Registry {
-    store: Arc<dyn Store>,
-    runtime: Arc<dyn Runtime>,
-    clock: Arc<dyn Clock>,
-    owners: Vec<TableOwner>,
-    pub(crate) host_tool_names: Vec<String>,
+    deps: RegistryDeps,
     state: Mutex<State>,
     views: watch::Sender<Arc<View>>,
 }
@@ -163,30 +149,6 @@ pub enum Verdict {
     Failed(Failure),
 }
 
-/// Result of accepting a component as a new generation.
-#[derive(serde::Serialize)]
-pub struct Deployed {
-    /// Newly committed generation.
-    pub generation: GenerationRecord,
-    /// Configured callers affected by the change.
-    pub users: Vec<String>,
-}
-
-/// Result of applying configuration content.
-pub enum Applied {
-    /// Newly registered and active content.
-    Registered {
-        /// New global generation number.
-        generation: GenerationId,
-        /// Previously active configuration.
-        previous: GenerationId,
-        /// Real calls made for newly declared uses.
-        probes: Vec<Probe>,
-    },
-    /// The content was already active; no calls or writes occurred.
-    Unchanged(GenerationId),
-}
-
 /// A successful real call made while applying configuration.
 #[derive(serde::Serialize)]
 pub struct Probe {
@@ -196,39 +158,14 @@ pub struct Probe {
     pub endpoint: String,
 }
 
-/// How the current intent file relates to registered configuration content.
-#[derive(serde::Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ConfigDivergence {
-    /// Intent equals the active configuration.
-    None,
-    /// The document is registered, but these active plugin generations use different settings.
-    PluginSettings {
-        /// Current plugin generations, each differing from its section in the active document.
-        active: BTreeMap<String, GenerationId>,
-    },
-    /// Intent has never been registered, or cannot be read.
-    Unapplied {
-        /// Read or parse error, when present.
-        reason: Option<String>,
-    },
-    /// Intent was registered but a different generation is active.
-    Superseded {
-        /// Latest generation matching the intent document.
-        generation: GenerationId,
-        /// Explanation derived from the append-only generation history.
-        reason: String,
-    },
-}
-
 /// An explicit registry operation could not complete.
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
     /// A durable operation failed.
     #[error(transparent)]
     Store(#[from] StoreError),
-    /// A reserved identity in plugins.lock differs from the host's identity.
-    #[error("plugins.lock records a different identity for factory plugin {0}")]
+    /// A stored factory identity differs from the host's reserved identity.
+    #[error("registry records a different identity for factory plugin {0}")]
     FactoryIdentity(String),
     /// No registered plugin matches this name or identity.
     #[error("unknown plugin {0}")]
@@ -265,172 +202,98 @@ pub enum RegistryError {
 }
 
 impl Registry {
-    /// Restore persisted routing, register embedded artifacts and validate configured uses.
-    pub async fn open(deps: RegistryDeps) -> Result<Arc<Self>, RegistryError> {
+    /// Restore registered behavior; only an empty registry consumes initial intent.
+    pub async fn open<E, F>(
+        deps: RegistryDeps,
+        bootstrap: impl FnOnce(RegisteredIntent) -> F,
+    ) -> Result<Arc<Self>, E>
+    where
+        E: From<RegistryError>,
+        F: std::future::Future<Output = Result<RegistrationRequest, E>>,
+    {
         configuration::check_owners(&deps.owners)?;
-        let (state, admission) = State::initialize(&deps).await?;
-        let (views, _) = watch::channel(Arc::new(state.view(admission)));
+        let (state, config) = startup::open(&deps, bootstrap).await?;
+        let admission = admission::evaluate(state.contents(), &deps.host_tool_names);
+        let (views, _) = watch::channel(Arc::new(state.view(config, admission, &deps.factory)));
         Ok(Arc::new(Self {
-            store: deps.store,
-            runtime: deps.runtime,
-            clock: deps.clock,
-            owners: deps.owners,
-            host_tool_names: deps.host_tool_names,
+            deps,
             state: Mutex::new(state),
             views,
         }))
     }
 
-    /// Read one immutable snapshot, immediately releasing the watch borrow.
+    /// Read an immutable view without retaining a watch borrow.
     pub fn view(&self) -> Arc<View> {
         self.views.borrow().clone()
     }
 
-    /// Follow published views at a component's own boundary.
+    pub(crate) fn host_tool_names(&self) -> &[String] {
+        &self.deps.host_tool_names
+    }
+
+    /// Each component follows changes at its own ownership boundary.
     pub fn subscribe(&self) -> watch::Receiver<Arc<View>> {
         self.views.subscribe()
     }
 
-    /// Load outside the commit lock, then admit and activate against the latest state.
-    pub async fn deploy(
+    fn publish(
         &self,
-        name: &str,
-        source: PluginSource,
-    ) -> Result<Deployed, RegistryError> {
-        validate_name(name)?;
-        let state = self.state.lock().await;
-        let expected_plugin = state
-            .plugins
-            .names
-            .get(name)
-            .and_then(|id| state.plugins.active.get(id))
-            .copied();
-        let expected_config = state.config.generation;
-        let (artifact, hash, settings) = match source {
-            PluginSource::Artifact(bytes) => {
-                let settings = expected_plugin
-                    .and_then(|id| state.plugins.generations.get(&id))
-                    .map_or_else(PluginSettings::default, |record| record.settings.clone());
-                drop(state);
-                let hash = self.store.put_artifact(&bytes).await?;
-                (bytes, hash, settings)
-            }
-            PluginSource::Generation(id) => {
-                let record = state.plugins.generations.get(&id).ok_or_else(|| {
-                    if state.configs.contains_key(&id) {
-                        rejected(name, "generation is configuration content")
-                    } else {
-                        RegistryError::UnknownGeneration(id)
-                    }
-                })?;
-                if state.plugins.names.get(name) != Some(&record.plugin) {
-                    return Err(rejected(name, "generation belongs to another plugin"));
-                }
-                let record = record.clone();
-                drop(state);
-                (
-                    self.store.artifact(&record.artifact).await?,
-                    record.artifact,
-                    record.settings,
-                )
-            }
-        };
-        let loaded = registration::load(self.runtime.as_ref(), name, &artifact, &settings).await?;
-        let mut state = self.state.lock().await;
-        let current = state
-            .plugins
-            .names
-            .get(name)
-            .and_then(|id| state.plugins.active.get(id))
-            .copied();
-        if current != expected_plugin || state.config.generation != expected_config {
-            return Err(RegistryError::Conflict(name.into()));
-        }
-        let candidates = BTreeMap::from([(name.to_owned(), loaded.clone())]);
-        let before = admission::evaluate(&state.plugins, &self.host_tool_names, &BTreeMap::new());
-        let admission = admission::evaluate(&state.plugins, &self.host_tool_names, &candidates);
-        admission.accept_change(
-            &before,
-            &[name.into()],
-            &state.config.uses,
-            &state.config.uses,
-        )?;
-        let plugin = match state.plugins.names.get(name) {
-            Some(id) => *id,
-            None => {
-                let id = PluginId::new();
-                self.store.register_plugin(name, id).await?;
-                state.plugins.names.insert(name.into(), id);
-                id
-            }
-        };
-        let generation = NewGeneration {
-            plugin,
-            artifact: hash,
-            settings,
-            origin: Origin::Deployed,
-            status: GenerationStatus::Trial,
-            created_at: self.clock.now(),
-        };
-        let id = self.store.insert_generation(&generation, true).await?;
-        let record = generation.numbered(id);
-        state.plugins.registered(record.clone(), loaded);
-        self.publish(&mut state, Some(admission));
-        Ok(Deployed {
-            generation: record,
-            users: users(&state.config.uses, name),
-        })
+        state: &mut State,
+        config: Option<ActiveConfig>,
+        admission: Option<admission::Admission>,
+    ) {
+        state.release();
+        let config = config.unwrap_or_else(|| self.view().config.clone());
+        let admission = admission
+            .unwrap_or_else(|| admission::evaluate(state.contents(), &self.deps.host_tool_names));
+        self.views
+            .send_replace(Arc::new(state.view(config, admission, &self.deps.factory)));
     }
+}
 
-    /// Roll back relative to the generation observed when choosing the target.
-    pub async fn rollback(&self, name: &str) -> Result<GenerationRecord, RegistryError> {
-        let (plugin, expected, candidates) = {
-            let state = self.state.lock().await;
-            let plugin = *state
-                .plugins
-                .names
-                .get(name)
-                .ok_or_else(|| RegistryError::UnknownPlugin(name.into()))?;
-            let expected = state
-                .plugins
-                .active
-                .get(&plugin)
-                .copied()
-                .ok_or_else(|| RegistryError::NoRollbackTarget(name.into()))?;
-            (plugin, expected, state.plugins.candidates(plugin, expected))
-        };
-        if candidates.is_empty() {
-            return Err(RegistryError::NoRollbackTarget(name.into()));
-        }
-        self.activate(name, plugin, expected, candidates, ActivationReason::Manual)
-            .await?
-            .target
-            .ok_or_else(|| RegistryError::NoRollbackTarget(name.into()))
-    }
-
-    fn publish(&self, state: &mut State, admission: Option<admission::Admission>) {
-        state.plugins.loaded.retain(|id, _| {
-            state.plugins.active.values().any(|active| active == id)
-                || state.plugins.factory.values().any(|factory| factory == id)
-        });
-        state.plugins.trial_successes.retain(|id, _| {
-            state.plugins.active.values().any(|active| active == id)
-                && state
-                    .plugins
-                    .generations
-                    .get(id)
-                    .is_some_and(|record| record.status == GenerationStatus::Trial)
-        });
-        let admission = admission.unwrap_or_else(|| {
-            admission::evaluate(&state.plugins, &self.host_tool_names, &BTreeMap::new())
-        });
-        self.views.send_replace(Arc::new(state.view(admission)));
-    }
+/// Validate the directory and routing name accepted by every plugin entry point.
+pub fn validate_plugin_name(name: &str) -> Result<(), RegistryError> {
+    validate_name(name)
 }
 
 fn rejected(name: &str, reason: impl ToString) -> RegistryError {
     RegistryError::Rejected {
         name: name.into(),
         reason: reason.to_string(),
+    }
+}
+
+/// Failed durable writes leave the previous references authoritative for artifact retention.
+async fn cleanup_failed_write(
+    deps: &RegistryDeps,
+    state: &State,
+    error: RegistryError,
+) -> RegistryError {
+    match deps
+        .store
+        .retain_artifacts(&state.retained_artifacts())
+        .await
+    {
+        Ok(()) => error,
+        Err(cleanup) => StoreError::Backend(format!(
+            "{error}; releasing unaccepted artifacts also failed: {cleanup}"
+        ))
+        .into(),
+    }
+}
+
+/// Cleanup follows committed references; a failure cannot undo their acceptance.
+async fn cleanup_artifacts(deps: &RegistryDeps, state: &State) -> Option<String> {
+    match deps
+        .store
+        .retain_artifacts(&state.retained_artifacts())
+        .await
+    {
+        Ok(()) => None,
+        Err(error) => {
+            let warning = format!("artifact cleanup: {error}");
+            tracing::warn!("{warning}");
+            Some(warning)
+        }
     }
 }

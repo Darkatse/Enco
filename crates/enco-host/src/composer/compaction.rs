@@ -93,6 +93,7 @@ impl Compaction {
         history_tokens: u32,
         keep: u32,
     ) -> Option<LogPos> {
+        let first = self.chunks.first()?.0;
         let window = self.window;
         let mut tail = history_tokens;
         let mut needed = self.overhead;
@@ -100,7 +101,14 @@ impl Compaction {
         let mut chunks = self.chunks.iter().peekable();
         let mut fitting = None;
         // All three sequences follow Log order, so each item is counted once.
-        for &end in &input.transcript.round_ends {
+        // A compaction-only Round has no visible content to summarize again.
+        for end in input
+            .transcript
+            .round_ends
+            .iter()
+            .copied()
+            .filter(|end| *end >= first)
+        {
             while let Some((_, size)) = sizes.next_if(|(pos, _)| *pos <= end) {
                 tail -= size;
             }

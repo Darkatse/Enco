@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 pub(crate) struct Status {
     pub(crate) sessions: Vec<SessionStatus>,
+    pub(crate) plugins: Vec<Plugin>,
 }
 
 #[derive(Deserialize)]
@@ -20,7 +21,7 @@ pub(crate) struct Session {
 
 #[derive(Deserialize)]
 pub(crate) struct Plugin {
-    pub(crate) name: String,
+    pub(crate) name: Option<String>,
     pub(crate) active: Option<Generation>,
 }
 

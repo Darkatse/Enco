@@ -4,6 +4,7 @@ pub mod channel;
 mod clock;
 mod composer;
 mod context;
+pub mod development;
 mod limits;
 pub mod memory;
 mod sqlite;
@@ -20,7 +21,9 @@ pub use memory::{
 };
 pub use store::{SqliteStore, StorePaths};
 pub use telegram::Telegram;
-pub use tools::{LIFELINE, config, native_tools, plugin_tool_specs, plugin_tools};
+pub use tools::{
+    LIFELINE, development_tool_specs, development_tools, native_tools, self_status_spec,
+};
 
 /// Configuration ownership for the host components assembled by the application.
 pub const TABLE_OWNERS: [enco_kernel::TableOwner; 2] = [memory::TABLE_OWNER, telegram::TABLE_OWNER];

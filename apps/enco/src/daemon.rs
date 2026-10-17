@@ -1,11 +1,10 @@
 use crate::{
     compose_root,
     paths::Paths,
-    protocol::{Command, DeploySource, Request, ServerMessage},
+    protocol::{Command, Request, ServerMessage},
 };
 use anyhow::{Context, Result, bail};
 use enco_core::*;
-use enco_host::config;
 use enco_kernel::{Accepted, Kernel, KernelError, Scheduled};
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
@@ -116,7 +115,7 @@ async fn connection(
             _ = stop.cancelled() => return Ok(()),
             line = lines.next_line() => {
                 let Some(line) = line? else { return Ok(()); };
-                let response = respond(&application, &line, &mut subscription).await;
+                let response = respond(&application, &line, &mut subscription, &stop).await;
                 send(&mut writer, &response, &stop).await?;
             }
             entry = event => {
@@ -143,6 +142,7 @@ async fn respond(
     application: &compose_root::Application,
     line: &str,
     subscription: &mut Option<Subscription>,
+    stop: &CancellationToken,
 ) -> ServerMessage {
     let request = match serde_json::from_str::<Request>(line) {
         Ok(request) => request,
@@ -154,7 +154,7 @@ async fn respond(
             };
         }
     };
-    match process(application, request.command, subscription).await {
+    match process(application, request.command, subscription, stop).await {
         Ok(data) => ServerMessage::Ok {
             id: request.id,
             data,
@@ -219,6 +219,7 @@ async fn process(
     application: &compose_root::Application,
     command: Command,
     subscription: &mut Option<Subscription>,
+    stop: &CancellationToken,
 ) -> Result<Value, CommandError> {
     let kernel = &application.kernel;
     let memory_error = |error: enco_host::MemoryError| CommandError {
@@ -284,7 +285,7 @@ async fn process(
                 .map_err(memory_error)?;
             json!({ "forgotten": forgotten })
         }
-        Command::Status {} => status(application).await?,
+        Command::Status {} => crate::status::read(application).await?,
         Command::Sessions {} => json!(kernel.sessions().await?),
         Command::Log {
             session: name,
@@ -293,35 +294,42 @@ async fn process(
             let session = existing_session(kernel, &name).await?;
             json!(kernel.log(session.id, after).await?)
         }
-        Command::PluginStatus {} => json!(kernel.registry().status().await.plugins),
-        Command::PluginDeploy { name, source } => json!(
+        Command::Apply {} => json!(
+            application
+                .development
+                .apply(kernel.registry(), stop)
+                .await
+                .map_err(development_error)?
+        ),
+        Command::Rollback {} => json!(
             kernel
                 .registry()
-                .deploy(&name, plugin_source(source).await?)
+                .rollback()
                 .await
                 .map_err(KernelError::from)?
         ),
-        Command::ConfigApply { generation } => {
-            config::apply(&application.paths.config(), kernel.registry(), generation)
-                .await
-                .map_err(|error| CommandError {
-                    code: "config",
-                    message: error.to_string(),
-                })?
+        Command::PluginDeploy { name, path } => {
+            let bytes = tokio::fs::read(&path).await.map_err(|error| CommandError {
+                code: "bad_request",
+                message: format!("{}: {error}", path.display()),
+            })?;
+            json!(
+                application
+                    .development
+                    .deploy(kernel.registry(), name, bytes, stop)
+                    .await
+                    .map_err(development_error)?
+            )
         }
-        Command::ConfigRollback {} => json!(
-            kernel
-                .registry()
-                .rollback_config()
+        Command::PluginScaffold { name } => {
+            json!({ "files": application.development.scaffold(kernel.registry(), &name).await.map_err(development_error)? })
+        }
+        Command::PluginRename { name, to } => json!(
+            application
+                .development
+                .rename(kernel.registry(), &name, &to, stop)
                 .await
-                .map_err(KernelError::from)?
-        ),
-        Command::PluginRollback { name } => json!(
-            kernel
-                .registry()
-                .rollback(&name)
-                .await
-                .map_err(KernelError::from)?
+                .map_err(development_error)?
         ),
         Command::Inspect {
             session: name,
@@ -345,36 +353,9 @@ async fn process(
     })
 }
 
-/// The kernel's status with what only the daemon knows: channels and the intent file.
-async fn status(application: &compose_root::Application) -> Result<Value, CommandError> {
-    let kernel = &application.kernel;
-    let mut status = json!(kernel.status().await?);
-    status["channels"] = json!(application.channels.status().await?);
-    status["config"] = json!(kernel.registry().status().await.config);
-    status["config"]["divergence"] = json!(
-        kernel
-            .registry()
-            .config_divergence(
-                config::document(&application.paths.config())
-                    .await
-                    .map_err(|error| error.to_string())
-            )
-            .await
-    );
-    Ok(status)
-}
-
-/// The daemon reads a component file, so the registry receives bytes or a generation number.
-async fn plugin_source(source: DeploySource) -> Result<enco_kernel::PluginSource, CommandError> {
-    Ok(match source {
-        DeploySource::Path(path) => {
-            enco_kernel::PluginSource::Artifact(tokio::fs::read(&path).await.map_err(|error| {
-                CommandError {
-                    code: "bad_request",
-                    message: format!("{}: {error}", path.display()),
-                }
-            })?)
-        }
-        DeploySource::Generation(id) => enco_kernel::PluginSource::Generation(id),
-    })
+fn development_error(error: enco_host::development::DevelopmentError) -> CommandError {
+    CommandError {
+        code: "development",
+        message: error.to_string(),
+    }
 }

@@ -1,8 +1,7 @@
 pub(crate) mod args;
-pub mod config;
+mod development;
 mod files;
-mod plugins;
-pub use plugins::{plugin_tool_specs, plugin_tools};
+pub use development::{development_tool_specs, development_tools, self_status_spec};
 mod shell;
 
 use enco_core::CodeRef;
@@ -13,15 +12,14 @@ use std::{
 };
 
 /// Minimal repair tools, also required by ordinary Agent Sessions.
-pub const LIFELINE: [&str; 8] = [
+pub const LIFELINE: [&str; 7] = [
     "fs_read",
     "fs_write",
     "fs_edit",
     "fs_list",
     "shell_exec",
-    "plugin_status",
-    "plugin_deploy",
-    "config_apply",
+    "self_status",
+    "self_apply",
 ];
 
 /// Native capabilities share the workspace path rules and ordinary Tool dispatch.

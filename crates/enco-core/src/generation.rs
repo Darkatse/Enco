@@ -1,4 +1,4 @@
-use crate::{ContentHash, DateTime, Failure, GenerationId, PluginId, Utc};
+use crate::{ContentHash, DateTime, Failure, GenerationId, PluginId, RegistrationId, Utc};
 use serde::{Deserialize, Serialize};
 
 /// One immutable generation identity, with a mutable availability status.
@@ -13,6 +13,7 @@ pub struct GenerationRecord {
     /// Owner-selected plugin configuration and credential names, fixed together with the code.
     pub settings: PluginSettings,
     /// How this generation entered the registry.
+    #[serde(flatten)]
     pub origin: Origin,
     /// Whether this generation remains eligible for use.
     pub status: GenerationStatus,
@@ -43,12 +44,39 @@ impl Default for PluginSettings {
 
 /// Source of a registered generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "origin", rename_all = "snake_case")]
 pub enum Origin {
     /// Component embedded in the host binary.
     Factory,
-    /// Component explicitly deployed by the owner or agent.
-    Deployed,
+    /// Accepted code intent, from source or the current host's factory implementation.
+    Code {
+        /// Accepted change that supplied this code.
+        registration: RegistrationId,
+    },
+    /// New settings paired with the currently active code.
+    Settings {
+        /// Accepted change that supplied these settings.
+        registration: RegistrationId,
+        /// Generation whose code is reused.
+        based_on: GenerationId,
+    },
+    /// A component supplied directly, independently of source intent.
+    Artifact {
+        /// Accepted change that supplied this component.
+        registration: RegistrationId,
+    },
+}
+
+impl Origin {
+    /// The accepted change that produced this content; factory content belongs to the host.
+    pub fn registration(self) -> Option<RegistrationId> {
+        match self {
+            Self::Factory => None,
+            Self::Code { registration }
+            | Self::Settings { registration, .. }
+            | Self::Artifact { registration } => Some(registration),
+        }
+    }
 }
 
 /// Eligibility for use and automatic recovery.
@@ -81,8 +109,12 @@ pub struct RolledBack {
 pub struct ConfigGeneration {
     /// Global registry sequence number, shared with plugin generations.
     pub id: GenerationId,
+    /// Accepted change which produced this generation.
+    pub registration: RegistrationId,
     /// Complete configuration content; declarations are derived by its owners.
     pub document: serde_json::Value,
+    /// Configuration which was active immediately before this one was registered.
+    pub previous: Option<GenerationId>,
     /// Observation time for display, never ordering.
     pub created_at: DateTime<Utc>,
 }

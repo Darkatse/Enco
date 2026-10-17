@@ -25,3 +25,4 @@ pub(crate) const TELEGRAM_POLL_SECONDS: u64 = 30;
 pub(crate) const TELEGRAM_SEND_SECONDS: u64 = 15;
 pub(crate) const TELEGRAM_MESSAGE_CHARS: usize = 32768;
 pub(crate) const RECENT_DELIVERY_FAILURES: u32 = 10;
+pub(crate) const BUILD_DIAGNOSTICS: usize = 12;

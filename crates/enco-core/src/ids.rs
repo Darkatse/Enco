@@ -70,6 +70,17 @@ impl fmt::Display for GenerationId {
     }
 }
 
+/// Registry-global registration number; one accepted change may contain several generations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RegistrationId(pub u64);
+
+impl fmt::Display for RegistrationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Ownership generation; single-node execution uses one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Epoch(pub u64);

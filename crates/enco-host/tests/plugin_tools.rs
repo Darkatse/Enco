@@ -12,6 +12,7 @@ use std::{
 };
 use support::*;
 use tokio::sync::Barrier;
+use tokio_util::sync::CancellationToken;
 
 fn spec(name: &str, label: &str, effect: Effect) -> ToolSpec {
     ToolSpec {
@@ -84,21 +85,12 @@ fn fault() -> Failure {
     }
 }
 
-async fn configured(
-    root: &Path,
-    runtime: Arc<dyn Runtime>,
-    document: Value,
-) -> (Arc<Registry>, Arc<SqliteStore>) {
-    let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
-    let registry = Registry::open(registry_deps(
-        store.clone(),
-        runtime,
-        FACTORY_BYTES,
-        document,
-    ))
-    .await
-    .unwrap();
-    (registry, store)
+async fn tool_kernel(root: &Path, loaded: Loaded) -> Kernel {
+    let (development, registry, store) =
+        scripted_home(root, factory_runtime(loaded), configuration(), vec![]).await;
+    Kernel::start(kernel_deps(root, store, registry, None, Some(development)))
+        .await
+        .unwrap()
 }
 
 async fn send(kernel: &Kernel) -> Vec<Entry> {
@@ -121,12 +113,12 @@ fn plugin_generation(registry: &Registry) -> GenerationId {
 }
 
 #[tokio::test]
-async fn configuration_changes_tools_at_the_next_round_and_redeployment_restores_all_settings() {
+async fn configuration_changes_tools_at_the_next_round_and_git_restores_settings() {
     let root = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![
         calls(vec![
             call("fixture_read", "{}"),
-            call("config_apply", "{}"),
+            call("self_apply", "{}"),
             call("fixture_read", "{}"),
         ]),
         calls(vec![call("fixture_read", "{}")]),
@@ -138,7 +130,9 @@ async fn configuration_changes_tools_at_the_next_round_and_redeployment_restores
     let mut document = configuration();
     document["plugin"] =
         json!({"fixture": {"config": {"label": "old"}, "secrets": {"service": "OLD_KEY"}}});
-    let (registry, store) = configured(root.path(), runtime, document.clone()).await;
+    let (development, registry, store) =
+        scripted_home(root.path(), runtime, document.clone(), vec![]).await;
+    let initial = registry.registered_intent().await.base.unwrap().revision;
     let old = plugin_generation(&registry);
     document["plugin"]["fixture"] =
         json!({"config": {"label": "new"}, "secrets": {"service": "NEW_KEY"}});
@@ -147,9 +141,15 @@ async fn configuration_changes_tools_at_the_next_round_and_redeployment_restores
         toml::to_string(&document).unwrap(),
     )
     .unwrap();
-    let kernel = Kernel::start(kernel_deps(root.path(), store, registry.clone(), None))
-        .await
-        .unwrap();
+    let kernel = Kernel::start(kernel_deps(
+        root.path(),
+        store,
+        registry.clone(),
+        None,
+        Some(development.clone()),
+    ))
+    .await
+    .unwrap();
     let log = send(&kernel).await;
     let new = plugin_generation(&registry);
     assert_ne!(old, new);
@@ -180,39 +180,47 @@ async fn configuration_changes_tools_at_the_next_round_and_redeployment_restores
         })
         .collect();
     assert_eq!(outputs, ["old", "old", "new"]);
+    for (request, expected) in provider
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .zip(["Fixture old", "Fixture new"])
     {
-        let requests = provider.requests.lock().unwrap();
         assert_eq!(
-            requests[0]
+            request
                 .tools
                 .iter()
                 .find(|tool| tool.name == "fixture_read")
                 .unwrap()
                 .description,
-            "Fixture old"
-        );
-        assert_eq!(
-            requests[1]
-                .tools
-                .iter()
-                .find(|tool| tool.name == "fixture_read")
-                .unwrap()
-                .description,
-            "Fixture new"
+            expected
         );
     }
-    let restored = registry
-        .deploy("fixture", PluginSource::Generation(old))
-        .await
-        .unwrap()
-        .generation;
+    restore_config(root.path(), &initial, &registry, &development).await;
+    let status = registry.status().await.unwrap();
+    let restored = status.plugins[0].active.as_ref().unwrap();
     assert_eq!(restored.settings.config, json!({"label":"old"}));
     assert_eq!(restored.settings.secrets["service"], "OLD_KEY");
-    assert_eq!(
-        registry.status().await.plugins[0].settings_match,
-        Some(false)
-    );
+    assert!(status.plugins[0].matches_registered);
     kernel.shutdown().await.unwrap();
+}
+
+async fn restore_config(
+    root: &Path,
+    revision: &str,
+    registry: &Registry,
+    development: &development::Development,
+) {
+    git(
+        root,
+        &["restore", "--source", revision, "--", "config.toml"],
+    )
+    .await;
+    development
+        .apply(registry, &CancellationToken::new())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -227,22 +235,31 @@ async fn failed_bound_code_stops_later_calls_until_the_next_round() {
         calls(vec![call("fixture_read", "{}")]),
         reply("done"),
     ]);
-    let (registry, store) = configured(
-        root.path(),
-        Arc::new(ConfiguredRuntime { provider }),
-        configuration(),
-    )
-    .await;
+    let runtime = Arc::new(ConfiguredRuntime { provider });
+    let (development, registry, store) =
+        scripted_home(root.path(), runtime, configuration(), vec![]).await;
     let factory = plugin_generation(&registry);
-    let broken = registry
-        .deploy("fixture", PluginSource::Artifact(b"trap".to_vec()))
+    let broken = development
+        .deploy(
+            &registry,
+            "fixture".into(),
+            b"trap".to_vec(),
+            &CancellationToken::new(),
+        )
         .await
         .unwrap()
-        .generation
+        .generations
+        .remove(0)
         .id;
-    let kernel = Kernel::start(kernel_deps(root.path(), store, registry.clone(), None))
-        .await
-        .unwrap();
+    let kernel = Kernel::start(kernel_deps(
+        root.path(),
+        store,
+        registry.clone(),
+        None,
+        Some(development),
+    ))
+    .await
+    .unwrap();
     let log = send(&kernel).await;
     let failures: Vec<_> = log
         .iter()
@@ -326,10 +343,7 @@ async fn readonly_batches_overlap_and_settle_in_proposal_order_around_mutations(
         ],
         adapter: ordered.clone(),
     });
-    let (registry, store) = registry_configured(root.path(), loaded, configuration(), vec![]).await;
-    let kernel = Kernel::start(kernel_deps(root.path(), store, registry, None))
-        .await
-        .unwrap();
+    let kernel = tool_kernel(root.path(), loaded).await;
     let log = send(&kernel).await;
     let settled: Vec<_> = log
         .iter()
@@ -385,10 +399,7 @@ async fn shutdown_signals_the_whole_batch_and_waits_for_every_settlement() {
         specs: vec![spec("wait", "wait", Effect::ReadOnly)],
         adapter: waiting.clone(),
     });
-    let (registry, store) = registry_configured(root.path(), loaded, configuration(), vec![]).await;
-    let kernel = Kernel::start(kernel_deps(root.path(), store, registry, None))
-        .await
-        .unwrap();
+    let kernel = tool_kernel(root.path(), loaded).await;
     let session = kernel.open_session("main").await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "work".into())
@@ -426,29 +437,36 @@ async fn shutdown_signals_the_whole_batch_and_waits_for_every_settlement() {
 }
 
 #[tokio::test]
-async fn deployments_and_configuration_reject_native_and_plugin_tool_name_conflicts() {
+async fn registrations_and_configuration_reject_native_and_plugin_tool_name_conflicts() {
     let root = tempfile::tempdir().unwrap();
     let runtime = Arc::new(ConfiguredRuntime {
         provider: ScriptedProvider::new(vec![]),
     });
-    let (registry, store) = configured(root.path(), runtime, configuration()).await;
+    let store = Arc::new(SqliteStore::open(store_paths(root.path())).await.unwrap());
+    let registry = open_registry(
+        registry_deps(store.clone(), runtime, FACTORY_BYTES),
+        configuration_request(configuration()),
+    )
+    .await
+    .unwrap();
     let mut document = configuration();
     document["plugin"] = json!({"fixture": {"config": {"tool":"fs_read"}}});
     let before = store.registry().await.unwrap();
-    let rejected = registry
-        .apply_config(ConfigSource::Document(document.clone()))
+    let rejected = submit(&registry, configuration_request(document.clone()))
         .await
         .err()
         .unwrap();
     assert!(rejected.to_string().contains("fs_read") && rejected.to_string().contains("native"));
     assert!(
-        registry
-            .deploy("native-copy", PluginSource::Artifact(b"native".to_vec()))
-            .await
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("fs_read")
+        submit(
+            &registry,
+            artifact_request("native-copy", b"native".to_vec())
+        )
+        .await
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("fs_read")
     );
     assert_eq!(
         store.registry().await.unwrap().generations,
@@ -458,14 +476,12 @@ async fn deployments_and_configuration_reject_native_and_plugin_tool_name_confli
         store.registry().await.unwrap().config_generations,
         before.config_generations
     );
-    registry
-        .deploy("other", PluginSource::Artifact(b"other".to_vec()))
+    submit(&registry, artifact_request("other", b"other".to_vec()))
         .await
         .unwrap();
     document["plugin"]["fixture"]["config"]["tool"] = "other_read".into();
     assert!(
-        registry
-            .apply_config(ConfigSource::Document(document))
+        submit(&registry, configuration_request(document))
             .await
             .err()
             .unwrap()
@@ -473,8 +489,7 @@ async fn deployments_and_configuration_reject_native_and_plugin_tool_name_confli
             .contains("other_read")
     );
     assert!(
-        registry
-            .deploy("third", PluginSource::Artifact(b"other".to_vec()))
+        submit(&registry, artifact_request("third", b"other".to_vec()))
             .await
             .err()
             .unwrap()
@@ -506,40 +521,45 @@ async fn mechanical_rollback_excludes_both_conflicts_and_keeps_native_tools_runn
         });
         runtime.insert(bytes, loaded);
     }
-    let (registry, store) = configured(root.path(), runtime.clone(), configuration()).await;
-    let first = registry
-        .deploy("first", PluginSource::Artifact(b"shared".to_vec()))
-        .await
-        .unwrap()
-        .generation;
+    let (development, registry, store) =
+        scripted_home(root.path(), runtime.clone(), configuration(), vec![]).await;
+    let deploy = async |name: &str, bytes: &[u8]| {
+        development
+            .deploy(
+                &registry,
+                name.into(),
+                bytes.to_vec(),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .generations
+            .remove(0)
+    };
+    let first = deploy("first", b"shared").await;
     for _ in 0..TRIAL_CALLS {
         registry.report(first.id, Verdict::Ok, None).await.unwrap();
     }
+    let renamed = deploy("first", b"renamed").await;
+    let second = deploy("second", b"shared").await;
     registry
-        .deploy("first", PluginSource::Artifact(b"renamed".to_vec()))
+        .report(renamed.id, Verdict::Failed(fault()), None)
         .await
         .unwrap();
-    let second = registry
-        .deploy("second", PluginSource::Artifact(b"shared".to_vec()))
-        .await
-        .unwrap()
-        .generation;
-    registry.rollback("first").await.unwrap();
     drop(registry);
-    let registry = Registry::open(registry_deps(
+    let (development, registry) = open_home(
+        root.path(),
         store.clone(),
-        runtime,
-        FACTORY_BYTES,
+        registry_deps(store.clone(), runtime, FACTORY_BYTES),
         configuration(),
-    ))
-    .await
-    .unwrap();
-    let status = registry.status().await;
+    )
+    .await;
+    let status = registry.status().await.unwrap();
     for name in ["first", "second"] {
         let plugin = status
             .plugins
             .iter()
-            .find(|plugin| plugin.name == name)
+            .find(|plugin| plugin.name.as_deref() == Some(name))
             .unwrap();
         let reason = plugin.unavailable.as_ref().unwrap();
         assert!(reason.contains("shared_read") && reason.contains("first, second"));
@@ -548,9 +568,15 @@ async fn mechanical_rollback_excludes_both_conflicts_and_keeps_native_tools_runn
             if name == "first" { first.id } else { second.id }
         );
     }
-    let kernel = Kernel::start(kernel_deps(root.path(), store, registry, None))
-        .await
-        .unwrap();
+    let kernel = Kernel::start(kernel_deps(
+        root.path(),
+        store,
+        registry,
+        None,
+        Some(development),
+    ))
+    .await
+    .unwrap();
     std::fs::write(root.path().join("workspace/repair.txt"), "repair available").unwrap();
     let log = send(&kernel).await;
     assert!(log.iter().any(|entry| matches!(&entry.body, EntryBody::ToolCallSettled { outcome: Settlement::Ok, content, .. } if content.contains("repair available"))));
@@ -559,6 +585,82 @@ async fn mechanical_rollback_excludes_both_conflicts_and_keeps_native_tools_runn
             .tools
             .iter()
             .all(|spec| spec.name != "shared_read")
+    );
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn self_apply_moves_the_next_attempt_and_memory_call_to_the_restored_code() {
+    let root = tempfile::tempdir().unwrap();
+    let previous = ScriptedProvider::new(vec![calls(vec![call("self_apply", "{}")])]);
+    let restored = ScriptedProvider::new(vec![reply("factory code")]);
+    *restored.embedding_failure.lock().unwrap() = Some(Failure {
+        code: code::PROVIDER_NETWORK.into(),
+        message: "offline".into(),
+        retryable: true,
+    });
+    let runtime = factory_runtime(fixture(restored.clone(), restored.clone()));
+    runtime.insert(b"source", fixture(previous.clone(), previous));
+    let mut document = configuration();
+    for name in ["reply", "compaction"] {
+        document["endpoint"][name]["model"] = "per-call-model".into();
+    }
+    let (development, registry, store) =
+        scripted_home(root.path(), runtime, document, vec![]).await;
+    let previous = source_fixture(
+        root.path(),
+        &store,
+        &development,
+        &registry,
+        "fixture",
+        b"source",
+    )
+    .await
+    .generations[0]
+        .id;
+    std::fs::remove_dir_all(root.path().join("plugins/fixture")).unwrap();
+    let settings = registry.view().config.kernel.profiles["default"]
+        .reply
+        .first()
+        .endpoint
+        .settings
+        .clone();
+    let kernel = Kernel::start(kernel_deps(
+        root.path(),
+        store,
+        registry.clone(),
+        None,
+        Some(development),
+    ))
+    .await
+    .unwrap();
+    let memories = open_memories(root.path(), registry.clone()).await;
+    let entries = send(&kernel).await;
+    let starts: Vec<_> = entries
+        .iter()
+        .filter_map(|entry| match &entry.body {
+            EntryBody::AttemptStarted {
+                provider, settings, ..
+            } => Some((provider, settings)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[0].0, &previous);
+    assert_eq!(*starts[1].0, plugin_generation(&registry));
+    assert_ne!(starts[0].0, starts[1].0);
+    assert!(starts.iter().all(|(_, selected)| **selected == settings));
+    assert_eq!(
+        restored.settings.lock().unwrap().as_slice(),
+        std::slice::from_ref(&settings)
+    );
+    assert!(
+        memories
+            .recall("after", 1, &CancellationToken::new())
+            .await
+            .unwrap()
+            .lexical_only
+            .is_some()
     );
     kernel.shutdown().await.unwrap();
 }

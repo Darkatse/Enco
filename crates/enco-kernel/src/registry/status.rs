@@ -1,61 +1,80 @@
 use super::*;
 
-/// Inspectable identity, history and routing for one registered name.
+/// Identity, content and routing for one installation, including removed identities.
 #[derive(serde::Serialize)]
 pub struct PluginStatus {
-    /// Human-facing name.
-    pub name: String,
-    /// Stable identity from plugins.lock.
+    /// Immutable installation identity.
     pub id: PluginId,
-    /// Current generation, if available.
+    /// Current routing name; absent while not running.
+    pub name: Option<String>,
+    /// Concrete name version currently referenced by this identity.
+    pub named_by: Option<RegistrationId>,
+    /// Current generation, if running.
     pub active: Option<GenerationRecord>,
-    /// Description of the active component, if loaded.
+    /// Registration which wrote the current code reference, independently of its creation.
+    pub activated_by: Option<RegistrationId>,
+    /// Generation which supplied the active code; settings-only generations reuse this provenance.
+    pub active_code: Option<GenerationId>,
+    /// Retained healthy generation, before the embedded factory fallback.
+    pub rollback_target: Option<PluginActivation>,
+    /// Current embedded component, when this is a host-reserved plugin.
+    pub factory: Option<FactoryStatus>,
+    /// Whether name, code and settings agree with accepted intent.
+    pub matches_registered: bool,
+    /// Summary of the active component.
     pub summary: Option<String>,
-    /// First recovery candidate, including the current factory fallback.
-    pub rollback_target: Option<GenerationId>,
-    /// Configured users of this plugin.
+    /// Configured users of the current name.
     pub users: Vec<String>,
-    /// Why the active generation cannot run on this node, if it cannot.
+    /// Reason the current component cannot be used.
     pub unavailable: Option<String>,
-    /// Configured uses this plugin cannot serve, each identified by its user.
+    /// Each configured use that cannot be served.
     pub unavailable_uses: Vec<String>,
-    /// Whether active settings match the registered document; absent without an active generation.
-    pub settings_match: Option<bool>,
-    /// Complete history in registry sequence order.
+    /// Complete generation history in commit order.
     pub generations: Vec<GenerationRecord>,
 }
 
-/// Plugin and configuration histories from the same committer snapshot.
+/// Plugin and configuration facts sampled under the same committer.
 #[derive(serde::Serialize)]
 pub struct RegistryStatus {
-    /// Registered plugin identities and histories.
+    /// The same narrow accepted-intent query used to prepare registrations.
+    pub registered: RegisteredIntent,
+    /// Accepted changes, including names and removals.
+    pub registrations: Vec<RegistrationRecord>,
+    /// Every installation's content and references.
     pub plugins: Vec<PluginStatus>,
-    /// Active configuration and its history.
+    /// Current configuration and its history.
     pub config: ConfigStatus,
 }
 
-/// Configuration history and current host interpretation failures.
+/// Configuration is one intent document; a rollback changes only its active reference.
 #[derive(serde::Serialize)]
 pub struct ConfigStatus {
-    /// Active generation.
-    pub active: GenerationId,
-    /// Earlier configuration selected by mechanical rollback.
-    pub rollback_target: Option<GenerationId>,
-    /// Generation numbers and observation times in commit order.
-    pub generations: Vec<(GenerationId, DateTime<Utc>)>,
-    /// Tables the current host cannot interpret.
+    /// Current configuration document and provenance.
+    pub active: ConfigGeneration,
+    /// Complete configuration history.
+    pub generations: Vec<ConfigGeneration>,
+    /// Host tables which the current host cannot interpret.
     pub invalid: Vec<SettingsError>,
-    /// Configured uses that cannot be served, each identified by its user.
+    /// Uses which cannot currently be served.
     pub unavailable_uses: Vec<String>,
 }
 
 impl Registry {
-    /// Read the registry's single owned state without maintaining a second status cache.
-    pub async fn status(&self) -> RegistryStatus {
+    /// Inspect facts, never infer which sequence of recovery actions produced them.
+    pub async fn status(&self) -> Result<RegistryStatus, RegistryError> {
         let state = self.state.lock().await;
-        let divergent = state.settings_divergence();
         let view = self.view();
-        let unavailable_uses: Vec<_> = state
+        let active = &state.history.config_generations[&view.config.generation];
+        let registered = state.registered_intent(&self.deps.factory);
+        let registered_settings: BTreeMap<String, PluginSettings> = registered
+            .configuration
+            .as_ref()
+            .and_then(|config| config.document.get("plugin"))
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|error| rejected("plugin", error))?
+            .unwrap_or_default();
+        let unavailable_uses: Vec<_> = view
             .config
             .uses
             .iter()
@@ -67,72 +86,100 @@ impl Registry {
             })
             .collect();
         let plugins = state
+            .history
             .plugins
-            .names
-            .iter()
-            .map(|(name, id)| {
-                let active = state
+            .values()
+            .map(|plugin| {
+                let accepted = registered
                     .plugins
-                    .active
-                    .get(id)
-                    .copied()
-                    .and_then(|id| state.plugins.generations.get(&id));
-                PluginStatus {
-                    name: name.clone(),
-                    id: *id,
-                    settings_match: active.map(|_| !divergent.contains_key(name)),
-                    summary: active
-                        .and_then(|record| state.plugins.loaded.get(&record.id))
-                        .map(|loaded| loaded.summary.clone()),
-                    rollback_target: active.and_then(|record| {
-                        state
-                            .plugins
-                            .candidates(*id, record.id)
-                            .first()
-                            .map(|record| record.id)
-                    }),
-                    active: active.cloned(),
-                    users: users(&state.config.uses, name),
-                    unavailable: view
-                        .exports
-                        .loaded(name)
-                        .err()
-                        .map(|failure| failure.message),
-                    unavailable_uses: unavailable_uses
-                        .iter()
-                        .filter(|(usage, _)| usage.endpoint.plugin == *name)
-                        .map(|(_, reason)| reason.clone())
-                        .collect(),
-                    generations: state
-                        .plugins
-                        .generations
-                        .values()
-                        .filter(|record| record.plugin == *id)
-                        .cloned()
-                        .collect(),
-                }
+                    .iter()
+                    .find(|(_, accepted)| accepted.id == plugin.id);
+                let settings = accepted
+                    .and_then(|(name, _)| registered_settings.get(name))
+                    .cloned()
+                    .unwrap_or_default();
+                plugin_status(
+                    &state,
+                    &view,
+                    plugin,
+                    accepted,
+                    &settings,
+                    &unavailable_uses,
+                )
             })
             .collect();
-        RegistryStatus {
+        Ok(RegistryStatus {
+            registered,
+            registrations: state.history.registrations.values().cloned().collect(),
             plugins,
             config: ConfigStatus {
-                active: state.config.generation,
-                rollback_target: state
-                    .configs
-                    .range(..state.config.generation)
-                    .next_back()
-                    .map(|(id, _)| *id),
-                generations: state
-                    .configs
-                    .values()
-                    .map(|record| (record.id, record.created_at))
-                    .collect(),
-                invalid: state.config.invalid.clone(),
+                active: active.clone(),
+                generations: state.history.config_generations.values().cloned().collect(),
+                invalid: view.config.invalid.clone(),
                 unavailable_uses: unavailable_uses
                     .into_iter()
                     .map(|(_, reason)| reason)
                     .collect(),
             },
-        }
+        })
+    }
+}
+
+fn plugin_status(
+    state: &State,
+    view: &View,
+    plugin: &PluginRecord,
+    registered: Option<(&String, &RegisteredPlugin)>,
+    settings: &PluginSettings,
+    unavailable_uses: &[(&Use, String)],
+) -> PluginStatus {
+    let name = state.running_name(plugin.id).map(str::to_owned);
+    let active = state.active(plugin.id).cloned();
+    let matches_registered = name.as_ref() == registered.map(|(name, _)| name)
+        && match (
+            &active,
+            registered.and_then(|(_, plugin)| plugin.code.as_ref()),
+        ) {
+            (Some(active), Some(code)) => {
+                active.artifact == code.artifact && &active.settings == settings
+            }
+            (None, None) => true,
+            _ => false,
+        };
+    PluginStatus {
+        id: plugin.id,
+        name: name.clone(),
+        named_by: plugin.named_by,
+        summary: active
+            .as_ref()
+            .and_then(|record| state.loaded.get(&record.id))
+            .map(|loaded| loaded.summary.clone()),
+        active_code: active
+            .as_ref()
+            .map(|active| state.code_generation(active.id)),
+        activated_by: plugin.active.and_then(|reference| reference.registration),
+        active,
+        rollback_target: plugin.rollback_target,
+        factory: registered.and_then(|(_, plugin)| plugin.factory.clone()),
+        matches_registered,
+        users: name
+            .as_ref()
+            .map_or_else(Vec::new, |name| users(&view.config.uses, name)),
+        unavailable: name
+            .as_ref()
+            .and_then(|name| view.exports.loaded(name).err())
+            .map(|failure| failure.message),
+        unavailable_uses: unavailable_uses
+            .iter()
+            .filter(|(usage, _)| Some(&usage.endpoint.plugin) == name.as_ref())
+            .map(|(_, reason)| reason.clone())
+            .collect(),
+        generations: state
+            .history
+            .generations
+            .values()
+            .filter(|record| record.plugin == plugin.id)
+            .cloned()
+            .collect(),
     }
 }

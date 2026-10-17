@@ -1,301 +1,206 @@
 use super::*;
+use crate::{Activation, RegistrationWrite, RegistryState};
+use std::collections::BTreeSet;
 
-enum Follow {
-    Unchanged,
-    Factory,
-    Trial,
-}
-
-pub(super) struct Plugins {
-    pub names: BTreeMap<String, PluginId>,
-    pub generations: BTreeMap<GenerationId, GenerationRecord>,
-    pub active: BTreeMap<PluginId, GenerationId>,
-    pub factory: BTreeMap<PluginId, GenerationId>,
+/// Persisted references own lifetime; loaded adapters and names are projections.
+pub(super) struct State {
+    pub history: RegistryState,
     pub loaded: BTreeMap<GenerationId, Loaded>,
+    pub factory: BTreeMap<PluginId, GenerationId>,
     pub trial_successes: BTreeMap<GenerationId, u32>,
 }
 
-impl Plugins {
-    pub async fn initialize(
-        deps: &RegistryDeps,
-        records: crate::RegistryState,
-        uses: &[Use],
-    ) -> Result<Self, RegistryError> {
-        let names = deps.store.plugin_names().await?;
-        for name in names.keys() {
-            validate_name(name)?;
-        }
-        for factory in &deps.factory {
-            if names.get(&factory.name).is_some_and(|id| id != &factory.id) {
-                return Err(RegistryError::FactoryIdentity(factory.name.clone()));
-            }
-        }
-        for record in &records.generations {
-            if !names.values().any(|id| *id == record.plugin) {
-                return Err(RegistryError::UnknownPlugin(record.plugin.to_string()));
-            }
-        }
-        let mut state = Self {
-            names,
-            generations: records
-                .generations
-                .into_iter()
-                .map(|record| (record.id, record))
-                .collect(),
-            active: records.active,
-            factory: BTreeMap::new(),
-            loaded: BTreeMap::new(),
-            trial_successes: BTreeMap::new(),
-        };
-        for factory in &deps.factory {
-            state.register_factory(deps, factory, uses).await?;
-        }
-        Ok(state)
-    }
-
-    async fn register_factory(
-        &mut self,
-        deps: &RegistryDeps,
-        factory: &FactoryPlugin,
-        uses: &[Use],
-    ) -> Result<(), RegistryError> {
-        if !self.names.contains_key(&factory.name) {
-            deps.store
-                .register_plugin(&factory.name, factory.id)
-                .await?;
-            self.names.insert(factory.name.clone(), factory.id);
-        }
-        let hash = deps.store.put_artifact(&factory.artifact).await?;
-        let follow = self.follow_factory(deps, factory, hash, uses).await?;
-        let activate = matches!(follow, Follow::Factory) || !self.active.contains_key(&factory.id);
-        let existing = self
-            .generations
-            .values()
-            .rev()
-            .find(|record| {
-                record.plugin == factory.id
-                    && record.artifact == hash
-                    && record.origin == Origin::Factory
-                    && record.status == GenerationStatus::Healthy
-            })
-            .map(|record| record.id);
-        let id = match existing {
-            Some(id) => {
-                if activate && self.active.get(&factory.id) != Some(&id) {
-                    deps.store.activate(factory.id, Some(id), &[], None).await?;
-                }
-                id
-            }
-            None => {
-                let record = NewGeneration {
-                    plugin: factory.id,
-                    artifact: hash,
-                    settings: PluginSettings::default(),
-                    origin: Origin::Factory,
-                    status: GenerationStatus::Healthy,
-                    created_at: deps.clock.now(),
-                };
-                let id = deps.store.insert_generation(&record, activate).await?;
-                self.generations.insert(id, record.numbered(id));
-                id
-            }
-        };
-        if activate {
-            self.active.insert(factory.id, id);
-        }
-        self.factory.insert(factory.id, id);
-        Ok(())
-    }
-
-    async fn follow_factory(
-        &mut self,
-        deps: &RegistryDeps,
-        factory: &FactoryPlugin,
-        artifact: ContentHash,
-        uses: &[Use],
-    ) -> Result<Follow, RegistryError> {
-        let previous_factory = self
-            .generations
-            .values()
-            .rev()
-            .find(|record| record.plugin == factory.id && record.origin == Origin::Factory);
-        let active = self
-            .active
-            .get(&factory.id)
-            .and_then(|id| self.generations.get(id));
-        let Some((previous, active)) = previous_factory.zip(active) else {
-            return Ok(Follow::Unchanged);
-        };
-        if active.artifact != previous.artifact || active.artifact == artifact {
-            return Ok(Follow::Unchanged);
-        }
-        if active.settings == PluginSettings::default() {
-            return Ok(Follow::Factory);
-        }
-        let generation = NewGeneration {
-            plugin: factory.id,
-            artifact,
-            settings: active.settings.clone(),
-            origin: Origin::Deployed,
-            status: GenerationStatus::Trial,
-            created_at: deps.clock.now(),
-        };
-        let candidate = registration::load(
-            deps.runtime.as_ref(),
-            &factory.name,
-            &factory.artifact,
-            &generation.settings,
-        )
-        .await;
-        let loaded = match candidate.and_then(|loaded| {
-            let before = admission::evaluate(self, &deps.host_tool_names, &BTreeMap::new());
-            let candidates = BTreeMap::from([(factory.name.clone(), loaded.clone())]);
-            let after = admission::evaluate(self, &deps.host_tool_names, &candidates);
-            after.accept_change(&before, std::slice::from_ref(&factory.name), uses, uses)?;
-            Ok(loaded)
-        }) {
-            Ok(loaded) => loaded,
-            Err(error) => {
-                tracing::warn!(plugin = factory.name, %error, "factory upgrade rejected; keeping registered content");
-                return Ok(Follow::Unchanged);
-            }
-        };
-        // Register the trial before the new recovery floor, so older healthy settings come first.
-        let id = deps.store.insert_generation(&generation, true).await?;
-        self.registered(generation.numbered(id), loaded);
-        Ok(Follow::Trial)
-    }
-
-    pub fn name_of(&self, plugin: PluginId) -> Result<&str, RegistryError> {
-        self.names
-            .iter()
-            .find(|(_, id)| **id == plugin)
-            .map(|(name, _)| name.as_str())
-            .ok_or_else(|| RegistryError::UnknownPlugin(plugin.to_string()))
-    }
-
-    /// Earlier healthy generations first, with the current factory as the recovery floor.
-    pub fn candidates(&self, plugin: PluginId, before: GenerationId) -> Vec<GenerationRecord> {
-        let mut candidates: Vec<_> = self
-            .generations
-            .range(..before)
-            .rev()
-            .filter(|(_, record)| {
-                record.plugin == plugin && record.status == GenerationStatus::Healthy
-            })
-            .map(|(_, record)| record.clone())
-            .collect();
-        if let Some(factory) = self.factory.get(&plugin)
-            && *factory != before
-            && !candidates.iter().any(|record| record.id == *factory)
-            && let Some(record) = self.generations.get(factory)
-            && record.status == GenerationStatus::Healthy
-        {
-            candidates.push(record.clone());
-        }
-        candidates
-    }
-}
-
-pub(super) struct State {
-    pub plugins: Plugins,
-    pub configs: BTreeMap<GenerationId, ConfigGeneration>,
-    pub config: ActiveConfig,
-}
-
 impl State {
-    pub fn settings_divergence(&self) -> BTreeMap<String, GenerationId> {
-        self.plugins
-            .active_records()
+    pub fn new(history: RegistryState) -> Self {
+        Self {
+            history,
+            loaded: BTreeMap::new(),
+            factory: BTreeMap::new(),
+            trial_successes: BTreeMap::new(),
+        }
+    }
+
+    pub fn name_at(
+        &self,
+        plugin: PluginId,
+        registration: Option<RegistrationId>,
+    ) -> Option<&RegisteredName> {
+        self.history
+            .registrations
+            .get(&registration?)?
+            .names
+            .get(&plugin)
+    }
+
+    pub fn running_name(&self, plugin: PluginId) -> Option<&str> {
+        let record = self.history.plugins.get(&plugin)?;
+        record.active?;
+        self.name_at(plugin, record.named_by)?.name.as_deref()
+    }
+
+    pub fn running_names(&self) -> BTreeMap<String, PluginId> {
+        self.history
+            .plugins
+            .keys()
+            .filter_map(|id| self.running_name(*id).map(|name| (name.to_owned(), *id)))
+            .collect()
+    }
+
+    /// Accepted names remain distinct from names changed by mechanical recovery.
+    pub fn registered_names(&self) -> BTreeMap<String, PluginId> {
+        let mut names = BTreeMap::new();
+        for registration in self.history.registrations.values() {
+            for (id, registered) in &registration.names {
+                names.retain(|_, plugin| plugin != id);
+                if let Some(name) = &registered.name {
+                    names.insert(name.clone(), *id);
+                }
+            }
+        }
+        names
+    }
+
+    pub fn registered_config(&self) -> Option<&ConfigGeneration> {
+        self.history.config_generations.values().next_back()
+    }
+
+    /// Settings preserve their exact code provenance, even when bytes match another generation.
+    pub fn code_generation(&self, mut generation: GenerationId) -> GenerationId {
+        while let Origin::Settings {
+            based_on: previous, ..
+        } = self.history.generations[&generation].origin
+        {
+            generation = previous;
+        }
+        generation
+    }
+
+    pub fn active(&self, plugin: PluginId) -> Option<&GenerationRecord> {
+        self.history
+            .generations
+            .get(&self.history.plugins.get(&plugin)?.active?.generation)
+    }
+
+    pub fn contents(&self) -> BTreeMap<String, Option<Loaded>> {
+        self.running_names()
             .into_iter()
-            .filter_map(|(name, record)| {
-                (self.config.plugins.get(&name).cloned().unwrap_or_default() != record.settings)
-                    .then_some((name, record.id))
+            .map(|(name, id)| {
+                let loaded = self
+                    .active(id)
+                    .and_then(|record| self.loaded.get(&record.id))
+                    .cloned();
+                (name, loaded)
             })
             .collect()
     }
 
-    pub async fn initialize(
-        deps: &RegistryDeps,
-    ) -> Result<(Self, admission::Admission), RegistryError> {
-        let mut records = deps.store.registry().await?;
-        let mut configs: BTreeMap<_, _> = std::mem::take(&mut records.config_generations)
-            .into_iter()
-            .map(|record| (record.id, record))
-            .collect();
-        let active = records.active_config;
-        let document = match active {
-            Some(id) => configs
-                .get(&id)
-                .ok_or(RegistryError::UnknownGeneration(id))?
-                .document
-                .clone(),
-            None => deps.bootstrap.clone().map_err(RegistryError::Bootstrap)?,
-        };
-        let declaration = if active.is_some() {
-            configuration::declare(&document, &deps.owners).map_err(RegistryError::Config)?
-        } else {
-            configuration::declare_valid(&document, &deps.owners)?
-        };
-        let mut plugins = Plugins::initialize(deps, records, &declaration.uses).await?;
-        activation::restore(deps, &mut plugins).await?;
-        let (config, admission) = match active {
-            Some(id) => {
-                let admission =
-                    admission::evaluate(&plugins, &deps.host_tool_names, &BTreeMap::new());
-                (
-                    declaration.into_active(
-                        configs
-                            .get(&id)
-                            .ok_or(RegistryError::UnknownGeneration(id))?,
-                    ),
-                    admission,
-                )
-            }
-            None => {
-                let prepared = registration::settings(
-                    deps.store.as_ref(),
-                    deps.runtime.as_ref(),
-                    &BTreeMap::new(),
-                    &declaration.plugins,
-                    &plugins.active_records(),
-                    deps.clock.now(),
-                )
-                .await?;
-                let candidates = prepared
-                    .iter()
-                    .map(|(name, prepared)| (name.clone(), prepared.loaded.clone()))
-                    .collect();
-                let admission = admission::evaluate(&plugins, &deps.host_tool_names, &candidates);
-                // First registration adopts everything in use, so every plugin and use must work.
-                let names: Vec<_> = plugins.names.keys().cloned().collect();
-                admission.accept_change(&Default::default(), &names, &declaration.uses, &[])?;
-                let record = configuration::register(
-                    deps.store.as_ref(),
-                    &mut configs,
-                    &mut plugins,
-                    prepared,
-                    document,
-                    deps.clock.now(),
-                )
-                .await?;
-                (declaration.into_active(&record), admission)
-            }
-        };
-        Ok((
-            Self {
-                plugins,
-                configs,
-                config,
-            },
-            admission,
-        ))
+    pub fn next_registration(&self) -> RegistrationId {
+        RegistrationId(
+            self.history
+                .registrations
+                .keys()
+                .next_back()
+                .map_or(1, |id| id.0 + 1),
+        )
     }
 
-    pub fn view(&self, admission: admission::Admission) -> View {
+    pub fn next_generation(&self) -> GenerationId {
+        GenerationId(
+            self.history
+                .generations
+                .keys()
+                .chain(self.history.config_generations.keys())
+                .map(|id| id.0)
+                .max()
+                .map_or(1, |id| id + 1),
+        )
+    }
+
+    pub fn registered(&mut self, write: RegistrationWrite, loaded: BTreeMap<GenerationId, Loaded>) {
+        self.history
+            .registrations
+            .insert(write.registration.id, write.registration);
+        self.history.generations.extend(
+            write
+                .generations
+                .into_iter()
+                .map(|record| (record.id, record)),
+        );
+        self.history
+            .plugins
+            .extend(write.plugins.into_iter().map(|record| (record.id, record)));
+        if let Some(config) = write.configuration {
+            self.history.active_config = Some(config.id);
+            self.history.config_generations.insert(config.id, config);
+        }
+        self.loaded.extend(loaded);
+    }
+
+    pub fn activated(&mut self, change: &Activation) {
+        self.history.plugins.extend(
+            change
+                .plugins
+                .iter()
+                .cloned()
+                .map(|record| (record.id, record)),
+        );
+        if let Some(config) = change.configuration {
+            self.history.active_config = Some(config);
+        }
+        for (id, failure) in &change.failed {
+            if let Some(record) = self.history.generations.get_mut(id) {
+                record.status = GenerationStatus::Failed;
+                record.failure = Some(failure.clone());
+            }
+        }
+    }
+
+    pub fn retained_artifacts(&self) -> std::collections::HashSet<ContentHash> {
+        self.history
+            .plugins
+            .values()
+            .flat_map(|plugin| [plugin.active, plugin.rollback_target])
+            .flatten()
+            .map(|reference| reference.generation)
+            .filter_map(|id| self.history.generations.get(&id))
+            .map(|record| record.artifact)
+            .collect()
+    }
+
+    pub fn release(&mut self) {
+        let retained: BTreeSet<_> = self
+            .history
+            .plugins
+            .values()
+            .flat_map(|plugin| [plugin.active, plugin.rollback_target])
+            .flatten()
+            .map(|reference| reference.generation)
+            .chain(self.factory.values().copied())
+            .collect();
+        self.loaded.retain(|id, _| retained.contains(id));
+        self.trial_successes.retain(|id, _| {
+            self.history.generations.get(id).is_some_and(|record| {
+                record.status == GenerationStatus::Trial
+                    && self
+                        .history
+                        .plugins
+                        .get(&record.plugin)
+                        .is_some_and(|plugin| {
+                            plugin.active.is_some_and(|active| active.generation == *id)
+                        })
+            })
+        });
+    }
+
+    pub fn view(
+        &self,
+        config: ActiveConfig,
+        admission: admission::Admission,
+        factory: &[FactoryPlugin],
+    ) -> View {
         View {
-            exports: self.plugins.exports(admission),
-            config: self.config.clone(),
+            config,
+            exports: self.exports(admission, factory),
         }
     }
 }

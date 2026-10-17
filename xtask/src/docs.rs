@@ -4,7 +4,7 @@ use wit_parser::{Docs, Resolve, Type, TypeDefKind, WorldKey};
 
 pub fn generate(check: bool) -> Result<()> {
     let mut resolve = Resolve::default();
-    let (id, _) = resolve.push_dir("wit")?;
+    let (id, _) = resolve.push_dir("sdk/wit")?;
     let package = &resolve.packages[id];
     let mut missing = vec![];
     required(&package.docs, "package", &mut missing);
@@ -48,11 +48,11 @@ pub fn generate(check: bool) -> Result<()> {
         bail!("missing WIT documentation:\n{}", missing.join("\n"));
     }
     if check {
-        if fs::read_to_string("wit/CONTRACT.md").unwrap_or_default() != out {
-            bail!("wit/CONTRACT.md is stale; run cargo xtask docs");
+        if fs::read_to_string("sdk/wit/CONTRACT.md").unwrap_or_default() != out {
+            bail!("sdk/wit/CONTRACT.md is stale; run cargo xtask docs");
         }
     } else {
-        fs::write("wit/CONTRACT.md", out)?;
+        fs::write("sdk/wit/CONTRACT.md", out)?;
     }
     Ok(())
 }

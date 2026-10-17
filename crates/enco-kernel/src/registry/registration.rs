@@ -1,84 +1,148 @@
+//! One preparation and commit path for source, configuration, factory code and direct artifacts.
 use super::*;
+use crate::{RegistrationWrite, RegistryState};
+mod commit;
+pub(super) use commit::accept;
+mod prepare;
+pub(super) use prepare::{Prepared, artifact, plan, prepare};
 
-pub(super) struct Prepared {
-    pub generation: NewGeneration,
-    pub loaded: Loaded,
+/// Expectations contain only references, not a second copy of immutable history.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct Expected {
+    next: RegistrationId,
+    config: Option<GenerationId>,
+    plugins: BTreeMap<PluginId, PluginRecord>,
 }
 
-/// Intentional changes share declaration and probe; mechanical recovery only loads.
-pub(super) async fn load(
-    runtime: &dyn Runtime,
-    name: &str,
-    artifact: &[u8],
-    settings: &PluginSettings,
-) -> Result<Loaded, RegistryError> {
-    let loaded = runtime
-        .load(artifact, settings)
-        .await
-        .map_err(|error| rejected(name, error))?;
-    loaded.lifecycle.probe().await.map_err(|failure| {
-        rejected(
-            name,
-            format!("probe failed: {}: {}", failure.code, failure.message),
-        )
-    })?;
-    Ok(loaded)
-}
-
-/// The change is relative to registered intent, so an unrelated apply cannot undo a rollback.
-pub(super) async fn settings(
-    store: &dyn Store,
-    runtime: &dyn Runtime,
-    previous: &BTreeMap<String, PluginSettings>,
-    next: &BTreeMap<String, PluginSettings>,
-    active: &BTreeMap<String, GenerationRecord>,
-    now: DateTime<Utc>,
-) -> Result<BTreeMap<String, Prepared>, RegistryError> {
-    let names: std::collections::BTreeSet<_> = previous.keys().chain(next.keys()).collect();
-    let mut prepared = BTreeMap::new();
-    for name in names {
-        if previous.get(name) == next.get(name) {
-            continue;
+impl Expected {
+    pub fn capture(state: &State) -> Self {
+        Self {
+            next: state.next_registration(),
+            config: state.history.active_config,
+            plugins: state.history.plugins.clone(),
         }
-        validate_name(name)?;
-        let base = active
-            .get(name)
-            .ok_or_else(|| rejected(name, "settings require a registered active plugin"))?;
-        let settings = next.get(name).cloned().unwrap_or_default();
-        let bytes = store.artifact(&base.artifact).await?;
-        let loaded = load(runtime, name, &bytes, &settings).await?;
-        prepared.insert(
-            name.clone(),
-            Prepared {
-                generation: NewGeneration {
-                    plugin: base.plugin,
-                    artifact: base.artifact,
-                    settings,
-                    origin: Origin::Deployed,
-                    status: GenerationStatus::Trial,
-                    created_at: now,
-                },
-                loaded,
-            },
-        );
     }
-    Ok(prepared)
+    pub fn matches(&self, state: &State) -> bool {
+        *self == Self::capture(state)
+    }
 }
 
-impl state::Plugins {
-    pub fn active_records(&self) -> BTreeMap<String, GenerationRecord> {
-        self.names
-            .iter()
-            .filter_map(|(name, plugin)| {
-                let record = self.generations.get(self.active.get(plugin)?)?;
-                Some((name.clone(), record.clone()))
-            })
-            .collect()
+impl Registry {
+    /// Check the same rename candidate before the host moves its source directory.
+    pub async fn check_rename(&self, name: &str, to: &str) -> Result<(), RegistryError> {
+        let state = self.state.lock().await;
+        let view = self.view();
+        let identities = state.registered_identities(&self.deps.factory);
+        prepare::check_rename(
+            &self.deps,
+            &state,
+            &identities,
+            Some(&view.config),
+            name,
+            to,
+        )
     }
 
-    pub fn registered(&mut self, record: GenerationRecord, loaded: Loaded) {
-        self.active.insert(record.plugin, record.id);
-        self.loaded.insert(record.id, loaded);
-        self.generations.insert(record.id, record);
+    /// Validate outside the committer, then accept every part against one current composition.
+    pub async fn register(
+        &self,
+        request: RegistrationRequest,
+    ) -> Result<Registered, RegistryError> {
+        let plan = {
+            let state = self.state.lock().await;
+            let view = self.view();
+            plan(&self.deps, &state, Some(&view.config), request).await?
+        };
+        let mut prepared = prepare(&self.deps, plan).await?;
+        self.probe_registration(&mut prepared).await?;
+        let mut state = self.state.lock().await;
+        let (mut result, config, admission) =
+            commit::accept(&self.deps, &mut state, prepared).await?;
+        self.publish(&mut state, config, Some(admission));
+        result
+            .warnings
+            .extend(cleanup_artifacts(&self.deps, &state).await);
+        Ok(result)
+    }
+
+    async fn probe_registration(&self, prepared: &mut Prepared) -> Result<(), RegistryError> {
+        if prepared.plan.configuration.is_none() {
+            return Ok(());
+        }
+        let mut checked: Vec<Use> = Vec::new();
+        let view = self.view();
+        for usage in &prepared.plan.declaration.uses {
+            if prepared
+                .plan
+                .previous_uses
+                .iter()
+                .chain(checked.iter())
+                .any(|previous| previous.same_call(usage))
+            {
+                continue;
+            }
+            let (loaded, generation) = match prepared.loaded_for(&usage.endpoint.plugin) {
+                Some(loaded) => (loaded, None),
+                None => {
+                    let (generation, loaded) = view
+                        .exports
+                        .loaded(&usage.endpoint.plugin)
+                        .map_err(|failure| rejected(&usage.endpoint.plugin, failure.message))?;
+                    (loaded, Some(generation))
+                }
+            };
+            let outcome = match probe::call(loaded, usage).await {
+                Ok(result) => {
+                    if let Some(generation) = generation {
+                        self.report(generation, result.verdict, None).await?;
+                    }
+                    result.outcome
+                }
+                Err(failure) => Err(failure),
+            };
+            outcome.map_err(|failure| {
+                rejected(
+                    "config",
+                    format!(
+                        "{} (endpoint {}): {}: {}",
+                        usage.user, usage.endpoint.name, failure.code, failure.message
+                    ),
+                )
+            })?;
+            prepared.probes.push(Probe {
+                user: usage.user.clone(),
+                endpoint: usage.endpoint.name.clone(),
+            });
+            checked.push(usage.clone());
+        }
+        Ok(())
+    }
+}
+
+fn settings(
+    document: &serde_json::Value,
+) -> Result<BTreeMap<String, PluginSettings>, RegistryError> {
+    document.get("plugin").map_or_else(
+        || Ok(BTreeMap::new()),
+        |value| serde_json::from_value(value.clone()).map_err(|error| rejected("plugin", error)),
+    )
+}
+
+fn empty_plugin(id: PluginId) -> PluginRecord {
+    PluginRecord {
+        id,
+        named_by: None,
+        active: None,
+        rollback_target: None,
+    }
+}
+
+fn next_rollback(history: &RegistryState, plugin: &PluginRecord) -> Option<PluginActivation> {
+    match plugin
+        .active
+        .and_then(|active| history.generations.get(&active.generation))
+    {
+        Some(record) if record.status == GenerationStatus::Healthy => plugin.active,
+        _ => plugin.rollback_target,
     }
 }

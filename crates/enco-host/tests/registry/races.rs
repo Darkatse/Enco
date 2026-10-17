@@ -11,6 +11,7 @@ use tokio::sync::Notify;
 struct PausedLoad {
     runtime: Arc<ScriptedRuntime>,
     pause: Mutex<Option<ContentHash>>,
+    unavailable: Mutex<Option<ContentHash>>,
     entered: Notify,
     resume: Notify,
 }
@@ -18,6 +19,9 @@ struct PausedLoad {
 #[async_trait]
 impl Runtime for PausedLoad {
     async fn load(&self, artifact: &[u8], config: &PluginSettings) -> Result<Loaded, LoadError> {
+        if self.unavailable.lock().unwrap().as_ref() == Some(&ContentHash::of(artifact)) {
+            return Err(LoadError("temporarily unavailable adapter".into()));
+        }
         let result = self.runtime.load(artifact, config).await;
         let pause = self
             .pause
@@ -34,7 +38,7 @@ impl Runtime for PausedLoad {
 }
 
 #[tokio::test]
-async fn rollback_cannot_overwrite_a_deployment_committed_during_loading() {
+async fn registration_cannot_overwrite_a_rollback_committed_during_loading() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
     let scripted = Arc::new(ScriptedRuntime::default());
@@ -44,6 +48,7 @@ async fn rollback_cannot_overwrite_a_deployment_committed_during_loading() {
     let runtime = Arc::new(PausedLoad {
         runtime: scripted,
         pause: Mutex::new(None),
+        unavailable: Mutex::new(None),
         entered: Notify::new(),
         resume: Notify::new(),
     });
@@ -52,10 +57,124 @@ async fn rollback_cannot_overwrite_a_deployment_committed_during_loading() {
     promote(&registry, one.id).await;
     let two = deploy_artifact(&registry, "fixture", b"two").await;
     promote(&registry, two.id).await;
+    *runtime.pause.lock().unwrap() = Some(ContentHash::of(b"three"));
+    let deploy = submit(&registry, artifact_request("fixture", b"three".to_vec()));
+    let rollback = async {
+        runtime.entered.notified().await;
+        registry.rollback().await.unwrap();
+        runtime.resume.notify_one();
+    };
+    let (result, ()) = tokio::join!(deploy, rollback);
+    assert!(matches!(result, Err(RegistryError::Conflict(_))));
+    let status = registry.status().await.unwrap().plugins.remove(0);
+    assert_eq!(status.generations.len(), 3);
+    assert_eq!(status.active.unwrap().id, one.id);
+}
+
+#[tokio::test]
+async fn a_late_failure_after_replacement_does_not_roll_back_or_publish_a_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let runtime = Arc::new(ScriptedRuntime::default());
+    for bytes in [FACTORY_BYTES, b"old", b"new"] {
+        runtime.insert(bytes, loaded(ScriptedProvider::new(vec![])));
+    }
+    let registry = open(&store, runtime).await;
+    let old = deploy_artifact(&registry, "fixture", b"old").await;
+    let new = deploy_artifact(&registry, "fixture", b"new").await;
+    let session = store.ensure_session("notice", Utc::now()).await.unwrap();
+    registry
+        .report(
+            old.id,
+            Verdict::Failed(fault(code::PLUGIN_TRAP)),
+            Some(session.id),
+        )
+        .await
+        .unwrap();
+    let history = store.registry().await.unwrap();
+    assert_eq!(
+        history.plugins[&old.plugin].active.unwrap().generation,
+        new.id
+    );
+    assert_eq!(history.generations[&old.id].status, GenerationStatus::Trial);
+    assert!(store.pending(session.id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn registration_discards_preparation_when_its_plugin_or_configuration_changes() {
+    for change_config in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+        let scripted = Arc::new(ScriptedRuntime::default());
+        for bytes in [FACTORY_BYTES, b"late", b"winner"] {
+            scripted.insert(bytes, loaded(ScriptedProvider::new(vec![])));
+        }
+        let runtime = Arc::new(PausedLoad {
+            runtime: scripted,
+            pause: Mutex::new(Some(ContentHash::of(b"late"))),
+            unavailable: Mutex::new(None),
+            entered: Notify::new(),
+            resume: Notify::new(),
+        });
+        let registry = open(&store, runtime.clone()).await;
+        let deploy = submit(&registry, artifact_request("fixture", b"late".to_vec()));
+        let change = async {
+            runtime.entered.notified().await;
+            if change_config {
+                let mut document = configuration();
+                document["run"] = serde_json::json!({"max_rounds": 7});
+                submit(&registry, configuration_request(document))
+                    .await
+                    .unwrap();
+            } else {
+                deploy_artifact(&registry, "fixture", b"winner").await;
+            }
+            runtime.resume.notify_one();
+        };
+        let (result, ()) = tokio::join!(deploy, change);
+        assert!(matches!(result, Err(RegistryError::Conflict(_))));
+        let status = registry.status().await.unwrap().plugins.remove(0);
+        assert!(
+            status
+                .generations
+                .iter()
+                .all(|record| record.artifact != ContentHash::of(b"late"))
+        );
+        let first: &[u8] = if change_config {
+            FACTORY_BYTES
+        } else {
+            b"winner"
+        };
+        assert_eq!(status.active.unwrap().artifact, ContentHash::of(first));
+    }
+}
+
+#[tokio::test]
+async fn rollback_cannot_overwrite_a_registration_committed_during_loading() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let scripted = Arc::new(ScriptedRuntime::default());
+    for bytes in [FACTORY_BYTES, b"one", b"two", b"three"] {
+        scripted.insert(bytes, loaded(ScriptedProvider::new(vec![])));
+    }
+    let runtime = Arc::new(PausedLoad {
+        runtime: scripted,
+        pause: Mutex::new(None),
+        unavailable: Mutex::new(None),
+        entered: Notify::new(),
+        resume: Notify::new(),
+    });
+    let registry = open(&store, runtime.clone()).await;
+    let one = deploy_artifact(&registry, "fixture", b"one").await;
+    promote(&registry, one.id).await;
+    let two = deploy_artifact(&registry, "fixture", b"two").await;
+    promote(&registry, two.id).await;
+    drop(registry);
+    let registry = reopen_without_adapter(&store, &runtime, one.artifact).await;
     *runtime.pause.lock().unwrap() = Some(one.artifact);
     let rollback = tokio::spawn({
         let registry = registry.clone();
-        async move { registry.rollback("fixture").await }
+        async move { registry.rollback().await }
     });
     runtime.entered.notified().await;
     let three = deploy_artifact(&registry, "fixture", b"three").await;
@@ -64,15 +183,22 @@ async fn rollback_cannot_overwrite_a_deployment_committed_during_loading() {
         rollback.await.unwrap(),
         Err(RegistryError::Conflict(_))
     ));
-    let status = registry.status().await.plugins.remove(0);
+    let status = registry.status().await.unwrap().plugins.remove(0);
     assert_eq!(status.generations.len(), 4);
     assert_eq!(status.active.unwrap().id, three.id);
-    let previous = registry.rollback("fixture").await.unwrap();
-    assert_eq!(previous.id, two.id);
+    registry.rollback().await.unwrap();
+    assert_eq!(
+        registry.status().await.unwrap().plugins[0]
+            .active
+            .as_ref()
+            .unwrap()
+            .id,
+        two.id
+    );
 }
 
 #[tokio::test]
-async fn automatic_rollback_discards_preparation_after_deployment_or_promotion() {
+async fn automatic_rollback_discards_preparation_after_registration_or_promotion() {
     for promote_current in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
@@ -83,6 +209,7 @@ async fn automatic_rollback_discards_preparation_after_deployment_or_promotion()
         let runtime = Arc::new(PausedLoad {
             runtime: scripted,
             pause: Mutex::new(None),
+            unavailable: Mutex::new(None),
             entered: Notify::new(),
             resume: Notify::new(),
         });
@@ -90,6 +217,8 @@ async fn automatic_rollback_discards_preparation_after_deployment_or_promotion()
         let healthy = deploy_artifact(&registry, "fixture", b"healthy").await;
         promote(&registry, healthy.id).await;
         let trial = deploy_artifact(&registry, "fixture", b"trial").await;
+        drop(registry);
+        let registry = reopen_without_adapter(&store, &runtime, healthy.artifact).await;
         *runtime.pause.lock().unwrap() = Some(healthy.artifact);
         let session = store.ensure_session("notice", Utc::now()).await.unwrap();
         let report = tokio::spawn({
@@ -128,62 +257,21 @@ async fn automatic_rollback_discards_preparation_after_deployment_or_promotion()
                 .await
                 .unwrap()
                 .generations
-                .iter()
+                .values()
                 .all(|record| record.status != GenerationStatus::Failed && record.failure.is_none())
         );
         assert!(store.pending(session.id).await.unwrap().is_empty());
     }
 }
 
-#[tokio::test]
-async fn deployment_discards_preparation_when_its_plugin_or_configuration_changes() {
-    for change_config in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
-        let scripted = Arc::new(ScriptedRuntime::default());
-        for bytes in [FACTORY_BYTES, b"late", b"winner"] {
-            scripted.insert(bytes, loaded(ScriptedProvider::new(vec![])));
-        }
-        let runtime = Arc::new(PausedLoad {
-            runtime: scripted,
-            pause: Mutex::new(Some(ContentHash::of(b"late"))),
-            entered: Notify::new(),
-            resume: Notify::new(),
-        });
-        let registry = open(&store, runtime.clone()).await;
-        let deploy = registry.deploy(
-            "fixture",
-            enco_kernel::PluginSource::Artifact(b"late".to_vec()),
-        );
-        let change = async {
-            runtime.entered.notified().await;
-            if change_config {
-                let mut document = configuration();
-                document["run"] = serde_json::json!({"max_rounds": 7});
-                registry
-                    .apply_config(ConfigSource::Document(document))
-                    .await
-                    .unwrap();
-            } else {
-                deploy_artifact(&registry, "fixture", b"winner").await;
-            }
-            runtime.resume.notify_one();
-        };
-        let (result, ()) = tokio::join!(deploy, change);
-        assert!(matches!(result, Err(RegistryError::Conflict(_))));
-        let status = registry.status().await.plugins.remove(0);
-        assert!(
-            status
-                .generations
-                .iter()
-                .all(|record| record.artifact != ContentHash::of(b"late"))
-        );
-        // The first committer stays active.
-        let first: &[u8] = if change_config {
-            FACTORY_BYTES
-        } else {
-            b"winner"
-        };
-        assert_eq!(status.active.unwrap().artifact, ContentHash::of(first));
-    }
+/// Retained bytes may outlive an adapter that could not be loaded at startup.
+async fn reopen_without_adapter(
+    store: &Arc<SqliteStore>,
+    runtime: &Arc<PausedLoad>,
+    artifact: ContentHash,
+) -> Arc<Registry> {
+    *runtime.unavailable.lock().unwrap() = Some(artifact);
+    let registry = open(store, runtime.clone()).await;
+    *runtime.unavailable.lock().unwrap() = None;
+    registry
 }

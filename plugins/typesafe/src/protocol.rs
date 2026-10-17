@@ -1,6 +1,6 @@
 //! TypeSafe's named wire answers map back to the caller's question and label order.
 use crate::decision::{Answer, Question, QuestionKind};
-use provider_protocol::{Settings, apply_options, bad, failure, post, types::Failure};
+use enco_sdk::protocol::{Settings, apply_options, bad, failure, post, types::Failure};
 use serde_json::{Map, Value, json};
 
 /// The contract's allowance for service rounding (`decision.answer`).

@@ -4,22 +4,12 @@ mod fetch;
 mod http;
 mod search;
 
-use bindings::{
-    enco::plugin::{host, types},
-    exports::enco::plugin::{lifecycle, tools},
-};
+use bindings::exports::enco::plugin::{lifecycle, tools};
 use config::Config;
+use enco_sdk::{host, types};
 use serde_json::json;
 
-mod bindings {
-    #![expect(
-        unsafe_code,
-        reason = "the export macro expands to the generated canonical ABI glue"
-    )]
-    wit_bindgen::generate!({ path: "../../wit", world: "tool-plugin" });
-    use super::Plugin;
-    export!(Plugin with_types_in self);
-}
+enco_sdk::export!(tools, Plugin);
 
 struct Plugin;
 

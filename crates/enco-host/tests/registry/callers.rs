@@ -21,9 +21,10 @@ struct Node {
 
 impl Node {
     async fn start(root: &Path, store: Arc<SqliteStore>, registry: Arc<Registry>) -> Self {
-        let kernel = Kernel::start(kernel_deps(root, store, registry.clone(), None))
-            .await
-            .unwrap();
+        let mut deps = kernel_deps(root, store, registry.clone(), None, None);
+        // Registry tests have no Git home, so the registration tool cannot be assembled.
+        deps.lifeline.retain(|name| name != "self_apply");
+        let kernel = Kernel::start(deps).await.unwrap();
         let memories = open_memories(root, registry).await;
         let session = kernel.open_session("main").await.unwrap().id;
         let rx = kernel.subscribe(session).unwrap();
@@ -42,170 +43,6 @@ impl Node {
             .unwrap();
         finish(&mut self.rx).await
     }
-}
-
-/// Factory code whose first reply deploys `new.wasm` through the plugin tool; the new code's
-/// embedding fails.
-struct ToolDeployment {
-    node: Node,
-    old: Arc<ScriptedProvider>,
-    new: Arc<ScriptedProvider>,
-    factory: GenerationId,
-    settings: ProviderSettings,
-}
-
-impl ToolDeployment {
-    /// Returns the node after the deploying Run, with that Run's entries.
-    async fn replace_provider(root: &Path) -> (Self, Vec<Entry>) {
-        let workspace = root.join("workspace");
-        std::fs::create_dir(&workspace).unwrap();
-        std::fs::write(workspace.join("new.wasm"), b"new").unwrap();
-        let old = ScriptedProvider::new(vec![calls(vec![call(
-            "plugin_deploy",
-            r#"{"name":"fixture","path":"new.wasm"}"#,
-        )])]);
-        let new = ScriptedProvider::new(vec![reply("new code")]);
-        *new.embedding_failure.lock().unwrap() = Some(fault(code::PROVIDER_NETWORK));
-        let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
-        let runtime = Arc::new(ScriptedRuntime::default());
-        runtime.insert(FACTORY_BYTES, loaded(old.clone()));
-        runtime.insert(b"new", loaded(new.clone()));
-        let mut document = configuration();
-        for name in ["reply", "compaction"] {
-            document["endpoint"][name]["model"] = "per-call-model".into();
-        }
-        let registry = Registry::open(registry_deps(
-            store.clone(),
-            runtime,
-            FACTORY_BYTES,
-            document,
-        ))
-        .await
-        .unwrap();
-        let factory = registry
-            .view()
-            .exports
-            .completion(&fixture_endpoint("fixture"), false)
-            .unwrap()
-            .generation;
-        let settings = registry.view().config.kernel.profiles["default"]
-            .reply
-            .first()
-            .endpoint
-            .settings
-            .clone();
-        let mut node = Node::start(root, store, registry).await;
-        let entries = node.run("replace your provider").await;
-        let deployment = Self {
-            node,
-            old,
-            new,
-            factory,
-            settings,
-        };
-        (deployment, entries)
-    }
-}
-
-#[tokio::test]
-async fn deployment_tool_moves_the_next_attempt_and_memory_call_to_the_new_code() {
-    let dir = tempfile::tempdir().unwrap();
-    let (deployment, entries) = ToolDeployment::replace_provider(dir.path()).await;
-    let starts: Vec<_> = entries
-        .iter()
-        .filter_map(|entry| match &entry.body {
-            EntryBody::AttemptStarted {
-                provider, settings, ..
-            } => Some((provider, settings)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(starts.len(), 2);
-    assert_eq!(starts[0].0, &deployment.factory);
-    assert_eq!(
-        starts[1].0,
-        &deployment
-            .node
-            .kernel
-            .registry()
-            .view()
-            .exports
-            .completion(&fixture_endpoint("fixture"), false)
-            .unwrap()
-            .generation
-    );
-    assert!(
-        starts
-            .iter()
-            .all(|(_, settings)| **settings == deployment.settings)
-    );
-    assert_eq!(
-        deployment.new.settings.lock().unwrap().as_slice(),
-        std::slice::from_ref(&deployment.settings)
-    );
-    assert!(
-        deployment
-            .node
-            .memories
-            .recall("after", 1, &CancellationToken::new())
-            .await
-            .unwrap()
-            .lexical_only
-            .is_some()
-    );
-    deployment.node.kernel.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn deployment_tool_restores_registered_code_as_a_new_generation() {
-    let dir = tempfile::tempdir().unwrap();
-    let (mut deployment, _) = ToolDeployment::replace_provider(dir.path()).await;
-    deployment
-        .new
-        .steps
-        .lock()
-        .unwrap()
-        .push_back(calls(vec![call(
-            "plugin_deploy",
-            &serde_json::json!({"name": "fixture", "generation": deployment.factory}).to_string(),
-        )]));
-    deployment
-        .old
-        .steps
-        .lock()
-        .unwrap()
-        .push_back(reply("restored"));
-    let entries = deployment.node.run("restore your provider").await;
-    let returned = entries
-        .iter()
-        .find_map(|entry| match &entry.body {
-            EntryBody::ToolCallSettled {
-                outcome: Settlement::Ok,
-                content,
-                ..
-            } => Some(
-                serde_json::from_value::<GenerationRecord>(
-                    serde_json::from_str::<serde_json::Value>(content).unwrap()["generation"]
-                        .clone(),
-                )
-                .unwrap(),
-            ),
-            _ => None,
-        })
-        .unwrap();
-    assert!(returned.id > deployment.factory);
-    assert_eq!(returned.artifact, ContentHash::of(FACTORY_BYTES));
-    assert!(
-        deployment
-            .node
-            .memories
-            .recall("restored", 1, &CancellationToken::new())
-            .await
-            .unwrap()
-            .lexical_only
-            .is_none()
-    );
-    deployment.node.kernel.shutdown().await.unwrap();
 }
 
 /// A node whose `fixture` plugin runs the `working` trial over factory code, with the `broken`
@@ -235,12 +72,10 @@ impl Callers {
         runtime.insert(b"broken", loaded(broken.clone()));
         let mut document = configuration();
         document["endpoint"]["reply"]["model"] = "chosen-model".into();
-        let registry = Registry::open(registry_deps(
-            store.clone(),
-            runtime.clone(),
-            FACTORY_BYTES,
-            document,
-        ))
+        let registry = open_registry(
+            registry_deps(store.clone(), runtime.clone(), FACTORY_BYTES),
+            configuration_request(document),
+        )
         .await
         .unwrap();
         let factory_id = registry
@@ -272,7 +107,7 @@ impl Callers {
     }
 
     async fn active_status(&self) -> GenerationStatus {
-        self.registry.status().await.plugins[0]
+        self.registry.status().await.unwrap().plugins[0]
             .active
             .as_ref()
             .unwrap()
@@ -291,7 +126,13 @@ impl Callers {
         node.kernel.shutdown().await.unwrap();
         drop((node, registry));
         let registry = open(&store, runtime).await;
-        registry.status().await.plugins.remove(0).generations
+        registry
+            .status()
+            .await
+            .unwrap()
+            .plugins
+            .remove(0)
+            .generations
     }
 }
 
@@ -503,7 +344,7 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
             .contains(&notices[0].canonical_message())
     );
     assert_eq!(
-        callers.registry.status().await.plugins[0]
+        callers.registry.status().await.unwrap().plugins[0]
             .generations
             .last()
             .unwrap()
@@ -532,13 +373,15 @@ async fn safe_mode_replies_when_another_use_needs_an_interface_absent_from_facto
     runtime.insert(b"embedding", loaded(active_provider.clone()));
     let mut document = configuration();
     document["endpoint"]["embed"]["plugin"] = "embedder".into();
-    let mut deps = registry_deps(store.clone(), runtime, FACTORY_BYTES, document.clone());
+    let mut deps = registry_deps(store.clone(), runtime, FACTORY_BYTES);
     deps.factory.push(FactoryPlugin {
         name: "embedder".into(),
         id: PluginId::new(),
         artifact: b"embedding".to_vec(),
     });
-    let registry = Registry::open(deps).await.unwrap();
+    let registry = open_registry(deps, configuration_request(document.clone()))
+        .await
+        .unwrap();
     let factory = registry
         .view()
         .exports
@@ -547,8 +390,7 @@ async fn safe_mode_replies_when_another_use_needs_an_interface_absent_from_facto
         .generation;
     deploy_artifact(&registry, "fixture", b"multi-export").await;
     document["endpoint"]["embed"]["plugin"] = "fixture".into();
-    registry
-        .apply_config(ConfigSource::Document(document))
+    submit(&registry, configuration_request(document))
         .await
         .unwrap();
     let mut node = Node::start(dir.path(), store, registry).await;
@@ -578,26 +420,23 @@ async fn safe_mode_keeps_the_active_generation_of_a_plugin_without_factory_code(
     let custom = ScriptedProvider::new(vec![reply("probe"), reply("custom repair reply")]);
     runtime.insert(FACTORY_BYTES, loaded(ScriptedProvider::new(vec![])));
     runtime.insert(b"custom", loaded(custom.clone()));
-    let registry = Registry::open(registry_deps(
-        store.clone(),
-        runtime,
-        FACTORY_BYTES,
-        configuration(),
-    ))
+    let registry = open_registry(
+        registry_deps(store.clone(), runtime, FACTORY_BYTES),
+        configuration_request(configuration()),
+    )
     .await
     .unwrap();
-    let deployed = deploy_artifact(&registry, "custom", b"custom").await;
+    let custom_generation = deploy_artifact(&registry, "custom", b"custom").await;
     let mut document = configuration();
     document["endpoint"]["reply"]["plugin"] = "custom".into();
-    registry
-        .apply_config(ConfigSource::Document(document))
+    submit(&registry, configuration_request(document))
         .await
         .unwrap();
     let mut node = Node::start(dir.path(), store, registry).await;
     node.kernel.set_safe_mode(true).await.unwrap();
     let log = node.run("repair").await;
     assert!(log.iter().any(|entry| matches!(&entry.body,
-        EntryBody::AttemptStarted { provider, .. } if *provider == deployed.id
+        EntryBody::AttemptStarted { provider, .. } if *provider == custom_generation.id
     )));
     assert!(matches!(
         log.last().unwrap().body,

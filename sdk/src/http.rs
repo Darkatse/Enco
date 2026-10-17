@@ -1,5 +1,5 @@
 //! Shared JSON transport and service failure classification.
-use crate::{Settings, bad, failure, host, types::Failure};
+use crate::protocol::{Settings, bad, failure, host, types::Failure};
 use serde_json::Value;
 
 /// Merge service options without replacing fields owned by the typed request.

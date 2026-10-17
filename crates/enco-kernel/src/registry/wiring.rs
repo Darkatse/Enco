@@ -14,9 +14,15 @@ impl Endpoint {
             retryable: false,
         };
         let adapter = adapter.ok_or_else(|| unavailable(format!("requires {interface}")))?;
-        let mismatch = match (&loaded.credential, self.settings.api_key_env.is_some()) {
+        let mismatch = match (
+            loaded
+                .credentials
+                .iter()
+                .find(|credential| credential.origin.is_none()),
+            self.settings.api_key_env.is_some(),
+        ) {
             (None, true) => Some("sets api_key_env, but the artifact declares no credential"),
-            (Some(Credential { required: true }), false) => {
+            (Some(Credential { required: true, .. }), false) => {
                 Some("has no api_key_env, but the artifact requires a credential")
             }
             _ => None,

@@ -1,5 +1,6 @@
 use crate::{
     config::{Model, Trial},
+    enco::Binary,
     render::Renderer,
     task::{self, Task},
     trial::Variant,
@@ -58,6 +59,9 @@ impl Home {
             &variant.plugin,
         )?;
         tokio::fs::write(enco.join("config.toml"), source).await?;
+        self.initialize(&variant.binary).await?;
+        let cargo = self.toolchain()?;
+        self.prefetch(&cargo, &enco).await?;
         self.environment.extend(model.variables.clone());
         self.environment.extend(variant.variables.clone());
         for name in ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"] {
@@ -71,6 +75,78 @@ impl Home {
             .join(",");
         for name in ["no_proxy", "NO_PROXY"] {
             self.environment.insert(name.into(), hosts.clone().into());
+        }
+        Ok(())
+    }
+
+    async fn initialize(&self, binary: &Binary) -> Result<()> {
+        let initialized = tokio::process::Command::new(&binary.path)
+            .arg("init")
+            .env_clear()
+            .envs(&self.environment)
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output()
+            .await
+            .context("initialize trial intent")?;
+        ensure!(
+            initialized.status.success(),
+            "enco init: {}",
+            String::from_utf8_lossy(&initialized.stderr)
+        );
+        Ok(())
+    }
+
+    fn toolchain(&mut self) -> Result<PathBuf> {
+        let owner = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
+        for (key, default) in [("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup")] {
+            let path = std::env::var_os(key).map_or_else(|| owner.join(default), PathBuf::from);
+            self.environment
+                .insert(key.into(), std::path::absolute(path)?.into_os_string());
+        }
+        let cargo = executable("cargo")?;
+        let rustc = executable("rustc")?;
+        let path = self
+            .environment
+            .get("PATH")
+            .context("trial PATH is not set")?;
+        let mut paths: Vec<_> = std::env::split_paths(path).collect();
+        paths.push(cargo.parent().context("cargo directory")?.into());
+        self.environment
+            .insert("PATH".into(), std::env::join_paths(paths)?);
+        self.environment
+            .insert("RUSTC".into(), rustc.into_os_string());
+        self.environment
+            .insert("CARGO_NET_OFFLINE".into(), "true".into());
+        Ok(cargo)
+    }
+
+    /// Resolve dependencies with the evaluator's network before the subject receives its proxy.
+    async fn prefetch(&self, cargo: &Path, enco: &Path) -> Result<()> {
+        let mut manifests = vec![enco.join("sdk/Cargo.toml")];
+        let mut plugins = tokio::fs::read_dir(enco.join("plugins")).await?;
+        while let Some(entry) = plugins.next_entry().await? {
+            if entry.file_type().await?.is_dir() {
+                manifests.push(entry.path().join("Cargo.toml"));
+            }
+        }
+        manifests.sort();
+        for manifest in manifests {
+            let output = tokio::process::Command::new(cargo)
+                .args(["fetch", "--target", "wasm32-wasip2", "--manifest-path"])
+                .arg(&manifest)
+                .env("CARGO_HOME", &self.environment["CARGO_HOME"])
+                .stdin(Stdio::null())
+                .kill_on_drop(true)
+                .output()
+                .await
+                .with_context(|| format!("prefetch {}", manifest.display()))?;
+            ensure!(
+                output.status.success(),
+                "prefetch {}: {}",
+                manifest.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
         Ok(())
     }
@@ -117,4 +193,12 @@ async fn copy(source: &Path, destination: &Path, renderer: &Renderer) -> Result<
             .await?;
     }
     Ok(())
+}
+
+fn executable(name: &str) -> Result<PathBuf> {
+    let path = std::env::var_os("PATH").context("PATH is not set")?;
+    std::env::split_paths(&path)
+        .map(|path| path.join(name))
+        .find(|path| path.is_file())
+        .with_context(|| format!("{name} is not on the evaluator PATH"))
 }

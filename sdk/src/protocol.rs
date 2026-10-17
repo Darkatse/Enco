@@ -1,15 +1,6 @@
-//! Shared WIT types, HTTP transport and Chat Completions protocol. No host crate is visible here.
-mod http;
-pub use http::{apply_options, post};
-pub mod bindings {
-    wit_bindgen::generate!({
-        path: "../../wit",
-        world: "completion-plugin",
-        // Library mode emits export metadata only when an entry point invokes export!.
-        pub_export_macro: true,
-    });
-}
-
+//! Chat Completions and embeddings over the SDK transport.
+use crate::bindings;
+pub use crate::http::{apply_options, post};
 pub use bindings::enco::plugin::{host, types};
 pub use bindings::exports::enco::plugin::completion::{Completion, Request, StopReason, Usage};
 use serde_json::{Map, Value, json};

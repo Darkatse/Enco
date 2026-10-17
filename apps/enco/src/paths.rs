@@ -21,10 +21,6 @@ impl Paths {
         self.home.join("config.toml")
     }
 
-    pub fn gitignore(&self) -> PathBuf {
-        self.home.join(".gitignore")
-    }
-
     pub fn workspace(&self) -> PathBuf {
         self.home.join("workspace")
     }
@@ -43,9 +39,6 @@ impl Paths {
     }
     pub fn artifacts(&self) -> PathBuf {
         self.data().join("artifacts")
-    }
-    pub fn plugins_lock(&self) -> PathBuf {
-        self.home.join("plugins.lock")
     }
     pub fn memory_db(&self) -> PathBuf {
         self.data().join("memory.db")

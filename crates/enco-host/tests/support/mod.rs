@@ -1,5 +1,6 @@
 #![allow(
     dead_code,
+    unused_imports,
     clippy::unwrap_used,
     clippy::expect_used,
     reason = "shared test support: each test binary uses a subset of these helpers, which fail the test by panicking"
@@ -15,6 +16,9 @@ use std::{
     time::Duration,
 };
 use tokio::sync::broadcast;
+
+mod development;
+pub use development::*;
 
 /// A plugin whose admission probe has a fixed result.
 pub struct ScriptedLifecycle(pub Result<(), Failure>);
@@ -115,7 +119,6 @@ pub fn store_paths(root: &Path) -> StorePaths {
         db: root.join("enco.db"),
         blobs: root.join("blobs"),
         artifacts: root.join("artifacts"),
-        plugins_lock: root.join("plugins.lock"),
     }
 }
 
@@ -151,7 +154,7 @@ pub fn fixture(completion: Arc<dyn Provider>, embedding: Arc<dyn Embedding>) -> 
         lifecycle: Arc::new(ScriptedLifecycle(Ok(()))),
         summary: "fixture".into(),
         config_schema: serde_json::json!({}),
-        credential: None,
+        credentials: Vec::new(),
         unavailable: None,
         tools: None,
         completion: Some(completion),
@@ -160,20 +163,16 @@ pub fn fixture(completion: Arc<dyn Provider>, embedding: Arc<dyn Embedding>) -> 
     }
 }
 
-/// The registry over a scripted runtime, declaring the host tools every test kernel builds;
-/// tests that also build memory tools add their names through `registry_configured`.
 pub fn registry_deps(
     store: Arc<SqliteStore>,
     runtime: Arc<dyn Runtime>,
     factory: &[u8],
-    document: serde_json::Value,
 ) -> RegistryDeps {
     RegistryDeps {
         host_tool_names: native_tools(Default::default())
             .iter()
             .map(|tool| tool.spec())
-            .chain(plugin_tool_specs())
-            .chain(config::config_tool_specs(Path::new("config.toml")))
+            .chain([self_status_spec()])
             .chain(builtin_tool_specs())
             .map(|spec| spec.name)
             .collect(),
@@ -185,9 +184,14 @@ pub fn registry_deps(
             artifact: factory.to_vec(),
         }],
         owners: TABLE_OWNERS.into(),
-        bootstrap: Ok(document),
         clock: Arc::new(SystemClock),
     }
+}
+
+pub fn factory_runtime(loaded: Loaded) -> Arc<ScriptedRuntime> {
+    let runtime = Arc::new(ScriptedRuntime::default());
+    runtime.insert(FACTORY_BYTES, loaded);
+    runtime
 }
 
 pub async fn registry_configured(
@@ -197,12 +201,12 @@ pub async fn registry_configured(
     extra_tools: Vec<ToolSpec>,
 ) -> (Arc<Registry>, Arc<SqliteStore>) {
     let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
-    let runtime = Arc::new(ScriptedRuntime::default());
-    runtime.insert(FACTORY_BYTES, loaded);
-    let mut deps = registry_deps(store.clone(), runtime, FACTORY_BYTES, document);
+    let mut deps = registry_deps(store.clone(), factory_runtime(loaded), FACTORY_BYTES);
     deps.host_tool_names
         .extend(extra_tools.into_iter().map(|spec| spec.name));
-    let registry = Registry::open(deps).await.unwrap();
+    let registry = open_registry(deps, configuration_request(document))
+        .await
+        .unwrap();
     (registry, store)
 }
 
@@ -219,13 +223,13 @@ pub async fn open_memories(root: &Path, registry: Arc<Registry>) -> Arc<Memories
     .unwrap()
 }
 
-/// The Kernel as the composition root assembles it over an already-built registry; memory
-/// joins with its context source and tools when the test exercises it.
+/// The lifeline is the host's own, so a kernel without its home's registration tools fails to start.
 pub fn kernel_deps(
     root: &Path,
     store: Arc<SqliteStore>,
     registry: Arc<Registry>,
     memories: Option<Arc<Memories>>,
+    development: Option<Arc<enco_host::development::Development>>,
 ) -> KernelDeps {
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -238,15 +242,17 @@ pub fn kernel_deps(
         context.push(Arc::new(MemoryContextSource::new(memories.clone())));
         tools.extend(memory_tools(memories));
     }
-    tools.extend(plugin_tools(registry.clone(), workspace.clone()));
-    tools.extend(config::tools(root.join("config.toml"), registry.clone()));
+    if let Some(development) = development {
+        tools.extend(development_tools(development, registry.clone()));
+    }
+    tools.push(Arc::new(TestStatus(registry.clone())));
     KernelDeps {
         store,
         registry,
         composer: Arc::new(FactoryComposer::new(workspace, instructions)),
         context,
         tools,
-        lifeline: LIFELINE.iter().map(|name| (*name).into()).collect(),
+        lifeline: LIFELINE.map(String::from).into(),
         clock: Arc::new(SystemClock),
     }
 }
@@ -310,10 +316,10 @@ pub async fn kernel_configured(
     configure: impl FnOnce(&mut KernelDeps),
 ) -> (Kernel, Arc<SqliteStore>) {
     // Without memory nothing recalls; the export only satisfies memory's declared use.
-    let loaded = fixture(provider, ScriptedProvider::new(vec![]));
+    let runtime = factory_runtime(fixture(provider, ScriptedProvider::new(vec![])));
     let extra = tools.iter().map(|tool| tool.spec()).collect();
-    let (registry, store) = registry_configured(root, loaded, document, extra).await;
-    let mut deps = kernel_deps(root, store.clone(), registry, None);
+    let (development, registry, store) = scripted_home(root, runtime, document, extra).await;
+    let mut deps = kernel_deps(root, store.clone(), registry, None, Some(development));
     deps.tools.extend(tools);
     configure(&mut deps);
     (Kernel::start(deps).await.unwrap(), store)
@@ -326,10 +332,17 @@ pub async fn kernel_with_memory(
     document: serde_json::Value,
     configure: impl FnOnce(&mut KernelDeps),
 ) -> (Kernel, Arc<Memories>) {
-    let loaded = fixture(provider.clone(), provider);
-    let (registry, store) = registry_configured(root, loaded, document, memory_tool_specs()).await;
+    let runtime = factory_runtime(fixture(provider.clone(), provider));
+    let (development, registry, store) =
+        scripted_home(root, runtime, document, memory_tool_specs()).await;
     let memories = open_memories(root, registry.clone()).await;
-    let mut deps = kernel_deps(root, store, registry, Some(memories.clone()));
+    let mut deps = kernel_deps(
+        root,
+        store,
+        registry,
+        Some(memories.clone()),
+        Some(development),
+    );
     configure(&mut deps);
     (Kernel::start(deps).await.unwrap(), memories)
 }
@@ -378,4 +391,95 @@ pub fn is_reminder(entry: &Entry, id: ScheduleId) -> bool {
         return false;
     };
     matches!(event.body, EventBody::Reminder { schedule, .. } if schedule == id)
+}
+
+/// Supply the initial factory candidates at the host boundary; reopening only restores.
+pub async fn open_registry(
+    deps: RegistryDeps,
+    mut request: RegistrationRequest,
+) -> Result<Arc<Registry>, RegistryError> {
+    Registry::open(deps, |registered| async move {
+        for (name, plugin) in registered.plugins {
+            if plugin.factory.is_some() {
+                request.plugins.entry(name).or_insert(PluginChange::Factory);
+            }
+        }
+        Ok::<_, RegistryError>(request)
+    })
+    .await
+}
+
+/// Tests offer candidates against the same accepted baseline a host would capture.
+pub async fn submit(
+    registry: &Registry,
+    mut request: RegistrationRequest,
+) -> Result<Registered, RegistryError> {
+    request.base = registry.registered_intent().await.base.map(|base| base.id);
+    registry.register(request).await
+}
+
+pub fn configuration_request(document: serde_json::Value) -> RegistrationRequest {
+    RegistrationRequest {
+        revision: format!("fixture-config-{}", EventId::new()),
+        configuration: Some(document),
+        base: None,
+        plugins: Default::default(),
+    }
+}
+
+pub fn artifact_request(name: &str, bytes: Vec<u8>) -> RegistrationRequest {
+    RegistrationRequest {
+        revision: format!("fixture-artifact-{}", EventId::new()),
+        plugins: [(name.into(), PluginChange::Artifact(bytes))].into(),
+        base: None,
+        configuration: None,
+    }
+}
+
+pub fn source_request(name: &str, bytes: &[u8]) -> RegistrationRequest {
+    RegistrationRequest {
+        revision: format!("fixture-source-{}", EventId::new()),
+        plugins: [(
+            name.into(),
+            PluginChange::Code(ArtifactSource::Bytes(bytes.into())),
+        )]
+        .into(),
+        base: None,
+        configuration: None,
+    }
+}
+
+pub fn credential(required: bool) -> Credential {
+    Credential {
+        name: "service".into(),
+        origin: None,
+        required,
+        header: "authorization".into(),
+        prefix: "Bearer ".into(),
+    }
+}
+
+/// Kernel fixtures expose registry facts; the complete application status is covered by CLI tests.
+struct TestStatus(Arc<Registry>);
+
+#[async_trait]
+impl Tool for TestStatus {
+    fn code(&self) -> CodeRef {
+        CodeRef::Native {
+            name: "test-status".into(),
+            version: "1".into(),
+        }
+    }
+    fn spec(&self) -> ToolSpec {
+        self_status_spec()
+    }
+    async fn call(
+        &self,
+        _ctx: CallContext,
+        _args: serde_json::Map<String, serde_json::Value>,
+    ) -> Outcome {
+        Outcome::Ok {
+            value: serde_json::json!(self.0.status().await.unwrap()),
+        }
+    }
 }

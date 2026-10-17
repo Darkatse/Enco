@@ -24,6 +24,8 @@ pub struct WasmRuntime {
 pub enum WasmError {
     #[error("Wasm engine: {0}")]
     Engine(wasmtime::Error),
+    #[error("Wasm epoch clock: {0}")]
+    Clock(std::io::Error),
     #[error("HTTP client: {0}")]
     Http(#[from] reqwest::Error),
 }
@@ -140,13 +142,17 @@ impl Runtime for WasmRuntime {
         Ok(Loaded {
             summary: description.summary,
             config_schema,
-            credential: description
+            credentials: description
                 .credentials
                 .into_iter()
-                .find(|credential| credential.origin.is_none())
                 .map(|credential| Credential {
+                    name: credential.name,
+                    origin: credential.origin,
                     required: credential.required,
-                }),
+                    header: credential.header,
+                    prefix: credential.prefix,
+                })
+                .collect(),
             unavailable,
             tools,
             lifecycle: plugin.clone(),

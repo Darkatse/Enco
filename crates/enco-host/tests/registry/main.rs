@@ -6,6 +6,7 @@ mod admission;
 mod callers;
 mod opening;
 mod races;
+mod registrations;
 mod trial;
 
 use enco_core::*;
@@ -37,20 +38,18 @@ fn fault(code: &str) -> Failure {
 
 /// Opens the registry over the scripted factory and the default configuration.
 async fn open(store: &Arc<SqliteStore>, runtime: Arc<dyn Runtime>) -> Arc<Registry> {
-    Registry::open(registry_deps(
-        store.clone(),
-        runtime,
-        FACTORY_BYTES,
-        configuration(),
-    ))
+    open_registry(
+        registry_deps(store.clone(), runtime, FACTORY_BYTES),
+        configuration_request(configuration()),
+    )
     .await
     .unwrap()
 }
 
 async fn deploy_artifact(registry: &Registry, name: &str, bytes: &[u8]) -> GenerationRecord {
-    registry
-        .deploy(name, PluginSource::Artifact(bytes.to_vec()))
+    submit(registry, artifact_request(name, bytes.to_vec()))
         .await
         .unwrap()
-        .generation
+        .generations
+        .remove(0)
 }

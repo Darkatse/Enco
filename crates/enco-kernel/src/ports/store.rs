@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use enco_core::*;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
+mod registry;
+pub use registry::*;
 
 /// Persistence boundary; only the owning actor may commit its state.
 #[async_trait]
@@ -68,37 +70,21 @@ pub trait Store: Send + Sync {
     // ---- Identity, generations and wiring (writer: Registry)
     /// Select the profile under the registry committer, effective at the next Round.
     async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError>;
-    /// Read the authoritative name-to-identity mapping from plugins.lock.
-    async fn plugin_names(&self) -> Result<BTreeMap<String, PluginId>, StoreError>;
-    /// Register a new name before any generation is committed for its identity.
-    async fn register_plugin(&self, name: &str, id: PluginId) -> Result<(), StoreError>;
-    /// Read all durable generations and active routing.
+    /// Read registration history and the references restored at startup.
     async fn registry(&self) -> Result<RegistryState, StoreError>;
-    /// Assign a generation number and optionally activate it in the same transaction.
-    async fn insert_generation(
-        &self,
-        generation: &NewGeneration,
-        activate: bool,
-    ) -> Result<GenerationId, StoreError>;
-    /// Register and activate a configuration and its changed plugin settings atomically.
-    /// Returns the configuration ID and plugin IDs in input order.
-    async fn insert_config_generation(
-        &self,
-        document: &serde_json::Value,
-        created_at: DateTime<Utc>,
-        plugins: &[NewGeneration],
-    ) -> Result<(GenerationId, Vec<GenerationId>), StoreError>;
-    /// Activate a previously registered configuration.
-    async fn activate_config(&self, generation: GenerationId) -> Result<(), StoreError>;
-    /// Promote a trial generation after successful observation.
+    /// Record embedded factory content without activating it or creating a registration.
+    async fn record_factories(&self, generations: &[GenerationRecord]) -> Result<(), StoreError>;
+
+    /// Atomically accept one registration, its content and its runtime references.
+    async fn register(&self, write: &RegistrationWrite) -> Result<(), StoreError>;
+    /// Promote an observed trial without changing its identity or rollback target.
     async fn promote(&self, generation: GenerationId) -> Result<(), StoreError>;
-    /// Commit each failed generation with its reason, routing and an optional notice atomically.
-    async fn activate(
+    /// Atomically move runtime references and record attributable failures and a notice.
+    async fn activate(&self, change: &Activation) -> Result<(), StoreError>;
+    /// Remove component files which no runtime reference retains.
+    async fn retain_artifacts(
         &self,
-        plugin: PluginId,
-        to: Option<GenerationId>,
-        failed: &[(GenerationId, Failure)],
-        event: Option<&Event>,
+        hashes: &std::collections::HashSet<ContentHash>,
     ) -> Result<(), StoreError>;
     /// Persist immutable component bytes separately from removable history blobs.
     async fn put_artifact(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
@@ -121,51 +107,6 @@ pub struct NodeRecord {
     pub id: NodeId,
     /// Whether the next Round uses only the lifeline.
     pub safe_mode: bool,
-}
-
-/// Durable registry facts; compiled exports are a derived view.
-pub struct RegistryState {
-    /// All generation records in commit order.
-    pub generations: Vec<GenerationRecord>,
-    /// Active generations; a missing plugin has no active generation.
-    pub active: BTreeMap<PluginId, GenerationId>,
-    /// Configuration history in registry order.
-    pub config_generations: Vec<ConfigGeneration>,
-    /// Active configuration; absent until first registration.
-    pub active_config: Option<GenerationId>,
-}
-
-/// A generation awaiting its registry-assigned sequence number.
-#[derive(Clone)]
-pub struct NewGeneration {
-    /// Plugin identity which owns this history.
-    pub plugin: PluginId,
-    /// Component content address.
-    pub artifact: ContentHash,
-    /// Complete plugin settings, not model invocation parameters.
-    pub settings: PluginSettings,
-    /// Factory registration or explicit deployment.
-    pub origin: Origin,
-    /// Initial eligibility: trial or healthy; failures are committed through activate.
-    pub status: GenerationStatus,
-    /// Observation time supplied by the registry clock.
-    pub created_at: DateTime<Utc>,
-}
-
-impl NewGeneration {
-    /// Attach the number allocated by the durable commit.
-    pub fn numbered(self, id: GenerationId) -> GenerationRecord {
-        GenerationRecord {
-            id,
-            plugin: self.plugin,
-            artifact: self.artifact,
-            settings: self.settings,
-            origin: self.origin,
-            status: self.status,
-            failure: None,
-            created_at: self.created_at,
-        }
-    }
 }
 
 /// An atomic append of Log facts and consumption of their corresponding Inbox rows.
@@ -240,9 +181,6 @@ pub enum StoreError {
     /// A referenced registry record does not exist.
     #[error("unknown generation {0}")]
     UnknownGeneration(GenerationId),
-    /// Plugin identity file could not be read, interpreted or atomically replaced.
-    #[error("plugins.lock: {0}")]
-    Lock(String),
     /// The authority uses another schema version; opening it never deletes or migrates data.
     #[error(
         "database schema version {found} does not match this Enco ({expected}); {}",

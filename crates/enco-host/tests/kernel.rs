@@ -2,7 +2,7 @@ mod support;
 
 use enco_core::*;
 use enco_host::SqliteStore;
-use enco_kernel::{Kernel, Registry, Store};
+use enco_kernel::{Kernel, Store};
 use std::sync::Arc;
 use support::*;
 
@@ -330,14 +330,16 @@ async fn startup_requires_host_tool_declarations_to_match_handlers() {
         let runtime = Arc::new(ScriptedRuntime::default());
         let provider = ScriptedProvider::new(vec![]);
         runtime.insert(FACTORY_BYTES, fixture(provider.clone(), provider));
-        let mut declared = registry_deps(store.clone(), runtime, FACTORY_BYTES, configuration());
+        let mut declared = registry_deps(store.clone(), runtime, FACTORY_BYTES);
         if missing {
             declared.host_tool_names.retain(|name| name != "fs_read");
         } else {
             declared.host_tool_names.push("absent_handler".into());
         }
-        let registry = Registry::open(declared).await.unwrap();
-        let error = Kernel::start(kernel_deps(root.path(), store, registry, None))
+        let registry = open_registry(declared, configuration_request(configuration()))
+            .await
+            .unwrap();
+        let error = Kernel::start(kernel_deps(root.path(), store, registry, None, None))
             .await
             .err()
             .unwrap();

@@ -338,7 +338,7 @@ async fn compaction_requests_carry_arrival_times_and_failures_but_not_pinned_mem
         assert_eq!(inspection.request, request);
         if inspection.purpose == AttemptPurpose::Compaction {
             let text = request.messages[1].joined_text();
-            assert!(text.contains(ARRIVAL));
+            assert!(text.contains(ARRIVAL), "{text}");
             assert!(!text.contains("Owner is River"));
             summarized_outcome |=
                 text.contains("provider.bad_request") && text.contains("request rejected");
@@ -507,9 +507,7 @@ async fn owner_zone_changes_renarrate_times_and_move_only_floating_schedules() {
     *clock.0.lock().unwrap() = utc("2026-03-10T16:00:00Z");
     let mut document = kernel.registry().view().config.document.clone();
     document["owner"]["timezone"] = json!(Tz::America__Los_Angeles);
-    kernel
-        .registry()
-        .apply_config(ConfigSource::Document(document))
+    submit(kernel.registry(), configuration_request(document))
         .await
         .unwrap();
     finish(&mut rx).await;
@@ -652,4 +650,64 @@ async fn stopped_scheduler_reports_the_schedule_that_failed() {
     assert!(stopped.contains(&schedule.id.to_string()));
     assert!(matches!(failure, ScheduleError::Stopped(Some(reason)) if reason == stopped));
     kernel.shutdown().await.unwrap();
+}
+
+#[test]
+fn a_compaction_only_round_after_a_summary_cannot_produce_an_empty_summary_request() {
+    let now = Utc::now();
+    let pos = |seq| LogPos {
+        epoch: Epoch(1),
+        seq: Seq(seq),
+    };
+    let mut input = ComposeInput {
+        now,
+        timezone: Tz::UTC,
+        session: SessionRecord {
+            id: SessionId::new(),
+            name: "main".into(),
+            created_at: now,
+            binding: Binding {
+                node: NodeId::new(),
+                epoch: Epoch(1),
+            },
+            profile: "default".into(),
+        },
+        transcript: Transcript {
+            summary: Some("Earlier conversation".into()),
+            items: vec![TranscriptItem {
+                pos: pos(10),
+                message: Message::text(Role::User, "x".repeat(20_000)),
+                generation: None,
+                event: None,
+            }],
+            round_ends: vec![pos(5)],
+            run_ends: vec![],
+        },
+        previous_plan: None,
+        context: Contribution::default(),
+        unavailable: vec![],
+        tools: vec![],
+        safe_mode: None,
+        reply: ReplyTarget {
+            budget: Budget {
+                context_tokens: 5000.try_into().unwrap(),
+                max_output_tokens: 512.try_into().unwrap(),
+            },
+            skipped: vec![],
+        },
+        compaction: Some(Budget {
+            context_tokens: 30000.try_into().unwrap(),
+            max_output_tokens: 512.try_into().unwrap(),
+        }),
+        compactions_left: 2,
+    };
+    let composer = FactoryComposer::new("workspace".into(), "AGENTS.md".into());
+    assert!(matches!(
+        composer.compose(&input),
+        Err(ComposeError::ContextOverflow { .. })
+    ));
+    input.transcript.round_ends.push(pos(20));
+    assert!(
+        matches!(composer.compose(&input), Ok(Composition::Compact { upto, .. }) if upto == pos(20))
+    );
 }

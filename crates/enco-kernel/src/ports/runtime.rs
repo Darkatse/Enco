@@ -17,8 +17,8 @@ pub struct Loaded {
     pub summary: String,
     /// Plugin-owned configuration documentation, retained with the loaded generation.
     pub config_schema: serde_json::Value,
-    /// Credential requirement for the service selected by the caller.
-    pub credential: Option<Credential>,
+    /// Credential declarations used by transport, wiring and generated documentation.
+    pub credentials: Vec<Credential>,
     /// A missing environment requirement; the code still loads and retains its health.
     pub unavailable: Option<Failure>,
     /// Self-check required before a deployment is admitted.
@@ -54,11 +54,19 @@ pub trait Tools: Send + Sync {
     ) -> Outcome;
 }
 
-/// Credential placement belongs to the transport; wiring only needs this requirement.
-#[derive(Clone)]
+/// A declared credential; transport validates placement and alone reads its value.
+#[derive(Clone, serde::Serialize)]
 pub struct Credential {
-    /// The selected mapping must name a credential environment variable.
+    /// Name used in the owner's secret mapping.
+    pub name: String,
+    /// Fixed service origin, or the service selected by the caller.
+    pub origin: Option<String>,
+    /// Whether the mapping must be present.
     pub required: bool,
+    /// Header populated by the transport.
+    pub header: String,
+    /// Literal prefix before the secret value.
+    pub prefix: String,
 }
 
 /// Compilation, import validation or component description failed.

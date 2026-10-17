@@ -1,5 +1,4 @@
 use super::*;
-use state::Plugins;
 
 /// Whether each registered name's active generation, with any candidates substituted, can run on
 /// this node, and why not. It depends only on the generations' own facts, never on their users.
@@ -29,30 +28,12 @@ pub(super) fn users(uses: &[Use], name: &str) -> Vec<String> {
         .collect()
 }
 
-/// A pure projection of the complete composition, with all candidates substituted together.
+/// Evaluate one complete proposed composition, independent of how it was assembled.
 pub(super) fn evaluate(
-    plugins: &Plugins,
+    contents: BTreeMap<String, Option<Loaded>>,
     host_tool_names: &[String],
-    candidates: &BTreeMap<String, Loaded>,
 ) -> Admission {
-    let mut active: BTreeMap<_, _> = plugins
-        .names
-        .iter()
-        .map(|(name, plugin)| {
-            let loaded = plugins
-                .active
-                .get(plugin)
-                .and_then(|id| plugins.loaded.get(id))
-                .cloned();
-            (name.clone(), loaded)
-        })
-        .collect();
-    active.extend(
-        candidates
-            .iter()
-            .map(|(name, loaded)| (name.clone(), Some(loaded.clone()))),
-    );
-    Admission(check(active, host_tool_names))
+    Admission(check(contents, host_tool_names))
 }
 
 fn check(

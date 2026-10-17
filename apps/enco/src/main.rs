@@ -5,10 +5,11 @@ mod daemon;
 mod paths;
 mod protocol;
 mod send;
+mod status;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
-use enco_core::{AttemptId, EventId, GenerationId, MemoryId, ScheduleId};
+use enco_core::{AttemptId, EventId, MemoryId, ScheduleId};
 use paths::Paths;
 use protocol::Command;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ use tokio::io::AsyncWriteExt;
 #[derive(Parser)]
 #[command(
     name = "enco",
-    version,
+    version = env!("ENCO_VERSION"),
     about = "A personal agent with a durable execution log"
 )]
 struct Cli {
@@ -27,14 +28,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    Config {
-        #[command(subcommand)]
-        command: ConfigAction,
-    },
+    /// Build and register changed intent on Enco's chain, preserving your branch and index.
+    Apply,
+    /// Restore the still-effective parts of a registration without Git, Cargo or model calls.
+    Rollback,
     Plugin {
         #[command(subcommand)]
         command: PluginAction,
     },
+    /// Initialize the home repository and bundled SDK without committing to your branch.
     Init,
     Serve,
     Chat {
@@ -83,26 +85,12 @@ enum Action {
 
 #[derive(Subcommand)]
 enum PluginAction {
-    Status,
-    Deploy {
-        name: String,
-        #[arg(required_unless_present = "generation", conflicts_with = "generation")]
-        path: Option<PathBuf>,
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        generation: Option<u64>,
-    },
-    Rollback {
-        name: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum ConfigAction {
-    Apply {
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        generation: Option<u64>,
-    },
-    Rollback,
+    /// Register a component file without changing source intent.
+    Deploy { name: String, path: PathBuf },
+    /// Create a standalone plugin directory for the next apply.
+    Scaffold { name: String },
+    /// Rename registered source while preserving identity and unregistered edits.
+    Rename { name: String, to: String },
 }
 
 #[derive(Clone, ValueEnum)]
@@ -120,27 +108,15 @@ async fn main() -> Result<()> {
     let paths = Paths::from_env()?;
     let cli = Cli::parse();
     let command = match cli.command {
+        Action::Apply => Command::Apply {},
+        Action::Rollback => Command::Rollback {},
         Action::Plugin { command } => match command {
-            PluginAction::Status => Command::PluginStatus {},
-            PluginAction::Deploy {
+            PluginAction::Deploy { name, path } => Command::PluginDeploy {
                 name,
-                path,
-                generation,
-            } => Command::PluginDeploy {
-                name,
-                source: match (path, generation) {
-                    (Some(path), None) => protocol::DeploySource::Path(std::path::absolute(path)?),
-                    (None, Some(id)) => protocol::DeploySource::Generation(GenerationId(id)),
-                    _ => anyhow::bail!("provide exactly one of path or generation"),
-                },
+                path: std::path::absolute(path)?,
             },
-            PluginAction::Rollback { name } => Command::PluginRollback { name },
-        },
-        Action::Config { command } => match command {
-            ConfigAction::Apply { generation } => Command::ConfigApply {
-                generation: generation.map(GenerationId),
-            },
-            ConfigAction::Rollback => Command::ConfigRollback {},
+            PluginAction::Scaffold { name } => Command::PluginScaffold { name },
+            PluginAction::Rename { name, to } => Command::PluginRename { name, to },
         },
         Action::Init => return init(&paths).await,
         Action::Serve => {
@@ -210,7 +186,6 @@ async fn main() -> Result<()> {
 async fn init(paths: &Paths) -> Result<()> {
     tokio::fs::create_dir_all(paths.workspace()).await?;
     tokio::fs::create_dir_all(paths.data()).await?;
-    create_new(&paths.gitignore(), b"/.data/\n/workspace/\n").await?;
     let template = include_str!("../../../examples/deepseek-gemini.toml");
     ensure!(
         template.matches(EXAMPLE_TIMEZONE).count() == 1,
@@ -230,6 +205,8 @@ async fn init(paths: &Paths) -> Result<()> {
             paths.config().display()
         );
     }
+    compose_root::SDK.write(&paths.home).await?;
+    enco_host::development::Development::initialize(&paths.home).await?;
     println!(
         "Enco home: {}\nEdit {}, set its API key environment variables, then run `enco serve` and `enco chat`.",
         paths.home.display(),

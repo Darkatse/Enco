@@ -303,7 +303,7 @@ async fn live_memory_settings_rebuild_only_the_vector_space_and_recover_invalid_
     let provider = ScriptedProvider::new(vec![]);
     // The embedding endpoint later names a credential variable.
     let loaded = || Loaded {
-        credential: Some(Credential { required: false }),
+        credentials: vec![credential(false)],
         ..fixture(provider.clone(), provider.clone())
     };
     let mut document = configuration();
@@ -336,8 +336,7 @@ async fn live_memory_settings_rebuild_only_the_vector_space_and_recover_invalid_
             provider.embedding_dimensions.store(32, Ordering::SeqCst);
         }
         document["endpoint"]["embed"][field] = value.clone();
-        registry
-            .apply_config(ConfigSource::Document(document.clone()))
+        submit(&registry, configuration_request(document.clone()))
             .await
             .unwrap();
         *provider.embedding_failure.lock().unwrap() = Some(offline.clone());
@@ -357,8 +356,7 @@ async fn live_memory_settings_rebuild_only_the_vector_space_and_recover_invalid_
     }
 
     document["endpoint"]["embed"]["api_key_env"] = "NEW_CREDENTIAL_VARIABLE".into();
-    registry
-        .apply_config(ConfigSource::Document(document.clone()))
+    submit(&registry, configuration_request(document.clone()))
         .await
         .unwrap();
     *provider.embedding_failure.lock().unwrap() = Some(offline);
@@ -376,19 +374,18 @@ async fn live_memory_settings_rebuild_only_the_vector_space_and_recover_invalid_
     // Model a host upgrade that can no longer interpret one registered host table.
     let mut invalid = document.clone();
     invalid["memory"]["embedding"] = "missing".into();
-    store
-        .insert_config_generation(&invalid, Utc::now(), &[])
-        .await
-        .unwrap();
+    register_previous_host_config(store.clone(), loaded(), invalid).await;
     let (registry, _) = registry_configured(dir.path(), loaded(), document.clone(), vec![]).await;
-    assert_eq!(registry.status().await.config.invalid[0].table, "memory");
+    assert_eq!(
+        registry.status().await.unwrap().config.invalid[0].table,
+        "memory"
+    );
     let memories = open_memories(dir.path(), registry.clone()).await;
     let recalled = memories.recall("tea", 8, &cancel).await.unwrap();
     assert_eq!(recalled.lexical_only.unwrap().code, code::CONFIG_INVALID);
     assert_eq!(recalled.unindexed[0].id, memory.id);
     *provider.embedding_failure.lock().unwrap() = None;
-    registry
-        .apply_config(ConfigSource::Document(document))
+    submit(&registry, configuration_request(document))
         .await
         .unwrap();
     assert!(
@@ -399,5 +396,27 @@ async fn live_memory_settings_rebuild_only_the_vector_space_and_recover_invalid_
             .unindexed
             .is_empty()
     );
-    assert!(registry.status().await.config.invalid.is_empty());
+    assert!(registry.status().await.unwrap().config.invalid.is_empty());
+}
+
+/// Register through the previous host, whose memory table did not declare an endpoint use.
+async fn register_previous_host_config(
+    store: Arc<SqliteStore>,
+    loaded: Loaded,
+    document: serde_json::Value,
+) {
+    let runtime = Arc::new(ScriptedRuntime::default());
+    runtime.insert(FACTORY_BYTES, loaded);
+    let mut deps = registry_deps(store, runtime, FACTORY_BYTES);
+    deps.owners
+        .iter_mut()
+        .find(|owner| owner.tables.contains(&"memory"))
+        .unwrap()
+        .declare = |_, _| Ok(vec![]);
+    let registry = open_registry(deps, configuration_request(document.clone()))
+        .await
+        .unwrap();
+    submit(&registry, configuration_request(document))
+        .await
+        .unwrap();
 }

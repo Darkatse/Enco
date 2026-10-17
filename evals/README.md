@@ -1,6 +1,6 @@
 # Enco 评测
 
-本目录衡量 Agent 经正式路径（构建、部署、回退）改进自身能力的效果。从 P2 起，composer、工具与记忆策略的迭代以这里的任务成功率为目标，以 Attempt 记录的用量（含缓存命中）为成本约束（[路线图](../docs/Roadmap.md) P2，[验证的设计](../docs/design/verification.md)）。
+本目录衡量 Agent 经正式路径（构建、登记、回退）改进自身能力的效果。从 P2 起，composer、工具与记忆策略的迭代以这里的任务成功率为目标，以 Attempt 记录的用量（含缓存命中）为成本约束（[路线图](../docs/Roadmap.md) P2，[验证的设计](../docs/design/verification.md)）。
 
 题目各验证一个机制，用来确认机制走得通并建立基线，不是排行榜。题目会随 P2 的里程碑与使用增加，Agent 也可以补充自己的开发题。
 
@@ -55,7 +55,7 @@ path = "/usr/local/bin:/usr/bin:/bin"  # 被测守护进程 PATH 中 bin/ 之后
 ```toml
 enco = "target/release/enco"     # 可选；默认 PATH 中的 enco
 
-[[deploy]]                       # 可选：在每个被测 home 中部署的代际
+[[deploy]]                       # 可选：在每个被测 home 中登记的制品
 plugin = "openai-compatible"
 artifact = "plugin.wasm"
 
@@ -72,7 +72,7 @@ exa = "EXA_API_KEY"
 tinyfish = "TINYFISH_API_KEY"
 ```
 
-省略 `--variant` 时，变体是 PATH 中的 `enco`，运行的是出厂制品与上述 web 设置，与主人平时的配置相同。这两个密钥只会发往题目的 mock，任意非空值都可以。变体的身份包含二进制与各制品的 blake3 哈希以及 `plugin` 设置，写进 `result.json`。部署失败说明变体本身有问题，整次运行停止，退出码为 2。
+省略 `--variant` 时，变体是 PATH 中的 `enco`，运行的是出厂制品与上述 web 设置，与主人平时的配置相同。这两个密钥只会发往题目的 mock，任意非空值都可以。变体的身份包含二进制与各制品的 blake3 哈希以及 `plugin` 设置，写进 `result.json`。登记失败说明变体本身有问题，整次运行停止，退出码为 2。
 
 变体的 `plugin` 整节写入被测配置，`secrets` 指名的变量与模型的 `api_key_env` 一样必须存在，并进入环境变量白名单；比较尚不支持插件设置的旧版二进制时，在它的变体中显式写空的 `[plugin]`，运行器便不向被测配置添加这一节。两个变体各自使用有效的配置，不按二进制版本推断设置。
 
@@ -127,7 +127,7 @@ trials/<题>/<变体>/<i>/
     log/<session>.json       enco log
     tool-calls.json          由 Log 配对得出：每次工具调用的名字、参数与结局
     transcript/<session>.md  对话：按顺序的消息，每条以 "## owner"、"## reminder" 或 "## assistant" 开头
-    schedules.json  memory.json  plugins.json  status.json
+    schedules.json  memory.json  status.json
     mock/<名字>/state.json   mock 的最终状态
     mock/<名字>/requests.jsonl
     network.jsonl            被代理拒绝的访问
@@ -266,6 +266,8 @@ data = "hidden/mocks/mail/inbox.json"  # 初始数据；省略时为空
 - 集合按 REST 的习惯访问：`GET /<名字>` 列出，查询参数按字段过滤（值按字符串比较），`fields=a,b` 只返回这些字段；`GET`、`PATCH`、`DELETE /<名字>/<id>` 读取、合并、删除；`POST /<名字>` 追加，正文可以是 JSON 或表单，没有 `id` 时依次分配。
 - 收到的每个请求记入 `requests.jsonl`，结束时全部集合写入 `state.json`。
 - 占位符：`{{mock:<名字>}}` 是 mock 的地址，即 `http://<host>`；`{{time:<偏移>}}` 与 `{{date:<偏移>}}` 是相对于试验开始时刻（取整到分钟）的时间与日期，按题目的时区写成 RFC 3339 与 `YYYY-MM-DD`。偏移可以组合 `d`、`h`、`m`、`s`，例如 `-3h05m14s`，也可以用 `b` 数工作日（周一到周五），例如 `+2b`；`0` 是开始时刻本身。日期可以加格式：`|zh` 写成"10 月 13 日（周二）"，`|en` 写成 "October 13, 2026"。`home/` 中的文本文件、路由的 `body` 文件与集合的初始数据在试验开始时替换；`reference` 在评分时按同一个开始时刻替换，评判因此看到与 Agent 相同的日期。数据里写具体日期而不写"本周四"，题目才不随试验落在星期几而变。
+- 题目的 `home/plugins/` 可以携带完整的插件源码目录。运行器复制 home 后调用被测二进制的 `enco init`，再在试跑代理之外按 SDK 与各插件自带的锁预取依赖，新建插件的第一份锁也取自 SDK，所以版本在试跑之间不变；被测进程共用运行器的 `CARGO_HOME`，设置 `CARGO_NET_OFFLINE=true`，首次启动把插件与配置一起登记，在 `refs/enco/registered` 上写下完整意图；主人的分支与索引保持不变。运行器环境须提供 Cargo、rustc 与 `wasm32-wasip2` 目标。源码不依赖评测仓库，只依赖 home 下宿主分发的 `../../sdk`。
+- 状态与插件历史统一导出为 `snapshot/status.json`，代际指标从其中的 `plugins` 读取。
 - 夹具命令（例如 `home/bin/mail`）用 POSIX sh 与 curl 编写，不引入其他运行时。运行器保留文件的可执行位，并把被测 home 的 `bin/` 放在 PATH 最前面，所以夹具命令优先于系统里的同名命令（例如 macOS 的 `/usr/bin/mail`）。
 
 ## 题目自检
@@ -291,7 +293,7 @@ recall = "fail"        # 列出的评分项必须得到这个结局
 
 1. 写明这道题守护的能力，以及它要抓住哪种改坏。
 2. 评分检查的一切都在题目中说明，写在输入里或 home 中主人的常驻指令里；两个认真的人读题会得出同一个判断。
-3. 查结果，不查做法；只有过程本身就是验证对象时才查过程，例如经正式路径部署、只读手册。
+3. 查结果，不查做法；只有过程本身就是验证对象时才查过程，例如经正式路径登记、只读手册。
 4. 退化的做法必须失败：什么都不做、一律说不知道、什么都写上，都通不过整道题。null 与近似错误的案例检验这一条。
 5. 能用 `state` 判断的不用 `rubric`；`rubric` 必须带参考答案。
 6. 环境冻结：外部服务全部 mock，与时间相关的数据相对于试验开始生成，答案不能靠模型的先验知识猜出。

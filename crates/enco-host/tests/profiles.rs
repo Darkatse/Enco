@@ -94,9 +94,7 @@ async fn change_profile_during_compaction(
         if update_definition {
             let mut document = configured();
             document["profile"]["default"] = document["profile"]["alternate"].clone();
-            kernel
-                .registry()
-                .apply_config(ConfigSource::Document(document))
+            submit(kernel.registry(), configuration_request(document))
                 .await
                 .unwrap();
         } else {
@@ -195,20 +193,16 @@ async fn a_session_whose_profile_was_rolled_back_away_remains_recoverable() {
         .as_object_mut()
         .unwrap()
         .remove("alternate");
-    kernel
-        .registry()
-        .apply_config(ConfigSource::Document(earlier))
+    submit(kernel.registry(), configuration_request(earlier))
         .await
         .unwrap();
-    kernel
-        .registry()
-        .apply_config(ConfigSource::Document(configured()))
+    submit(kernel.registry(), configuration_request(configured()))
         .await
         .unwrap();
     let main = kernel.open_session("main").await.unwrap();
     let other = kernel.open_session("other").await.unwrap();
     kernel.set_profile(main.id, "alternate").await.unwrap();
-    kernel.registry().rollback_config().await.unwrap();
+    kernel.registry().rollback().await.unwrap();
     kernel.shutdown().await.unwrap();
     drop(kernel);
 
@@ -328,9 +322,7 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
         .unwrap()
         .remove("alternate");
     document["endpoint"]["reply"]["model"] = "old-compaction".into();
-    let apply = kernel
-        .registry()
-        .apply_config(ConfigSource::Document(document.clone()));
+    let apply = submit(kernel.registry(), configuration_request(document.clone()));
     let assign = async {
         provider.entered.notified().await;
         kernel.set_profile(session.id, "alternate").await.unwrap();
@@ -349,9 +341,7 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
     );
     assert_eq!(kernel.registry().view().config.generation, before);
     kernel.set_profile(session.id, "default").await.unwrap();
-    kernel
-        .registry()
-        .apply_config(ConfigSource::Document(document))
+    submit(kernel.registry(), configuration_request(document))
         .await
         .unwrap();
     assert!(matches!(
@@ -362,7 +352,7 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
 }
 
 #[tokio::test]
-async fn configuration_probes_conflict_with_deployment_but_not_trial_promotion() {
+async fn configuration_probes_conflict_with_registration_but_not_trial_promotion() {
     for promote in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let provider = Arc::new(PausedCompaction {
@@ -374,22 +364,19 @@ async fn configuration_probes_conflict_with_deployment_but_not_trial_promotion()
         let (kernel, _) =
             kernel_configured(dir.path(), provider.clone(), configured(), vec![], |_| {}).await;
         let registry = kernel.registry();
-        let factory = registry
-            .view()
-            .exports
-            .completion(&fixture_endpoint("fixture"), true)
-            .unwrap()
-            .generation;
-        let trial = registry
-            .deploy("fixture", enco_kernel::PluginSource::Generation(factory))
-            .await
-            .unwrap()
-            .generation
-            .id;
+        let trial = submit(
+            registry,
+            artifact_request("fixture", FACTORY_BYTES.to_vec()),
+        )
+        .await
+        .unwrap()
+        .generations
+        .remove(0)
+        .id;
         let before = registry.view().config.generation;
         let mut document = configured();
         document["endpoint"]["reply"]["model"] = "old-compaction".into();
-        let apply = registry.apply_config(ConfigSource::Document(document));
+        let apply = submit(registry, configuration_request(document));
         let change = async {
             provider.entered.notified().await;
             if promote {
@@ -397,10 +384,12 @@ async fn configuration_probes_conflict_with_deployment_but_not_trial_promotion()
                     registry.report(trial, Verdict::Ok, None).await.unwrap();
                 }
             } else {
-                registry
-                    .deploy("fixture", enco_kernel::PluginSource::Generation(factory))
-                    .await
-                    .unwrap();
+                submit(
+                    registry,
+                    artifact_request("fixture", FACTORY_BYTES.to_vec()),
+                )
+                .await
+                .unwrap();
             }
             provider.resume.notify_one();
         };

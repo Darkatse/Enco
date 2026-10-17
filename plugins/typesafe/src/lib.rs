@@ -2,30 +2,15 @@
 mod protocol;
 
 use bindings::exports::enco::plugin::{decision, lifecycle};
-use provider_protocol::{Settings, types::Failure};
+use enco_sdk::protocol::{Settings, types::Failure};
 
-mod bindings {
-    #![expect(
-        unsafe_code,
-        reason = "the export macro expands to the generated canonical ABI glue"
-    )]
-    wit_bindgen::generate!({
-        path: "../../wit",
-        world: "decision-plugin",
-        with: {
-            "enco:plugin/host@0.4.0": provider_protocol::host,
-            "enco:plugin/types@0.4.0": provider_protocol::types,
-        },
-    });
-    use super::Plugin;
-    export!(Plugin with_types_in self);
-}
+enco_sdk::export!(decision, Plugin);
 
 struct Plugin;
 
 impl lifecycle::Guest for Plugin {
     fn describe(config: String) -> Result<lifecycle::Description, Failure> {
-        provider_protocol::empty_config(&config)?;
+        enco_sdk::protocol::empty_config(&config)?;
         Ok(lifecycle::Description {
             summary: "TypeSafe decisions over shared text evidence".into(),
             config_schema: r#"{"type":"object","additionalProperties":false}"#.into(),

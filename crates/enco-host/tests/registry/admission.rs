@@ -13,11 +13,11 @@ async fn admission_keeps_configured_exports_connected() {
     let runtime = Arc::new(ScriptedRuntime::default());
     let provider = ScriptedProvider::new(vec![]);
     let mut factory = loaded(provider.clone());
-    factory.credential = Some(Credential { required: false });
+    factory.credentials = vec![credential(false)];
     runtime.insert(FACTORY_BYTES, factory);
     runtime.insert(b"no-credential", loaded(provider.clone()));
     let mut required = loaded(provider.clone());
-    required.credential = Some(Credential { required: true });
+    required.credentials = vec![credential(true)];
     runtime.insert(b"required", required);
     runtime.insert(
         b"completion-only",
@@ -25,7 +25,7 @@ async fn admission_keeps_configured_exports_connected() {
             lifecycle: Arc::new(ScriptedLifecycle(Ok(()))),
             summary: "completion".into(),
             config_schema: serde_json::json!({}),
-            credential: None,
+            credentials: Vec::new(),
             unavailable: None,
             tools: None,
             completion: Some(provider),
@@ -35,15 +35,13 @@ async fn admission_keeps_configured_exports_connected() {
     );
     let mut document = configuration();
     document["endpoint"]["embed"]["api_key_env"] = "FIXTURE_KEY".into();
-    let registry = Registry::open(registry_deps(
-        store.clone(),
-        runtime.clone(),
-        FACTORY_BYTES,
-        document,
-    ))
+    let registry = open_registry(
+        registry_deps(store.clone(), runtime.clone(), FACTORY_BYTES),
+        configuration_request(document),
+    )
     .await
     .unwrap();
-    let before = registry.status().await.plugins.remove(0);
+    let before = registry.status().await.unwrap().plugins.remove(0);
     for (bytes, user, explanation) in [
         (
             b"completion-only".as_slice(),
@@ -61,12 +59,7 @@ async fn admission_keeps_configured_exports_connected() {
             "requires a credential",
         ),
     ] {
-        let result = registry
-            .deploy(
-                "fixture",
-                enco_kernel::PluginSource::Artifact(bytes.to_vec()),
-            )
-            .await;
+        let result = submit(&registry, artifact_request("fixture", bytes.to_vec())).await;
         let Err(RegistryError::Rejected { name, reason }) = result else {
             panic!("expected admission rejection");
         };
@@ -77,17 +70,15 @@ async fn admission_keeps_configured_exports_connected() {
         );
     }
     assert_eq!(
-        registry.status().await.plugins[0].generations,
+        registry.status().await.unwrap().plugins[0].generations,
         before.generations
     );
     drop(registry);
     // Restoring registered content reports unavailable uses instead of accepting new intent.
-    let restored = Registry::open(registry_deps(
-        store,
-        runtime.clone(),
-        b"required",
-        serde_json::json!({"ignored": true}),
-    ))
+    let restored = open_registry(
+        registry_deps(store, runtime.clone(), b"required"),
+        configuration_request(serde_json::json!({"ignored": true})),
+    )
     .await
     .unwrap();
     assert!(restored.view().config.document.get("memory").is_some());
@@ -99,31 +90,34 @@ async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
     let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
     let runtime = Arc::new(ScriptedRuntime::default());
     let provider = ScriptedProvider::new(vec![]);
-    let mut optional = loaded(provider.clone());
-    optional.credential = Some(Credential { required: false });
-    runtime.insert(FACTORY_BYTES, optional);
-    runtime.insert(b"no-credential", loaded(provider));
-    let mut document = configuration();
-    document["endpoint"]["embed"]["api_key_env"] = "FIXTURE_KEY".into();
-    drop(
-        Registry::open(registry_deps(
-            store.clone(),
-            runtime.clone(),
-            FACTORY_BYTES,
-            document.clone(),
-        ))
-        .await
-        .unwrap(),
-    );
-    let registry = Registry::open(registry_deps(
-        store,
-        runtime,
-        b"no-credential",
-        document.clone(),
-    ))
+    runtime.insert(FACTORY_BYTES, loaded(provider.clone()));
+    let mut optional = loaded(provider);
+    optional.credentials = vec![credential(false)];
+    runtime.insert(b"optional", optional);
+    let registry = open_registry(
+        registry_deps(store, runtime, FACTORY_BYTES),
+        configuration_request(configuration()),
+    )
     .await
     .unwrap();
-    let status = registry.status().await;
+    let mut document = configuration();
+    document["endpoint"]["embed"]["api_key_env"] = "FIXTURE_KEY".into();
+    let mut request = configuration_request(document.clone());
+    request.plugins = source_request("fixture", b"optional").plugins;
+    let trial = submit(&registry, request)
+        .await
+        .unwrap()
+        .generations
+        .remove(0);
+    registry
+        .report(
+            trial.id,
+            Verdict::Failed(super::fault(code::PLUGIN_TRAP)),
+            None,
+        )
+        .await
+        .unwrap();
+    let status = registry.status().await.unwrap();
     assert_eq!(status.plugins[0].unavailable, None);
     assert_eq!(status.plugins[0].unavailable_uses.len(), 1);
     assert!(status.plugins[0].unavailable_uses[0].contains("memory.embedding"));
@@ -139,8 +133,7 @@ async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
     assert!(registry.view().exports.embedding(&embed).is_err());
 
     document["owner"]["timezone"] = "Europe/Paris".into();
-    registry
-        .apply_config(ConfigSource::Document(document.clone()))
+    submit(&registry, configuration_request(document.clone()))
         .await
         .unwrap();
     let before = registry.view().config.generation;
@@ -148,8 +141,7 @@ async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
     invalid["endpoint"]["new"] = invalid["endpoint"]["reply"].clone();
     invalid["endpoint"]["new"]["api_key_env"] = "FIXTURE_KEY".into();
     invalid["profile"]["default"]["reply"] = serde_json::json!(["reply", "new"]);
-    let error = registry
-        .apply_config(ConfigSource::Document(invalid))
+    let error = submit(&registry, configuration_request(invalid))
         .await
         .err()
         .unwrap();
@@ -160,11 +152,10 @@ async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
         .as_object_mut()
         .unwrap()
         .remove("api_key_env");
-    registry
-        .apply_config(ConfigSource::Document(document))
+    submit(&registry, configuration_request(document))
         .await
         .unwrap();
-    let status = registry.status().await;
+    let status = registry.status().await.unwrap();
     assert!(status.plugins[0].unavailable_uses.is_empty());
     assert!(status.config.unavailable_uses.is_empty());
     embed.settings.api_key_env = None;
@@ -179,7 +170,11 @@ async fn initial_configuration_requires_registered_plugins() {
     let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
     let mut document = configuration();
     document["endpoint"]["reply"]["plugin"] = "missing".into();
-    let result = Registry::open(registry_deps(store, runtime, FACTORY_BYTES, document)).await;
+    let result = open_registry(
+        registry_deps(store, runtime, FACTORY_BYTES),
+        configuration_request(document),
+    )
+    .await;
     let Err(RegistryError::Rejected { name, reason }) = result else {
         panic!("expected missing plugin rejection");
     };
@@ -191,7 +186,7 @@ async fn initial_configuration_requires_registered_plugins() {
 }
 
 #[tokio::test]
-async fn a_rejected_deployment_writes_neither_a_generation_nor_a_name() {
+async fn a_rejected_registration_writes_neither_a_generation_nor_a_name() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
     let runtime = Arc::new(ScriptedRuntime::default());
@@ -203,16 +198,15 @@ async fn a_rejected_deployment_writes_neither_a_generation_nor_a_name() {
     let registry = open(&store, runtime).await;
     let before = store.registry().await.unwrap().generations;
     assert!(matches!(
-        registry
-            .deploy(
-                "new-name",
-                enco_kernel::PluginSource::Artifact(b"rejected".to_vec())
-            )
-            .await,
+        submit(
+            &registry,
+            artifact_request("new-name", b"rejected".to_vec())
+        )
+        .await,
         Err(RegistryError::Rejected { .. })
     ));
     assert_eq!(store.registry().await.unwrap().generations, before);
-    assert!(!store.plugin_names().await.unwrap().contains_key("new-name"));
+    assert_eq!(store.registry().await.unwrap().plugins.len(), 1);
 }
 
 #[tokio::test]
@@ -234,18 +228,15 @@ async fn unrelated_unavailable_plugins_do_not_block_incremental_repairs() {
         id: PluginId::new(),
         artifact: b"optional".to_vec(),
     };
-    let mut deps = registry_deps(
-        store.clone(),
-        runtime.clone(),
-        FACTORY_BYTES,
-        document.clone(),
-    );
+    let mut deps = registry_deps(store.clone(), runtime.clone(), FACTORY_BYTES);
     deps.factory.push(FactoryPlugin {
         name: factory.name.clone(),
         id: factory.id,
         artifact: factory.artifact.clone(),
     });
-    let registry = Registry::open(deps).await.unwrap();
+    let registry = open_registry(deps, configuration_request(document.clone()))
+        .await
+        .unwrap();
     drop(registry);
     let mut unavailable = available;
     unavailable.unavailable = Some(Failure {
@@ -254,23 +245,23 @@ async fn unrelated_unavailable_plugins_do_not_block_incremental_repairs() {
         retryable: false,
     });
     runtime.insert(b"optional", unavailable);
-    let mut deps = registry_deps(store, runtime, FACTORY_BYTES, document.clone());
+    let mut deps = registry_deps(store, runtime, FACTORY_BYTES);
     deps.factory.push(factory);
-    let registry = Registry::open(deps).await.unwrap();
-    registry
-        .deploy("fixture", PluginSource::Artifact(b"repair".to_vec()))
+    let registry = open_registry(deps, configuration_request(document.clone()))
+        .await
+        .unwrap();
+    submit(&registry, artifact_request("fixture", b"repair".to_vec()))
         .await
         .unwrap();
     document["owner"]["timezone"] = "Europe/Paris".into();
-    registry
-        .apply_config(ConfigSource::Document(document))
+    submit(&registry, configuration_request(document))
         .await
         .unwrap();
-    let status = registry.status().await;
+    let status = registry.status().await.unwrap();
     let optional = status
         .plugins
         .iter()
-        .find(|plugin| plugin.name == "optional")
+        .find(|plugin| plugin.name.as_deref() == Some("optional"))
         .unwrap();
     assert!(
         optional

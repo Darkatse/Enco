@@ -1,255 +1,290 @@
+//! Recovery follows retained references and never reconstructs intent.
 use super::*;
-use state::Plugins;
+use crate::Activation;
 
-pub(super) enum ActivationReason {
-    Manual,
-    Recovery(Failure),
-    TrialFailure {
-        failure: Failure,
-        session: Option<SessionId>,
-    },
+pub(super) struct Recovery {
+    pub target: Option<(PluginActivation, Loaded)>,
+    pub failed: Vec<(GenerationId, Failure)>,
 }
 
-pub(super) struct Activated {
-    pub target: Option<GenerationRecord>,
+pub(super) struct Candidate {
+    reference: PluginActivation,
+    record: GenerationRecord,
+    loaded: Option<Loaded>,
 }
 
-struct Prepared {
-    failed: Vec<(GenerationId, Failure)>,
-    target: Option<(GenerationRecord, Loaded)>,
+pub(super) fn candidates(state: &State, plugin: &PluginRecord) -> Vec<Candidate> {
+    let factory = state
+        .factory
+        .get(&plugin.id)
+        .map(|generation| PluginActivation {
+            generation: *generation,
+            registration: None,
+        });
+    let mut seen = Vec::new();
+    [plugin.rollback_target, factory]
+        .into_iter()
+        .flatten()
+        .filter(|reference| {
+            if Some(*reference) == plugin.active || seen.contains(reference) {
+                return false;
+            }
+            seen.push(*reference);
+            true
+        })
+        .filter_map(|reference| {
+            state
+                .history
+                .generations
+                .get(&reference.generation)
+                .map(|record| Candidate {
+                    reference,
+                    record: record.clone(),
+                    loaded: state.loaded.get(&reference.generation).cloned(),
+                })
+        })
+        .collect()
 }
 
-impl Registry {
-    /// Prepare without the committer, then check the captured facts before writing.
-    pub(super) async fn activate(
-        &self,
-        name: &str,
-        plugin: PluginId,
-        expected: GenerationId,
-        candidates: Vec<GenerationRecord>,
-        reason: ActivationReason,
-    ) -> Result<Activated, RegistryError> {
-        let cached = self.state.lock().await.plugins.loaded.clone();
-        let prepared = prepare(
-            self.store.as_ref(),
-            self.runtime.as_ref(),
-            name,
-            candidates,
-            &cached,
-        )
-        .await?;
-        let mut state = self.state.lock().await;
-        let activated = commit(
-            self.store.as_ref(),
-            self.clock.as_ref(),
-            &mut state.plugins,
-            plugin,
-            expected,
-            prepared,
-            reason,
-        )
-        .await?;
-        self.publish(&mut state, None);
-        Ok(activated)
-    }
-}
-
-pub(super) async fn restore(
+pub(super) async fn prepare(
     deps: &RegistryDeps,
-    plugins: &mut Plugins,
-) -> Result<(), RegistryError> {
-    for (plugin, generation) in plugins.factory.clone() {
-        let name = plugins.name_of(plugin)?;
-        let record = &plugins.generations[&generation];
-        let loaded = load(deps.store.as_ref(), deps.runtime.as_ref(), name, record).await?;
-        plugins.loaded.insert(generation, loaded);
-    }
-    for (plugin, generation) in plugins.active.clone() {
-        if plugins.loaded.contains_key(&generation) {
+    candidates: Vec<Candidate>,
+) -> Result<Recovery, RegistryError> {
+    let mut recovery = Recovery {
+        target: None,
+        failed: Vec::new(),
+    };
+    for candidate in candidates {
+        if candidate.record.status == GenerationStatus::Failed {
             continue;
         }
-        let name = plugins.name_of(plugin)?.to_owned();
-        let record = &plugins.generations[&generation];
-        match load(deps.store.as_ref(), deps.runtime.as_ref(), &name, record).await {
+        let loaded = load(deps, &candidate.record, candidate.loaded).await?;
+        match loaded {
             Ok(loaded) => {
-                plugins.loaded.insert(generation, loaded);
+                recovery.target = Some((candidate.reference, loaded));
+                break;
             }
-            Err(error) => {
-                let failure = load_failure(error)?;
-                let candidates = plugins.candidates(plugin, generation);
-                let prepared = prepare(
-                    deps.store.as_ref(),
-                    deps.runtime.as_ref(),
-                    &name,
-                    candidates,
-                    &plugins.loaded,
-                )
-                .await?;
-                commit(
-                    deps.store.as_ref(),
-                    deps.clock.as_ref(),
-                    plugins,
-                    plugin,
-                    generation,
-                    prepared,
-                    ActivationReason::Recovery(failure),
-                )
-                .await?;
+            Err(failure) => recovery.failed.push((candidate.record.id, failure)),
+        }
+    }
+    Ok(recovery)
+}
+
+/// Every recovery writes retained factory bytes before its new references.
+pub(super) async fn commit(
+    deps: &RegistryDeps,
+    state: &mut State,
+    change: &Activation,
+) -> Result<(), RegistryError> {
+    let result = async {
+        factory::retain(deps, state, &change.plugins).await?;
+        deps.store.activate(change).await?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        return Err(cleanup_failed_write(deps, state, error).await);
+    }
+    state.activated(change);
+    Ok(())
+}
+
+/// Storage failures propagate; an absent or incompatible artifact is an attributable load failure.
+pub(super) async fn load(
+    deps: &RegistryDeps,
+    record: &GenerationRecord,
+    cached: Option<Loaded>,
+) -> Result<Result<Loaded, Failure>, RegistryError> {
+    let bytes = match super::registration::artifact(deps, record).await {
+        Ok(bytes) => bytes,
+        Err(RegistryError::Store(StoreError::Artifact(hash))) => {
+            return Ok(Err(load_failure(format!(
+                "artifact {hash} is corrupt or missing"
+            ))));
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(loaded) = cached {
+        return Ok(Ok(loaded));
+    }
+    Ok(deps
+        .runtime
+        .load(&bytes, &record.settings)
+        .await
+        .map_err(|error| load_failure(error.to_string())))
+}
+
+fn load_failure(message: String) -> Failure {
+    Failure {
+        code: code::PLUGIN_LOAD.into(),
+        message,
+        retryable: false,
+    }
+}
+
+pub(super) async fn restore(deps: &RegistryDeps, state: &mut State) -> Result<(), RegistryError> {
+    for plugin in state.history.plugins.values().cloned().collect::<Vec<_>>() {
+        let Some(active) = plugin.active else {
+            continue;
+        };
+        let active = active.generation;
+        if state.loaded.contains_key(&active) {
+            continue;
+        }
+        let record = state
+            .history
+            .generations
+            .get(&active)
+            .ok_or(RegistryError::UnknownGeneration(active))?;
+        match load(deps, record, None).await? {
+            Ok(loaded) => {
+                state.loaded.insert(active, loaded);
+            }
+            Err(failure) => {
+                let mut recovery = prepare(deps, candidates(state, &plugin)).await?;
+                recovery.failed.push((active, failure));
+                let mut restored = plugin;
+                restored.active = recovery.target.as_ref().map(|(id, _)| *id);
+                restored.rollback_target = None;
+                let change = Activation {
+                    plugins: vec![restored],
+                    failed: recovery.failed,
+                    ..Activation::default()
+                };
+                commit(deps, state, &change).await?;
+                if let Some((id, loaded)) = recovery.target {
+                    state.loaded.insert(id.generation, loaded);
+                }
             }
         }
     }
     Ok(())
 }
 
-async fn load(
-    store: &dyn Store,
-    runtime: &dyn Runtime,
-    name: &str,
-    record: &GenerationRecord,
-) -> Result<Loaded, RegistryError> {
-    let bytes = store.artifact(&record.artifact).await?;
-    runtime
-        .load(&bytes, &record.settings)
-        .await
-        .map_err(|error| RegistryError::Rejected {
-            name: name.into(),
-            reason: error.to_string(),
-        })
-}
-
-async fn prepare(
-    store: &dyn Store,
-    runtime: &dyn Runtime,
-    name: &str,
-    candidates: Vec<GenerationRecord>,
-    cached: &BTreeMap<GenerationId, Loaded>,
-) -> Result<Prepared, RegistryError> {
-    let mut prepared = Prepared {
-        failed: vec![],
-        target: None,
-    };
-    for record in candidates {
-        let result = match cached.get(&record.id) {
-            Some(loaded) => Ok(loaded.clone()),
-            None => load(store, runtime, name, &record).await,
+impl Registry {
+    /// Restore the still-effective parts of the newest accepted change.
+    pub async fn rollback(&self) -> Result<Rollback, RegistryError> {
+        let RollbackPlan {
+            expected,
+            registration,
+            mut change,
+            recoveries,
+        } = {
+            let state = self.state.lock().await;
+            rollback_plan(&state)?
         };
-        match result {
-            Ok(loaded) => {
-                prepared.target = Some((record, loaded));
-                break;
+        let mut loaded = BTreeMap::new();
+        for (id, candidates) in recoveries {
+            let recovery = prepare(&self.deps, candidates).await?;
+            if let Some(plugin) = change.plugins.iter_mut().find(|plugin| plugin.id == id) {
+                plugin.active = recovery.target.as_ref().map(|(id, _)| *id);
+                plugin.rollback_target = None;
             }
-            Err(error) => prepared.failed.push((record.id, load_failure(error)?)),
+            change.failed.extend(recovery.failed);
+            if let Some((id, adapter)) = recovery.target {
+                loaded.insert(id.generation, adapter);
+            }
         }
-    }
-    Ok(prepared)
-}
-
-async fn commit(
-    store: &dyn Store,
-    clock: &dyn Clock,
-    plugins: &mut Plugins,
-    plugin: PluginId,
-    expected: GenerationId,
-    prepared: Prepared,
-    reason: ActivationReason,
-) -> Result<Activated, RegistryError> {
-    let name = plugins.name_of(plugin)?.to_owned();
-    if plugins.active.get(&plugin) != Some(&expected)
-        || (matches!(reason, ActivationReason::TrialFailure { .. })
-            && plugins
-                .generations
-                .get(&expected)
-                .is_none_or(|record| record.status != GenerationStatus::Trial))
-        || prepared.target.as_ref().is_some_and(|(target, _)| {
-            plugins
-                .generations
-                .get(&target.id)
-                .is_none_or(|record| record.status != GenerationStatus::Healthy)
+        let mut state = self.state.lock().await;
+        if !expected.matches(&state) {
+            return Err(RegistryError::Conflict("rollback".into()));
+        }
+        let config = change
+            .configuration
+            .map(|id| {
+                let record = state
+                    .history
+                    .config_generations
+                    .get(&id)
+                    .ok_or(RegistryError::UnknownGeneration(id))?;
+                configuration::declare(&record.document, &self.deps.owners)
+                    .map(|declaration| declaration.into_active(record))
+                    .map_err(RegistryError::Config)
+            })
+            .transpose()?;
+        commit(&self.deps, &mut state, &change).await?;
+        state.loaded.extend(loaded);
+        self.publish(&mut state, config, None);
+        let warnings = cleanup_artifacts(&self.deps, &state)
+            .await
+            .into_iter()
+            .collect();
+        Ok(Rollback {
+            registration,
+            plugins: change.plugins,
+            configuration: change.configuration,
+            warnings,
         })
+    }
+}
+
+struct RollbackPlan {
+    expected: registration::Expected,
+    registration: RegistrationId,
+    change: Activation,
+    recoveries: BTreeMap<PluginId, Vec<Candidate>>,
+}
+
+fn rollback_plan(state: &State) -> Result<RollbackPlan, RegistryError> {
+    let initial = state.history.registrations.keys().next().copied();
+    let registration = state
+        .history
+        .registrations
+        .values()
+        .rev()
+        .find(|record| Some(record.id) != initial && effective(state, record))
+        .ok_or_else(|| RegistryError::NoRollbackTarget("registry".into()))?;
+    let mut change = Activation::default();
+    if let Some(config) = state
+        .history
+        .active_config
+        .and_then(|id| state.history.config_generations.get(&id))
+        && config.registration == registration.id
     {
-        return Err(RegistryError::Conflict(name));
+        change.configuration = config.previous;
     }
-    let mut failed = prepared.failed;
-    match &reason {
-        ActivationReason::Manual => {}
-        ActivationReason::Recovery(failure) | ActivationReason::TrialFailure { failure, .. } => {
-            failed.push((expected, failure.clone()))
+    let mut recoveries = BTreeMap::new();
+    for plugin in state.history.plugins.values() {
+        let code = plugin
+            .active
+            .is_some_and(|active| active.registration == Some(registration.id));
+        let name = plugin.named_by == Some(registration.id);
+        if !code && !name {
+            continue;
         }
+        let mut restored = plugin.clone();
+        let row = registration.names.get(&plugin.id);
+        if name {
+            restored.named_by = row.and_then(|row| row.previous);
+        }
+        let added = name && restored.named_by.is_none();
+        let removed = name && row.is_some_and(|row| row.name.is_none());
+        if added {
+            restored.active = None;
+            restored.rollback_target = None;
+        } else if code || removed {
+            recoveries.insert(plugin.id, candidates(state, plugin));
+        }
+        change.plugins.push(restored);
     }
-    let to = match &prepared.target {
-        Some((record, _)) => Some(record.id),
-        None if matches!(reason, ActivationReason::Manual) => Some(expected),
-        None => None,
-    };
-    let event = match reason {
-        ActivationReason::TrialFailure {
-            failure,
-            session: Some(session),
-        } => {
-            let rollback = RolledBack {
-                plugin: name.clone(),
-                from: expected,
-                to,
-                failure,
-            };
-            Some(Event {
-                id: EventId::new(),
-                session,
-                source: EventSource::Registry,
-                body: EventBody::GenerationRolledBack {
-                    text: notice(&rollback),
-                    rollback,
-                },
-                received_at: clock.now(),
-            })
-        }
-        ActivationReason::TrialFailure { session: None, .. }
-        | ActivationReason::Manual
-        | ActivationReason::Recovery(_) => None,
-    };
-    store.activate(plugin, to, &failed, event.as_ref()).await?;
-    for (id, failure) in failed {
-        tracing::warn!(plugin = name, generation = %id, code = %failure.code, reason = %failure.message, "generation marked failed");
-        if let Some(record) = plugins.generations.get_mut(&id) {
-            record.status = GenerationStatus::Failed;
-            record.failure = Some(failure);
-        }
-    }
-    match to {
-        Some(id) => {
-            plugins.active.insert(plugin, id);
-        }
-        None => {
-            plugins.active.remove(&plugin);
-        }
-    }
-    let target = prepared.target.map(|(record, loaded)| {
-        plugins.loaded.insert(record.id, loaded);
-        record
-    });
-    Ok(Activated { target })
+    Ok(RollbackPlan {
+        expected: registration::Expected::capture(state),
+        registration: registration.id,
+        change,
+        recoveries,
+    })
 }
 
-fn load_failure(error: RegistryError) -> Result<Failure, RegistryError> {
-    match error {
-        RegistryError::Store(StoreError::Artifact(_)) | RegistryError::Rejected { .. } => {
-            Ok(Failure {
-                code: code::PLUGIN_LOAD.into(),
-                message: error.to_string(),
-                retryable: false,
-            })
-        }
-        _ => Err(error),
-    }
-}
-
-fn notice(rollback: &RolledBack) -> String {
-    let target = match rollback.to {
-        Some(to) => format!("now using generation {to}"),
-        None => "no generation is active".into(),
-    };
-    format!(
-        "[plugin rolled back] {}: generation {} failed ({}: {}); {target}",
-        rollback.plugin, rollback.from, rollback.failure.code, rollback.failure.message
-    )
+fn effective(state: &State, record: &RegistrationRecord) -> bool {
+    state
+        .history
+        .active_config
+        .and_then(|id| state.history.config_generations.get(&id))
+        .is_some_and(|config| config.registration == record.id)
+        || state.history.plugins.values().any(|plugin| {
+            plugin.named_by == Some(record.id)
+                || plugin
+                    .active
+                    .is_some_and(|active| active.registration == Some(record.id))
+        })
 }

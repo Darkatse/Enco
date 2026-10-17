@@ -316,7 +316,7 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
             "schedule_create",
             &serde_json::json!({ "at": at, "message": "must not be created" }).to_string(),
         )]),
-        calls(vec![call("config_apply", "{}")]),
+        calls(vec![call("self_apply", "{}")]),
         reply("safe"),
     ]);
     let (kernel, store) = kernel(dir.path(), provider).await;
@@ -359,7 +359,7 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
         1
     );
     assert!(log.iter().any(|entry| matches!(&entry.body,
-        EntryBody::ToolCallSettled { outcome: Settlement::Ok, content, .. } if serde_json::from_str::<serde_json::Value>(content).unwrap()["unchanged"] == false)));
+        EntryBody::ToolCallSettled { outcome: Settlement::Ok, content, .. } if serde_json::from_str::<serde_json::Value>(content).unwrap()["registered"]["registration"].is_object())));
     assert_eq!(
         kernel
             .registry()
@@ -385,16 +385,15 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
         })
         .unwrap();
     let plan: ContextPlan = serde_json::from_slice(&store.get_blob(&hash).await.unwrap()).unwrap();
-    assert_eq!(
-        plan.tools
-            .iter()
-            .map(|(_, t)| t.name.as_str())
-            .collect::<Vec<_>>(),
-        enco_host::LIFELINE
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect::<Vec<_>>()
-    );
+    let mut tools: Vec<_> = plan
+        .tools
+        .iter()
+        .map(|(_, tool)| tool.name.as_str())
+        .collect();
+    tools.sort_unstable();
+    let mut expected = enco_host::LIFELINE.to_vec();
+    expected.sort_unstable();
+    assert_eq!(tools, expected);
     kernel.shutdown().await.unwrap();
 }
 

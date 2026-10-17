@@ -49,21 +49,18 @@ enum CallOutcome {
 
 pub(crate) async fn export(enco: &Enco, directory: &Path, forbidden: &[&Path]) -> Result<Snapshot> {
     let mut snapshot = Snapshot::default();
-    for name in ["schedules", "memory", "status"] {
+    for name in ["schedules", "memory"] {
         snapshot
             .read::<Value>(enco, directory, name, &[name])
             .await?;
     }
-    if let Some(plugins) = snapshot
-        .read::<Vec<Plugin>>(enco, directory, "plugins", &["plugin", "status"])
+    if let Some(status) = snapshot
+        .read::<Status>(enco, directory, "status", &["status"])
         .await?
     {
-        for plugin in plugins {
-            if let Some(generation) = plugin.active {
-                snapshot
-                    .metrics
-                    .generations
-                    .insert(plugin.name, generation.id);
+        for plugin in status.plugins {
+            if let (Some(name), Some(generation)) = (plugin.name, plugin.active) {
+                snapshot.metrics.generations.insert(name, generation.id);
             }
         }
     }

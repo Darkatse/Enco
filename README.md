@@ -32,11 +32,11 @@ In P0 the model provider already runs as a plugin. Tools and request assembly mo
 
 ### Built for the agent
 
-The agent is the main user of Enco and also a long-term maintainer of its code. Capabilities, their source locations and their recent failures should be easy for it to find, and changing one capability should only require reading one interface. Plugin documentation (`wit/CONTRACT.md`) is generated from the WIT contract, and `cargo xtask check` fails when the generated file is out of date.
+The agent is the main user of Enco and also a long-term maintainer of its code. Capabilities, their source locations and their recent failures should be easy for it to find, and changing one capability should only require reading one interface. Plugin documentation (`sdk/wit/CONTRACT.md`) is generated from the WIT contract, and `cargo xtask check` fails when the generated file is out of date.
 
 ### Hot reload with rollback (P1)
 
-The agent can edit a plugin, rebuild it and swap it in while Enco keeps running. New code takes effect at the start of the next round, which is the only point where code is replaced. A new version is kept only if it passes a health check, and Enco falls back to the previous one otherwise. If things break badly, safe mode keeps a small set of file, shell, plugin deployment and configuration tools available for repair. Replacing the host binary itself always needs the owner's confirmation.
+The agent can edit a plugin, rebuild it and swap it in while Enco keeps running. New code takes effect at the start of the next round, which is the only point where code is replaced. A new version is kept only if it passes a health check, and Enco falls back to the previous one otherwise. If things break badly, safe mode keeps a small set of file and shell tools, plus tools to register changes and inspect the node available for repair. Replacing the host binary itself always needs the owner's confirmation.
 
 ### A durable record
 
@@ -90,6 +90,10 @@ Requirements: Rust 1.99.0 with the `wasm32-wasip2` target. The versions are pinn
 ```bash
 git clone https://github.com/Darkatse/Enco.git
 cd Enco
+cargo fetch                   # prefetch once; xtask commands run offline
+for manifest in sdk/Cargo.toml evals/runner/Cargo.toml plugins/*/Cargo.toml; do
+    cargo fetch --manifest-path "$manifest"
+done
 cargo xtask build-factory      # build the bundled plugins
 cargo run -p enco -- init      # create ~/.enco and a config template
 ```
@@ -101,7 +105,11 @@ cargo run -p enco -- serve     # start the service
 cargo run -p enco -- chat      # in another terminal
 ```
 
-After the first startup, edit the config and run `enco config apply` to register changes. Restarts restore the registered configuration; `enco status` reports unapplied or superseded file contents. Use `enco config apply --generation <N>` to register earlier content again, or `enco config rollback` for recovery without model calls. Older databases require manual migration or recreation.
+`enco init` makes the home a Git repository and writes the bundled SDK to `sdk/`. Put plugin sources in `plugins/<name>/`, or use `enco plugin scaffold <name>` to start a tool plugin. Each plugin is a standalone Cargo workspace that depends on `../../sdk`.
+
+After editing source or `config.toml`, run `enco apply` to build and register all changed intent together. The agent uses the same path through `self_apply`. `enco status` and `self_status` report working-file changes separately from differences between registered intent and running generations. `enco rollback` mechanically restores the still-effective parts of the latest registration without Git, Cargo or model calls. Restarts restore registered state. Older databases require manual migration or recreation.
+
+Each accepted registration creates one commit on `refs/enco/registered`; Enco leaves your branch, HEAD and index alone. Use `git log -p enco/registered` to inspect accepted changes. To undo a registration's file changes, restore the relevant paths from its parent with `git restore --source=<commit>^ -- <paths>`, then apply again. Git restore does not remove untracked directories, so remove a newly added plugin directory yourself when undoing its creation. Use `self_status` to check pending intent; `git status` compares against your own branch.
 
 Standing instructions live in `~/.enco/AGENTS.md`; runtime data lives in `~/.enco/.data/`. To enable Telegram, uncomment the `[telegram]` block in the config example, set your user ID, and export the token variable. `/session` selects a Session, `/cancel` cancels its Run, and `enco status` lists channel health and recent failed or uncertain deliveries.
 
@@ -112,7 +120,7 @@ Set `ENCO_HOME` to use a directory other than `~/.enco`. Run `cargo xtask check`
 - [docs/design/](docs/design/README.md): the design outline and the judgments behind each area (Chinese)
 - [docs/Roadmap.md](docs/Roadmap.md): phases and their acceptance criteria (Chinese)
 - [LESSONS.md](LESSONS.md): approaches that failed in practice; read before changing code (Chinese)
-- [wit/CONTRACT.md](wit/CONTRACT.md): the plugin contract, generated from WIT
+- [sdk/wit/CONTRACT.md](sdk/wit/CONTRACT.md): the plugin contract, generated from WIT
 - [CONTRIBUTING.md](CONTRIBUTING.md): project principles and how to contribute
 
 ## Contributing

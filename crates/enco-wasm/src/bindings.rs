@@ -1,7 +1,7 @@
 //! Each view requires only its own exports; shared interfaces keep one Rust type identity.
 mod completion {
     wasmtime::component::bindgen!({
-        path: "../../wit",
+        path: "../../sdk/wit",
         world: "completion-plugin",
         exports: { default: async },
     });
@@ -9,7 +9,7 @@ mod completion {
 
 mod base {
     wasmtime::component::bindgen!({
-        path: "../../wit",
+        path: "../../sdk/wit",
         world: "base",
         exports: { default: async },
         with: {
@@ -21,7 +21,7 @@ mod base {
 
 mod embedding {
     wasmtime::component::bindgen!({
-        path: "../../wit",
+        path: "../../sdk/wit",
         world: "embedding-plugin",
         exports: { default: async },
         with: {
@@ -33,7 +33,7 @@ mod embedding {
 
 mod decision {
     wasmtime::component::bindgen!({
-        path: "../../wit",
+        path: "../../sdk/wit",
         world: "decision-plugin",
         exports: { default: async },
         with: {
@@ -45,7 +45,7 @@ mod decision {
 
 mod tools {
     wasmtime::component::bindgen!({
-        path: "../../wit",
+        path: "../../sdk/wit",
         world: "tool-plugin",
         exports: { default: async },
         with: {
@@ -55,7 +55,7 @@ mod tools {
     });
 }
 
-/// Package version of `wit/plugin.wit`; change it together with the WIT.
+/// Package version of `sdk/wit/plugin.wit`; change it together with the WIT.
 pub(crate) const CONTRACT_VERSION: &str = "0.4.0";
 
 pub(crate) use base::BasePre;

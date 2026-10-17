@@ -8,7 +8,7 @@ mod client;
 mod protocol;
 mod support;
 
-use enco_core::{EntryBody, EventId, GenerationId, RunEnd, code};
+use enco_core::{EntryBody, EventId, RunEnd, code};
 use protocol::Command;
 use serde_json::{Value, json};
 use support::*;
@@ -54,8 +54,9 @@ async fn apply(daemon: &Daemon, document: &Value) -> Result<Value, String> {
     daemon
         .connect()
         .await
-        .request(Command::ConfigApply { generation: None })
+        .request(Command::Apply {})
         .await
+        .map(|value| value["registered"].clone())
         .map_err(|error| error.to_string())
 }
 
@@ -76,8 +77,16 @@ async fn first_registration_adopts_config_toml_without_model_requests() {
     let status = config_status(&daemon).await;
     let generations = status["generations"].as_array().unwrap();
     assert_eq!(generations.len(), 1);
-    assert_eq!(status["active"], generations[0][0]);
-    assert_eq!(status["divergence"]["kind"], "none");
+    assert_eq!(status["active"], generations[0]);
+    assert_eq!(
+        status["active"],
+        daemon
+            .connect()
+            .await
+            .request(Command::Status {})
+            .await
+            .unwrap()["registered"]["configuration"]
+    );
     assert!(server.received_requests().await.unwrap().is_empty());
     daemon.stop().await;
 }
@@ -162,8 +171,11 @@ async fn applying_calls_only_the_changed_endpoint_once() {
     assert_eq!(probe["model"], "cheap");
     assert!(probe.get("tools").is_none());
     let again = apply(&daemon, &candidate).await.unwrap();
-    assert_eq!(again["unchanged"], true);
-    assert_eq!(again["generation"], applied["generation"]);
+    assert!(again["registration"].is_null());
+    assert_eq!(
+        config_status(&daemon).await["active"],
+        applied["configuration"]
+    );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     daemon.stop().await;
 }
@@ -182,83 +194,94 @@ async fn restart_restores_the_active_generation_whatever_config_toml_holds() {
         daemon.stop().await;
         std::fs::write(daemon.root.path().join("config.toml"), text).unwrap();
         daemon.restart().await;
-        assert!(
-            daemon.startup_log.contains("unapplied"),
-            "{}",
-            daemon.startup_log
-        );
         let status = config_status(&daemon).await;
         assert_eq!(status["active"], registered["active"]);
         assert_eq!(status["generations"], registered["generations"]);
-        assert_eq!(status["divergence"]["kind"], "unapplied");
-        let reason = &status["divergence"]["reason"];
+        let status = daemon
+            .connect()
+            .await
+            .request(Command::Status {})
+            .await
+            .unwrap();
+        let comparison = &status["workspace"]["configuration"];
+        assert_eq!(
+            comparison["state"],
+            if unreadable { "unknown" } else { "changed" }
+        );
         if unreadable {
-            assert!(reason.as_str().unwrap().contains("config.toml"), "{reason}");
-        } else {
-            assert!(reason.is_null(), "{reason}");
+            assert!(
+                comparison["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("config.toml")
+            );
         }
     }
     daemon.stop().await;
 }
 
 #[tokio::test]
-async fn undo_registers_earlier_content_and_rollback_reactivates_a_generation() {
-    let server = MockServer::start().await;
-    let original = configuration(&server);
-    let mut daemon = Daemon::start(&server, "openai-compatible").await;
-    let first = config_status(&daemon).await["active"].as_u64().unwrap();
+async fn git_restores_earlier_intent_and_the_running_document_after_owner_rollback() {
+    let server = model_service().await;
+    let mut original = configuration(&server);
+    // A second embedding endpoint lets the last edit change only the memory table.
+    original["endpoint"]["spare"] = original["endpoint"]["embed"].clone();
+    let mut daemon = Daemon::start_config(&toml::to_string(&original).unwrap()).await;
+    let root = daemon.root.path().to_path_buf();
+    let first_revision = git(&root, &["rev-parse", "enco/registered"]).await;
     let mut changed = original.clone();
     changed["owner"]["timezone"] = "America/New_York".into();
-    let second = apply(&daemon, &changed).await.unwrap()["generation"]
-        .as_u64()
-        .unwrap();
+    let second = apply(&daemon, &changed).await.unwrap()["configuration"].clone();
+    git(
+        &root,
+        &["restore", "--source", &first_revision, "--", "config.toml"],
+    )
+    .await;
     let undo = daemon
         .connect()
         .await
-        .request(Command::ConfigApply {
-            generation: Some(GenerationId(first)),
-        })
+        .request(Command::Apply {})
         .await
         .unwrap();
-    let third = undo["generation"].as_u64().unwrap();
-    assert!(third > second);
-    let path = daemon.root.path().join("config.toml");
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        toml::to_string(&changed).unwrap()
-    );
-    let status = config_status(&daemon).await;
-    assert_eq!(status["active"], third);
-    assert_eq!(status["divergence"]["kind"], "superseded");
-    assert_eq!(status["divergence"]["generation"], second);
-    assert!(
-        status["divergence"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("re-registered the content of {first}"))
-    );
-    // The new generation holds the first one's document.
-    write(&daemon, &original);
-    assert_eq!(config_status(&daemon).await["divergence"]["kind"], "none");
-
+    let third = &undo["registered"]["configuration"];
+    assert!(third["id"].as_u64().unwrap() > second["id"].as_u64().unwrap());
+    assert_eq!(third["document"], original);
     daemon
         .connect()
         .await
-        .request(Command::ConfigRollback {})
+        .request(Command::Rollback {})
         .await
         .unwrap();
-    let status = config_status(&daemon).await;
-    assert_eq!(status["active"], second);
-    assert_eq!(status["divergence"]["kind"], "superseded");
-    assert_eq!(status["divergence"]["generation"], third);
-    assert!(
-        status["divergence"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains(&format!(
-                "mechanical rollback activated earlier configuration {second}"
-            ))
-    );
+    let status = daemon
+        .connect()
+        .await
+        .request(Command::Status {})
+        .await
+        .unwrap();
+    assert_eq!(status["config"]["active"], second);
+    assert_eq!(&status["registered"]["configuration"], third);
+    assert!(server.received_requests().await.unwrap().is_empty());
+    // Start from the running document, so editing one table cannot re-register the undone one.
+    let running = status["registrations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|registration| registration["id"] == second["registration"])
+        .unwrap()["revision"]
+        .as_str()
+        .unwrap();
+    git(
+        &root,
+        &["restore", "--source", running, "--", "config.toml"],
+    )
+    .await;
+    let mut edited: Value =
+        toml::from_str(&std::fs::read_to_string(root.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(edited, second["document"]);
+    edited["memory"]["embedding"] = "spare".into();
+    let fourth = apply(&daemon, &edited).await.unwrap()["configuration"].clone();
+    assert_eq!(fourth["document"], edited);
+    assert_ne!(fourth["document"]["owner"], third["document"]["owner"]);
     daemon.stop().await;
 }
 
@@ -383,6 +406,7 @@ async fn fresh_home_rejects_invalid_configuration_before_serving() {
         toml::to_string(&document).unwrap(),
     )
     .unwrap();
+    initialize(root.path()).await;
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))

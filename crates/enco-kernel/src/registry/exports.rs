@@ -1,6 +1,6 @@
 use super::*;
 use admission::Admission;
-use state::Plugins;
+use state::State;
 
 /// An invocation's immutable association between code and registry identity.
 pub struct Export<T: ?Sized> {
@@ -120,15 +120,6 @@ impl Exports {
         })
     }
 
-    /// Identity remains visible even when this generation cannot be admitted.
-    pub(super) fn active_generation(&self, plugin: &str) -> Option<GenerationId> {
-        self.plugins
-            .get(plugin)?
-            .active
-            .as_ref()
-            .map(|active| active.generation)
-    }
-
     fn selected(
         &self,
         plugin: &str,
@@ -180,30 +171,43 @@ pub(super) fn unavailable(plugin: &str, reason: &str) -> Failure {
     }
 }
 
-impl Plugins {
+impl State {
     /// Bind one already computed admission result to the identities assigned by the commit.
-    pub fn exports(&self, admission: Admission) -> Exports {
+    pub fn exports(&self, admission: Admission, factory: &[FactoryPlugin]) -> Exports {
         let mut plugins = BTreeMap::new();
-        for (name, plugin) in &self.names {
+        let mut names = self.running_names();
+        names.extend(
+            factory
+                .iter()
+                .map(|plugin| (plugin.name.clone(), plugin.id)),
+        );
+        for (name, plugin) in names {
             plugins.insert(
                 name.clone(),
                 Routes {
-                    active: self.active.get(plugin).map(|generation| LoadedGeneration {
-                        plugin: *plugin,
-                        generation: *generation,
-                        loaded: admission.get(name).cloned(),
-                    }),
-                    factory: self.factory.get(plugin).map(|generation| LoadedGeneration {
-                        plugin: *plugin,
-                        generation: *generation,
-                        loaded: Ok(self.loaded[generation].clone()),
+                    active: self
+                        .history
+                        .plugins
+                        .get(&plugin)
+                        .and_then(|record| record.active)
+                        .map(|generation| LoadedGeneration {
+                            plugin,
+                            generation: generation.generation,
+                            loaded: admission.get(&name).cloned(),
+                        }),
+                    factory: self.factory.get(&plugin).and_then(|generation| {
+                        self.loaded.get(generation).map(|loaded| LoadedGeneration {
+                            plugin,
+                            generation: *generation,
+                            loaded: Ok(loaded.clone()),
+                        })
                     }),
                 },
             );
         }
         Exports {
             plugins,
-            generations: self.generations.clone(),
+            generations: self.history.generations.clone(),
         }
     }
 }

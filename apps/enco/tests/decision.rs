@@ -258,7 +258,7 @@ async fn relevance_follows_the_configured_endpoint() {
     daemon
         .connect()
         .await
-        .request(Command::ConfigApply { generation: None })
+        .request(Command::Apply {})
         .await
         .unwrap();
     let previous_calls = server

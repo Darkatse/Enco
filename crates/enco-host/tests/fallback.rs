@@ -3,7 +3,6 @@ mod support;
 
 use async_trait::async_trait;
 use enco_core::*;
-use enco_host::*;
 use enco_kernel::*;
 use serde_json::{Value, json};
 use std::{
@@ -159,7 +158,7 @@ fn run_failure(entries: &[Entry]) -> Option<&Failure> {
 }
 
 #[tokio::test]
-async fn exhausted_combinations_survive_other_deployments_and_reset_with_the_run() {
+async fn exhausted_combinations_survive_unrelated_registration_and_reset_with_the_run() {
     for empty in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let primary = ScriptedProvider::new(vec![
@@ -177,25 +176,23 @@ async fn exhausted_combinations_survive_other_deployments_and_reset_with_the_run
         ])));
         let (kernel, _) =
             kernel_configured(dir.path(), provider, candidates(), vec![], |_| {}).await;
-        std::fs::write(dir.path().join("workspace/unrelated.wasm"), FACTORY_BYTES).unwrap();
+        let mut changed = candidates();
+        changed["run"] = json!({"max_rounds": 30});
+        std::fs::write(
+            dir.path().join("config.toml"),
+            toml::to_string(&changed).unwrap(),
+        )
+        .unwrap();
         backup.steps.lock().unwrap().extend([
-            calls(vec![call(
-                "plugin_deploy",
-                r#"{"name":"unrelated","path":"unrelated.wasm"}"#,
-            )]),
+            calls(vec![call("self_apply", "{}")]),
             reply("backup finished"),
         ]);
         let log = send(&kernel, "work").await;
         assert_eq!(modes(&log), [false, false]);
         assert_eq!(models(&log), ["primary", "backup", "backup"]);
-        assert!(
-            kernel
-                .registry()
-                .status()
-                .await
-                .plugins
-                .iter()
-                .any(|plugin| plugin.name == "unrelated")
+        assert_eq!(
+            kernel.registry().view().config.document["run"]["max_rounds"],
+            30
         );
         assert_eq!(primary.requests.lock().unwrap().len(), 1); // The alias has the same combination.
         let prompt = backup.requests.lock().unwrap()[0].messages[0].joined_text();
@@ -240,34 +237,22 @@ async fn registry_node(
     factory: Arc<dyn Provider>,
     trial: Arc<dyn Provider>,
 ) -> (Kernel, GenerationId, GenerationId) {
-    let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
-    let runtime = Arc::new(ScriptedRuntime::default());
-    runtime.insert(
-        FACTORY_BYTES,
-        fixture(factory, ScriptedProvider::new(vec![])),
-    );
+    let runtime = factory_runtime(fixture(factory, ScriptedProvider::new(vec![])));
     runtime.insert(b"trial", fixture(trial, ScriptedProvider::new(vec![])));
-    let registry = Registry::open(registry_deps(
-        store.clone(),
-        runtime,
-        FACTORY_BYTES,
-        configuration(),
-    ))
-    .await
-    .unwrap();
+    let (development, registry, store) =
+        scripted_home(root, runtime, configuration(), vec![]).await;
     let original = registry
         .view()
         .exports
         .completion(&fixture_endpoint("fixture"), true)
         .unwrap()
         .generation;
-    let trial = registry
-        .deploy("fixture", PluginSource::Artifact(b"trial".to_vec()))
+    let trial = source_fixture(root, &store, &development, &registry, "fixture", b"trial")
         .await
-        .unwrap()
-        .generation
+        .generations[0]
         .id;
-    let kernel = Kernel::start(kernel_deps(root, store, registry, None))
+    std::fs::remove_dir_all(root.join("plugins/fixture")).unwrap();
+    let kernel = Kernel::start(kernel_deps(root, store, registry, None, Some(development)))
         .await
         .unwrap();
     (kernel, original, trial)
@@ -281,10 +266,7 @@ async fn automatic_safe_mode_tracks_repair_and_starts_each_run_afresh() {
         let trial = ScriptedProvider::new(vec![Err(unavailable(false)), Err(unavailable(false))]);
         let (kernel, original, broken) = registry_node(dir.path(), factory.clone(), trial).await;
         let repair_call = if repair {
-            call(
-                "plugin_deploy",
-                &json!({"name": "fixture", "generation": original}).to_string(),
-            )
+            call("self_apply", "{}")
         } else {
             call("fs_list", r#"{"path":"."}"#)
         };
@@ -524,9 +506,7 @@ async fn applying_calls_every_candidate_once_and_a_failing_backup_rejects_it() {
     )
     .await;
     let before = registry.view().config.generation;
-    let result = registry
-        .apply_config(ConfigSource::Document(candidates()))
-        .await;
+    let result = submit(&registry, configuration_request(candidates())).await;
     assert!(
         matches!(result, Err(RegistryError::Rejected { reason, .. }) if reason.contains("endpoint backup-chat") && reason.contains("402"))
     );
@@ -558,7 +538,7 @@ async fn a_profile_without_candidates_is_rejected() {
     for field in ["reply", "compaction"] {
         let mut empty = configuration();
         empty["profile"]["default"][field] = json!([]);
-        let result = registry.apply_config(ConfigSource::Document(empty)).await;
+        let result = submit(&registry, configuration_request(empty)).await;
         assert!(
             matches!(result, Err(RegistryError::Rejected { reason, .. }) if reason.contains("profile.default") && reason.contains(field))
         );

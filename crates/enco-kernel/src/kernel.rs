@@ -114,7 +114,7 @@ impl Kernel {
         let (schedules, scheduler) = crate::scheduler::Scheduler::channel();
         deps.tools.extend(crate::builtin::tools(schedules.clone()));
         let declared: std::collections::BTreeSet<_> =
-            deps.registry.host_tool_names.iter().cloned().collect();
+            deps.registry.host_tool_names().iter().cloned().collect();
         let actual: std::collections::BTreeSet<_> =
             deps.tools.iter().map(|tool| tool.spec().name).collect();
         if declared != actual {

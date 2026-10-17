@@ -36,7 +36,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 
 这两条互为对偶：前者让 Session 可以重建，后者让 Agent 可以重建。
 
-**归属与转移。** 每份可变状态有唯一的归属者，由它按顺序处理变更，插件代码只在归属者的边界上替换，即 Erlang 的 gen_server。回调把写入作为返回值交出，归属者把这些写入与接纳事实一起原子提交。丢失更新、重投重复、游标倒退、并发部署互相覆盖、迟到的健康结果，都由这两条消解。派生状态是它的权威的函数，可以随时丢弃、从权威重建。
+**归属与转移。** 每份可变状态有唯一的归属者，由它按顺序处理变更，插件代码只在归属者的边界上替换，即 Erlang 的 gen_server。回调把写入作为返回值交出，归属者把这些写入与接纳事实一起原子提交。丢失更新、重投重复、游标倒退、并发登记互相覆盖、迟到的健康结果，都由这两条消解。派生状态是它的权威的函数，可以随时丢弃、从权威重建。
 
 **Round 边界是唯一的安全点。** 模型可见的世界（能力目录、profile、时区）在这里换代，漫游在这里提交，执行权在这里检查，压缩与 Brief 在这里生成，崩溃后也从这里恢复。一个 Round 内模型看到的世界不变，所以每一步都能只凭记录解释。Provider 的代际在每次 Attempt 时选取并不违背这一点：请求已经记录，换的只是翻译协议的代码。
 
@@ -56,7 +56,11 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 
 ### 状态是事实的函数
 
-能从已登记的事实求出的东西，就不另存，不另设标志，也不靠后台进程维持。存下来的派生结果会在规则变化后与重新求出的值并存，成为第二个事实来源；标志会卡住；后台对账会与前台的命令竞争。所以声明每次从内容求出，每个组件是注册表视图的函数，安全模式是本 Run 的 Log 的函数，意图与登记的不一致从代际历史推出，记忆索引在召回前与权威对账。
+能从已登记的事实求出的东西，就不另存，不另设标志，也不靠后台进程维持。存下来的派生结果会在规则变化后与重新求出的值并存，成为第二个事实来源；标志会卡住；后台对账会与前台的命令竞争。所以声明每次从内容求出，每个组件是注册表视图的函数，安全模式是本 Run 的 Log 的函数，意图与运行的不一致从登记事实推出，记忆索引在召回前与权威对账。
+
+### 值不可变，身份稳定，可变的只是引用
+
+内容一经记下就不再改变：制品与计划按内容寻址，配置文档与 Log 只追加。插件与 Session 是身份，跨越变化保持不变；变的只是身份此刻指向哪个值，由归属者移动。所以问"内容变没变"比较值，问"是不是同一个、同一次"比较身份与引用：同一份出厂代码可以激活多次，复制来的源码可能编出相同的字节，名字也会改回去。
 
 ### 在源头声明，不在下游防御
 
@@ -91,7 +95,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | Space | 主人全部节点的集合；控制平面（成员、Binding、期望状态、git 引用）由共识维护 |
 | Binding | `key → (node, epoch)`，单写者资源的所有权：Session 是粘滞所有权，渠道与定时是租约 |
 
-其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief；ContextPlan、Composer、Candidate、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
+其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief；ContextPlan、Composer、Candidate、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
 
 扩展只有两种形态：
 
@@ -125,9 +129,9 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 
 | 透镜 | 做到极致的地方 | Enco 拿走的 | 它的教训与 Enco 的对策 |
 |---|---|---|---|
-| Erlang | 隔离进程、邮箱、位置透明、supervision、热代码加载 | 归属者 actor 持有状态，代际是可替换的回调模块；健康门控是代际的 supervisor，父 Session 是子 Session 的 supervisor | 位置透明掩盖部分失败，netsplit 后要人工收拾，最多两个代码版本 → 远程调用显式返回 `unknown`，控制平面用共识，代际数量不限 |
+| Erlang | 隔离进程、邮箱、位置透明、supervision、热代码加载 | 归属者 actor 持有状态，代际是可替换的回调模块；健康门控是代际的 supervisor，父 Session 是子 Session 的 supervisor | 位置透明掩盖部分失败，netsplit 后要人工收拾，最多两个代码版本 → 远程调用显式返回 `unknown`，控制平面用共识，记录与钉住的实例数量不限，恢复只留两份制品 |
 | Plan 9 | 按进程组合的命名空间，`import`，`cpu` | 每个 Round 的能力快照是一个命名空间，由本地与远程导出的能力组成；roam 就是 `cpu` | 一切皆文件会丢失动作的语义 → 动作用类型化调用，文件投影只用于查看 |
-| Smalltalk | 活的 image，系统在运行中修改自己 | 自我修改的闭环，`status` 与 `inspect` | image 不可复现、会腐烂，包之间的方法覆盖让结果取决于加载顺序 → git、内容寻址的制品与代际；要改变一个插件的行为就改它的源码并部署 |
+| Smalltalk | 活的 image，系统在运行中修改自己 | 自我修改的闭环，`status` 与 `inspect` | image 不可复现、会腐烂，包之间的方法覆盖让结果取决于加载顺序 → git、内容寻址的制品与代际；要改变一个插件的行为就改它的源码并登记 |
 | Lisp | 代码即数据，eval 与 REPL，语言扩展自身 | Log 是数据；请求是 composer 对当前输入的纯函数，并作为数据记录；工具调用是被内核 eval 的程序 | 无限扩展导致方言碎片化 → 少量类型化的贡献与 WIT 契约 |
 
 ## 源码地图
@@ -141,12 +145,13 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | Transcript、崩溃恢复、定时、请求查看 | `crates/enco-kernel/src/` 的 `transcript`、`recovery`、`scheduler`、`inspect` |
 | 注册表、内核的配置表与 profile | `crates/enco-kernel/src/` 的 `registry/`、`settings`、`profile` |
 | 内核与外界的边界（端口）、上限常量 | `crates/enco-kernel/src/ports/`、各 crate 的 `limits.rs` |
-| SQLite、blob、制品库、`plugins.lock` | `crates/enco-host/src/store/`，模式在 `schema.sql` |
+| SQLite、blob、制品库 | `crates/enco-host/src/store/`，模式在 `schema.sql` |
 | 出厂 composer、工作区上下文、原生工具 | `crates/enco-host/src/` 的 `composer`、`context`、`tools/` |
 | 记忆、渠道与 Telegram | `crates/enco-host/src/` 的 `memory/`、`channel/`、`telegram/` |
 | 插件运行时、宿主导入、凭证 | `crates/enco-wasm` |
 | 组合根、守护进程、本地协议与 CLI | `apps/enco/src` |
-| 插件契约 | `wit/plugin.wit`，生成的 `wit/CONTRACT.md` |
+| 插件的构建与已登记意图的链 | `crates/enco-host/src/development/`；分发的 SDK 在 `sdk/` |
+| 插件契约 | `sdk/wit/plugin.wit`，生成的 `sdk/wit/CONTRACT.md` |
 | 出厂插件 | `plugins/` |
 | 评测题与黑盒运行器 | `evals/` |
 | 门禁：`cargo xtask check` | `xtask/` |

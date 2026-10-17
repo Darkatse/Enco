@@ -44,6 +44,7 @@ async fn trial_promotion_counts_successes_since_opening_and_ignores_environment_
             .await
             .unwrap()
             .generations
+            .values()
             .last()
             .unwrap()
             .status,
@@ -56,6 +57,7 @@ async fn trial_promotion_counts_successes_since_opening_and_ignores_environment_
             .await
             .unwrap()
             .generations
+            .values()
             .last()
             .unwrap()
             .status,
@@ -108,7 +110,14 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
         next.id
     );
     assert_eq!(
-        store.registry().await.unwrap().generations.last().unwrap(),
+        store
+            .registry()
+            .await
+            .unwrap()
+            .generations
+            .values()
+            .last()
+            .unwrap(),
         &next
     );
     assert!(store.pending(session.id).await.unwrap().is_empty());
@@ -152,10 +161,10 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
             .generation,
         healthy.id
     );
-    let status = registry.status().await.plugins;
+    let status = registry.status().await.unwrap().plugins;
     let failed = status
         .iter()
-        .find(|plugin| plugin.name == "custom")
+        .find(|plugin| plugin.name.as_deref() == Some("custom"))
         .unwrap()
         .generations
         .last()
@@ -203,29 +212,25 @@ async fn configuration_probes_report_trial_health_even_when_configuration_is_rej
     let provider = ScriptedProvider::new(vec![reply("OK"), Err(fault(code::PLUGIN_TRAP))]);
     runtime.insert(FACTORY_BYTES, loaded(provider));
     let registry = open(&store, runtime).await;
-    let factory = registry
-        .view()
-        .exports
-        .completion(&fixture_endpoint("fixture"), true)
-        .unwrap()
-        .generation;
-    let trial = registry
-        .deploy("fixture", PluginSource::Generation(factory))
-        .await
-        .unwrap()
-        .generation
-        .id;
+    let trial = submit(
+        &registry,
+        artifact_request("fixture", FACTORY_BYTES.to_vec()),
+    )
+    .await
+    .unwrap()
+    .generations
+    .remove(0)
+    .id;
     let mut document = configuration();
     document["endpoint"]["reply"]["model"] = "probe-success".into();
-    registry
-        .apply_config(ConfigSource::Document(document.clone()))
+    submit(&registry, configuration_request(document.clone()))
         .await
         .unwrap();
     for _ in 0..TRIAL_CALLS - 2 {
         registry.report(trial, Verdict::Ok, None).await.unwrap();
     }
     assert_eq!(
-        registry.status().await.plugins[0]
+        registry.status().await.unwrap().plugins[0]
             .active
             .as_ref()
             .unwrap()
@@ -234,24 +239,25 @@ async fn configuration_probes_report_trial_health_even_when_configuration_is_rej
     );
     registry.report(trial, Verdict::Ok, None).await.unwrap();
     assert_eq!(
-        registry.status().await.plugins[0]
+        registry.status().await.unwrap().plugins[0]
             .active
             .as_ref()
             .unwrap()
             .status,
         GenerationStatus::Healthy
     );
-    let broken = registry
-        .deploy("fixture", PluginSource::Generation(factory))
-        .await
-        .unwrap()
-        .generation
-        .id;
+    let broken = submit(
+        &registry,
+        artifact_request("fixture", FACTORY_BYTES.to_vec()),
+    )
+    .await
+    .unwrap()
+    .generations
+    .remove(0)
+    .id;
     let config = registry.view().config.generation;
     document["endpoint"]["reply"]["model"] = "probe-trap".into();
-    let result = registry
-        .apply_config(ConfigSource::Document(document))
-        .await;
+    let result = submit(&registry, configuration_request(document)).await;
     assert!(matches!(result, Err(RegistryError::Rejected { .. })));
     assert_eq!(registry.view().config.generation, config);
     assert_eq!(
@@ -263,7 +269,7 @@ async fn configuration_probes_report_trial_health_even_when_configuration_is_rej
             .generation,
         trial
     );
-    let status = registry.status().await;
+    let status = registry.status().await.unwrap();
     assert_eq!(
         status.plugins[0]
             .generations

@@ -241,7 +241,7 @@ async fn evidence_is_isolated_and_regrading_uses_the_saved_trial() {
     let requests =
         std::fs::read_to_string(trial_dir.join("snapshot/mock/mail/requests.jsonl")).unwrap();
     assert!(requests.contains("/inbox"));
-    let plugins = read(&trial_dir.join("snapshot/plugins.json"));
+    let plugins = read(&trial_dir.join("snapshot/status.json"))["plugins"].clone();
     let active = &plugins
         .as_array()
         .unwrap()
@@ -415,5 +415,59 @@ async fn unreachable_providers_remain_execution_failures() {
             .contains("provider.network"),
         "{trial}"
     );
+    evaluation.finish().await;
+}
+
+#[tokio::test]
+async fn source_fixture_is_registered_offline_before_serving() {
+    use std::os::unix::fs::PermissionsExt;
+    let evaluation = Evaluation::new().await;
+    let fixture = evaluation
+        .root
+        .join("evals/tasks/mail/home/plugins/fixture");
+    copy(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/test-fixture"),
+        &fixture,
+    );
+    write(
+        &evaluation.root.join("evals/tasks/mail/home/bin/mail"),
+        "#!/bin/sh\nset -eu\ncurl -fsS '{{mock:mail}}/inbox'\n",
+    );
+    // Reuse this scenario's Cargo cache without locking other source builds.
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/plugin-tests/evaluation");
+    std::fs::create_dir_all(&target).unwrap();
+    let target = target.canonicalize().unwrap();
+    let binary = evaluation.enco.to_str().unwrap().replace('\'', "'\\''");
+    let target = target.to_str().unwrap().replace('\'', "'\\''");
+    let wrapper = evaluation.root.join("source-enco");
+    write(
+        &wrapper,
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = init ]; then\n  '{binary}' \"$@\" || exit\n  ln -s '{target}' \"$ENCO_HOME/.data/target\"\nelse\n  exec '{binary}' \"$@\"\nfi\n"
+        ),
+    );
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write(
+        &evaluation.root.join("variant.toml"),
+        &format!("enco = {wrapper:?}\n"),
+    );
+    let (directory, report) = evaluation.run().await;
+    let trial = &report["trials"][0];
+    assert_eq!(trial["result"], "success", "{trial:#}");
+    assert_eq!(trial["network_violations"], 0);
+    let trial = directory.join(trial["dir"].as_str().unwrap());
+    let status = read(&trial.join("snapshot/status.json"));
+    let plugin = status["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|plugin| plugin["name"] == "fixture")
+        .unwrap();
+    assert_eq!(plugin["active"]["origin"], "code");
+    assert_eq!(
+        plugin["active"]["registration"],
+        status["config"]["active"]["registration"]
+    );
+    assert!(trial.join("home/.enco/plugins/fixture/README.md").is_file());
     evaluation.finish().await;
 }

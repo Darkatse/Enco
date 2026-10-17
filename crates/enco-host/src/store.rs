@@ -2,7 +2,6 @@ mod accept;
 mod commit;
 mod connections;
 mod content;
-mod lock;
 mod registry;
 mod rows;
 mod schedules;
@@ -18,8 +17,8 @@ use std::{
 };
 
 /// `PRAGMA user_version` covers SQLite and its referenced plans. Until P4, persistent
-/// format changes bump it and existing databases are migrated by hand.
-const SCHEMA_VERSION: u32 = 7;
+/// format changes require a new database; opening never migrates or deletes the old one.
+const SCHEMA_VERSION: u32 = 8;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -29,8 +28,6 @@ pub struct StorePaths {
     pub blobs: PathBuf,
     /// Retained content-addressed components.
     pub artifacts: PathBuf,
-    /// Authoritative plugin name-to-identity mapping.
-    pub plugins_lock: PathBuf,
 }
 
 /// SQLite authority and its associated content and identity files.
@@ -43,7 +40,7 @@ pub struct SqliteStore {
 impl SqliteStore {
     /// Open the authority, initializing the schema and node identity on first use.
     pub async fn open(paths: StorePaths) -> Result<Self, StoreError> {
-        for path in [&paths.db, &paths.plugins_lock] {
+        for path in [&paths.db] {
             if let Some(parent) = path.parent() {
                 tokio::fs::create_dir_all(parent).await.map_err(backend)?;
             }
@@ -69,7 +66,7 @@ impl SqliteStore {
         self.paths.artifacts.join(format!("{hash}.wasm"))
     }
 
-    async fn run<T: Send + 'static>(
+    pub(crate) async fn run<T: Send + 'static>(
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
     ) -> Result<T, StoreError> {
@@ -264,49 +261,19 @@ impl Store for SqliteStore {
             .await
     }
 
-    async fn plugin_names(
-        &self,
-    ) -> Result<std::collections::BTreeMap<String, PluginId>, StoreError> {
-        let path = self.paths.plugins_lock.clone();
-        self.run(move |_| lock::read(&path)).await
-    }
-
-    async fn register_plugin(&self, name: &str, id: PluginId) -> Result<(), StoreError> {
-        let path = self.paths.plugins_lock.clone();
-        let name = name.to_owned();
-        self.run(move |_| lock::register(&path, name, id)).await
-    }
-
     async fn registry(&self) -> Result<RegistryState, StoreError> {
         self.run(|connection| registry::read(connection)).await
     }
 
-    async fn insert_generation(
-        &self,
-        generation: &NewGeneration,
-        activate: bool,
-    ) -> Result<GenerationId, StoreError> {
-        let generation = generation.clone();
-        self.run(move |connection| registry::insert(connection, &generation, activate))
+    async fn record_factories(&self, generations: &[GenerationRecord]) -> Result<(), StoreError> {
+        let generations = generations.to_vec();
+        self.run(move |connection| registry::record_factories(connection, &generations))
             .await
     }
 
-    async fn insert_config_generation(
-        &self,
-        document: &serde_json::Value,
-        created_at: DateTime<Utc>,
-        plugins: &[NewGeneration],
-    ) -> Result<(GenerationId, Vec<GenerationId>), StoreError> {
-        let document = document.clone();
-        let plugins = plugins.to_vec();
-        self.run(move |connection| {
-            registry::insert_config_generation(connection, &document, created_at, &plugins)
-        })
-        .await
-    }
-
-    async fn activate_config(&self, generation: GenerationId) -> Result<(), StoreError> {
-        self.run(move |connection| registry::activate_config(connection, generation))
+    async fn register(&self, write: &RegistrationWrite) -> Result<(), StoreError> {
+        let write = write.clone();
+        self.run(move |connection| registry::register(connection, &write))
             .await
     }
 
@@ -315,19 +282,31 @@ impl Store for SqliteStore {
             .await
     }
 
-    async fn activate(
+    async fn activate(&self, change: &Activation) -> Result<(), StoreError> {
+        let change = change.clone();
+        self.run(move |connection| registry::activate(connection, &change))
+            .await
+    }
+
+    async fn retain_artifacts(
         &self,
-        plugin: PluginId,
-        to: Option<GenerationId>,
-        failed: &[(GenerationId, Failure)],
-        event: Option<&Event>,
+        hashes: &std::collections::HashSet<ContentHash>,
     ) -> Result<(), StoreError> {
-        let failed = failed.to_vec();
-        let event = event.cloned();
-        self.run(move |connection| {
-            registry::activate(connection, plugin, to, &failed, event.as_ref())
-        })
-        .await
+        let retained: std::collections::BTreeSet<_> =
+            hashes.iter().map(|hash| format!("{hash}.wasm")).collect();
+        let mut files = tokio::fs::read_dir(&self.paths.artifacts)
+            .await
+            .map_err(backend)?;
+        while let Some(file) = files.next_entry().await.map_err(backend)? {
+            if !file
+                .file_name()
+                .to_str()
+                .is_some_and(|name| retained.contains(name))
+            {
+                tokio::fs::remove_file(file.path()).await.map_err(backend)?;
+            }
+        }
+        Ok(())
     }
 
     async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError> {

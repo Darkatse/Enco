@@ -48,3 +48,10 @@ pub(crate) fn unsigned(row: &Row<'_>, col: usize) -> rusqlite::Result<u64> {
     let value: i64 = row.get(col)?;
     u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(col, value))
 }
+
+pub(crate) fn optional_unsigned(row: &Row<'_>, col: usize) -> rusqlite::Result<Option<u64>> {
+    match row.get_ref(col)? {
+        rusqlite::types::ValueRef::Null => Ok(None),
+        _ => unsigned(row, col).map(Some),
+    }
+}

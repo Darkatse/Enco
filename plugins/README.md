@@ -1,6 +1,6 @@
 # 插件
 
-本目录是独立 Cargo 工作区，只经 [WIT 契约](../wit/CONTRACT.md) 与宿主交互，不依赖 `enco-core` 或其他宿主 crate。
+每个插件目录都是独立 Cargo 工作区，以 `../../sdk` 依赖宿主分发的 SDK，只经 [WIT 契约](../sdk/wit/CONTRACT.md) 与宿主交互，不依赖 `enco-core` 或其他宿主 crate。
 
 | 位置 | 职责 |
 |---|---|
@@ -9,10 +9,17 @@
 | `typesafe/src/lib.rs`、`protocol.rs` | TypeSafe 入口与 System One 协议：只导出 decision |
 | `web/src/lib.rs`、`config.rs` | web 工具声明、配置与服务声明 |
 | `web/src/fetch.rs`、`search.rs`、`http.rs` | 网页读取、搜索与 HTTP 传输 |
-| `provider-protocol/src/lib.rs` | 共用的类型绑定与 Chat Completions / Embeddings 转换 |
-| `provider-protocol/src/http.rs` | 共用的 JSON 传输、options 合并与 HTTP 错误分类 |
+| `test-fixture/` | 应用与评测共用的源码夹具，参与门禁，不内嵌到宿主 |
+| `../sdk/src/lib.rs`、`../sdk/src/protocol.rs` | 共用的类型绑定与 Chat Completions / Embeddings 转换 |
+| `../sdk/src/http.rs` | 共用的 JSON 传输、options 合并与 HTTP 错误分类 |
 
-改动插件后用 `cargo xtask build-factory` 构建（产物在 `target/factory/<name>.wasm`），再经 `plugin_deploy` 工具或 `enco plugin deploy <name> <path>` 部署。
+首次依赖预取见根目录的[构建说明](../README.zh-CN.md#从源码构建)；`xtask` 命令离线运行。
+
+在 Enco 仓库内用 `cargo xtask build-factory` 构建宿主自带制品（产物在 `target/factory/<name>.wasm`）。每个目录自带依赖锁、lint 表与默认 Wasm 目标，也可以进入目录直接运行 `cargo build`。
+
+修改运行中节点的插件时，把整个目录复制到 `$ENCO_HOME/plugins/<name>/`，改好源码与配置，再经 `self_apply` 或 `enco apply` 一起登记。首次构建写出 README 生成区，区外文字保留。每次接纳写入 Enco 自己的链，不改主人的分支与索引。撤销一次登记对文件的修改时，用 `git restore --source=<提交>^ -- <路径>` 从它的父提交取回相关路径，再登记；未跟踪的新目录须自行删除。删除出厂插件的覆盖目录并登记，会恢复出厂代码。改名使用 `plugin_rename` 或 `enco plugin rename <name> <to>`，以保留身份。
+
+`enco plugin deploy <name> <path>` 供主人与评测运行器直接登记没有源码的制品，它在 Enco 的链上写一个树不变的提交，不推进源码意图。
 
 ## 配置
 
@@ -29,4 +36,4 @@ tinyfish = "TINYFISH_KEY"
 
 `config` 是插件配置；`secrets` 把凭证名映射到环境变量名，不填写密钥值。
 
-工具行为以当前代际的工具描述为准；已登记的设置、不可用原因和历史通过 `plugin_status` 查看。开发契约见 [CONTRACT.md](../wit/CONTRACT.md)，模型服务配置示例见 [deepseek-gemini.toml](../examples/deepseek-gemini.toml)。
+工具行为以当前代际的工具描述为准；已登记的设置、不可用原因和历史通过 `self_status` 查看。开发契约见 [CONTRACT.md](../sdk/wit/CONTRACT.md)，模型服务配置示例见 [deepseek-gemini.toml](../examples/deepseek-gemini.toml)。

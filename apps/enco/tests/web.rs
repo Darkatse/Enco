@@ -88,10 +88,10 @@ async fn web_status(daemon: &Daemon) -> Value {
     let status = daemon
         .connect()
         .await
-        .request(Command::PluginStatus {})
+        .request(Command::Status {})
         .await
         .unwrap();
-    status
+    status["plugins"]
         .as_array()
         .unwrap()
         .iter()
@@ -202,11 +202,7 @@ async fn missing_credentials_reject_apply_but_only_exclude_the_plugin_on_restart
         toml::to_string(&document).unwrap(),
     )
     .unwrap();
-    let rejected = daemon
-        .connect()
-        .await
-        .request(Command::ConfigApply { generation: None })
-        .await;
+    let rejected = daemon.connect().await.request(Command::Apply {}).await;
     assert!(
         rejected
             .unwrap_err()
@@ -226,7 +222,7 @@ async fn missing_credentials_reject_apply_but_only_exclude_the_plugin_on_restart
     daemon
         .connect()
         .await
-        .request(Command::ConfigApply { generation: None })
+        .request(Command::Apply {})
         .await
         .unwrap();
     send(&daemon).await;
@@ -434,7 +430,7 @@ async fn malformed_jina_content_does_not_trigger_exa_fallback() {
 }
 
 #[tokio::test]
-async fn deploying_web_through_the_tool_preserves_its_exact_declared_definitions() {
+async fn applying_web_source_through_the_tool_preserves_its_exact_declared_definitions() {
     let services = Services::new().await;
     let document = services.document(&["exa", "tinyfish"]);
     let settings: PluginSettings =
@@ -448,14 +444,22 @@ async fn deploying_web_through_the_tool_preserves_its_exact_declared_definitions
         .unwrap()
         .specs;
     let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
-    let previous = web_status(&daemon).await["active"]["id"].clone();
+    let previous = web_status(&daemon).await;
+    build_target(daemon.root.path(), "web");
+    copy_plugin("web", daemon.root.path());
+    let source = daemon.root.path().join("plugins/web/src/lib.rs");
+    let code = std::fs::read_to_string(&source).unwrap();
+    std::fs::write(
+        source,
+        code.replace(
+            "Read web pages and search with configured engines",
+            "Local web source",
+        ),
+    )
+    .unwrap();
     propose(
         &services.model,
-        tool_message(
-            "deploy",
-            "plugin_deploy",
-            json!({"name":"web", "generation":previous}),
-        ),
+        tool_message("apply", "self_apply", json!({})),
     )
     .await;
     let log = send(&daemon).await;
@@ -466,7 +470,11 @@ async fn deploying_web_through_the_tool_preserves_its_exact_declared_definitions
             ..
         }
     )));
-    assert_ne!(web_status(&daemon).await["active"]["id"], previous);
+    let registered = web_status(&daemon).await;
+    assert_ne!(registered["active"]["id"], previous["active"]["id"]);
+    assert_eq!(registered["id"], previous["id"]);
+    assert_eq!(registered["factory"], previous["factory"]);
+    assert_eq!(registered["active"]["origin"], "code");
     let inspection: Inspection = serde_json::from_value(
         daemon
             .connect()
@@ -495,5 +503,56 @@ async fn deploying_web_through_the_tool_preserves_its_exact_declared_definitions
         search.input_schema["properties"]["engine"]["enum"],
         json!(["exa", "tinyfish"])
     );
+    check_safe_mode_and_source_removal(&daemon, &previous).await;
     daemon.stop().await;
+}
+
+async fn check_safe_mode_and_source_removal(daemon: &Daemon, before: &Value) {
+    daemon
+        .connect()
+        .await
+        .request(Command::SafeMode { enabled: true })
+        .await
+        .unwrap();
+    let log = send(daemon).await;
+    assert!(log.iter().any(|entry| matches!(
+        entry.body,
+        EntryBody::RoundStarted {
+            safe_mode: true,
+            ..
+        }
+    )));
+    let inspection: Inspection = serde_json::from_value(
+        daemon
+            .connect()
+            .await
+            .request(Command::Inspect {
+                session: "main".into(),
+                attempt_id: None,
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        inspection
+            .plan
+            .tools
+            .iter()
+            .all(|(_, spec)| enco_host::LIFELINE.contains(&spec.name.as_str()))
+    );
+    assert_eq!(web_status(daemon).await["factory"], before["factory"]);
+    std::fs::remove_dir_all(daemon.root.path().join("plugins/web")).unwrap();
+    daemon
+        .connect()
+        .await
+        .request(Command::Apply {})
+        .await
+        .unwrap();
+    let restored = web_status(daemon).await;
+    assert_eq!(restored["id"], before["id"]);
+    assert_eq!(
+        restored["active"]["artifact"],
+        before["factory"]["artifact"]
+    );
 }

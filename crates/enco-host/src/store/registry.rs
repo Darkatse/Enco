@@ -1,197 +1,269 @@
+//! Registration writes and mechanical activation share the registry's durable references.
 use super::{backend, encode, rows, signed};
-use crate::sqlite::timestamp;
+use crate::sqlite::{optional_unsigned, timestamp};
 use enco_core::*;
-use enco_kernel::{NewGeneration, RegistryState, StoreError};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use enco_kernel::{Activation, RegistrationWrite, StoreError};
+use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
+mod read;
+pub(super) use read::read;
 
-pub(super) fn read(connection: &Connection) -> Result<RegistryState, StoreError> {
-    let mut generations = connection.prepare("SELECT g.id,p.plugin_id,p.artifact,p.settings,p.origin,p.status,COALESCE(p.failure,'null'),g.created_at FROM plugin_generations p JOIN generations g ON g.id=p.id ORDER BY g.id").map_err(backend)?;
-    let generations = generations
-        .query_map([], |row| {
-            Ok(GenerationRecord {
-                id: GenerationId(rows::unsigned(row, 0)?),
-                plugin: rows::text(row, 1)?,
-                artifact: rows::text(row, 2)?,
-                settings: rows::document(row, 3)?,
-                origin: rows::text(row, 4)?,
-                status: rows::text(row, 5)?,
-                failure: rows::document(row, 6)?,
-                created_at: rows::text(row, 7)?,
-            })
-        })
-        .map_err(backend)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(backend)?;
-    let mut active = connection
-        .prepare("SELECT id,active FROM plugins WHERE active IS NOT NULL ORDER BY id")
-        .map_err(backend)?;
-    let active = active
-        .query_map([], |row| {
-            Ok((rows::text(row, 0)?, GenerationId(rows::unsigned(row, 1)?)))
-        })
-        .map_err(backend)?
-        .collect::<Result<_, _>>()
-        .map_err(backend)?;
-    let mut configs = connection.prepare("SELECT g.id,c.document,g.created_at FROM config_generations c JOIN generations g ON g.id=c.id ORDER BY g.id").map_err(backend)?;
-    let configs = configs
-        .query_map([], |row| {
-            Ok(ConfigGeneration {
-                id: GenerationId(rows::unsigned(row, 0)?),
-                document: rows::document(row, 1)?,
-                created_at: rows::text(row, 2)?,
-            })
-        })
-        .map_err(backend)?
-        .collect::<Result<_, _>>()
-        .map_err(backend)?;
-    let active_config = connection
-        .query_row("SELECT active FROM config WHERE singleton=1", [], |row| {
-            Ok(GenerationId(rows::unsigned(row, 0)?))
-        })
-        .optional()
-        .map_err(backend)?;
-    Ok(RegistryState {
-        generations,
-        active,
-        config_generations: configs,
-        active_config,
-    })
-}
-
-pub(super) fn insert(
+pub(super) fn record_factories(
     connection: &mut Connection,
-    generation: &NewGeneration,
-    activate: bool,
-) -> Result<GenerationId, StoreError> {
-    let tx = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(backend)?;
-    let id = insert_in(&tx, generation, activate)?;
-    tx.commit().map_err(backend)?;
-    Ok(id)
-}
-
-fn insert_in(
-    tx: &Connection,
-    generation: &NewGeneration,
-    activate: bool,
-) -> Result<GenerationId, StoreError> {
-    let plugin = generation.plugin.to_string();
-    tx.execute(
-        "INSERT INTO plugins(id,active) VALUES (?,NULL) ON CONFLICT(id) DO NOTHING",
-        [&plugin],
-    )
-    .map_err(backend)?;
-    let origin = match generation.origin {
-        Origin::Factory => "factory",
-        Origin::Deployed => "deployed",
-    };
-    let status = match generation.status {
-        GenerationStatus::Trial => "trial",
-        GenerationStatus::Healthy => "healthy",
-        GenerationStatus::Failed => "failed",
-    };
-    tx.execute(
-        "INSERT INTO generations(created_at) VALUES (?)",
-        [timestamp(generation.created_at)],
-    )
-    .map_err(backend)?;
-    let id = tx.last_insert_rowid();
-    tx.execute("INSERT INTO plugin_generations(id,plugin_id,artifact,settings,origin,status) VALUES (?,?,?,?,?,?)", params![id, plugin, generation.artifact.to_string(), encode(&generation.settings)?, origin, status]).map_err(backend)?;
-    if activate {
-        tx.execute(
-            "UPDATE plugins SET active=? WHERE id=?",
-            params![id, plugin],
-        )
-        .map_err(backend)?;
-    }
-    Ok(GenerationId(u64::try_from(id).map_err(backend)?))
-}
-
-pub(super) fn activate(
-    connection: &mut Connection,
-    plugin: PluginId,
-    to: Option<GenerationId>,
-    failed: &[(GenerationId, Failure)],
-    event: Option<&Event>,
+    generations: &[GenerationRecord],
 ) -> Result<(), StoreError> {
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
-    for (id, failure) in failed {
-        let changed = tx
-            .execute(
-                "UPDATE plugin_generations SET status='failed',failure=? WHERE id=? AND plugin_id=?",
-                params![encode(failure)?, signed(id.0)?, plugin.to_string()],
+    for record in generations {
+        tx.execute(
+            "INSERT INTO plugins(id) VALUES (?) ON CONFLICT(id) DO NOTHING",
+            [record.plugin.to_string()],
+        )
+        .map_err(backend)?;
+        insert_generation(&tx, record)?;
+    }
+    tx.commit().map_err(backend)
+}
+
+fn activation(row: &Row<'_>, column: usize) -> rusqlite::Result<Option<PluginActivation>> {
+    let Some(generation) = optional_unsigned(row, column)? else {
+        return Ok(None);
+    };
+    Ok(Some(PluginActivation {
+        generation: GenerationId(generation),
+        registration: optional_unsigned(row, column + 1)?.map(RegistrationId),
+    }))
+}
+
+pub(super) fn register(
+    connection: &mut Connection,
+    write: &RegistrationWrite,
+) -> Result<(), StoreError> {
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(backend)?;
+    let record = &write.registration;
+    tx.execute(
+        "INSERT INTO registrations(id,revision,created_at) VALUES (?,?,?)",
+        params![
+            signed(record.id.0)?,
+            record.revision,
+            timestamp(record.created_at)
+        ],
+    )
+    .map_err(backend)?;
+    for plugin in &write.plugins {
+        tx.execute(
+            "INSERT INTO plugins(id) VALUES (?) ON CONFLICT(id) DO NOTHING",
+            [plugin.id.to_string()],
+        )
+        .map_err(backend)?;
+    }
+    for (plugin, name) in &record.names {
+        let current: Option<u64> = tx
+            .query_row(
+                "SELECT named_by FROM plugins WHERE id=?",
+                [plugin.to_string()],
+                |row| optional_unsigned(row, 0),
             )
             .map_err(backend)?;
-        if changed != 1 {
+        if current.map(RegistrationId) != name.previous {
+            return Err(backend(format!(
+                "plugin {plugin}: name changed before registration {}",
+                record.id
+            )));
+        }
+        tx.execute(
+            "INSERT INTO registration_names(registration,plugin_id,name,previous) VALUES (?,?,?,?)",
+            params![
+                signed(record.id.0)?,
+                plugin.to_string(),
+                name.name,
+                name.previous.map(|id| signed(id.0)).transpose()?
+            ],
+        )
+        .map_err(backend)?;
+    }
+    for (plugin, code) in &record.code {
+        let intent = code.intent.map(|intent| match intent {
+            CodeIntent::Directory => "directory",
+            CodeIntent::Factory => "factory",
+        });
+        tx.execute(
+            "INSERT INTO registration_code(registration,plugin_id,generation,intent) VALUES (?,?,?,?)",
+            params![signed(record.id.0)?, plugin.to_string(), signed(code.generation.0)?, intent],
+        ).map_err(backend)?;
+    }
+    for generation in &write.generations {
+        insert_generation(&tx, generation)?;
+    }
+    if let Some(config) = &write.configuration {
+        insert_config(&tx, config)?;
+    }
+    references(
+        &tx,
+        &write.plugins,
+        write.configuration.as_ref().map(|record| record.id),
+    )?;
+    tx.commit().map_err(backend)
+}
+
+fn insert_generation(connection: &Connection, record: &GenerationRecord) -> Result<(), StoreError> {
+    connection
+        .execute(
+            "INSERT INTO generations(id,created_at) VALUES (?,?)",
+            params![signed(record.id.0)?, timestamp(record.created_at)],
+        )
+        .map_err(backend)?;
+    let (origin, registration, based_on) = match record.origin {
+        Origin::Factory => ("factory", None, None),
+        Origin::Code { registration } => ("code", Some(registration), None),
+        Origin::Artifact { registration } => ("artifact", Some(registration), None),
+        Origin::Settings {
+            registration,
+            based_on,
+        } => ("settings", Some(registration), Some(based_on)),
+    };
+    let status = match record.status {
+        GenerationStatus::Trial => "trial",
+        GenerationStatus::Healthy => "healthy",
+        GenerationStatus::Failed => "failed",
+    };
+    connection
+        .execute(
+            "INSERT INTO plugin_generations(id,plugin_id,artifact,settings,origin,status,failure,registration,based_on)
+         VALUES (?,?,?,?,?,?,?,?,?)",
+            params![
+                signed(record.id.0)?,
+                record.plugin.to_string(),
+                record.artifact.to_string(),
+                encode(&record.settings)?,
+                origin,
+                status,
+                record.failure.as_ref().map(encode).transpose()?,
+                registration.map(|id| signed(id.0)).transpose()?,
+                based_on.map(|id| signed(id.0)).transpose()?
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
+fn insert_config(connection: &Connection, record: &ConfigGeneration) -> Result<(), StoreError> {
+    let current: Option<u64> = connection
+        .query_row("SELECT active FROM config WHERE singleton=1", [], |row| {
+            rows::unsigned(row, 0)
+        })
+        .optional()
+        .map_err(backend)?;
+    if current.map(GenerationId) != record.previous {
+        return Err(backend("active configuration changed before registration"));
+    }
+    connection
+        .execute(
+            "INSERT INTO generations(id,created_at) VALUES (?,?)",
+            params![signed(record.id.0)?, timestamp(record.created_at)],
+        )
+        .map_err(backend)?;
+    connection
+        .execute(
+            "INSERT INTO config_generations(id,registration,document,previous) VALUES (?,?,?,?)",
+            params![
+                signed(record.id.0)?,
+                signed(record.registration.0)?,
+                encode(&record.document)?,
+                record.previous.map(|id| signed(id.0)).transpose()?
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
+pub(super) fn activate(connection: &mut Connection, change: &Activation) -> Result<(), StoreError> {
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(backend)?;
+    for (id, failure) in &change.failed {
+        if tx
+            .execute(
+                "UPDATE plugin_generations SET status='failed',failure=? WHERE id=?",
+                params![encode(failure)?, signed(id.0)?],
+            )
+            .map_err(backend)?
+            != 1
+        {
             return Err(StoreError::UnknownGeneration(*id));
         }
     }
-    let changed = tx
-        .execute(
-            "UPDATE plugins SET active=? WHERE id=?",
-            params![to.map(|id| signed(id.0)).transpose()?, plugin.to_string()],
-        )
-        .map_err(backend)?;
-    if changed != 1 {
-        return Err(backend(format!("unknown plugin {plugin}")));
-    }
-    if let Some(event) = event {
+    references(&tx, &change.plugins, change.configuration)?;
+    if let Some(event) = &change.event {
         super::accept::events_in(&tx, std::slice::from_ref(event))?;
     }
     tx.commit().map_err(backend)
 }
 
-pub(super) fn promote(connection: &Connection, generation: GenerationId) -> Result<(), StoreError> {
-    let changed = connection
-        .execute(
-            "UPDATE plugin_generations SET status='healthy' WHERE id=? AND status='trial'",
-            [signed(generation.0)?],
+fn references(
+    connection: &Connection,
+    plugins: &[PluginRecord],
+    config: Option<GenerationId>,
+) -> Result<(), StoreError> {
+    for plugin in plugins {
+        let changed = connection
+            .execute(
+                "UPDATE plugins SET named_by=?,active=?,active_by=?,rollback_target=?,rollback_by=? WHERE id=?",
+                params![
+                    plugin.named_by.map(|id| signed(id.0)).transpose()?,
+                    plugin.active.map(|active| signed(active.generation.0)).transpose()?,
+                    plugin.active.and_then(|active| active.registration).map(|id| signed(id.0)).transpose()?,
+                    plugin.rollback_target.map(|active| signed(active.generation.0)).transpose()?,
+                    plugin.rollback_target.and_then(|active| active.registration).map(|id| signed(id.0)).transpose()?,
+                    plugin.id.to_string()
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(backend(format!("unknown plugin {}", plugin.id)));
+        }
+    }
+    if let Some(id) = config {
+        connection
+            .execute(
+                "INSERT INTO config(singleton,active) VALUES (1,?)
+             ON CONFLICT(singleton) DO UPDATE SET active=excluded.active",
+                [signed(id.0)?],
+            )
+            .map_err(backend)?;
+    }
+    // Durable names must stay unique after both registration and mechanical recovery.
+    let conflict: Option<String> = connection
+        .query_row(
+            "SELECT n.name FROM plugins p
+         JOIN registration_names n ON n.registration=p.named_by AND n.plugin_id=p.id
+         WHERE p.active IS NOT NULL AND n.name IS NOT NULL
+         GROUP BY n.name HAVING COUNT(*)>1 LIMIT 1",
+            [],
+            |row| row.get(0),
         )
+        .optional()
         .map_err(backend)?;
-    if changed != 1 {
-        return Err(backend(format!(
-            "generation {generation} is absent or not trial"
-        )));
+    if let Some(name) = conflict {
+        return Err(backend(format!("running plugin name {name} is not unique")));
     }
     Ok(())
 }
 
-pub(super) fn insert_config_generation(
-    connection: &mut Connection,
-    document: &serde_json::Value,
-    created_at: DateTime<Utc>,
-    plugins: &[NewGeneration],
-) -> Result<(GenerationId, Vec<GenerationId>), StoreError> {
-    let tx = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(backend)?;
-    tx.execute(
-        "INSERT INTO generations(created_at) VALUES (?)",
-        [timestamp(created_at)],
-    )
-    .map_err(backend)?;
-    let id = GenerationId(u64::try_from(tx.last_insert_rowid()).map_err(backend)?);
-    tx.execute(
-        "INSERT INTO config_generations(id,document) VALUES (?,?)",
-        params![signed(id.0)?, encode(document)?],
-    )
-    .map_err(backend)?;
-    activate_config(&tx, id)?;
-    let plugins = plugins
-        .iter()
-        .map(|generation| insert_in(&tx, generation, true))
-        .collect::<Result<Vec<_>, _>>()?;
-    tx.commit().map_err(backend)?;
-    Ok((id, plugins))
-}
-
-pub(super) fn activate_config(
-    connection: &Connection,
-    generation: GenerationId,
-) -> Result<(), StoreError> {
-    connection.execute("INSERT INTO config(singleton,active) VALUES (1,?) ON CONFLICT(singleton) DO UPDATE SET active=excluded.active", [signed(generation.0)?]).map_err(backend)?;
+pub(super) fn promote(connection: &Connection, generation: GenerationId) -> Result<(), StoreError> {
+    if connection
+        .execute(
+            "UPDATE plugin_generations SET status='healthy' WHERE id=? AND status='trial'",
+            [signed(generation.0)?],
+        )
+        .map_err(backend)?
+        != 1
+    {
+        return Err(backend(format!(
+            "generation {generation} is absent or not trial"
+        )));
+    }
     Ok(())
 }

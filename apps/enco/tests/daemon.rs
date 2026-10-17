@@ -94,7 +94,7 @@ async fn cli_to_wasm_to_http_records_a_reply() {
         .unwrap();
     assert!(output.status.success());
     let inspection: Inspection = serde_json::from_slice(&output.stdout).unwrap();
-    let plugins = client.request(Command::PluginStatus {}).await.unwrap();
+    let plugins = client.request(Command::Status {}).await.unwrap()["plugins"].clone();
     let active = plugins
         .as_array()
         .unwrap()
@@ -131,9 +131,10 @@ async fn cli_deploys_a_caller_relative_artifact_that_survives_restart_and_rolls_
     let plugins = daemon
         .connect()
         .await
-        .request(Command::PluginStatus {})
+        .request(Command::Status {})
         .await
-        .unwrap();
+        .unwrap()["plugins"]
+        .clone();
     let active = &plugins
         .as_array()
         .unwrap()
@@ -166,11 +167,36 @@ async fn cli_deploys_a_caller_relative_artifact_that_survives_restart_and_rolls_
         String::from_utf8_lossy(&output.stderr)
     );
     let deployed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_ne!(deployed["generation"]["id"], generation);
+    let revision = deployed["registration"]["revision"].as_str().unwrap();
+    assert_eq!(
+        git(
+            daemon.root.path(),
+            &["rev-parse", &format!("{revision}^{{tree}}")]
+        )
+        .await,
+        git(
+            daemon.root.path(),
+            &["rev-parse", &format!("{revision}^^{{tree}}")]
+        )
+        .await
+    );
+    let unchanged = daemon
+        .connect()
+        .await
+        .request(Command::Apply {})
+        .await
+        .unwrap();
+    assert!(unchanged["registered"].is_null());
+    assert_eq!(
+        git(daemon.root.path(), &["rev-parse", "enco/registered"]).await,
+        revision
+    );
+
+    assert_ne!(deployed["generations"][0]["id"], generation);
     daemon.stop().await;
     daemon.restart().await;
     let mut client = daemon.connect().await;
-    let plugins = client.request(Command::PluginStatus {}).await.unwrap();
+    let plugins = client.request(Command::Status {}).await.unwrap()["plugins"].clone();
     assert_eq!(
         plugins
             .as_array()
@@ -178,17 +204,17 @@ async fn cli_deploys_a_caller_relative_artifact_that_survives_restart_and_rolls_
             .iter()
             .find(|plugin| plugin["name"] == "openai-compatible")
             .unwrap()["active"],
-        deployed["generation"]
+        deployed["generations"][0]
     );
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
-        .args(["plugin", "rollback", "openai-compatible"])
+        .arg("rollback")
         .env("ENCO_HOME", daemon.root.path())
         .output()
         .await
         .unwrap();
     assert!(output.status.success());
     let restored: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(restored["id"], generation);
+    assert_eq!(restored["plugins"][0]["active"]["generation"], generation);
     daemon.stop().await;
 }
 
@@ -440,7 +466,7 @@ compaction = ["alternate"]
     daemon
         .connect()
         .await
-        .request(Command::ConfigApply { generation: None })
+        .request(Command::Apply {})
         .await
         .unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
@@ -522,7 +548,7 @@ async fn wasm_embedding_preserves_batch_order_and_rejects_reserved_options() {
     };
     let provider = runtime
         .load(
-            include_bytes!(env!("ENCO_FACTORY_OPENAI")),
+            include_bytes!(env!("ENCO_FACTORY_OPENAI_COMPATIBLE")),
             &enco_core::PluginSettings::default(),
         )
         .await

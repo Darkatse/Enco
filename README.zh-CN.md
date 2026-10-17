@@ -32,11 +32,11 @@ P0 中模型服务商已经以插件形式运行；工具和请求组装在 P2 �
 
 ### 为 Agent 设计
 
-Agent 是 Enco 的首要使用者，也是它长期的维护者。能力、源码位置和最近的失败应当容易被它找到，修改一种能力只需要读懂一个接口。插件文档（`wit/CONTRACT.md`）由 WIT 契约生成，生成物过期时 `cargo xtask check` 会失败。
+Agent 是 Enco 的首要使用者，也是它长期的维护者。能力、源码位置和最近的失败应当容易被它找到，修改一种能力只需要读懂一个接口。插件文档（`sdk/wit/CONTRACT.md`）由 WIT 契约生成，生成物过期时 `cargo xtask check` 会失败。
 
 ### 热更新与回滚（P1）
 
-Agent 可以在 Enco 运行时修改插件、重新构建并替换上线。新代码从下一个 Round 开始生效，Round 边界是唯一替换代码的时机。新版本通过健康检查才会保留，否则退回上一版。如果改坏得比较严重，安全模式会保留一小组文件、Shell、插件部署和配置工具用来修复。替换宿主程序本身始终需要主人确认。
+Agent 可以在 Enco 运行时修改插件、重新构建并替换上线。新代码从下一个 Round 开始生效，Round 边界是唯一替换代码的时机。新版本通过健康检查才会保留，否则退回上一版。如果改坏得比较严重，安全模式会保留一小组文件、Shell、登记与状态工具用来修复。替换宿主程序本身始终需要主人确认。
 
 ### 可靠的记录
 
@@ -90,6 +90,10 @@ P0 在 macOS 和 Linux 上以后台服务加命令行客户端的形式运行，
 ```bash
 git clone https://github.com/Darkatse/Enco.git
 cd Enco
+cargo fetch                   # 首次预取依赖；xtask 命令离线运行
+for manifest in sdk/Cargo.toml evals/runner/Cargo.toml plugins/*/Cargo.toml; do
+    cargo fetch --manifest-path "$manifest"
+done
 cargo xtask build-factory      # 构建内置插件
 cargo run -p enco -- init      # 创建 ~/.enco 与配置模板
 ```
@@ -101,7 +105,11 @@ cargo run -p enco -- serve     # 启动服务
 cargo run -p enco -- chat      # 在另一个终端中
 ```
 
-首次启动之后，修改配置要执行 `enco config apply` 才会登记生效。重启恢复已登记的配置；`enco status` 报告文件中尚未应用或已被取代的内容。`enco config apply --generation <N>` 可以重新登记早期内容，`enco config rollback` 则用于不发模型调用的机械恢复。旧库需要手动迁移或重建。
+`enco init` 把 home 初始化为 Git 仓库，并把宿主自带的 SDK 写到 `sdk/`。插件源码放在 `plugins/<名字>/` 下，也可以用 `enco plugin scaffold <名字>` 创建工具插件。每个插件是独立的 Cargo 工作区，以 `../../sdk` 为路径依赖。
+
+改好源码与 `config.toml` 后，执行 `enco apply`，一起构建并登记发生变化的意图；Agent 经 `self_apply` 走同一条路。`enco status` 与 `self_status` 分别报告工作区是否有未登记的修改、运行中的代际是否符合已登记的意图。`enco rollback` 以一次登记为单位机械回退仍在生效的部分，不需要 Git、Cargo 或模型调用。重启恢复已登记的状态。旧库需要手动迁移或重建。
+
+每次接受登记都在 `refs/enco/registered` 上产生一个提交，Enco 不改主人的分支、HEAD 与索引。用 `git log -p enco/registered` 查看已接受的修改；撤销一次登记对文件的修改，用 `git restore --source=<提交>^ -- <路径>` 从父提交取回相关路径，再执行 apply。Git restore 不会删除未跟踪的目录，撤销新增插件时须自行删除它的目录。是否有未登记的意图由 `self_status` 回答，`git status` 比较的是主人的分支。
 
 常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`。启用 Telegram 时，取消配置示例中 `[telegram]` 段的注释，填写主人的 user ID 并导出 token 环境变量。`/session` 切换 Session，`/cancel` 取消当前 Run；`enco status` 列出渠道状态以及最近失败或未知的投递。
 
@@ -112,7 +120,7 @@ cargo run -p enco -- chat      # 在另一个终端中
 - [docs/design/](docs/design/README.md)：设计总纲与各领域的判断
 - [docs/Roadmap.md](docs/Roadmap.md)：各阶段的计划与验收标准
 - [LESSONS.md](LESSONS.md)：实践中被证伪的做法，改代码前先读
-- [wit/CONTRACT.md](wit/CONTRACT.md)：插件契约，由 WIT 生成
+- [sdk/wit/CONTRACT.md](sdk/wit/CONTRACT.md)：插件契约，由 WIT 生成
 - [CONTRIBUTING.md](CONTRIBUTING.md)：项目理念与贡献方式
 
 ## 参与贡献

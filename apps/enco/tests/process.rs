@@ -229,21 +229,25 @@ async fn killed_daemon_settles_unknown_without_reexecuting_a_side_effect() {
         std::fs::read_to_string(daemon.root.path().join("workspace/marker.txt")).unwrap(),
         "run\n"
     );
-    client
-        .send(Command::Send {
-            session: "main".into(),
-            text: "continue".into(),
-            event_id: EventId::new(),
-        })
-        .await
-        .unwrap();
-    assert!(matches!(
-        finish(&mut client).await.last().unwrap().body,
-        EntryBody::RunEnded {
-            end: RunEnd::Completed,
-            ..
-        }
-    ));
+    // Catch-up and subscription pushes may overlap; the CLI waits for this new input's Run.
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+            .args(["send", "--wait", "continue"])
+            .env("ENCO_HOME", daemon.root.path())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["end"], json!(RunEnd::Completed));
     daemon.stop().await;
 }
 

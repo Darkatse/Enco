@@ -1,33 +1,14 @@
 //! DeepSeek completions through the shared Chat Completions wire protocol.
 use bindings::exports::enco::plugin::{completion, lifecycle};
-use provider_protocol::{Completion, Request, Settings, types::Failure};
+use enco_sdk::protocol::{Completion, Request, Settings, types::Failure};
 
-mod bindings {
-    #![expect(
-        unsafe_code,
-        reason = "the export macro expands to the generated canonical ABI glue"
-    )]
-    wit_bindgen::generate!({
-        path: "../../wit",
-        world: "completion-plugin",
-        with: {
-            "enco:plugin/host@0.4.0": provider_protocol::host,
-            "enco:plugin/types@0.4.0": provider_protocol::types,
-            "enco:plugin/completion@0.4.0/request": provider_protocol::Request,
-            "enco:plugin/completion@0.4.0/completion": provider_protocol::Completion,
-            "enco:plugin/completion@0.4.0/usage": provider_protocol::Usage,
-            "enco:plugin/completion@0.4.0/stop-reason": provider_protocol::StopReason,
-        },
-    });
-    use super::Plugin;
-    export!(Plugin with_types_in self);
-}
+enco_sdk::export!(completion, Plugin);
 
 struct Plugin;
 
 impl lifecycle::Guest for Plugin {
     fn describe(config: String) -> Result<lifecycle::Description, Failure> {
-        provider_protocol::empty_config(&config)?;
+        enco_sdk::protocol::empty_config(&config)?;
         Ok(lifecycle::Description {
             summary: "DeepSeek Chat Completions".into(),
             config_schema: r#"{"type":"object","additionalProperties":false}"#.into(),
@@ -48,6 +29,6 @@ impl lifecycle::Guest for Plugin {
 
 impl completion::Guest for Plugin {
     async fn complete(settings: Settings, request: Request) -> Result<Completion, Failure> {
-        provider_protocol::complete(settings, request).await
+        enco_sdk::protocol::complete(settings, request).await
     }
 }

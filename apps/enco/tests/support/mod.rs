@@ -66,6 +66,11 @@ dimensions = 4
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join(".data")).unwrap();
         std::fs::write(root.path().join("config.toml"), config).unwrap();
+        Self::start_home(root).await
+    }
+
+    pub async fn start_home(root: tempfile::TempDir) -> Self {
+        initialize(root.path()).await;
         let (child, stderr, startup_log) = spawn(root.path(), &[]).await;
         Self {
             child,
@@ -179,6 +184,7 @@ async fn spawn(
     command
         .arg("serve")
         .env("ENCO_HOME", root)
+        .env("CARGO_NET_OFFLINE", "true")
         .env("ENCO_TEST_API_KEY", "enco-test-secret")
         .env_remove(UNSET_API_KEY_ENV)
         .env("ENCO_TEST_SECOND_API_KEY", "enco-second-test-secret")
@@ -213,4 +219,66 @@ pub fn is_reminder(entry: &Entry, id: ScheduleId) -> bool {
         return false;
     };
     matches!(event.body, EventBody::Reminder { schedule, .. } if schedule == id)
+}
+
+pub async fn initialize(root: &Path) {
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+        .arg("init")
+        .env("ENCO_HOME", root)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+pub async fn git(root: &Path, args: &[&str]) -> String {
+    let output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+/// Each source scenario keeps a warm Cargo cache without locking other builds.
+pub fn build_target(root: &Path, scenario: &str) {
+    let target = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/plugin-tests")
+        .join(scenario);
+    std::fs::create_dir_all(&target).unwrap();
+    std::os::unix::fs::symlink(target.canonicalize().unwrap(), root.join(".data/target")).unwrap();
+}
+
+pub fn copy_plugin(name: &str, root: &Path) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins")
+        .join(name);
+    copy_directory(&source, &root.join("plugins").join(name));
+}
+
+pub fn copy_directory(source: &Path, destination: &Path) {
+    std::fs::create_dir_all(destination).unwrap();
+    for entry in std::fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_name() == "target" {
+            continue;
+        }
+        let destination = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_directory(&entry.path(), &destination);
+        } else {
+            std::fs::copy(entry.path(), destination).unwrap();
+        }
+    }
 }

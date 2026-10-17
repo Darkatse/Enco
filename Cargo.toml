@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*", "apps/enco", "xtask"]
-exclude = ["plugins", "evals/runner"]
+exclude = ["sdk", "plugins/*", "evals/runner"]
 resolver = "3"
 
 [workspace.package]
@@ -47,8 +47,7 @@ enco-wasm = { path = "crates/enco-wasm" }
 [profile.release]
 incremental = true
 
-# Every daemon start compiles the factory components; optimizing Cranelift cuts it from about
-# 1 s to 0.2 s in tests.
+# Optimize the Wasm compiler's hot paths without slowing every dependency rebuild.
 [profile.dev.package.cranelift-codegen]
 opt-level = 2
 [profile.dev.package.regalloc2]

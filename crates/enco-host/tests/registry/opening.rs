@@ -7,91 +7,103 @@ use enco_kernel::*;
 use std::{path::PathBuf, sync::Arc};
 
 #[tokio::test]
-async fn factory_updates_are_idempotent_and_preserve_owner_deployments() {
+async fn factory_records_need_registration_to_activate_and_preserve_source_overrides() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
     let runtime = Arc::new(ScriptedRuntime::default());
-    for bytes in [b"factory-1", b"factory-2", b"factory-3"] {
+    for bytes in [
+        b"factory-1".as_slice(),
+        b"factory-2",
+        b"factory-3",
+        b"owner",
+    ] {
         runtime.insert(bytes, loaded(ScriptedProvider::new(vec![])));
     }
-    let registry = Registry::open(registry_deps(
-        store.clone(),
-        runtime.clone(),
-        b"factory-1",
-        configuration(),
-    ))
+    let registry = open_registry(
+        registry_deps(store.clone(), runtime.clone(), b"factory-1"),
+        configuration_request(configuration()),
+    )
     .await
     .unwrap();
-    let first = registry.status().await.plugins.remove(0);
+    let first = registry.status().await.unwrap().plugins.remove(0);
     drop(registry);
-    let registry = Registry::open(registry_deps(
-        store.clone(),
-        runtime.clone(),
-        b"factory-1",
-        configuration(),
-    ))
+    let registry = open_registry(
+        registry_deps(store.clone(), runtime.clone(), b"factory-1"),
+        configuration_request(configuration()),
+    )
     .await
     .unwrap();
     assert_eq!(
-        registry.status().await.plugins[0].generations,
+        registry.status().await.unwrap().plugins[0].generations,
         first.generations
     );
     drop(registry);
-    let registry = Registry::open(registry_deps(
-        store.clone(),
-        runtime.clone(),
-        b"factory-2",
-        configuration(),
-    ))
-    .await
-    .unwrap();
-    let second = registry.status().await.plugins.remove(0);
-    assert_eq!(second.generations.len(), 2);
-    assert_eq!(second.active.as_ref().unwrap().origin, Origin::Factory);
-    assert!(second.active.unwrap().id > first.active.unwrap().id);
-    let deployed = deploy_artifact(&registry, "fixture", b"factory-1").await;
-    drop(registry);
-    let registry = Registry::open(registry_deps(
-        store.clone(),
-        runtime.clone(),
-        b"factory-3",
-        configuration(),
-    ))
+    let registry = open_registry(
+        registry_deps(store.clone(), runtime.clone(), b"factory-2"),
+        configuration_request(configuration()),
+    )
     .await
     .unwrap();
     assert_eq!(
-        registry.status().await.plugins[0].active.as_ref(),
-        Some(&deployed)
+        registry.status().await.unwrap().plugins[0].active,
+        first.active
     );
-    assert_eq!(registry.status().await.plugins[0].generations.len(), 4);
+    submit(
+        &registry,
+        RegistrationRequest {
+            revision: "follow-factory-2".into(),
+            plugins: [("fixture".into(), PluginChange::Factory)].into(),
+            base: None,
+            configuration: None,
+        },
+    )
+    .await
+    .unwrap();
+    let second = registry.status().await.unwrap().plugins.remove(0);
+    assert_eq!(second.generations.len(), 2);
+    assert_eq!(second.active.as_ref().unwrap().origin, Origin::Factory);
+    assert!(second.active.unwrap().id > first.active.unwrap().id);
+    let owner_code = submit(&registry, source_request("fixture", b"owner"))
+        .await
+        .unwrap()
+        .generations
+        .remove(0);
+    drop(registry);
+    let registry = open_registry(
+        registry_deps(store.clone(), runtime.clone(), b"factory-3"),
+        configuration_request(configuration()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        registry.status().await.unwrap().plugins[0].active.as_ref(),
+        Some(&owner_code)
+    );
+    assert_eq!(
+        registry.status().await.unwrap().plugins[0]
+            .generations
+            .len(),
+        4
+    );
     drop(registry);
     // A contract upgrade can make every older artifact unloadable, including the active one.
     let runtime = Arc::new(ScriptedRuntime::default());
     runtime.insert(b"factory-4", loaded(ScriptedProvider::new(vec![])));
-    let registry = Registry::open(registry_deps(
-        store.clone(),
-        runtime.clone(),
-        b"factory-4",
-        configuration(),
-    ))
+    let registry = open_registry(
+        registry_deps(store.clone(), runtime.clone(), b"factory-4"),
+        configuration_request(configuration()),
+    )
     .await
     .unwrap();
     assert_eq!(
-        registry.status().await.plugins[0]
-            .active
-            .as_ref()
-            .unwrap()
-            .artifact,
+        active(&registry).await.artifact,
         ContentHash::of(b"factory-4")
     );
     drop(registry);
-    std::fs::write(
-        dir.path().join("plugins.lock"),
-        format!("[plugins.fixture]\nid = \"{}\"\n", PluginId::new()),
-    )
-    .unwrap();
+    let mut deps = registry_deps(store, runtime, b"factory-4");
+    deps.factory[0].id = PluginId::new();
     assert!(matches!(
-        Registry::open(registry_deps(store, runtime, b"factory-4", configuration())).await,
+        open_registry(deps, configuration_request(configuration())).await,
         Err(RegistryError::FactoryIdentity(_))
     ));
 }
@@ -118,15 +130,17 @@ async fn overlapping_table_owners_are_rejected_before_any_generation_is_written(
                 },
             ]
         };
-        let result = Registry::open(RegistryDeps {
-            owners,
-            ..registry_deps(
-                store.clone(),
-                Arc::new(ScriptedRuntime::default()),
-                FACTORY_BYTES,
-                configuration(),
-            )
-        })
+        let result = open_registry(
+            RegistryDeps {
+                owners,
+                ..registry_deps(
+                    store.clone(),
+                    Arc::new(ScriptedRuntime::default()),
+                    FACTORY_BYTES,
+                )
+            },
+            configuration_request(configuration()),
+        )
         .await;
         assert!(matches!(result, Err(RegistryError::TableOwner(name)) if name == table));
         let records = store.registry().await.unwrap();
@@ -134,8 +148,7 @@ async fn overlapping_table_owners_are_rejected_before_any_generation_is_written(
     }
 }
 
-/// The fixture plugin after a process committed `latest` active and crashed before publishing
-/// it; `older` is the healthy generation before it.
+/// Durable active state left by a process; `older` is the healthy generation before it.
 struct Crashed {
     dir: tempfile::TempDir,
     store: Arc<SqliteStore>,
@@ -155,27 +168,28 @@ impl Crashed {
             runtime.insert(bytes, loaded(ScriptedProvider::new(vec![])));
         }
         let registry = open(&store, runtime.clone()).await;
-        let factory = registry.status().await.plugins.remove(0).active.unwrap().id;
+        let factory = registry
+            .status()
+            .await
+            .unwrap()
+            .plugins
+            .remove(0)
+            .active
+            .unwrap()
+            .id;
         let older = deploy_artifact(&registry, "fixture", b"older").await;
         promote(&registry, older.id).await;
-        // Emulate a crash after the durable commit but before in-memory publication.
-        let pending = NewGeneration {
-            plugin: older.plugin,
-            artifact: store.put_artifact(b"latest").await.unwrap(),
-            settings: PluginSettings::default(),
-            origin: Origin::Deployed,
-            status: GenerationStatus::Healthy,
-            created_at: SystemClock.now(),
-        };
-        let latest = store.insert_generation(&pending, true).await.unwrap();
+        let latest = deploy_artifact(&registry, "fixture", b"latest").await;
+        promote(&registry, latest.id).await;
+        drop(registry);
         Self {
             dir,
             store,
             runtime,
             factory,
-            latest,
+            latest: latest.id,
             older_artifact: older.artifact,
-            latest_artifact: pending.artifact,
+            latest_artifact: latest.artifact,
         }
     }
 
@@ -217,7 +231,7 @@ async fn recovery_uses_the_committed_activation() {
 async fn recovery_skips_missing_and_corrupt_artifacts() {
     let crashed = Crashed::new().await;
     let registry = crashed.lose_artifacts().await;
-    let status = registry.status().await.plugins.remove(0);
+    let status = registry.status().await.unwrap().plugins.remove(0);
     assert_eq!(status.active.as_ref().unwrap().id, crashed.factory);
     for record in status
         .generations
@@ -232,10 +246,10 @@ async fn recovery_skips_missing_and_corrupt_artifacts() {
 }
 
 #[tokio::test]
-async fn rollback_and_recovery_skip_lost_artifacts_of_a_deployed_plugin() {
+async fn rollback_and_recovery_skip_lost_artifacts_of_a_registered_plugin() {
     let crashed = Crashed::new().await;
     let registry = crashed.lose_artifacts().await;
-    let status = registry.status().await.plugins.remove(0);
+    let status = registry.status().await.unwrap().plugins.remove(0);
     let only = deploy_artifact(&registry, "custom", b"latest").await;
     promote(&registry, only.id).await;
     let newer = deploy_artifact(&registry, "custom", b"older").await;
@@ -244,21 +258,15 @@ async fn rollback_and_recovery_skip_lost_artifacts_of_a_deployed_plugin() {
         b"older"
     );
     std::fs::remove_file(crashed.artifact(&only.artifact)).unwrap();
-    assert!(matches!(
-        registry.rollback("custom").await,
-        Err(RegistryError::NoRollbackTarget(_))
-    ));
-    assert_eq!(
+    registry.rollback().await.unwrap();
+    assert!(
         registry
             .view()
             .exports
             .completion(&fixture_endpoint("custom"), false)
-            .unwrap()
-            .generation,
-        newer.id
+            .is_err()
     );
     drop(registry);
-    std::fs::remove_file(crashed.artifact(&newer.artifact)).unwrap();
     // Both custom artifacts are now unavailable; recovery leaves it registered without exports.
     let registry = crashed.open().await;
     assert_eq!(
@@ -271,26 +279,36 @@ async fn rollback_and_recovery_skip_lost_artifacts_of_a_deployed_plugin() {
             .code,
         code::PLUGIN_UNAVAILABLE
     );
-    let restored = registry.status().await.plugins;
+    let restored = registry.status().await.unwrap().plugins;
     assert_eq!(
         restored
             .iter()
-            .find(|plugin| plugin.name == "fixture")
+            .find(|plugin| plugin.name.as_deref() == Some("fixture"))
             .unwrap()
             .generations,
         status.generations
     );
     let custom = restored
         .iter()
-        .find(|plugin| plugin.name == "custom")
+        .find(|plugin| plugin.id == only.plugin)
         .unwrap();
-    for record in &custom.generations {
-        assert_eq!(record.failure.as_ref().unwrap().code, code::PLUGIN_LOAD);
-    }
+    let failed = custom
+        .generations
+        .iter()
+        .find(|record| record.id == only.id)
+        .unwrap();
+    assert_eq!(failed.failure.as_ref().unwrap().code, code::PLUGIN_LOAD);
+    let retired = custom
+        .generations
+        .iter()
+        .find(|record| record.id == newer.id)
+        .unwrap();
+    assert_eq!(retired.status, GenerationStatus::Trial);
+    assert!(retired.failure.is_none());
 }
 
 #[tokio::test]
-async fn setting_registration_is_atomic_and_factory_following_preserves_rollback_content() {
+async fn registering_new_factory_code_preserves_rollback_content() {
     let root = tempfile::tempdir().unwrap();
     let runtime = Arc::new(ScriptedRuntime::default());
     let provider = ScriptedProvider::new(vec![]);
@@ -298,14 +316,99 @@ async fn setting_registration_is_atomic_and_factory_following_preserves_rollback
     runtime.insert(b"new-factory", loaded(provider));
     let store = Arc::new(SqliteStore::open(store_paths(root.path())).await.unwrap());
     let registry = super::open(&store, runtime.clone()).await;
+    let mut document = configuration();
+    document["plugin"] = serde_json::json!({"fixture": {"config": {"label": "good"}}});
+    submit(&registry, configuration_request(document.clone()))
+        .await
+        .unwrap();
+    let good = active(&registry).await.id;
+    for _ in 0..TRIAL_CALLS {
+        registry.report(good, Verdict::Ok, None).await.unwrap();
+    }
+    document["plugin"]["fixture"]["config"]["label"] = "bad".into();
+    submit(&registry, configuration_request(document))
+        .await
+        .unwrap();
+    registry
+        .report(
+            active(&registry).await.id,
+            Verdict::Failed(super::fault(code::PLUGIN_TRAP)),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(active(&registry).await.id, good);
+    drop(registry);
+    let registry = open_registry(
+        registry_deps(store, runtime, b"new-factory"),
+        configuration_request(configuration()),
+    )
+    .await
+    .unwrap();
+    submit(
+        &registry,
+        RegistrationRequest {
+            revision: "follow-new-factory".into(),
+            plugins: [("fixture".into(), PluginChange::Factory)].into(),
+            base: None,
+            configuration: None,
+        },
+    )
+    .await
+    .unwrap();
+    let upgraded = active(&registry).await;
+    assert_eq!(upgraded.artifact, ContentHash::of(b"new-factory"));
+    assert_eq!(upgraded.settings.config, serde_json::json!({"label":"bad"}));
+    let factory = registry
+        .view()
+        .exports
+        .completion(&fixture_endpoint("fixture"), true)
+        .unwrap()
+        .generation;
+    assert_ne!(upgraded.id, factory);
+    assert_eq!(
+        registry.status().await.unwrap().plugins[0]
+            .rollback_target
+            .unwrap()
+            .generation,
+        good
+    );
+    registry
+        .report(
+            upgraded.id,
+            Verdict::Failed(super::fault(code::PLUGIN_TRAP)),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(active(&registry).await.id, good);
+}
+
+async fn active(registry: &Registry) -> GenerationRecord {
+    registry
+        .status()
+        .await
+        .unwrap()
+        .plugins
+        .remove(0)
+        .active
+        .unwrap()
+}
+
+#[tokio::test]
+async fn rejected_settings_do_not_register_either_plugin_or_configuration() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(ScriptedRuntime::default());
+    runtime.insert(FACTORY_BYTES, loaded(ScriptedProvider::new(vec![])));
+    let store = Arc::new(SqliteStore::open(store_paths(root.path())).await.unwrap());
+    let registry = super::open(&store, runtime).await;
     let before = store.registry().await.unwrap();
     let mut document = configuration();
     document["plugin"] = serde_json::json!({"fixture": {"config": {"label": "good"}}});
     let sql = rusqlite::Connection::open(root.path().join("enco.db")).unwrap();
     sql.execute_batch("CREATE TRIGGER reject_settings BEFORE INSERT ON plugin_generations BEGIN SELECT RAISE(FAIL, 'reject settings'); END").unwrap();
     assert!(
-        registry
-            .apply_config(ConfigSource::Document(document.clone()))
+        submit(&registry, configuration_request(document.clone()))
             .await
             .is_err()
     );
@@ -317,76 +420,4 @@ async fn setting_registration_is_atomic_and_factory_following_preserves_rollback
         before.active_config.unwrap()
     );
     sql.execute_batch("DROP TRIGGER reject_settings").unwrap();
-    registry
-        .apply_config(ConfigSource::Document(document.clone()))
-        .await
-        .unwrap();
-    let good = registry.status().await.plugins.remove(0).active.unwrap().id;
-    for _ in 0..TRIAL_CALLS {
-        registry.report(good, Verdict::Ok, None).await.unwrap();
-    }
-    document["plugin"]["fixture"]["config"]["label"] = "bad".into();
-    registry
-        .apply_config(ConfigSource::Document(document.clone()))
-        .await
-        .unwrap();
-    registry
-        .report(
-            registry.status().await.plugins.remove(0).active.unwrap().id,
-            Verdict::Failed(super::fault(code::PLUGIN_TRAP)),
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        registry.status().await.plugins.remove(0).active.unwrap().id,
-        good
-    );
-    document["owner"]["timezone"] = "Europe/Paris".into();
-    registry
-        .apply_config(ConfigSource::Document(document.clone()))
-        .await
-        .unwrap();
-    assert_eq!(
-        registry.status().await.plugins.remove(0).active.unwrap().id,
-        good
-    );
-    assert!(matches!(
-        registry.config_divergence(Ok(document)).await,
-        ConfigDivergence::PluginSettings { .. }
-    ));
-    drop(registry);
-    let registry = Registry::open(registry_deps(
-        store,
-        runtime,
-        b"new-factory",
-        configuration(),
-    ))
-    .await
-    .unwrap();
-    let upgraded = registry.status().await.plugins.remove(0).active.unwrap();
-    assert_eq!(upgraded.artifact, ContentHash::of(b"new-factory"));
-    assert_eq!(
-        upgraded.settings.config,
-        serde_json::json!({"label":"good"})
-    );
-    let factory = registry
-        .view()
-        .exports
-        .completion(&fixture_endpoint("fixture"), true)
-        .unwrap()
-        .generation;
-    assert!(upgraded.id < factory);
-    registry
-        .report(
-            upgraded.id,
-            Verdict::Failed(super::fault(code::PLUGIN_TRAP)),
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        registry.status().await.plugins.remove(0).active.unwrap().id,
-        good
-    );
 }
