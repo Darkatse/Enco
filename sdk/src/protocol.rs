@@ -3,7 +3,7 @@ use crate::bindings;
 pub use crate::http::{apply_options, post};
 pub use bindings::enco::plugin::{host, types};
 pub use bindings::exports::enco::plugin::completion::{Completion, Request, StopReason, Usage};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 pub use types::Settings;
 use types::{Failure, Message, Part, Role};
 
@@ -166,15 +166,9 @@ fn message(message: &Message) -> Result<Value, Failure> {
             let calls: Vec<_> = message
                 .parts
                 .iter()
-                .filter_map(|part| {
-                    let Part::ToolCall(call) = part else {
-                        return None;
-                    };
-                    Some(json!({
-                        "id": call.id,
-                        "type": "function",
-                        "function": { "name": call.name, "arguments": call.arguments },
-                    }))
+                .filter_map(|part| match part {
+                    Part::ToolCall(call) => Some(wire_call(call)),
+                    _ => None,
                 })
                 .collect();
             // Chat Completions allows a null content only beside tool calls.
@@ -189,23 +183,69 @@ fn message(message: &Message) -> Result<Value, Failure> {
             }
             for part in &message.parts {
                 if let Part::Extension(extension) = part {
-                    let fields: Map<String, Value> = serde_json::from_str(&extension.data)
+                    let rest = serde_json::from_str(&extension.data)
                         .map_err(|e| failure("provider.bad_request", e.to_string(), false))?;
-                    for (key, value) in fields {
-                        if ["role", "content", "tool_calls"].contains(&key.as_str()) {
-                            return Err(failure(
-                                "provider.bad_request",
-                                "extension conflicts with canonical message fields",
-                                false,
-                            ));
-                        }
-                        wire[key] = value;
-                    }
+                    restore(&mut wire, rest)?;
                 }
             }
             wire
         }
     })
+}
+
+fn wire_call(call: &types::ToolCall) -> Value {
+    json!({
+        "id": call.id,
+        "type": "function",
+        "function": { "name": call.name, "arguments": call.arguments },
+    })
+}
+
+/// What `wire` carries beyond `canonical`, in the shape of `wire`, or null when nothing.
+fn residue(wire: Value, canonical: &Value) -> Value {
+    let (Value::Object(mut wire), Value::Object(canonical)) = (wire, canonical) else {
+        return Value::Null;
+    };
+    for (key, canonical) in canonical {
+        if let Some(value) = wire.remove(key) {
+            let rest = residue(value, canonical);
+            if !rest.is_null() {
+                wire.insert(key.clone(), rest);
+            }
+        }
+    }
+    if wire.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(wire)
+    }
+}
+
+/// Puts back what `residue` took from the wire; a residue never replaces a canonical value.
+fn restore(canonical: &mut Value, rest: Value) -> Result<(), Failure> {
+    match (canonical, rest) {
+        (_, Value::Null) => Ok(()),
+        (Value::Object(canonical), Value::Object(rest)) => {
+            for (key, value) in rest {
+                match canonical.get_mut(&key) {
+                    Some(slot) => restore(slot, value)?,
+                    None => {
+                        canonical.insert(key, value);
+                    }
+                }
+            }
+            Ok(())
+        }
+        (Value::Array(canonical), Value::Array(rest)) if canonical.len() == rest.len() => canonical
+            .iter_mut()
+            .zip(rest)
+            .try_for_each(|(canonical, rest)| restore(canonical, rest)),
+        _ => Err(failure(
+            "provider.bad_request",
+            "extension conflicts with canonical message fields",
+            false,
+        )),
+    }
 }
 
 fn parse_completion(response: Value) -> Result<Completion, Failure> {
@@ -250,16 +290,22 @@ fn parse_message(value: Option<&Value>) -> Result<Message, Failure> {
         Some(_) => return Err(bad("tool_calls must be an array")),
     };
     let mut ids = std::collections::HashSet::new();
+    let mut rests = Vec::with_capacity(calls.len());
     for call in calls {
-        let id = field(&call, "/id")?;
-        if !ids.insert(id.clone()) {
-            return Err(bad("duplicate provider call ID"));
-        }
-        parts.push(Part::ToolCall(types::ToolCall {
-            id,
+        let parsed = types::ToolCall {
+            id: field(&call, "/id")?,
             name: field(&call, "/function/name")?,
             arguments: field(&call, "/function/arguments")?,
-        }));
+        };
+        if !ids.insert(parsed.id.clone()) {
+            return Err(bad("duplicate provider call ID"));
+        }
+        rests.push(residue(call, &wire_call(&parsed)));
+        parts.push(Part::ToolCall(parsed));
+    }
+    // Fields a service attaches to a call, such as thought signatures, go back with that call.
+    if rests.iter().any(|rest| !rest.is_null()) {
+        wire.insert("tool_calls".into(), Value::Array(rests));
     }
     if !wire.is_empty() {
         parts.push(Part::Extension(types::Extension {

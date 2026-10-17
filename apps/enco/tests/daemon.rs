@@ -417,12 +417,16 @@ async fn both_plugins_preserve_tool_ids_and_provider_extensions_across_rounds() 
                 .iter()
                 .any(|m| m["role"] == "tool" && m["tool_call_id"] == "service-call-1")
         );
-        assert!(
-            messages.iter().any(|m| m["role"] == "assistant"
-                && m["reasoning_content"] == "write the requested file")
-        );
+        assert!(messages.iter().any(|m| m["role"] == "assistant"
+            && m["reasoning_content"] == "write the requested file"
+            && m["tool_calls"][0]["extra_content"] == signature()));
         daemon.stop().await;
     }
+}
+
+/// A service field on one tool call, shaped like Gemini's thought signature.
+fn signature() -> serde_json::Value {
+    json!({ "google": { "thought_signature": "signed" } })
 }
 
 /// Runs one write through `plugin`, whose service proposes the tool call with reasoning.
@@ -442,6 +446,7 @@ async fn write_a_file(plugin: &str) -> (MockServer, Daemon, Vec<Entry>) {
                 json!({ "path": "written.txt", "content": "from wasm" }),
             );
             message["reasoning_content"] = json!("write the requested file");
+            message["tool_calls"][0]["extra_content"] = signature();
             response(message, "tool_calls")
         })
         .mount(&server)
@@ -508,7 +513,8 @@ compaction = ["alternate"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|message| message.get("reasoning_content").is_none())
+            .all(|message| message.get("reasoning_content").is_none()
+                && message["tool_calls"][0].get("extra_content").is_none())
     );
     daemon.stop().await;
     daemon.restart().await;
