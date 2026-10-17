@@ -66,18 +66,7 @@ pub struct Memories {
     clock: Arc<dyn Clock>,
 }
 
-/// Keep the lock with blocking work; on failure, close the index before releasing the slot.
-struct OpenIndex {
-    index: MemoryIndex,
-    slot: OwnedMutexGuard<Option<MemoryIndex>>,
-}
-
-impl OpenIndex {
-    fn into_guard(mut self) -> OwnedMutexGuard<Option<MemoryIndex>> {
-        *self.slot = Some(self.index);
-        self.slot
-    }
-}
+type IndexGuard = OwnedMutexGuard<Option<MemoryIndex>>;
 
 struct Synced {
     query_vector: Option<Vec<f32>>,
@@ -211,10 +200,10 @@ impl Memories {
 
     async fn sync(
         &self,
-        index_guard: OwnedMutexGuard<Option<MemoryIndex>>,
+        index_guard: IndexGuard,
         query: Option<&str>,
         cancel: &CancellationToken,
-    ) -> Result<(OwnedMutexGuard<Option<MemoryIndex>>, Synced), MemoryError> {
+    ) -> Result<(IndexGuard, Synced), MemoryError> {
         let view = self.registry.view();
         let settings = match self.settings.get(&view) {
             Ok(settings) => settings,
@@ -242,39 +231,34 @@ impl Memories {
         };
         let path = self.index_path.clone();
         let requested = endpoint.clone();
-        let (index_guard, index) = index_work(index_guard, move |slot| {
-            match slot.take() {
-                Some(index) if index.identity == requested.identity() => Ok(index),
-                previous => {
-                    // Release Trivium's file lock before opening the next vector space.
-                    drop(previous);
-                    MemoryIndex::open(&path, &requested, &rows)
-                }
+        let (index_guard, ()) = index_work(index_guard, move |slot| {
+            if slot
+                .as_ref()
+                .is_none_or(|index| index.identity != requested.identity())
+            {
+                // Release Trivium's file lock before opening the next vector space.
+                **slot = None;
+                **slot = Some(MemoryIndex::open(&path, &requested, &rows)?);
             }
+            Ok(())
         })
         .await?;
-        let opened = OpenIndex {
-            index,
-            slot: index_guard,
-        };
-        let (opened, synced) = self
-            .sync_index(opened, &view, endpoint, query, cancel)
-            .await?;
-        Ok((opened.into_guard(), synced))
+        self.sync_index(index_guard, &view, endpoint, query, cancel)
+            .await
     }
 
     async fn sync_index(
         &self,
-        opened: OpenIndex,
+        index_guard: IndexGuard,
         view: &View,
         endpoint: &EmbeddingEndpoint,
         query: Option<&str>,
         cancel: &CancellationToken,
-    ) -> Result<(OpenIndex, Synced), MemoryError> {
+    ) -> Result<(IndexGuard, Synced), MemoryError> {
         let active = self.authority.revisions().await?;
         check_cancel(cancel)?;
-        let (opened, unindexed) =
-            index_work(opened, move |opened| opened.index.reconcile(&active)).await?;
+        let (index_guard, unindexed) =
+            index_write(index_guard, move |index| index.reconcile(&active)).await?;
         check_cancel(cancel)?;
 
         // Reserve one embedding slot for the query; startup uses the same batch path.
@@ -286,7 +270,7 @@ impl Memories {
         inputs.extend(rows.iter().map(|m| m.text.clone()));
         if inputs.is_empty() {
             return Ok((
-                opened,
+                index_guard,
                 Synced {
                     query_vector: None,
                     unindexed: vec![],
@@ -308,7 +292,7 @@ impl Memories {
             Ok(vectors) => vectors,
             Err(failure) => {
                 return Ok((
-                    opened,
+                    index_guard,
                     Synced {
                         query_vector: None,
                         unindexed,
@@ -326,12 +310,12 @@ impl Memories {
         };
         let inserted: HashSet<_> = rows.iter().map(|m| m.id).collect();
         let replacements = rows.into_iter().zip(vectors).collect();
-        let (opened, ()) =
-            index_work(opened, move |opened| opened.index.apply(replacements)).await?;
+        let (index_guard, ()) =
+            index_write(index_guard, move |index| index.apply(replacements)).await?;
         check_cancel(cancel)?;
 
         Ok((
-            opened,
+            index_guard,
             Synced {
                 query_vector,
                 unindexed: unindexed
@@ -391,6 +375,21 @@ fn check_cancel(cancel: &CancellationToken) -> Result<(), MemoryError> {
 
 fn index_error(e: impl std::fmt::Display) -> MemoryError {
     MemoryError::Index(e.to_string())
+}
+
+/// A failed write may leave the node map behind the file, so the index closes and the next use
+/// reopens it; cancellation and service failures keep it open.
+async fn index_write<T: Send + 'static>(
+    index_guard: IndexGuard,
+    work: impl FnOnce(&mut MemoryIndex) -> Result<T, MemoryError> + Send + 'static,
+) -> Result<(IndexGuard, T), MemoryError> {
+    index_work(index_guard, move |slot| {
+        let index = slot
+            .as_mut()
+            .ok_or_else(|| index_error("index is not open"))?;
+        work(index).inspect_err(|_| **slot = None)
+    })
+    .await
 }
 
 // Move the owned guard into blocking IO and return it to keep sync + search serialized.
