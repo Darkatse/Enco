@@ -1,5 +1,5 @@
 //! What opening the registry establishes from the factory and restores from durable records.
-use super::{deploy_artifact, loaded, open, promote};
+use super::{active, deploy_artifact, loaded, open, promote};
 use crate::support::*;
 use enco_core::*;
 use enco_host::*;
@@ -25,7 +25,7 @@ async fn factory_records_need_registration_to_activate_and_preserve_source_overr
     )
     .await
     .unwrap();
-    let first = registry.status().await.unwrap().plugins.remove(0);
+    let first = active(&registry).await;
     drop(registry);
     let registry = open_registry(
         registry_deps(store.clone(), runtime.clone(), b"factory-1"),
@@ -33,10 +33,7 @@ async fn factory_records_need_registration_to_activate_and_preserve_source_overr
     )
     .await
     .unwrap();
-    assert_eq!(
-        registry.status().await.unwrap().plugins[0].generations,
-        first.generations
-    );
+    assert_eq!(active(&registry).await, first);
     drop(registry);
     let registry = open_registry(
         registry_deps(store.clone(), runtime.clone(), b"factory-2"),
@@ -44,25 +41,22 @@ async fn factory_records_need_registration_to_activate_and_preserve_source_overr
     )
     .await
     .unwrap();
-    assert_eq!(
-        registry.status().await.unwrap().plugins[0].active,
-        first.active
-    );
+    assert_eq!(active(&registry).await, first);
     submit(
         &registry,
         RegistrationRequest {
-            revision: "follow-factory-2".into(),
-            plugins: [("fixture".into(), PluginChange::Factory)].into(),
+            initiator: Initiator::Owner { reason: None },
+            plugins: [("fixture".parse().unwrap(), PluginChange::Factory)].into(),
             base: None,
             configuration: None,
         },
     )
     .await
     .unwrap();
-    let second = registry.status().await.unwrap().plugins.remove(0);
-    assert_eq!(second.generations.len(), 2);
-    assert_eq!(second.active.as_ref().unwrap().origin, Origin::Factory);
-    assert!(second.active.unwrap().id > first.active.unwrap().id);
+    let second = active(&registry).await;
+    assert_eq!(store.registry().await.unwrap().generations.len(), 2);
+    assert_eq!(second.origin, Origin::Factory);
+    assert!(second.id > first.id);
     let owner_code = submit(&registry, source_request("fixture", b"owner"))
         .await
         .unwrap()
@@ -75,16 +69,8 @@ async fn factory_records_need_registration_to_activate_and_preserve_source_overr
     )
     .await
     .unwrap();
-    assert_eq!(
-        registry.status().await.unwrap().plugins[0].active.as_ref(),
-        Some(&owner_code)
-    );
-    assert_eq!(
-        registry.status().await.unwrap().plugins[0]
-            .generations
-            .len(),
-        4
-    );
+    assert_eq!(active(&registry).await, owner_code);
+    assert_eq!(store.registry().await.unwrap().generations.len(), 4);
     drop(registry);
     // A contract upgrade can make every older artifact unloadable, including the active one.
     let runtime = Arc::new(ScriptedRuntime::default());
@@ -115,17 +101,17 @@ async fn overlapping_table_owners_are_rejected_before_any_generation_is_written(
         let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
         let owners = if table == "owner" {
             vec![TableOwner {
-                tables: &["owner"],
+                tables: &[enco_kernel::ConfigTable::Single("owner")],
                 declare: |_, _| Ok(vec![]),
             }]
         } else {
             vec![
                 TableOwner {
-                    tables: &["absent"],
+                    tables: &[enco_kernel::ConfigTable::Single("absent")],
                     declare: |_, _| Ok(vec![]),
                 },
                 TableOwner {
-                    tables: &["absent"],
+                    tables: &[enco_kernel::ConfigTable::Single("absent")],
                     declare: |_, _| Ok(vec![]),
                 },
             ]
@@ -168,15 +154,7 @@ impl Crashed {
             runtime.insert(bytes, loaded(ScriptedProvider::new(vec![])));
         }
         let registry = open(&store, runtime.clone()).await;
-        let factory = registry
-            .status()
-            .await
-            .unwrap()
-            .plugins
-            .remove(0)
-            .active
-            .unwrap()
-            .id;
+        let factory = active(&registry).await.id;
         let older = deploy_artifact(&registry, "fixture", b"older").await;
         promote(&registry, older.id).await;
         let latest = deploy_artifact(&registry, "fixture", b"latest").await;
@@ -231,11 +209,14 @@ async fn recovery_uses_the_committed_activation() {
 async fn recovery_skips_missing_and_corrupt_artifacts() {
     let crashed = Crashed::new().await;
     let registry = crashed.lose_artifacts().await;
-    let status = registry.status().await.unwrap().plugins.remove(0);
-    assert_eq!(status.active.as_ref().unwrap().id, crashed.factory);
-    for record in status
+    assert_eq!(active(&registry).await.id, crashed.factory);
+    for record in crashed
+        .store
+        .registry()
+        .await
+        .unwrap()
         .generations
-        .iter()
+        .values()
         .filter(|record| record.id != crashed.factory)
     {
         assert_eq!(record.status, GenerationStatus::Failed);
@@ -249,7 +230,10 @@ async fn recovery_skips_missing_and_corrupt_artifacts() {
 async fn rollback_and_recovery_skip_lost_artifacts_of_a_registered_plugin() {
     let crashed = Crashed::new().await;
     let registry = crashed.lose_artifacts().await;
-    let status = registry.status().await.unwrap().plugins.remove(0);
+    let intended = registry.registered_intent(None).await.unwrap().plugins["fixture"]
+        .activation
+        .generation
+        .clone();
     let only = deploy_artifact(&registry, "custom", b"latest").await;
     promote(&registry, only.id).await;
     let newer = deploy_artifact(&registry, "custom", b"older").await;
@@ -279,30 +263,12 @@ async fn rollback_and_recovery_skip_lost_artifacts_of_a_registered_plugin() {
             .code,
         code::PLUGIN_UNAVAILABLE
     );
-    let restored = registry.status().await.unwrap().plugins;
-    assert_eq!(
-        restored
-            .iter()
-            .find(|plugin| plugin.name.as_deref() == Some("fixture"))
-            .unwrap()
-            .generations,
-        status.generations
-    );
-    let custom = restored
-        .iter()
-        .find(|plugin| plugin.id == only.plugin)
-        .unwrap();
-    let failed = custom
-        .generations
-        .iter()
-        .find(|record| record.id == only.id)
-        .unwrap();
+    let restored = registry.registered_intent(None).await.unwrap();
+    assert_eq!(restored.plugins["fixture"].activation.generation, intended);
+    let history = crashed.store.registry().await.unwrap();
+    let failed = &history.generations[&only.id];
     assert_eq!(failed.failure.as_ref().unwrap().code, code::PLUGIN_LOAD);
-    let retired = custom
-        .generations
-        .iter()
-        .find(|record| record.id == newer.id)
-        .unwrap();
+    let retired = &history.generations[&newer.id];
     assert_eq!(retired.status, GenerationStatus::Trial);
     assert!(retired.failure.is_none());
 }
@@ -348,8 +314,8 @@ async fn registering_new_factory_code_preserves_rollback_content() {
     submit(
         &registry,
         RegistrationRequest {
-            revision: "follow-new-factory".into(),
-            plugins: [("fixture".into(), PluginChange::Factory)].into(),
+            initiator: Initiator::Owner { reason: None },
+            plugins: [("fixture".parse().unwrap(), PluginChange::Factory)].into(),
             base: None,
             configuration: None,
         },
@@ -382,17 +348,6 @@ async fn registering_new_factory_code_preserves_rollback_content() {
         .await
         .unwrap();
     assert_eq!(active(&registry).await.id, good);
-}
-
-async fn active(registry: &Registry) -> GenerationRecord {
-    registry
-        .status()
-        .await
-        .unwrap()
-        .plugins
-        .remove(0)
-        .active
-        .unwrap()
 }
 
 #[tokio::test]

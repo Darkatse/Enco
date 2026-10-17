@@ -189,18 +189,23 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
     channel.shutdown().await.unwrap();
     let failures = channel.status().await.unwrap().recent_failures;
     assert_eq!(failures.len(), 1);
-    assert!(matches!(&failures[0].outcome, Settlement::Unknown { failure } if !failure.retryable));
+    assert!(
+        matches!(&failures[0].settlement.outcome, Settlement::Unknown { failure } if !failure.retryable)
+    );
     let session = kernel.open_session("main").await.unwrap();
-    assert_eq!(failures[0].delivery.session, session.id);
+    assert_eq!(failures[0].settlement.delivery.session, session.id);
     let log = kernel.log(session.id, None).await.unwrap();
-    assert!(log.iter().any(|entry| entry.pos == failures[0].delivery.pos
-        && matches!(
-            entry.body,
-            EntryBody::RoundEnded {
-                end: RoundEnd::Replied,
-                ..
-            }
-        )));
+    assert!(
+        log.iter()
+            .any(|entry| entry.pos == failures[0].settlement.delivery.pos
+                && matches!(
+                    entry.body,
+                    EntryBody::RoundEnded {
+                        end: RoundEnd::Replied,
+                        ..
+                    }
+                ))
+    );
     assert_eq!(provider.requests.lock().unwrap().len(), 2);
 
     // Reopening retains the failure while processed replies are not sent again.
@@ -221,7 +226,10 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
     assert_eq!(receipt.text, "- main\n- **work** (current)");
     receipt.result.send(Ok(())).unwrap();
     channel.shutdown().await.unwrap();
-    assert_eq!(channel.status().await.unwrap().recent_failures, failures);
+    assert_eq!(
+        serde_json::to_value(channel.status().await.unwrap().recent_failures).unwrap(),
+        serde_json::to_value(failures).unwrap()
+    );
     kernel.shutdown().await.unwrap();
 }
 
@@ -290,7 +298,7 @@ async fn a_delivery_left_unsettled_by_a_crash_is_recorded_as_unknown_on_restart(
     let status = channel.status().await.unwrap();
     assert_eq!(status.recent_failures.len(), 2);
     assert!(
-        matches!(&status.recent_failures[0].outcome, Settlement::Unknown { failure } if failure.code == code::INTERRUPTED)
+        matches!(&status.recent_failures[0].settlement.outcome, Settlement::Unknown { failure } if failure.code == code::INTERRUPTED)
     );
     channel.shutdown().await.unwrap();
     kernel.shutdown().await.unwrap();

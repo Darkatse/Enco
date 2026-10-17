@@ -1,7 +1,7 @@
 use super::{backend, encode, rows};
 use crate::sqlite::timestamp;
 use enco_core::*;
-use enco_kernel::StoreError;
+use enco_kernel::{Accepted, StoreError};
 use rusqlite::{Connection, TransactionBehavior, params};
 
 const COLUMNS: &str = "id,session_id,rule,message,created_at,state,last_due,last_event_id";
@@ -102,14 +102,11 @@ pub(super) fn fire(
     if inserted == 0 {
         return Err(StoreError::ScheduleNotActive(id));
     }
-    tx.execute(
-        "INSERT INTO inbox(event_id,session_id,event) VALUES (?,?,?)",
-        params![
-            event.id.to_string(),
-            event.session.to_string(),
-            encode(event)?
-        ],
-    )
-    .map_err(backend)?;
+    if super::accept::events_in(&tx, std::slice::from_ref(event))? == [Accepted::Duplicate] {
+        return Err(StoreError::Inbox(format!(
+            "reminder {} was already accepted",
+            event.id
+        )));
+    }
     tx.commit().map_err(backend)
 }

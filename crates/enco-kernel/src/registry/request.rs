@@ -3,14 +3,22 @@ use super::*;
 
 /// One intentional change. All supplied parts are accepted or rejected together.
 pub struct RegistrationRequest {
-    /// Commit containing the complete registered intent after this change.
-    pub revision: String,
+    /// Caller responsible for this change.
+    pub initiator: Initiator,
     /// Last accepted registration used to prepare the request; absent only on first boot.
     pub base: Option<RegistrationId>,
     /// A changed configuration document, or the initial document at startup.
-    pub configuration: Option<serde_json::Value>,
+    pub configuration: Option<ConfigurationSource>,
     /// Code, removal and name changes keyed by their user-facing names.
-    pub plugins: BTreeMap<String, PluginChange>,
+    pub plugins: BTreeMap<PluginName, PluginChange>,
+}
+
+/// Parsed configuration paired with the exact input retained by the host.
+pub struct ConfigurationSource {
+    /// Complete configuration content for validation.
+    pub document: serde_json::Value,
+    /// Content address of the original configuration file.
+    pub source: ContentHash,
 }
 
 /// One plugin's contribution to an atomic registration.
@@ -18,13 +26,18 @@ pub enum PluginChange {
     /// Current embedded code for a factory plugin without a source directory.
     Factory,
     /// A component built from source intent.
-    Code(ArtifactSource),
+    Code {
+        /// Source tree already persisted by the host.
+        source: ContentHash,
+        /// Compiled component offered for validation.
+        artifact: ArtifactSource,
+    },
     /// A component supplied independently of source intent.
     Artifact(Vec<u8>),
     /// Remove the identity associated with the registered source name.
     Remove,
     /// Change a registered name without changing code or settings.
-    Rename(String),
+    Rename(PluginName),
 }
 
 /// Newly built bytes or a content address already known to the store.
@@ -50,6 +63,8 @@ impl ArtifactSource {
 pub struct Registered {
     /// The accepted registration.
     pub registration: RegistrationRecord,
+    /// The same named, typed description returned by registration history.
+    pub changes: Vec<UnitChange>,
     /// Newly registered plugin content.
     pub generations: Vec<GenerationRecord>,
     /// Newly registered configuration, when present.

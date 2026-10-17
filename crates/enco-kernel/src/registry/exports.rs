@@ -1,5 +1,6 @@
 use super::*;
 use admission::Admission;
+use cause::unavailable_failure;
 use state::State;
 
 /// An invocation's immutable association between code and registry identity.
@@ -15,12 +16,12 @@ pub struct Export<T: ?Sized> {
 struct LoadedGeneration {
     plugin: PluginId,
     generation: GenerationId,
-    loaded: Result<Loaded, Failure>,
+    loaded: Result<Loaded, Vec<Cause>>,
 }
 
 /// Derived routing view. Holding it does not prevent the registry from publishing a new view.
 pub struct Exports {
-    plugins: BTreeMap<String, Routes>,
+    plugins: BTreeMap<PluginName, Routes>,
     generations: BTreeMap<GenerationId, GenerationRecord>,
 }
 
@@ -49,7 +50,7 @@ impl Exports {
     pub(crate) fn tools(&self) -> Vec<(ToolSpec, Export<dyn crate::Tools>)> {
         let mut tools = Vec::new();
         for name in self.plugins.keys() {
-            if let Ok((active, loaded)) = self.selected(name, false)
+            if let Some(Ok((active, loaded))) = self.selected(name, false)
                 && let Some(exported) = &loaded.tools
             {
                 tools.extend(exported.specs.iter().map(|spec| {
@@ -71,21 +72,30 @@ impl Exports {
         self.plugins
             .keys()
             .filter_map(|name| {
-                self.selected(name, false)
-                    .err()
-                    .map(|failure| (name.clone(), failure))
+                let failure = match self.selected(name, false) {
+                    Some(Ok(_)) => return None,
+                    Some(Err(causes)) => unavailable_failure(causes),
+                    None => not_running(name),
+                };
+                Some((name.to_string(), failure))
             })
             .collect()
     }
 
-    pub(super) fn loaded(&self, plugin: &str) -> Result<(GenerationId, &Loaded), Failure> {
+    pub(super) fn loaded(
+        &self,
+        plugin: &PluginName,
+    ) -> Option<Result<(GenerationId, &Loaded), &[Cause]>> {
         self.selected(plugin, false)
-            .map(|(generation, loaded)| (generation.generation, loaded))
+            .map(|selected| selected.map(|(generation, loaded)| (generation.generation, loaded)))
     }
 
-    pub(super) fn check_use(&self, usage: &Use) -> Result<(), Failure> {
-        let (_, loaded) = self.loaded(&usage.endpoint.plugin)?;
-        usage.check(loaded)
+    pub(super) fn check_use(&self, usage: &Use) -> Result<(), Vec<Cause>> {
+        admission::serve(
+            usage,
+            self.loaded(&usage.endpoint.plugin)
+                .map(|selected| selected.map(|(_, loaded)| loaded)),
+        )
     }
 
     /// Look up any recorded generation, including failed or unloaded history.
@@ -120,23 +130,26 @@ impl Exports {
         })
     }
 
+    /// Absent when no generation runs under the name.
     fn selected(
         &self,
-        plugin: &str,
+        plugin: &PluginName,
         safe_mode: bool,
-    ) -> Result<(&LoadedGeneration, &Loaded), Failure> {
-        let routes = self
-            .plugins
-            .get(plugin)
-            .ok_or_else(|| unavailable(plugin, "name is not registered"))?;
+    ) -> Option<Result<(&LoadedGeneration, &Loaded), &[Cause]>> {
+        let routes = self.plugins.get(plugin)?;
         // Safe mode replaces only what the host ships; a plugin without factory code keeps its own.
         let selected = if safe_mode {
             routes.factory.as_ref().or(routes.active.as_ref())
         } else {
             routes.active.as_ref()
-        }
-        .ok_or_else(|| unavailable(plugin, "no active generation"))?;
-        Ok((selected, selected.loaded.as_ref().map_err(Clone::clone)?))
+        }?;
+        Some(
+            selected
+                .loaded
+                .as_ref()
+                .map(|loaded| (selected, loaded))
+                .map_err(Vec::as_slice),
+        )
     }
 
     fn export<T: ?Sized>(
@@ -146,7 +159,11 @@ impl Exports {
         interface: &str,
         adapter: impl FnOnce(&Loaded) -> Option<Arc<T>>,
     ) -> Result<Export<T>, Failure> {
-        let (selected, loaded) = self.selected(&endpoint.plugin, safe_mode)?;
+        let (selected, loaded) = match self.selected(&endpoint.plugin, safe_mode) {
+            Some(Ok(selected)) => selected,
+            Some(Err(causes)) => return Err(unavailable_failure(causes)),
+            None => return Err(not_running(&endpoint.plugin)),
+        };
         let adapter = endpoint.export(loaded, adapter(loaded), interface)?;
         Ok(Export {
             plugin: selected.plugin,
@@ -163,10 +180,10 @@ impl Exports {
     }
 }
 
-pub(super) fn unavailable(plugin: &str, reason: &str) -> Failure {
+fn not_running(plugin: &PluginName) -> Failure {
     Failure {
         code: code::PLUGIN_UNAVAILABLE.into(),
-        message: format!("plugin {plugin}: {reason}"),
+        message: format!("plugin {plugin}: no generation runs"),
         retryable: false,
     }
 }
@@ -190,10 +207,11 @@ impl State {
                         .plugins
                         .get(&plugin)
                         .and_then(|record| record.active)
-                        .map(|generation| LoadedGeneration {
+                        .zip(admission.result(&name))
+                        .map(|(generation, loaded)| LoadedGeneration {
                             plugin,
                             generation: generation.generation,
-                            loaded: admission.get(&name).cloned(),
+                            loaded,
                         }),
                     factory: self.factory.get(&plugin).and_then(|generation| {
                         self.loaded.get(generation).map(|loaded| LoadedGeneration {

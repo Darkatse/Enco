@@ -3,7 +3,6 @@ use crate::sqlite::timestamp;
 use enco_core::*;
 use enco_kernel::{Commit, StoreError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
-use std::collections::HashSet;
 
 pub(super) fn commit(
     connection: &mut Connection,
@@ -80,31 +79,16 @@ fn consume_events(
     session: SessionId,
     commit: &Commit,
 ) -> Result<(), StoreError> {
-    let accepted: Vec<_> = commit
-        .entries
-        .iter()
-        .filter_map(|e| match &e.body {
-            EntryBody::EventConsumed { event } => Some((event, e.pos)),
-            _ => None,
-        })
-        .collect();
-    let consumed: HashSet<_> = commit.consumed.iter().copied().collect();
-    if consumed.len() != commit.consumed.len()
-        || consumed.len() != accepted.len()
-        || accepted
-            .iter()
-            .any(|(e, _)| !consumed.contains(&e.id) || e.session != session)
-    {
-        return Err(StoreError::Inbox(
-            "EventConsumed and consumed IDs must correspond exactly".into(),
-        ));
-    }
-    for (event, pos) in accepted {
+    let accepted = commit.entries.iter().filter_map(|e| match &e.body {
+        EntryBody::EventConsumed { event } => Some(event),
+        _ => None,
+    });
+    for event in accepted {
         let stored: Option<Event> = tx
             .query_row(
                 "SELECT event
                  FROM inbox
-                 WHERE event_id=? AND session_id=? AND consumed_seq IS NULL",
+                 WHERE event_id=? AND session_id=?",
                 params![event.id.to_string(), session.to_string()],
                 |row| rows::document(row, 0),
             )
@@ -116,15 +100,8 @@ fn consume_events(
                 event.id
             )));
         }
-        tx.execute(
-            "UPDATE inbox SET consumed_epoch=?,consumed_seq=? WHERE event_id=?",
-            params![
-                super::signed(pos.epoch.0)?,
-                super::signed(pos.seq.0)?,
-                event.id.to_string()
-            ],
-        )
-        .map_err(backend)?;
+        tx.execute("DELETE FROM inbox WHERE event_id=?", [event.id.to_string()])
+            .map_err(backend)?;
     }
     Ok(())
 }

@@ -4,6 +4,15 @@ use serde::{Deserialize, Serialize};
 /// Profile selected when a Session is created; every node configuration must define it.
 pub const DEFAULT_PROFILE: &str = "default";
 
+/// A Session's stable identity with its resolved name for inspection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionRef {
+    /// Identity used by the Session's durable records.
+    pub id: SessionId,
+    /// Human-readable name resolved by the record owner.
+    pub name: String,
+}
+
 /// Persistent Session identity, execution binding and selected profile.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionRecord {

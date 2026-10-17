@@ -1,5 +1,5 @@
 //! How verdicts move a generation through trial to health or rollback, and what survives restart.
-use super::{deploy_artifact, fault, loaded, open, promote};
+use super::{active, deploy_artifact, fault, loaded, open, promote};
 use crate::support::*;
 use enco_core::*;
 use enco_host::*;
@@ -143,7 +143,7 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
         healthy.id
     );
     let rollback = RolledBack {
-        plugin: "custom".into(),
+        plugin: "custom".parse().unwrap(),
         from: next.id,
         to: Some(healthy.id),
         failure: fault(code::PLUGIN_TRAP),
@@ -161,14 +161,8 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
             .generation,
         healthy.id
     );
-    let status = registry.status().await.unwrap().plugins;
-    let failed = status
-        .iter()
-        .find(|plugin| plugin.name.as_deref() == Some("custom"))
-        .unwrap()
-        .generations
-        .last()
-        .unwrap();
+    let intent = registry.registered_intent(None).await.unwrap();
+    let failed = &intent.plugins["custom"].activation.generation;
     assert_eq!(failed.status, GenerationStatus::Failed);
     assert_eq!(failed.failure.as_ref(), Some(&rollback.failure));
     let pending = store.pending(session.id).await.unwrap();
@@ -229,23 +223,9 @@ async fn configuration_probes_report_trial_health_even_when_configuration_is_rej
     for _ in 0..TRIAL_CALLS - 2 {
         registry.report(trial, Verdict::Ok, None).await.unwrap();
     }
-    assert_eq!(
-        registry.status().await.unwrap().plugins[0]
-            .active
-            .as_ref()
-            .unwrap()
-            .status,
-        GenerationStatus::Trial
-    );
+    assert_eq!(active(&registry).await.status, GenerationStatus::Trial);
     registry.report(trial, Verdict::Ok, None).await.unwrap();
-    assert_eq!(
-        registry.status().await.unwrap().plugins[0]
-            .active
-            .as_ref()
-            .unwrap()
-            .status,
-        GenerationStatus::Healthy
-    );
+    assert_eq!(active(&registry).await.status, GenerationStatus::Healthy);
     let broken = submit(
         &registry,
         artifact_request("fixture", FACTORY_BYTES.to_vec()),
@@ -269,14 +249,16 @@ async fn configuration_probes_report_trial_health_even_when_configuration_is_rej
             .generation,
         trial
     );
-    let status = registry.status().await.unwrap();
+    let history = store.registry().await.unwrap();
     assert_eq!(
-        status.plugins[0]
-            .generations
-            .iter()
-            .find(|g| g.id == broken)
-            .unwrap()
-            .status,
+        history.generations[&broken].status,
         GenerationStatus::Failed
+    );
+    assert_eq!(
+        registry.registered_intent(None).await.unwrap().plugins["fixture"]
+            .activation
+            .generation
+            .id,
+        broken
     );
 }

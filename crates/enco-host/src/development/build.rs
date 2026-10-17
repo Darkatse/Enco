@@ -1,6 +1,12 @@
-use super::{Development, DevelopmentError, cache::Build, process, readme};
+use super::{
+    BuildFailure, Development, DevelopmentError, EntryError, EntryProblem,
+    cache::Build,
+    error::{entry, io},
+    process, readme,
+    tree::FileTree,
+};
 use crate::limits::BUILD_DIAGNOSTICS;
-use enco_core::{ContentHash, PluginSettings, Utc};
+use enco_core::{ContentHash, IntentPath, PluginName, PluginSettings, Utc};
 use enco_kernel::{ArtifactSource, Store};
 use serde::Serialize;
 use serde_json::Value;
@@ -11,33 +17,61 @@ use tokio_util::sync::CancellationToken;
 #[derive(Serialize)]
 pub struct BuildResult {
     /// Plugin source directory.
-    pub name: String,
+    pub name: PluginName,
     /// Whether retained bytes were reused without invoking Cargo.
     pub reused: bool,
+    pub code_changed: bool,
     /// Diagnostic excerpts, with errors before warnings.
     pub diagnostics: Vec<String>,
     /// Complete build output, when Cargo was invoked.
     pub log: Option<PathBuf>,
 }
 
+/// How the bytes were obtained, before they are compared with registered code.
+pub(super) struct Compiled {
+    pub reused: bool,
+    pub diagnostics: Vec<String>,
+    pub log: Option<PathBuf>,
+}
+
 pub(super) struct Built {
     pub artifact: ArtifactSource,
-    pub tree: String,
-    pub result: BuildResult,
+    pub tree: FileTree,
+    pub compiled: Compiled,
+}
+
+impl Built {
+    pub fn result(
+        self,
+        name: PluginName,
+        code_changed: bool,
+    ) -> (ArtifactSource, FileTree, BuildResult) {
+        (
+            self.artifact,
+            self.tree,
+            BuildResult {
+                name,
+                reused: self.compiled.reused,
+                code_changed,
+                diagnostics: self.compiled.diagnostics,
+                log: self.compiled.log,
+            },
+        )
+    }
 }
 
 impl Development {
     pub(super) async fn build(
         &self,
-        name: &str,
-        source: String,
+        name: &PluginName,
+        source: FileTree,
+        cached: Option<Build>,
         registered: Option<ContentHash>,
         cancel: &CancellationToken,
     ) -> Result<Built, DevelopmentError> {
-        let relative = format!("plugins/{name}");
-        let directory = self.home.join(&relative);
+        let directory = IntentPath::Plugin(name.clone()).locate(&self.home);
         let sdk = self.sdk.hash();
-        if let Some(build) = self.store.build(&source, sdk).await? {
+        if let Some(build) = cached {
             let retained = match self.store.artifact(&build.artifact).await {
                 Ok(_) => true,
                 Err(enco_kernel::StoreError::Artifact(_)) => false,
@@ -47,8 +81,7 @@ impl Development {
                 return Ok(Built {
                     artifact: ArtifactSource::Stored(build.artifact),
                     tree: source,
-                    result: BuildResult {
-                        name: name.into(),
+                    compiled: Compiled {
                         reused: true,
                         diagnostics: Vec::new(),
                         log: None,
@@ -56,31 +89,32 @@ impl Development {
                 });
             }
         }
-        let readme_before = authored_readme(&directory).await?;
-        let (bytes, result) = self.compile(name, cancel).await?;
+
+        let failed = |failure| DevelopmentError::Build {
+            name: name.clone(),
+            failure,
+        };
+        let (bytes, compiled) = self.compile(name, cancel).await?;
         let loaded = self
             .runtime
             .load(&bytes, &PluginSettings::default())
             .await
-            .map_err(|error| {
-                DevelopmentError::Build(format!("{name}: empty configuration is invalid: {error}"))
-            })?;
+            .map_err(|error| failed(BuildFailure::EmptySettings(error)))?;
         readme::write(&directory, &loaded).await?;
-        let after = self.git.tree(&relative).await?;
-        let changed = self.git.changed_files(&source, &after).await?;
+        let after = FileTree::read(&directory).await?;
+        let changed = after.changes(&source);
+        let readme = directory.join(readme::FILE);
         if changed
             .iter()
-            .any(|path| path != "Cargo.lock" && path != "README.md")
-            || readme_before != authored_readme(&directory).await?
+            .any(|path| *path != "Cargo.lock" && *path != readme::FILE)
+            || authored_readme(&readme, &source)? != authored_readme(&readme, &after)?
         {
-            return Err(DevelopmentError::Build(format!(
-                "{name}: source changed during the build; inspect the files and retry"
-            )));
+            return Err(failed(BuildFailure::SourceChanged));
         }
         let toolchain = toolchain(&directory, cancel).await?;
         self.store
             .remember_build(Build {
-                source: after.clone(),
+                source: after.hash(),
                 sdk,
                 artifact: ContentHash::of(&bytes),
                 toolchain,
@@ -90,16 +124,23 @@ impl Development {
         Ok(Built {
             artifact: ArtifactSource::Bytes(bytes),
             tree: after,
-            result,
+            compiled,
         })
     }
 
     async fn compile(
         &self,
-        name: &str,
+        name: &PluginName,
         cancel: &CancellationToken,
-    ) -> Result<(Vec<u8>, BuildResult), DevelopmentError> {
-        let directory = tokio::fs::canonicalize(self.home.join("plugins").join(name)).await?;
+    ) -> Result<(Vec<u8>, Compiled), DevelopmentError> {
+        let location = IntentPath::Plugin(name.clone()).locate(&self.home);
+        let directory = tokio::fs::canonicalize(&location)
+            .await
+            .map_err(|error| io(&location, &error))?;
+        let failed = |failure| DevelopmentError::Build {
+            name: name.clone(),
+            failure,
+        };
         let mut log = Vec::new();
         let mut messages = Vec::new();
         let mut artifact = None;
@@ -128,34 +169,33 @@ impl Development {
                 &mut artifact,
             );
             if !output.status.success() {
-                let path = self.store.blob_path(&self.store.put_blob(&log).await?);
-                let diagnostics = excerpts(messages);
-                return Err(DevelopmentError::Build(format!(
-                    "{name}: cargo {stage} failed\n{}\nFull log: {}",
-                    if diagnostics.is_empty() {
-                        String::from_utf8_lossy(&output.stderr).into_owned()
-                    } else {
-                        diagnostics.join("\n")
-                    },
-                    path.display()
-                )));
+                let log = self.store.blob_path(&self.store.put_blob(&log).await?);
+                let mut diagnostics = excerpts(messages);
+                if diagnostics.is_empty() {
+                    diagnostics.push(String::from_utf8_lossy(&output.stderr).into_owned());
+                }
+                return Err(failed(BuildFailure::Cargo {
+                    stage,
+                    diagnostics,
+                    log,
+                }));
             }
         }
         let log = self.store.blob_path(&self.store.put_blob(&log).await?);
-        let artifact = artifact.ok_or_else(|| {
-            DevelopmentError::Build(format!(
-                "{name}: Cargo produced no cdylib Wasm artifact\nFull log: {}",
-                log.display()
-            ))
-        })?;
-        let bytes = tokio::fs::read(&artifact).await?;
-        let result = BuildResult {
-            name: name.into(),
-            reused: false,
-            diagnostics: excerpts(messages),
-            log: Some(log),
+        let Some(artifact) = artifact else {
+            return Err(failed(BuildFailure::NoArtifact(log)));
         };
-        Ok((bytes, result))
+        let bytes = tokio::fs::read(&artifact)
+            .await
+            .map_err(|error| io(&artifact, &error))?;
+        Ok((
+            bytes,
+            Compiled {
+                reused: false,
+                diagnostics: excerpts(messages),
+                log: Some(log),
+            },
+        ))
     }
 }
 
@@ -167,21 +207,18 @@ async fn toolchain(
     command.current_dir(directory).arg("-vV");
     let output = process::run(command, cancel).await?;
     if !output.status.success() {
-        return Err(DevelopmentError::Build(format!(
+        return Err(DevelopmentError::Host(format!(
             "rustc -vV: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    String::from_utf8(output.stdout).map_err(|error| DevelopmentError::Build(error.to_string()))
+    String::from_utf8(output.stdout).map_err(|error| DevelopmentError::Host(error.to_string()))
 }
 
-async fn authored_readme(directory: &std::path::Path) -> Result<String, DevelopmentError> {
-    let text = match tokio::fs::read_to_string(directory.join("README.md")).await {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error.into()),
-    };
-    readme::authored(&text)
+fn authored_readme(path: &std::path::Path, tree: &FileTree) -> Result<String, EntryError> {
+    let bytes = tree.files.get(readme::FILE).map_or(&[][..], Vec::as_slice);
+    let text = std::str::from_utf8(bytes).map_err(|_| entry(path, EntryProblem::NotText))?;
+    readme::authored(path, text)
 }
 
 fn parse_messages(

@@ -7,7 +7,7 @@ use rusqlite::{OptionalExtension, params};
 /// A successful local build; file retention is owned by the registry, independently of this record.
 #[derive(Clone)]
 pub(super) struct Build {
-    pub source: String,
+    pub source: ContentHash,
     pub sdk: ContentHash,
     pub artifact: ContentHash,
     pub toolchain: String,
@@ -21,18 +21,17 @@ fn error(error: impl std::fmt::Display) -> StoreError {
 impl SqliteStore {
     pub(super) async fn build(
         &self,
-        source: &str,
+        source: ContentHash,
         sdk: ContentHash,
     ) -> Result<Option<Build>, StoreError> {
-        let source = source.to_owned();
         self.run(move |connection| {
             connection
                 .query_row(
                     "SELECT artifact,toolchain,created_at FROM builds WHERE source=? AND sdk=?",
-                    params![source, sdk.to_string()],
+                    params![source.to_string(), sdk.to_string()],
                     |row| {
                         Ok(Build {
-                            source: source.clone(),
+                            source,
                             sdk,
                             artifact: text(row, 0)?,
                             toolchain: row.get(1)?,
@@ -52,7 +51,7 @@ impl SqliteStore {
                 "INSERT INTO builds(source,sdk,artifact,toolchain,created_at) VALUES (?,?,?,?,?)
                  ON CONFLICT(source,sdk) DO UPDATE SET
                    artifact=excluded.artifact, toolchain=excluded.toolchain, created_at=excluded.created_at",
-                params![build.source, build.sdk.to_string(), build.artifact.to_string(),
+                params![build.source.to_string(), build.sdk.to_string(), build.artifact.to_string(),
                     build.toolchain, timestamp(build.created_at)],
             ).map_err(error)?;
             Ok(())

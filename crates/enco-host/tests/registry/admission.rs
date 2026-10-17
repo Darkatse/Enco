@@ -41,38 +41,25 @@ async fn admission_keeps_configured_exports_connected() {
     )
     .await
     .unwrap();
-    let before = registry.status().await.unwrap().plugins.remove(0);
-    for (bytes, user, explanation) in [
-        (
-            b"completion-only".as_slice(),
-            "memory.embedding",
-            "requires embedding",
-        ),
-        (
-            b"no-credential",
-            "memory.embedding",
-            "declares no credential",
-        ),
-        (
-            b"required",
-            "profile default.reply",
-            "requires a credential",
-        ),
+    let before = store.registry().await.unwrap().generations;
+    for (bytes, expected_user, expected_endpoint) in [
+        (b"completion-only".as_slice(), "memory.embedding", "embed"),
+        (b"no-credential", "memory.embedding", "embed"),
+        (b"required", "profile default.reply", "reply"),
     ] {
         let result = submit(&registry, artifact_request("fixture", bytes.to_vec())).await;
-        let Err(RegistryError::Rejected { name, reason }) = result else {
+        let Err(RegistryError::Rejected(causes)) = result else {
             panic!("expected admission rejection");
         };
-        assert_eq!(name, "fixture");
         assert!(
-            reason.contains(user) && reason.contains(explanation),
-            "{reason}"
+            matches!(causes.as_slice(), [Cause::Use { user, endpoint, failure }]
+                if user == expected_user
+                    && endpoint == expected_endpoint
+                    && failure.code == code::PLUGIN_UNAVAILABLE),
+            "{causes:?}"
         );
     }
-    assert_eq!(
-        registry.status().await.unwrap().plugins[0].generations,
-        before.generations
-    );
+    assert_eq!(store.registry().await.unwrap().generations, before);
     drop(registry);
     // Restoring registered content reports unavailable uses instead of accepting new intent.
     let restored = open_registry(
@@ -118,13 +105,9 @@ async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
         .await
         .unwrap();
     let status = registry.status().await.unwrap();
-    assert_eq!(status.plugins[0].unavailable, None);
-    assert_eq!(status.plugins[0].unavailable_uses.len(), 1);
-    assert!(status.plugins[0].unavailable_uses[0].contains("memory.embedding"));
-    assert_eq!(
-        status.config.unavailable_uses,
-        status.plugins[0].unavailable_uses
-    );
+    assert!(matches!(status.plugins[0].running, Running::Serving { .. }));
+    assert_eq!(status.config.unavailable_uses.len(), 1);
+    assert_eq!(status.config.unavailable_uses[0].user, "memory.embedding");
     let reply = fixture_endpoint("fixture");
     assert!(registry.view().exports.completion(&reply, false).is_ok());
     let mut embed = reply.clone();
@@ -145,7 +128,14 @@ async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
         .await
         .err()
         .unwrap();
-    assert!(error.to_string().contains("declares no credential"));
+    assert!(
+        matches!(&error, RegistryError::Rejected(causes)
+            if matches!(causes.as_slice(), [Cause::Use { user, endpoint, failure }]
+                if user == "profile default.reply"
+                    && endpoint == "new"
+                    && failure.code == code::PLUGIN_UNAVAILABLE)),
+        "{error:?}"
+    );
     assert_eq!(registry.view().config.generation, before);
 
     document["endpoint"]["embed"]
@@ -156,7 +146,6 @@ async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
         .await
         .unwrap();
     let status = registry.status().await.unwrap();
-    assert!(status.plugins[0].unavailable_uses.is_empty());
     assert!(status.config.unavailable_uses.is_empty());
     embed.settings.api_key_env = None;
     assert!(registry.view().exports.embedding(&embed).is_ok());
@@ -175,13 +164,13 @@ async fn initial_configuration_requires_registered_plugins() {
         configuration_request(document),
     )
     .await;
-    let Err(RegistryError::Rejected { name, reason }) = result else {
+    let Err(RegistryError::Rejected(causes)) = result else {
         panic!("expected missing plugin rejection");
     };
-    assert_eq!(name, "missing");
     assert!(
-        reason.contains("profile default.reply") && reason.contains("not registered"),
-        "{reason}"
+        matches!(causes.as_slice(), [Cause::UnknownPlugin { user, plugin, .. }]
+            if user == "profile default.reply" && plugin.as_str() == "missing"),
+        "{causes:?}"
     );
 }
 
@@ -224,7 +213,7 @@ async fn unrelated_unavailable_plugins_do_not_block_incremental_repairs() {
     document["endpoint"]["optional"]["plugin"] = "optional".into();
     document["profile"]["default"]["reply"] = serde_json::json!(["reply", "optional"]);
     let factory = FactoryPlugin {
-        name: "optional".into(),
+        name: "optional".parse().unwrap(),
         id: PluginId::new(),
         artifact: b"optional".to_vec(),
     };
@@ -261,13 +250,11 @@ async fn unrelated_unavailable_plugins_do_not_block_incremental_repairs() {
     let optional = status
         .plugins
         .iter()
-        .find(|plugin| plugin.name.as_deref() == Some("optional"))
+        .find(|plugin| plugin.name.as_str() == "optional")
         .unwrap();
     assert!(
-        optional
-            .unavailable
-            .as_ref()
-            .unwrap()
-            .contains("OPTIONAL_KEY")
+        matches!(&optional.running, Running::Unavailable { causes, .. }
+        if matches!(causes.as_slice(), [Cause::Environment { failure, .. }]
+            if failure.code == code::CREDENTIAL_UNAVAILABLE))
     );
 }

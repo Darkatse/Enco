@@ -110,8 +110,15 @@ impl Runtime for ScriptedRuntime {
             .unwrap()
             .get(&ContentHash::of(bytes))
             .cloned()
-            .ok_or_else(|| LoadError("unknown fixture artifact".into()))
+            .ok_or_else(|| LoadError::Component("unknown fixture artifact".into()))
     }
+}
+
+pub fn running_generation(plugin: &PluginStatus) -> Option<&GenerationRecord> {
+    plugin
+        .running
+        .activation()
+        .map(|activation| &activation.generation)
 }
 
 pub fn store_paths(root: &Path) -> StorePaths {
@@ -144,7 +151,7 @@ pub fn fixture_endpoint(plugin: &str) -> Endpoint {
         .first()
         .endpoint
         .clone();
-    endpoint.plugin = plugin.into();
+    endpoint.plugin = plugin.parse().unwrap();
     endpoint
 }
 
@@ -179,7 +186,7 @@ pub fn registry_deps(
         store,
         runtime,
         factory: vec![FactoryPlugin {
-            name: "fixture".into(),
+            name: "fixture".parse().unwrap(),
             id: FIXTURE_ID.parse().unwrap(),
             artifact: factory.to_vec(),
         }],
@@ -398,14 +405,18 @@ pub async fn open_registry(
     deps: RegistryDeps,
     mut request: RegistrationRequest,
 ) -> Result<Arc<Registry>, RegistryError> {
-    Registry::open(deps, |registered| async move {
-        for (name, plugin) in registered.plugins {
-            if plugin.factory.is_some() {
-                request.plugins.entry(name).or_insert(PluginChange::Factory);
+    Registry::open(
+        deps,
+        |registered| async move {
+            for (name, plugin) in registered.plugins {
+                if plugin.factory.is_some() {
+                    request.plugins.entry(name).or_insert(PluginChange::Factory);
+                }
             }
-        }
-        Ok::<_, RegistryError>(request)
-    })
+            Ok::<_, RegistryError>(request)
+        },
+        |error| error,
+    )
     .await
 }
 
@@ -414,14 +425,25 @@ pub async fn submit(
     registry: &Registry,
     mut request: RegistrationRequest,
 ) -> Result<Registered, RegistryError> {
-    request.base = registry.registered_intent().await.base.map(|base| base.id);
+    request.base = registry
+        .registered_intent(None)
+        .await
+        .unwrap()
+        .registration();
     registry.register(request).await
+}
+
+pub fn configuration_source(document: serde_json::Value) -> ConfigurationSource {
+    ConfigurationSource {
+        source: ContentHash::of(document.to_string().as_bytes()),
+        document,
+    }
 }
 
 pub fn configuration_request(document: serde_json::Value) -> RegistrationRequest {
     RegistrationRequest {
-        revision: format!("fixture-config-{}", EventId::new()),
-        configuration: Some(document),
+        initiator: Initiator::Owner { reason: None },
+        configuration: Some(configuration_source(document)),
         base: None,
         plugins: Default::default(),
     }
@@ -429,8 +451,8 @@ pub fn configuration_request(document: serde_json::Value) -> RegistrationRequest
 
 pub fn artifact_request(name: &str, bytes: Vec<u8>) -> RegistrationRequest {
     RegistrationRequest {
-        revision: format!("fixture-artifact-{}", EventId::new()),
-        plugins: [(name.into(), PluginChange::Artifact(bytes))].into(),
+        initiator: Initiator::Owner { reason: None },
+        plugins: [(name.parse().unwrap(), PluginChange::Artifact(bytes))].into(),
         base: None,
         configuration: None,
     }
@@ -438,10 +460,13 @@ pub fn artifact_request(name: &str, bytes: Vec<u8>) -> RegistrationRequest {
 
 pub fn source_request(name: &str, bytes: &[u8]) -> RegistrationRequest {
     RegistrationRequest {
-        revision: format!("fixture-source-{}", EventId::new()),
+        initiator: Initiator::Owner { reason: None },
         plugins: [(
-            name.into(),
-            PluginChange::Code(ArtifactSource::Bytes(bytes.into())),
+            name.parse().unwrap(),
+            PluginChange::Code {
+                source: ContentHash::of(bytes),
+                artifact: ArtifactSource::Bytes(bytes.into()),
+            },
         )]
         .into(),
         base: None,
@@ -479,7 +504,7 @@ impl Tool for TestStatus {
         _args: serde_json::Map<String, serde_json::Value>,
     ) -> Outcome {
         Outcome::Ok {
-            value: serde_json::json!(self.0.status().await.unwrap()),
+            value: serde_json::json!(self.0.status().await.unwrap().plugins),
         }
     }
 }

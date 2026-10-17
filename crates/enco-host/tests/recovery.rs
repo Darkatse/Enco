@@ -316,10 +316,27 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
             "schedule_create",
             &serde_json::json!({ "at": at, "message": "must not be created" }).to_string(),
         )]),
-        calls(vec![call("self_apply", "{}")]),
+        calls(vec![call(
+            "self_apply",
+            r#"{"reason":"Apply test intent"}"#,
+        )]),
         reply("safe"),
     ]);
-    let (kernel, store) = kernel(dir.path(), provider).await;
+    let (kernel, store) = kernel(dir.path(), provider.clone()).await;
+    let baseline = kernel
+        .registry()
+        .registered_intent(None)
+        .await
+        .unwrap()
+        .registration()
+        .unwrap();
+    provider.steps.lock().unwrap().insert(
+        2,
+        calls(vec![call(
+            "self_rewind",
+            &serde_json::json!({"registration": baseline}).to_string(),
+        )]),
+    );
     std::fs::write(dir.path().join("AGENTS.md"), [0xff]).unwrap();
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
@@ -356,10 +373,21 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
         log.iter()
             .filter(|entry| matches!(entry.body, EntryBody::ToolCallStarted { .. }))
             .count(),
-        1
+        2
     );
-    assert!(log.iter().any(|entry| matches!(&entry.body,
-        EntryBody::ToolCallSettled { outcome: Settlement::Ok, content, .. } if serde_json::from_str::<serde_json::Value>(content).unwrap()["registered"]["registration"].is_object())));
+    assert_eq!(
+        log.iter()
+            .filter(|entry| matches!(
+                entry.body,
+                EntryBody::ToolCallSettled {
+                    outcome: Settlement::Ok,
+                    ..
+                }
+            ))
+            .count(),
+        2
+    );
+    assert_eq!(kernel.registry().history(None, 3).await.unwrap().len(), 2);
     assert_eq!(
         kernel
             .registry()
@@ -377,6 +405,11 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
         } => failure.code == code::TOOL_UNAVAILABLE,
         _ => false,
     }));
+    assert_lifeline_plan(&store, &log).await;
+    kernel.shutdown().await.unwrap();
+}
+
+async fn assert_lifeline_plan(store: &enco_host::SqliteStore, log: &[Entry]) {
     let hash = log
         .iter()
         .find_map(|e| match e.body {
@@ -394,7 +427,6 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
     let mut expected = enco_host::LIFELINE.to_vec();
     expected.sort_unstable();
     assert_eq!(tools, expected);
-    kernel.shutdown().await.unwrap();
 }
 
 #[tokio::test]

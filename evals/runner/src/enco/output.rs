@@ -3,8 +3,18 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
 pub(crate) struct Status {
+    pub(crate) node: Node,
+    pub(crate) plugins: std::collections::BTreeMap<String, PluginUnit>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Node {
     pub(crate) sessions: Vec<SessionStatus>,
-    pub(crate) plugins: Vec<Plugin>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct PluginUnit {
+    pub(crate) running: Option<Plugin>,
 }
 
 #[derive(Deserialize)]
@@ -21,8 +31,26 @@ pub(crate) struct Session {
 
 #[derive(Deserialize)]
 pub(crate) struct Plugin {
-    pub(crate) name: Option<String>,
-    pub(crate) active: Option<Generation>,
+    pub(crate) running: Running,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub(crate) enum Running {
+    Serving {
+        name: String,
+        activation: Activation,
+    },
+    Unavailable {
+        name: String,
+        activation: Activation,
+    },
+    Stopped,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Activation {
+    pub(crate) generation: Generation,
 }
 
 #[derive(Deserialize)]

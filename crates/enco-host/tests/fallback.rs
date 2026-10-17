@@ -77,12 +77,10 @@ fn narrow(endpoint: &mut Value, window_tokens: u32) {
     endpoint["max_output_tokens"] = 256.into();
 }
 
-fn write_history(root: &Path) {
-    std::fs::write(
-        root.join("workspace/history.txt"),
-        "some detailed history ".repeat(450),
-    )
-    .unwrap();
+fn write_history(root: &Path) -> String {
+    let text = "some detailed history ".repeat(450);
+    std::fs::write(root.join("workspace/history.txt"), &text).unwrap();
+    text
 }
 
 /// Replies that each read the long history once.
@@ -184,7 +182,10 @@ async fn exhausted_combinations_survive_unrelated_registration_and_reset_with_th
         )
         .unwrap();
         backup.steps.lock().unwrap().extend([
-            calls(vec![call("self_apply", "{}")]),
+            calls(vec![call(
+                "self_apply",
+                r#"{"reason":"Apply test intent"}"#,
+            )]),
             reply("backup finished"),
         ]);
         let log = send(&kernel, "work").await;
@@ -266,7 +267,7 @@ async fn automatic_safe_mode_tracks_repair_and_starts_each_run_afresh() {
         let trial = ScriptedProvider::new(vec![Err(unavailable(false)), Err(unavailable(false))]);
         let (kernel, original, broken) = registry_node(dir.path(), factory.clone(), trial).await;
         let repair_call = if repair {
-            call("self_apply", "{}")
+            call("self_apply", r#"{"reason":"Apply test intent"}"#)
         } else {
             call("fs_list", r#"{"path":"."}"#)
         };
@@ -507,9 +508,9 @@ async fn applying_calls_every_candidate_once_and_a_failing_backup_rejects_it() {
     .await;
     let before = registry.view().config.generation;
     let result = submit(&registry, configuration_request(candidates())).await;
-    assert!(
-        matches!(result, Err(RegistryError::Rejected { reason, .. }) if reason.contains("endpoint backup-chat") && reason.contains("402"))
-    );
+    assert!(matches!(result, Err(RegistryError::Rejected(causes))
+        if matches!(causes.as_slice(), [Cause::Use { endpoint, failure, .. }]
+            if endpoint == "backup-chat" && *failure == unavailable(false))));
     assert_eq!(registry.view().config.generation, before);
     // The alias shares the primary's call parameters, so the two make one call.
     assert_eq!(
@@ -539,9 +540,8 @@ async fn a_profile_without_candidates_is_rejected() {
         let mut empty = configuration();
         empty["profile"]["default"][field] = json!([]);
         let result = submit(&registry, configuration_request(empty)).await;
-        assert!(
-            matches!(result, Err(RegistryError::Rejected { reason, .. }) if reason.contains("profile.default") && reason.contains(field))
-        );
+        assert!(matches!(result, Err(RegistryError::Rejected(causes))
+            if matches!(causes.as_slice(), [Cause::Table(error)] if error.table == "profile.default")));
     }
 }
 
@@ -625,6 +625,61 @@ async fn compaction_fallback_recomposes_for_its_own_budget() {
     kernel.shutdown().await.unwrap();
 }
 
+struct ObservedComposer {
+    inner: Arc<dyn Composer>,
+    inputs: Arc<Mutex<Vec<ComposeInput>>>,
+}
+impl Composer for ObservedComposer {
+    fn code(&self) -> CodeRef {
+        self.inner.code()
+    }
+    fn compose(&self, input: &ComposeInput) -> Result<Composition, ComposeError> {
+        self.inputs.lock().unwrap().push(input.clone());
+        self.inner.compose(input)
+    }
+}
+
+#[expect(
+    clippy::panic,
+    reason = "calibration fails the test if the composer does not report its needed size"
+)]
+async fn measured_reply_window() -> u32 {
+    let root = tempfile::tempdir().unwrap();
+    let inputs = Arc::new(Mutex::new(Vec::new()));
+    let provider = ScriptedProvider::new(reads(2).chain([reply("read")]).collect());
+    let mut document = configuration();
+    document["endpoint"]["reply"]["max_output_tokens"] = 256.into();
+    let mut composer = None;
+    let (kernel, _) = kernel_configured(root.path(), provider, document, vec![], |deps| {
+        composer = Some(deps.composer.clone());
+        deps.composer = Arc::new(ObservedComposer {
+            inner: deps.composer.clone(),
+            inputs: inputs.clone(),
+        });
+    })
+    .await;
+    let composer = composer.unwrap();
+    let history = write_history(root.path());
+    send(&kernel, "read the history twice").await;
+    kernel.shutdown().await.unwrap();
+    let mut costs = BTreeMap::new();
+    for mut input in inputs.lock().unwrap().drain(..) {
+        let reads = input.transcript.items.iter().flat_map(|item| &item.message.parts)
+            .filter(|part| matches!(part, Part::ToolResult(result) if result.content.ends_with(&history))).count();
+        // Ask the real composer for its needed size, with compaction disabled for this probe.
+        input.reply.budget.context_tokens = std::num::NonZeroU32::MIN;
+        input.compactions_left = 0;
+        let Err(ComposeError::ContextOverflow { needed, .. }) = composer.compose(&input) else {
+            panic!("calibration must report the complete request size");
+        };
+        costs.insert(reads, needed);
+    }
+    let (one, two) = (costs[&1], costs[&2]);
+    let window = one + (two - one) / 2;
+    assert!(one < window && window < two);
+    window
+}
+
 #[tokio::test]
 async fn without_a_compaction_model_only_a_reply_that_fits_proceeds() {
     let dir = tempfile::tempdir().unwrap();
@@ -644,8 +699,10 @@ async fn without_a_compaction_model_only_a_reply_that_fits_proceeds() {
         ),
     ])));
     let mut document = configuration();
-    // After one read the reply is due for compaction but still fits; after two it does not.
-    narrow(&mut document["endpoint"]["reply"], 7000);
+    narrow(
+        &mut document["endpoint"]["reply"],
+        measured_reply_window().await,
+    );
     document["endpoint"]["compaction"]["model"] = "summary".into();
     let (kernel, _) = kernel_configured(dir.path(), provider, document, vec![], |_| {}).await;
     write_history(dir.path());

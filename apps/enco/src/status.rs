@@ -1,28 +1,68 @@
 use crate::compose_root::Application;
 use async_trait::async_trait;
 use enco_core::{CodeRef, Failure, Outcome, ToolSpec, code};
+use enco_host::development::Failed;
 use enco_kernel::{CallContext, KernelError, Tool};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use std::sync::{OnceLock, Weak};
 
-pub(crate) async fn read(application: &Application) -> Result<Value, KernelError> {
-    let (registry, workspace) = application
+/// Each source keeps its own error code.
+#[derive(Debug)]
+pub(crate) enum ReadError {
+    Development(Failed),
+    Kernel(KernelError),
+}
+
+impl From<Failed> for ReadError {
+    fn from(failed: Failed) -> Self {
+        Self::Development(failed)
+    }
+}
+
+impl From<KernelError> for ReadError {
+    fn from(error: KernelError) -> Self {
+        Self::Kernel(error)
+    }
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Development(failed) => failed.fmt(f),
+            Self::Kernel(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ReadError {}
+
+impl ReadError {
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::Development(failed) => failed.code(),
+            Self::Kernel(_) => code::TOOL_FAILED,
+        }
+    }
+}
+
+pub(crate) async fn read(
+    application: &Application,
+) -> Result<enco_host::status::Status, ReadError> {
+    let development = application
         .development
         .status(application.kernel.registry())
         .await?;
-    let mut status = json!(application.kernel.status().await?);
-    status["host"] = json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "revision": env!("ENCO_REVISION"),
-        "home": application.paths.home,
-    });
-    status["channels"] = json!(application.channels.status().await?);
-    status["config"] = json!(registry.config);
-    status["plugins"] = json!(registry.plugins);
-    status["registrations"] = json!(registry.registrations);
-    status["registered"] = json!(registry.registered);
-    status["workspace"] = json!(workspace);
-    Ok(status)
+    let execution = application.kernel.status().await?;
+    Ok(enco_host::status::Status {
+        development,
+        node: enco_host::status::Node {
+            version: env!("CARGO_PKG_VERSION").into(),
+            revision: env!("ENCO_REVISION").into(),
+            home: application.paths.home.clone(),
+            execution,
+            channels: application.channels.status().await?,
+        },
+    })
 }
 
 /// The application binds its status tool after construction; CLI and tools share `read`.
@@ -42,18 +82,26 @@ impl Tool for StatusTool {
     fn spec(&self) -> ToolSpec {
         enco_host::self_status_spec()
     }
-
-    async fn call(&self, _ctx: CallContext, _arguments: Map<String, Value>) -> Outcome {
-        let application = self.application.get().and_then(Weak::upgrade);
-        let result = match application {
-            Some(application) => read(&application).await.map_err(|error| error.to_string()),
-            None => Err("application is not running".into()),
-        };
-        match result {
-            Ok(value) => Outcome::Ok { value },
-            Err(error) => Outcome::Failed {
+    async fn call(&self, _ctx: CallContext, arguments: Map<String, Value>) -> Outcome {
+        if let Err(failure) = enco_host::development::StatusArguments::parse(arguments) {
+            return Outcome::Failed { failure };
+        }
+        let Some(application) = self.application.get().and_then(Weak::upgrade) else {
+            return Outcome::Failed {
                 failure: Failure {
                     code: code::TOOL_FAILED.into(),
+                    message: "application is not running".into(),
+                    retryable: false,
+                },
+            };
+        };
+        match read(&application).await {
+            Ok(status) => Outcome::Ok {
+                value: status.document().into(),
+            },
+            Err(error) => Outcome::Failed {
+                failure: Failure {
+                    code: error.code().into(),
                     message: error.to_string(),
                     retryable: false,
                 },

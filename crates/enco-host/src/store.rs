@@ -18,7 +18,7 @@ use std::{
 
 /// `PRAGMA user_version` covers SQLite and its referenced plans. Until P4, persistent
 /// format changes require a new database; opening never migrates or deletes the old one.
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -282,7 +282,7 @@ impl Store for SqliteStore {
             .await
     }
 
-    async fn activate(&self, change: &Activation) -> Result<(), StoreError> {
+    async fn activate(&self, change: &ActivationWrite) -> Result<(), StoreError> {
         let change = change.clone();
         self.run(move |connection| registry::activate(connection, &change))
             .await

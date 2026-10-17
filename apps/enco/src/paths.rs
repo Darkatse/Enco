@@ -18,7 +18,7 @@ impl Paths {
     }
 
     pub fn config(&self) -> PathBuf {
-        self.home.join("config.toml")
+        enco_core::IntentPath::Configuration.locate(&self.home)
     }
 
     pub fn workspace(&self) -> PathBuf {

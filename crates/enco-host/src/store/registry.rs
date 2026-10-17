@@ -2,7 +2,7 @@
 use super::{backend, encode, rows, signed};
 use crate::sqlite::{optional_unsigned, timestamp};
 use enco_core::*;
-use enco_kernel::{Activation, RegistrationWrite, StoreError};
+use enco_kernel::{ActivationWrite, RegistrationWrite, StoreError};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 mod read;
 pub(super) use read::read;
@@ -43,11 +43,18 @@ pub(super) fn register(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
     let record = &write.registration;
+    let (initiator, session, call) = match &record.initiator {
+        Initiator::Owner { .. } => ("owner", None, None),
+        Initiator::Host => ("host", None, None),
+        Initiator::Agent { session, call, .. } => {
+            ("agent", Some(session.to_string()), Some(call.to_string()))
+        }
+    };
     tx.execute(
-        "INSERT INTO registrations(id,revision,created_at) VALUES (?,?,?)",
+        "INSERT INTO registrations(id,initiator,session,call,reason,created_at) VALUES (?,?,?,?,?,?)",
         params![
             signed(record.id.0)?,
-            record.revision,
+            initiator, session, call, record.initiator.reason().map(Reason::as_str),
             timestamp(record.created_at)
         ],
     )
@@ -78,20 +85,21 @@ pub(super) fn register(
             params![
                 signed(record.id.0)?,
                 plugin.to_string(),
-                name.name,
+                name.name.as_deref(),
                 name.previous.map(|id| signed(id.0)).transpose()?
             ],
         )
         .map_err(backend)?;
     }
     for (plugin, code) in &record.code {
-        let intent = code.intent.map(|intent| match intent {
-            CodeIntent::Directory => "directory",
-            CodeIntent::Factory => "factory",
-        });
+        let (intent, source) = match code.intent {
+            Some(CodeIntent::Directory { source }) => (Some("directory"), Some(source.to_string())),
+            Some(CodeIntent::Factory) => (Some("factory"), None),
+            None => (None, None),
+        };
         tx.execute(
-            "INSERT INTO registration_code(registration,plugin_id,generation,intent) VALUES (?,?,?,?)",
-            params![signed(record.id.0)?, plugin.to_string(), signed(code.generation.0)?, intent],
+            "INSERT INTO registration_code(registration,plugin_id,generation,intent,source) VALUES (?,?,?,?,?)",
+            params![signed(record.id.0)?, plugin.to_string(), signed(code.generation.0)?, intent, source],
         ).map_err(backend)?;
     }
     for generation in &write.generations {
@@ -167,11 +175,12 @@ fn insert_config(connection: &Connection, record: &ConfigGeneration) -> Result<(
         .map_err(backend)?;
     connection
         .execute(
-            "INSERT INTO config_generations(id,registration,document,previous) VALUES (?,?,?,?)",
+            "INSERT INTO config_generations(id,registration,document,source,previous) VALUES (?,?,?,?,?)",
             params![
                 signed(record.id.0)?,
                 signed(record.registration.0)?,
                 encode(&record.document)?,
+                record.source.to_string(),
                 record.previous.map(|id| signed(id.0)).transpose()?
             ],
         )
@@ -179,7 +188,10 @@ fn insert_config(connection: &Connection, record: &ConfigGeneration) -> Result<(
     Ok(())
 }
 
-pub(super) fn activate(connection: &mut Connection, change: &Activation) -> Result<(), StoreError> {
+pub(super) fn activate(
+    connection: &mut Connection,
+    change: &ActivationWrite,
+) -> Result<(), StoreError> {
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;

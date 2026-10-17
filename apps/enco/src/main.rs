@@ -9,9 +9,9 @@ mod status;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
-use enco_core::{AttemptId, EventId, MemoryId, ScheduleId};
+use enco_core::{AttemptId, EventId, MemoryId, Reason, RegistrationId, ScheduleId};
 use paths::Paths;
-use protocol::Command;
+use protocol::{Command, Output};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
@@ -28,15 +28,38 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    /// Build and register changed intent on Enco's chain, preserving your branch and index.
-    Apply,
-    /// Restore the still-effective parts of a registration without Git, Cargo or model calls.
+    /// Build and register changed source and configuration intent in Enco's store.
+    Apply {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        reason: Option<Reason>,
+    },
+    /// Read registration history or compare a registration number with workspace intent.
+    History {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        from: Option<enco_host::development::HistoryPoint>,
+        #[arg(long)]
+        to: Option<enco_host::development::HistoryPoint>,
+        #[arg(long)]
+        before: Option<u64>,
+    },
+    /// Restore workspace intent; review it, then apply to register the change.
+    Rewind {
+        #[arg(long)]
+        json: bool,
+        registration: u64,
+        paths: Vec<enco_core::IntentPath>,
+    },
+    /// Restore the still-effective parts of a registration without builds or model calls.
     Rollback,
     Plugin {
         #[command(subcommand)]
         command: PluginAction,
     },
-    /// Initialize the home repository and bundled SDK without committing to your branch.
+    /// Initialize the home directories and bundled SDK without replacing existing intent.
     Init,
     Serve,
     Chat {
@@ -58,7 +81,10 @@ enum Action {
         #[arg(long)]
         forget: Option<MemoryId>,
     },
-    Status,
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     Sessions,
     Log {
         #[arg(long, default_value = "main", help = "Session name or ID")]
@@ -86,11 +112,25 @@ enum Action {
 #[derive(Subcommand)]
 enum PluginAction {
     /// Register a component file without changing source intent.
-    Deploy { name: String, path: PathBuf },
+    Deploy {
+        #[arg(long)]
+        json: bool,
+        name: enco_core::PluginName,
+        path: PathBuf,
+        #[arg(long)]
+        reason: Option<Reason>,
+    },
     /// Create a standalone plugin directory for the next apply.
-    Scaffold { name: String },
+    Scaffold { name: enco_core::PluginName },
     /// Rename registered source while preserving identity and unregistered edits.
-    Rename { name: String, to: String },
+    Rename {
+        #[arg(long)]
+        json: bool,
+        name: enco_core::PluginName,
+        to: enco_core::PluginName,
+        #[arg(long)]
+        reason: Option<Reason>,
+    },
 }
 
 #[derive(Clone, ValueEnum)]
@@ -100,6 +140,7 @@ enum Switch {
 }
 
 #[tokio::main]
+#[expect(clippy::too_many_lines, reason = "one dispatch arm per CLI command")]
 #[expect(
     clippy::print_stdout,
     reason = "printing the result is this command's interface"
@@ -108,15 +149,56 @@ async fn main() -> Result<()> {
     let paths = Paths::from_env()?;
     let cli = Cli::parse();
     let command = match cli.command {
-        Action::Apply => Command::Apply {},
+        Action::Apply { reason, json } => Command::Apply {
+            reason,
+            output: Output::for_json(json),
+        },
+        Action::History {
+            from,
+            to,
+            before,
+            json,
+        } => Command::History {
+            output: Output::for_json(json),
+            query: enco_host::development::HistoryQuery::new(from, to, before.map(RegistrationId))
+                .map_err(|error| anyhow::anyhow!(error))?,
+        },
+        Action::Rewind {
+            registration,
+            paths,
+            json,
+        } => Command::Rewind {
+            output: Output::for_json(json),
+            arguments: enco_host::development::RewindArguments {
+                registration: RegistrationId(registration),
+                paths: (!paths.is_empty()).then_some(paths),
+            },
+        },
         Action::Rollback => Command::Rollback {},
         Action::Plugin { command } => match command {
-            PluginAction::Deploy { name, path } => Command::PluginDeploy {
+            PluginAction::Deploy {
+                name,
+                path,
+                reason,
+                json,
+            } => Command::PluginDeploy {
+                output: Output::for_json(json),
                 name,
                 path: std::path::absolute(path)?,
+                reason,
             },
             PluginAction::Scaffold { name } => Command::PluginScaffold { name },
-            PluginAction::Rename { name, to } => Command::PluginRename { name, to },
+            PluginAction::Rename {
+                name,
+                to,
+                reason,
+                json,
+            } => Command::PluginRename {
+                name,
+                to,
+                reason,
+                output: Output::for_json(json),
+            },
         },
         Action::Init => return init(&paths).await,
         Action::Serve => {
@@ -156,7 +238,9 @@ async fn main() -> Result<()> {
             None => Command::Memories {},
         },
         Action::Profile { session, profile } => Command::SetProfile { session, profile },
-        Action::Status => Command::Status {},
+        Action::Status { json } => Command::Status {
+            output: Output::for_json(json),
+        },
         Action::Sessions => Command::Sessions {},
         Action::Log { session } => Command::Log {
             session,
@@ -171,11 +255,18 @@ async fn main() -> Result<()> {
         },
         Action::Cancel { session } => Command::Cancel { session },
     };
+    let output = command.output();
     let data = client::Client::connect(&paths.socket())
         .await?
         .request(command)
         .await?;
-    println!("{data:#}");
+    match output {
+        Output::Json => println!("{data:#}"),
+        Output::Document => {
+            let document: String = serde_json::from_value(data)?;
+            println!("{document}");
+        }
+    }
     Ok(())
 }
 
@@ -205,7 +296,7 @@ async fn init(paths: &Paths) -> Result<()> {
             paths.config().display()
         );
     }
-    compose_root::SDK.write(&paths.home).await?;
+    compose_root::sdk()?.write(&paths.home).await?;
     enco_host::development::Development::initialize(&paths.home).await?;
     println!(
         "Enco home: {}\nEdit {}, set its API key environment variables, then run `enco serve` and `enco chat`.",
@@ -232,5 +323,38 @@ async fn create_new(path: &Path, bytes: &[u8]) -> Result<bool> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(e) => Err(e).with_context(|| format!("create {}", path.display())),
+    }
+}
+
+impl Output {
+    pub(crate) fn for_json(json: bool) -> Self {
+        if json { Self::Json } else { Self::Document }
+    }
+}
+
+impl Command {
+    pub(crate) fn output(&self) -> Output {
+        match self {
+            Self::Status { output }
+            | Self::Apply { output, .. }
+            | Self::History { output, .. }
+            | Self::Rewind { output, .. }
+            | Self::PluginDeploy { output, .. }
+            | Self::PluginRename { output, .. } => *output,
+            Self::Send { .. }
+            | Self::Subscribe { .. }
+            | Self::Cancel { .. }
+            | Self::Schedules { .. }
+            | Self::CancelSchedule { .. }
+            | Self::Memories { .. }
+            | Self::ForgetMemory { .. }
+            | Self::Sessions { .. }
+            | Self::Log { .. }
+            | Self::Rollback { .. }
+            | Self::PluginScaffold { .. }
+            | Self::Inspect { .. }
+            | Self::SetProfile { .. }
+            | Self::SafeMode { .. } => Output::Json,
+        }
     }
 }

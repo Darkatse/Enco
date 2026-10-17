@@ -119,7 +119,7 @@ pub struct ChannelStatus {
     pub key: String,
     pub running: bool,
     pub stopped: Option<String>,
-    pub recent_failures: Vec<DeliverySettlement>,
+    pub recent_failures: Vec<enco_kernel::DeliveryStatus>,
 }
 
 #[derive(Clone)]

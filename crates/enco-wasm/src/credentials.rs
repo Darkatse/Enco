@@ -20,13 +20,13 @@ impl Placement {
     pub fn new(credential: &lifecycle::Credential) -> Result<Self, LoadError> {
         let name = &credential.name;
         let header = HeaderName::from_bytes(credential.header.as_bytes()).map_err(|e| {
-            LoadError(format!(
+            LoadError::Component(format!(
                 "credential {name} header {}: {e}",
                 credential.header
             ))
         })?;
         HeaderValue::from_str(&credential.prefix)
-            .map_err(|e| LoadError(format!("credential {name} prefix: {e}")))?;
+            .map_err(|e| LoadError::Component(format!("credential {name} prefix: {e}")))?;
         Ok(Self {
             name: name.clone(),
             origin: credential
@@ -34,7 +34,7 @@ impl Placement {
                 .as_deref()
                 .map(|declared| {
                     origin(declared).map_err(|error| {
-                        LoadError(format!(
+                        LoadError::Component(format!(
                             "credential {name} origin {declared}: {}",
                             error.message
                         ))
@@ -58,13 +58,13 @@ pub(crate) fn placements(
     let mut placements = Vec::new();
     for credential in declared {
         if credential.name.is_empty() {
-            return Err(LoadError(format!(
+            return Err(LoadError::Component(format!(
                 "credential name is empty (origin {})",
                 origin_text(credential.origin.as_deref())
             )));
         }
         if !names.insert(&credential.name) {
-            return Err(LoadError(format!(
+            return Err(LoadError::Component(format!(
                 "duplicate credential name {}",
                 credential.name
             )));
@@ -77,7 +77,7 @@ pub(crate) fn placements(
                 .origin
                 .as_ref()
                 .map(|url| url.origin().ascii_serialization());
-            return Err(LoadError(format!(
+            return Err(LoadError::Component(format!(
                 "credentials {previous} and {} both bind origin {}",
                 credential.name,
                 origin_text(origin.as_deref())
@@ -90,7 +90,7 @@ pub(crate) fn placements(
             .iter()
             .any(|placement| placement.name == *name && placement.origin.is_some())
         {
-            return Err(LoadError(format!(
+            return Err(LoadError::Settings(format!(
                 "secret {name} has no declared plugin-owned origin"
             )));
         }
@@ -100,7 +100,7 @@ pub(crate) fn placements(
             && placement.required
             && !settings.secrets.contains_key(&placement.name)
         {
-            return Err(LoadError(format!(
+            return Err(LoadError::Settings(format!(
                 "required credential {} has no secret mapping",
                 placement.name
             )));

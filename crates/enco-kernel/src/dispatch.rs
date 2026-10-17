@@ -31,15 +31,12 @@ impl SessionActor {
             ));
             full = Some(hash);
         }
-        self.commit(
-            vec![EntryBody::ToolCallSettled {
-                call,
-                outcome: Settlement::from(&outcome),
-                content,
-                full,
-            }],
-            vec![],
-        )
+        self.commit(vec![EntryBody::ToolCallSettled {
+            call,
+            outcome: Settlement::from(&outcome),
+            content,
+            full,
+        }])
         .await
     }
 
@@ -98,7 +95,7 @@ impl SessionActor {
             })
             .collect();
         if !starts.is_empty() {
-            self.commit(starts, vec![]).await?;
+            self.commit(starts).await?;
         }
         let batch_cancel = token.child_token();
         let mut tasks = tokio::task::JoinSet::new();

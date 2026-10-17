@@ -80,7 +80,7 @@ pub trait Store: Send + Sync {
     /// Promote an observed trial without changing its identity or rollback target.
     async fn promote(&self, generation: GenerationId) -> Result<(), StoreError>;
     /// Atomically move runtime references and record attributable failures and a notice.
-    async fn activate(&self, change: &Activation) -> Result<(), StoreError>;
+    async fn activate(&self, change: &ActivationWrite) -> Result<(), StoreError>;
     /// Remove component files which no runtime reference retains.
     async fn retain_artifacts(
         &self,
@@ -113,8 +113,6 @@ pub struct NodeRecord {
 pub struct Commit {
     /// Ordered facts to append.
     pub entries: Vec<Entry>,
-    /// Inbox IDs consumed by the corresponding EventConsumed facts.
-    pub consumed: Vec<EventId>,
 }
 
 /// State returned to the connection owner for atomic acceptance.

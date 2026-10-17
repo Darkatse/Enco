@@ -1,19 +1,35 @@
 use super::*;
 
+/// The registry owns the named settings sections of plugins.
+pub const PLUGIN_SETTINGS_TABLE: ConfigTable = ConfigTable::Named("plugin");
+
+/// Parse plugin settings using the same ownership boundary as registration.
+pub fn plugin_settings(
+    document: &serde_json::Value,
+) -> Result<BTreeMap<PluginName, PluginSettings>, SettingsError> {
+    document.get(PLUGIN_SETTINGS_TABLE.name()).map_or_else(
+        || Ok(BTreeMap::new()),
+        |value| {
+            serde_json::from_value(value.clone()).map_err(|error| {
+                SettingsError::new(PLUGIN_SETTINGS_TABLE.name(), error.to_string())
+            })
+        },
+    )
+}
+
 pub(super) struct Declaration {
     pub kernel: KernelSettings,
     pub uses: Vec<Use>,
     pub invalid: Vec<SettingsError>,
-    pub plugins: BTreeMap<String, PluginSettings>,
+    pub plugins: BTreeMap<PluginName, PluginSettings>,
 }
 
 /// Ownership is a property of the composition, independent of any document.
 pub(super) fn check_owners(owners: &[TableOwner]) -> Result<(), RegistryError> {
-    let mut tables = std::collections::BTreeSet::from(KernelSettings::TABLES);
-    tables.insert("plugin");
-    for table in owners.iter().flat_map(|owner| owner.tables) {
-        if !tables.insert(*table) {
-            return Err(RegistryError::TableOwner((*table).into()));
+    let mut names = std::collections::BTreeSet::new();
+    for table in tables(owners) {
+        if !names.insert(table.name()) {
+            return Err(RegistryError::TableOwner(table.name().into()));
         }
     }
     Ok(())
@@ -30,13 +46,7 @@ pub(super) fn declare(
         .ok_or_else(|| SettingsError::new("config", "expected a document of named tables"))?;
     let mut invalid = tables
         .keys()
-        .filter(|table| {
-            table.as_str() != "plugin"
-                && !KernelSettings::TABLES.contains(&table.as_str())
-                && !owners
-                    .iter()
-                    .any(|owner| owner.tables.contains(&table.as_str()))
-        })
+        .filter(|table| !self::tables(owners).any(|known| known.name() == table.as_str()))
         .map(|table| SettingsError::new(table, "no table owner"))
         .collect::<Vec<_>>();
     let mut uses = kernel.uses();
@@ -50,14 +60,74 @@ pub(super) fn declare(
         kernel,
         uses,
         invalid,
-        plugins: document.get("plugin").map_or_else(
-            || Ok(BTreeMap::new()),
-            |value| {
-                serde_json::from_value(value.clone())
-                    .map_err(|error| SettingsError::new("plugin", error.to_string()))
-            },
-        )?,
+        plugins: plugin_settings(document)?,
     })
+}
+
+fn tables(owners: &[TableOwner]) -> impl Iterator<Item = ConfigTable> + '_ {
+    KernelSettings::TABLES
+        .into_iter()
+        .chain([PLUGIN_SETTINGS_TABLE])
+        .chain(owners.iter().flat_map(|owner| owner.tables.iter().copied()))
+}
+
+/// Changes use the same section ownership as declaration and validation.
+pub(super) fn changed_sections(
+    before: Option<&serde_json::Value>,
+    after: &serde_json::Value,
+    owners: &[TableOwner],
+) -> Vec<String> {
+    let before_table = |name: &str| before.and_then(|document| document.get(name));
+    let keys: std::collections::BTreeSet<_> = before
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flat_map(|document| document.keys())
+        .chain(
+            after
+                .as_object()
+                .into_iter()
+                .flat_map(|document| document.keys()),
+        )
+        .collect();
+    let mut changed = Vec::new();
+    for name in keys {
+        let old = before_table(name);
+        let new = after.get(name);
+        if old == new {
+            continue;
+        }
+        let named = tables(owners)
+            .find(|table| table.name() == name)
+            .is_some_and(|table| matches!(table, ConfigTable::Named(_)));
+        if named
+            && old.is_none_or(serde_json::Value::is_object)
+            && new.is_none_or(serde_json::Value::is_object)
+        {
+            let entries: std::collections::BTreeSet<_> = old
+                .and_then(serde_json::Value::as_object)
+                .into_iter()
+                .flat_map(|object| object.keys())
+                .chain(
+                    new.and_then(serde_json::Value::as_object)
+                        .into_iter()
+                        .flat_map(|object| object.keys()),
+                )
+                .collect();
+            changed.extend(
+                entries
+                    .into_iter()
+                    .filter(|entry| {
+                        old.and_then(|value| value.get(*entry))
+                            != new.and_then(|value| value.get(*entry))
+                    })
+                    .map(|entry| format!("{name}.{entry}")),
+            );
+        } else {
+            // Historical tables no longer understood by this host retain their recorded top-level name.
+            changed.push(name.clone());
+        }
+    }
+    changed
 }
 
 /// Intentional registration accepts only content the current host fully interprets.
@@ -65,10 +135,18 @@ pub(super) fn declare_valid(
     document: &serde_json::Value,
     owners: &[TableOwner],
 ) -> Result<Declaration, RegistryError> {
-    let declaration = declare(document, owners).map_err(|error| rejected("config", error))?;
-    match declaration.invalid.first() {
-        Some(error) => Err(rejected("config", error)),
-        None => Ok(declaration),
+    let declaration = declare(document, owners).map_err(|error| rejected(Cause::Table(error)))?;
+    if declaration.invalid.is_empty() {
+        Ok(declaration)
+    } else {
+        Err(RegistryError::Rejected(
+            declaration
+                .invalid
+                .iter()
+                .cloned()
+                .map(Cause::Table)
+                .collect(),
+        ))
     }
 }
 
@@ -100,28 +178,23 @@ pub(super) async fn check_profiles(
     deps: &RegistryDeps,
     kernel: &KernelSettings,
 ) -> Result<(), RegistryError> {
-    let invalid: Vec<_> = deps
-        .store
-        .sessions()
-        .await?
-        .into_iter()
-        .filter(|session| !kernel.profiles.contains_key(&session.profile))
-        .map(|session| {
-            format!(
-                "{} ({}, profile {})",
-                session.name, session.id, session.profile
-            )
-        })
-        .collect();
-    if invalid.is_empty() {
+    let mut stranded: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for session in deps.store.sessions().await? {
+        if !kernel.profiles.contains_key(&session.profile) {
+            stranded
+                .entry(session.profile)
+                .or_default()
+                .push(session.name);
+        }
+    }
+    if stranded.is_empty() {
         Ok(())
     } else {
-        Err(rejected(
-            "config",
-            format!(
-                "profiles are still used by Sessions: {}",
-                invalid.join(", ")
-            ),
+        Err(RegistryError::Rejected(
+            stranded
+                .into_iter()
+                .map(|(profile, sessions)| Cause::ProfileInUse { profile, sessions })
+                .collect(),
         ))
     }
 }

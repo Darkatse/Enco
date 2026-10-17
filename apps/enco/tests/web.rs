@@ -84,32 +84,19 @@ async fn send(daemon: &Daemon) -> Vec<Entry> {
     finish(&mut client).await
 }
 
-async fn web_status(daemon: &Daemon) -> Value {
-    let status = daemon
-        .connect()
-        .await
-        .request(Command::Status {})
-        .await
-        .unwrap();
-    status["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["name"] == "web")
-        .unwrap()
-        .clone()
-}
-
-async fn config_generation_count(daemon: &Daemon) -> usize {
+async fn node_status(daemon: &Daemon) -> Value {
     daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
-        .unwrap()["config"]["generations"]
-        .as_array()
         .unwrap()
-        .len()
+}
+
+async fn web_status(daemon: &Daemon) -> Value {
+    running_generation(&node_status(daemon).await["plugins"]["web"]).clone()
 }
 
 #[tokio::test]
@@ -132,7 +119,7 @@ async fn wasm_tools_use_origin_bound_credentials_and_report_fetch_fallback() {
         Daemon::start_config(&toml::to_string(&services.document(&["exa", "tinyfish"])).unwrap())
             .await;
     let generation: GenerationId =
-        serde_json::from_value(web_status(&daemon).await["active"]["id"].clone()).unwrap();
+        serde_json::from_value(web_status(&daemon).await["id"].clone()).unwrap();
     let log = send(&daemon).await;
     assert_eq!(log.iter().filter(|entry| matches!(&entry.body, EntryBody::ToolCallStarted { code: CodeRef::Generation { id }, .. } if *id == generation)).count(), 3);
     let results: Vec<_> = log
@@ -194,7 +181,6 @@ async fn missing_credentials_reject_apply_but_only_exclude_the_plugin_on_restart
     let mut document = services.document(&[]);
     let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
     let before = web_status(&daemon).await;
-    let config_before = config_generation_count(&daemon).await;
     document = services.document(&["exa"]);
     document["plugin"]["web"]["secrets"]["exa"] = UNSET_API_KEY_ENV.into();
     std::fs::write(
@@ -202,17 +188,21 @@ async fn missing_credentials_reject_apply_but_only_exclude_the_plugin_on_restart
         toml::to_string(&document).unwrap(),
     )
     .unwrap();
-    let rejected = daemon.connect().await.request(Command::Apply {}).await;
+    let rejected = daemon
+        .connect()
+        .await
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
+        .await;
     assert!(
         rejected
             .unwrap_err()
             .to_string()
             .contains(UNSET_API_KEY_ENV)
     );
-    assert_eq!(
-        web_status(&daemon).await["generations"],
-        before["generations"]
-    );
+    assert_eq!(web_status(&daemon).await, before);
     document["plugin"]["web"]["secrets"]["exa"] = "ENCO_TEST_API_KEY".into();
     std::fs::write(
         daemon.root.path().join("config.toml"),
@@ -222,24 +212,24 @@ async fn missing_credentials_reject_apply_but_only_exclude_the_plugin_on_restart
     daemon
         .connect()
         .await
-        .request(Command::Apply {})
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
         .await
         .unwrap();
     send(&daemon).await;
     let applied = web_status(&daemon).await;
-    assert_eq!(
-        applied["generations"].as_array().unwrap().len(),
-        before["generations"].as_array().unwrap().len() + 1
-    );
-    let config_after = config_generation_count(&daemon).await;
-    assert_eq!(config_after, config_before + 1);
-    let active = applied["active"].clone();
+    assert_ne!(applied["id"], before["id"]);
+    check_registered_web_settings(&daemon, &applied["id"]).await;
     daemon.stop().await;
     daemon.restart_without(&["ENCO_TEST_API_KEY"]).await;
-    let unavailable = web_status(&daemon).await;
-    assert_eq!(unavailable["active"], active);
+    let status = node_status(&daemon).await;
+    assert_eq!(running_generation(&status["plugins"]["web"]), &applied);
+    let unavailable = &status["plugins"]["web"]["running"]["running"];
+    assert_eq!(unavailable["state"], "unavailable");
     assert!(
-        unavailable["unavailable"]
+        unavailable["causes"]
             .to_string()
             .contains("ENCO_TEST_API_KEY")
     );
@@ -276,6 +266,23 @@ async fn missing_credentials_reject_apply_but_only_exclude_the_plugin_on_restart
     daemon.stop().await;
 }
 
+async fn check_registered_web_settings(daemon: &Daemon, generation: &Value) {
+    let status = node_status(daemon).await;
+    let changes = status["recent_registrations"][0]["changes"]
+        .as_array()
+        .unwrap();
+    assert_eq!(changes.len(), 2);
+    assert!(changes.iter().any(|change| change["kind"] == "settings"
+        && change["name"] == "web"
+        && change["generation"]["id"] == *generation));
+    assert!(
+        changes
+            .iter()
+            .any(|change| change["kind"] == "configuration"
+                && change["sections"] == json!(["plugin.web"]))
+    );
+}
+
 #[tokio::test]
 async fn service_failures_settle_without_failing_the_tool_generation() {
     let services = Services::new().await;
@@ -307,10 +314,10 @@ async fn service_failures_settle_without_failing_the_tool_generation() {
         .mount(&services.model)
         .await;
     let mut daemon = Daemon::start_config(&toml::to_string(&services.document(&[])).unwrap()).await;
-    let before = web_status(&daemon).await["active"].clone();
+    let before = web_status(&daemon).await;
     let log = send(&daemon).await;
     assert!(log.iter().any(|entry| matches!(&entry.body, EntryBody::ToolCallSettled { outcome: Settlement::Failed { failure }, .. } if failure.code == code::TOOL_FAILED && failure.message.contains("503"))));
-    assert_eq!(web_status(&daemon).await["active"], before);
+    assert_eq!(web_status(&daemon).await, before);
     daemon.stop().await;
 }
 
@@ -459,7 +466,11 @@ async fn applying_web_source_through_the_tool_preserves_its_exact_declared_defin
     .unwrap();
     propose(
         &services.model,
-        tool_message("apply", "self_apply", json!({})),
+        tool_message(
+            "apply",
+            "self_apply",
+            json!({"reason":"Repair web configuration"}),
+        ),
     )
     .await;
     let log = send(&daemon).await;
@@ -471,10 +482,9 @@ async fn applying_web_source_through_the_tool_preserves_its_exact_declared_defin
         }
     )));
     let registered = web_status(&daemon).await;
-    assert_ne!(registered["active"]["id"], previous["active"]["id"]);
-    assert_eq!(registered["id"], previous["id"]);
-    assert_eq!(registered["factory"], previous["factory"]);
-    assert_eq!(registered["active"]["origin"], "code");
+    assert_ne!(registered["id"], previous["id"]);
+    assert_eq!(registered["plugin"], previous["plugin"]);
+    assert_eq!(registered["origin"], "code");
     let inspection: Inspection = serde_json::from_value(
         daemon
             .connect()
@@ -541,18 +551,17 @@ async fn check_safe_mode_and_source_removal(daemon: &Daemon, before: &Value) {
             .iter()
             .all(|(_, spec)| enco_host::LIFELINE.contains(&spec.name.as_str()))
     );
-    assert_eq!(web_status(daemon).await["factory"], before["factory"]);
     std::fs::remove_dir_all(daemon.root.path().join("plugins/web")).unwrap();
     daemon
         .connect()
         .await
-        .request(Command::Apply {})
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
         .await
         .unwrap();
     let restored = web_status(daemon).await;
-    assert_eq!(restored["id"], before["id"]);
-    assert_eq!(
-        restored["active"]["artifact"],
-        before["factory"]["artifact"]
-    );
+    assert_eq!(restored["plugin"], before["plugin"]);
+    assert_eq!(restored["artifact"], before["artifact"]);
 }

@@ -46,6 +46,12 @@ async fn open(store: &Arc<SqliteStore>, runtime: Arc<dyn Runtime>) -> Arc<Regist
     .unwrap()
 }
 
+async fn active(registry: &Registry) -> GenerationRecord {
+    running_generation(&registry.status().await.unwrap().plugins[0])
+        .unwrap()
+        .clone()
+}
+
 async fn deploy_artifact(registry: &Registry, name: &str, bytes: &[u8]) -> GenerationRecord {
     submit(registry, artifact_request(name, bytes.to_vec()))
         .await

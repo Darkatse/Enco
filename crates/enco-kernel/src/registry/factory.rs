@@ -44,10 +44,11 @@ pub(super) async fn record(deps: &RegistryDeps, state: &mut State) -> Result<(),
             .load(&factory.artifact, &generation.settings)
             .await
             .map_err(|error| {
-                rejected(
-                    &factory.name,
-                    format!("embedded factory code cannot load: {error}"),
-                )
+                rejected(Cause::Load {
+                    plugin: factory.name.clone(),
+                    candidate: Proposed::Factory,
+                    error,
+                })
             })?;
         state.factory.insert(factory.id, generation.id);
         state.loaded.insert(generation.id, loaded);

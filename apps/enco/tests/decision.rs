@@ -258,7 +258,10 @@ async fn relevance_follows_the_configured_endpoint() {
     daemon
         .connect()
         .await
-        .request(Command::Apply {})
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
         .await
         .unwrap();
     let previous_calls = server

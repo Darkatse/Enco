@@ -103,6 +103,10 @@ dimensions = 4
     }
 }
 
+pub fn running_generation(plugin: &serde_json::Value) -> &serde_json::Value {
+    &plugin["running"]["running"]["activation"]["generation"]
+}
+
 pub async fn finish(client: &mut client::Client) -> Vec<Entry> {
     finish_with_timeout(client, Duration::from_secs(30)).await
 }
@@ -183,6 +187,7 @@ async fn spawn(
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"));
     command
         .arg("serve")
+        .env("PATH", without_git(root))
         .env("ENCO_HOME", root)
         .env("CARGO_NET_OFFLINE", "true")
         .env("ENCO_TEST_API_KEY", "enco-test-secret")
@@ -224,6 +229,7 @@ pub fn is_reminder(entry: &Entry, id: ScheduleId) -> bool {
 pub async fn initialize(root: &Path) {
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
         .arg("init")
+        .env("PATH", without_git(root))
         .env("ENCO_HOME", root)
         .output()
         .await
@@ -235,20 +241,18 @@ pub async fn initialize(root: &Path) {
     );
 }
 
-pub async fn git(root: &Path, args: &[&str]) -> String {
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+/// All daemon scenarios exercise a home without a repository or a usable Git executable.
+pub fn without_git(root: &Path) -> std::ffi::OsString {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = root.join("test-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let git = bin.join("git");
+    std::fs::write(&git, "#!/bin/sh\nexit 99\n").unwrap();
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap()
 }
 
 /// Each source scenario keeps a warm Cargo cache without locking other builds.

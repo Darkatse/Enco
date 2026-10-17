@@ -1,5 +1,26 @@
-use crate::{ContentHash, DateTime, Failure, GenerationId, PluginId, RegistrationId, Utc};
+use crate::{
+    ContentHash, DateTime, Failure, GenerationId, PluginId, PluginName, RegistrationId, Utc,
+};
 use serde::{Deserialize, Serialize};
+
+/// The identity and registration of a configuration, without copying its document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ConfigurationRef {
+    /// Selected configuration generation.
+    pub generation: GenerationId,
+    /// Registration that accepted the configuration.
+    pub registration: RegistrationId,
+}
+
+impl ConfigurationRef {
+    /// The reference to one configuration generation.
+    pub fn of(configuration: &ConfigGeneration) -> Self {
+        Self {
+            generation: configuration.id,
+            registration: configuration.registration,
+        }
+    }
+}
 
 /// One immutable generation identity, with a mutable availability status.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,8 +115,8 @@ pub enum GenerationStatus {
 /// A committed automatic rollback, also accepted as a Session input when applicable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RolledBack {
-    /// Registered plugin name.
-    pub plugin: String,
+    /// Running plugin name.
+    pub plugin: PluginName,
     /// Failed trial generation.
     pub from: GenerationId,
     /// Replacement, or none when no healthy generation remains.
@@ -111,6 +132,8 @@ pub struct ConfigGeneration {
     pub id: GenerationId,
     /// Accepted change which produced this generation.
     pub registration: RegistrationId,
+    /// Content address of the exact configuration file, including comments.
+    pub source: ContentHash,
     /// Complete configuration content; declarations are derived by its owners.
     pub document: serde_json::Value,
     /// Configuration which was active immediately before this one was registered.

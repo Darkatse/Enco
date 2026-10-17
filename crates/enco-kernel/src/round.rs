@@ -32,7 +32,6 @@ impl SessionActor {
         );
         let safe_mode = mode.is_some();
         let pending = self.deps.store.pending(self.session.id).await?;
-        let consumed = pending.iter().map(|event| event.id).collect();
         prefix.extend(
             pending
                 .into_iter()
@@ -43,7 +42,7 @@ impl SessionActor {
             round,
             safe_mode,
         });
-        self.commit(prefix, consumed).await?;
+        self.commit(prefix).await?;
         let end = match self.execute_round(round, &view, mode, token).await {
             Ok(end) => end,
             Err(RoundError::Cancelled) => RoundEnd::Cancelled,
@@ -54,13 +53,10 @@ impl SessionActor {
             },
             Err(RoundError::Stopped(error)) => return Err(error),
         };
-        self.commit(
-            vec![EntryBody::RoundEnded {
-                round,
-                end: end.clone(),
-            }],
-            vec![],
-        )
+        self.commit(vec![EntryBody::RoundEnded {
+            round,
+            end: end.clone(),
+        }])
         .await?;
         Ok((end, safe_mode))
     }

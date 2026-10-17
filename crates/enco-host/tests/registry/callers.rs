@@ -20,10 +20,13 @@ struct Node {
 }
 
 impl Node {
-    async fn start(root: &Path, store: Arc<SqliteStore>, registry: Arc<Registry>) -> Self {
-        let mut deps = kernel_deps(root, store, registry.clone(), None, None);
-        // Registry tests have no Git home, so the registration tool cannot be assembled.
-        deps.lifeline.retain(|name| name != "self_apply");
+    async fn start(
+        root: &Path,
+        store: Arc<SqliteStore>,
+        registry: Arc<Registry>,
+        development: Arc<development::Development>,
+    ) -> Self {
+        let deps = kernel_deps(root, store, registry.clone(), None, Some(development));
         let kernel = Kernel::start(deps).await.unwrap();
         let memories = open_memories(root, registry).await;
         let session = kernel.open_session("main").await.unwrap().id;
@@ -72,12 +75,13 @@ impl Callers {
         runtime.insert(b"broken", loaded(broken.clone()));
         let mut document = configuration();
         document["endpoint"]["reply"]["model"] = "chosen-model".into();
-        let registry = open_registry(
+        let (development, registry) = open_home(
+            root,
+            store.clone(),
             registry_deps(store.clone(), runtime.clone(), FACTORY_BYTES),
-            configuration_request(document),
+            document,
         )
-        .await
-        .unwrap();
+        .await;
         let factory_id = registry
             .view()
             .exports
@@ -91,7 +95,7 @@ impl Callers {
             .endpoint
             .settings
             .clone();
-        let node = Node::start(root, store.clone(), registry.clone()).await;
+        let node = Node::start(root, store.clone(), registry.clone(), development).await;
         Self {
             node,
             store,
@@ -107,9 +111,7 @@ impl Callers {
     }
 
     async fn active_status(&self) -> GenerationStatus {
-        self.registry.status().await.unwrap().plugins[0]
-            .active
-            .as_ref()
+        running_generation(&self.registry.status().await.unwrap().plugins[0])
             .unwrap()
             .status
     }
@@ -125,14 +127,14 @@ impl Callers {
         } = self;
         node.kernel.shutdown().await.unwrap();
         drop((node, registry));
-        let registry = open(&store, runtime).await;
-        registry
-            .status()
+        let _registry = open(&store, runtime).await;
+        store
+            .registry()
             .await
             .unwrap()
-            .plugins
-            .remove(0)
             .generations
+            .into_values()
+            .collect()
     }
 }
 
@@ -344,10 +346,14 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
             .contains(&notices[0].canonical_message())
     );
     assert_eq!(
-        callers.registry.status().await.unwrap().plugins[0]
-            .generations
-            .last()
+        callers
+            .registry
+            .registered_intent(None)
+            .await
             .unwrap()
+            .plugins["fixture"]
+            .activation
+            .generation
             .status,
         GenerationStatus::Failed
     );
@@ -375,13 +381,12 @@ async fn safe_mode_replies_when_another_use_needs_an_interface_absent_from_facto
     document["endpoint"]["embed"]["plugin"] = "embedder".into();
     let mut deps = registry_deps(store.clone(), runtime, FACTORY_BYTES);
     deps.factory.push(FactoryPlugin {
-        name: "embedder".into(),
+        name: "embedder".parse().unwrap(),
         id: PluginId::new(),
         artifact: b"embedding".to_vec(),
     });
-    let registry = open_registry(deps, configuration_request(document.clone()))
-        .await
-        .unwrap();
+    let (development, registry) =
+        open_home(dir.path(), store.clone(), deps, document.clone()).await;
     let factory = registry
         .view()
         .exports
@@ -393,7 +398,7 @@ async fn safe_mode_replies_when_another_use_needs_an_interface_absent_from_facto
     submit(&registry, configuration_request(document))
         .await
         .unwrap();
-    let mut node = Node::start(dir.path(), store, registry).await;
+    let mut node = Node::start(dir.path(), store, registry, development).await;
     node.kernel.set_safe_mode(true).await.unwrap();
     let log = node.run("repair").await;
     assert!(log.iter().any(|entry| matches!(&entry.body,
@@ -420,19 +425,20 @@ async fn safe_mode_keeps_the_active_generation_of_a_plugin_without_factory_code(
     let custom = ScriptedProvider::new(vec![reply("probe"), reply("custom repair reply")]);
     runtime.insert(FACTORY_BYTES, loaded(ScriptedProvider::new(vec![])));
     runtime.insert(b"custom", loaded(custom.clone()));
-    let registry = open_registry(
+    let (development, registry) = open_home(
+        dir.path(),
+        store.clone(),
         registry_deps(store.clone(), runtime, FACTORY_BYTES),
-        configuration_request(configuration()),
+        configuration(),
     )
-    .await
-    .unwrap();
+    .await;
     let custom_generation = deploy_artifact(&registry, "custom", b"custom").await;
     let mut document = configuration();
     document["endpoint"]["reply"]["plugin"] = "custom".into();
     submit(&registry, configuration_request(document))
         .await
         .unwrap();
-    let mut node = Node::start(dir.path(), store, registry).await;
+    let mut node = Node::start(dir.path(), store, registry, development).await;
     node.kernel.set_safe_mode(true).await.unwrap();
     let log = node.run("repair").await;
     assert!(log.iter().any(|entry| matches!(&entry.body,

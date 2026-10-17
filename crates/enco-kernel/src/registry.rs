@@ -1,10 +1,15 @@
 //! The single committer of plugin identities, generation history and published exports.
 mod activation;
 mod admission;
+pub use admission::ToolOwner;
+mod cause;
+pub use cause::{Cause, IntentPart, Proposed, Referrer};
 mod configuration;
 mod exports;
 mod factory;
 mod health;
+mod history;
+pub use history::{PluginChangeKind, RegistrationDetails, UnitChange};
 mod intent;
 mod probe;
 mod registration;
@@ -15,18 +20,25 @@ mod status;
 mod wiring;
 
 use crate::{
-    Clock, Credential, Decision, Embedding, Endpoint, KernelSettings, Loaded, Provider, Runtime,
-    SettingsError, Store, StoreError,
+    Clock, Credential, Decision, Embedding, Endpoint, KernelSettings, LoadError, Loaded, Provider,
+    Runtime, SettingsError, Store, StoreError,
 };
-use admission::{users, validate_name};
+use admission::users;
+pub use configuration::{PLUGIN_SETTINGS_TABLE, plugin_settings};
 use enco_core::*;
 pub use exports::{Export, Exports};
 pub use intent::{
-    FactoryStatus, RegisteredIntent, RegisteredPlugin, RegisteredSource, RegistrationBase,
+    Activation, CodeProvenance, CodeSource, FactoryStatus, RegisteredIntent, RegisteredPlugin,
+    RegisteredSource, RegistrationBase, RewindScope, RewindSelection, ScopeError,
 };
-pub use request::{ArtifactSource, PluginChange, Registered, RegistrationRequest, Rollback};
+pub use request::{
+    ArtifactSource, ConfigurationSource, PluginChange, Registered, RegistrationRequest, Rollback,
+};
 use state::State;
-pub use status::{ConfigStatus, PluginStatus, RegistryStatus};
+pub use status::{
+    ConfigStatus, Difference, PluginStatus, RECENT_REGISTRATIONS, RegistryStatus, Running,
+    Standing, UnservedUse,
+};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{Mutex, watch};
 
@@ -50,7 +62,7 @@ pub struct RegistryDeps {
 #[derive(Clone)]
 pub struct FactoryPlugin {
     /// Host-reserved routing name.
-    pub name: String,
+    pub name: PluginName,
     /// Stable host-assigned identity, independent of component self-description.
     pub id: PluginId,
     /// Embedded component bytes.
@@ -60,9 +72,27 @@ pub struct FactoryPlugin {
 /// A host-owned group of tables and its pure declaration function.
 pub struct TableOwner {
     /// Top-level tables exclusively owned by this component.
-    pub tables: &'static [&'static str],
+    pub tables: &'static [ConfigTable],
     /// Parse the owned tables and project their endpoint requirements.
     pub declare: fn(&serde_json::Value, &KernelSettings) -> Result<Vec<Use>, SettingsError>,
+}
+
+/// The structural unit owned by one configuration declaration.
+#[derive(Clone, Copy)]
+pub enum ConfigTable {
+    /// The table is one configuration section.
+    Single(&'static str),
+    /// Each named entry is a configuration section.
+    Named(&'static str),
+}
+
+impl ConfigTable {
+    /// Top-level key owned by the declaration.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Single(name) | Self::Named(name) => name,
+        }
+    }
 }
 
 /// One configured user's endpoint and requirements.
@@ -117,7 +147,7 @@ pub struct ActiveConfig {
     /// Tables the current host cannot interpret; empty after any intentional registration.
     invalid: Vec<SettingsError>,
     /// Plugin settings requested by this configuration; active plugin content may have rolled back.
-    plugins: BTreeMap<String, PluginSettings>,
+    plugins: BTreeMap<PluginName, PluginSettings>,
 }
 
 impl View {
@@ -161,26 +191,44 @@ pub struct Probe {
 /// An explicit registry operation could not complete.
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
+    /// No registration exists yet; only bootstrap preparation may use an empty baseline.
+    #[error("no registration has been accepted")]
+    NoRegistrations,
+    /// Recorded facts cannot form a complete accepted view.
+    #[error("registered facts are inconsistent: {0}")]
+    Intent(String),
     /// A durable operation failed.
     #[error(transparent)]
     Store(#[from] StoreError),
     /// A stored factory identity differs from the host's reserved identity.
     #[error("registry records a different identity for factory plugin {0}")]
-    FactoryIdentity(String),
-    /// No registered plugin matches this name or identity.
+    FactoryIdentity(PluginName),
+    /// No registered plugin matches this name.
     #[error("unknown plugin {0}")]
-    UnknownPlugin(String),
-    /// The component, name or its exports cannot satisfy the operation.
-    #[error("{name} rejected: {reason}")]
-    Rejected {
-        /// Name supplied by the caller.
-        name: String,
-        /// Loading or admission failure.
-        reason: String,
-    },
+    UnknownPlugin(PluginName),
+    /// The intent is rejected; each cause names the part it concerns.
+    #[error("rejected: {}", .0.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))]
+    Rejected(Vec<Cause>),
+    /// A registration request supplied no change.
+    #[error("registration request has no changes")]
+    EmptyRequest,
+    /// Factory intent was requested for a name the host does not reserve.
+    #[error("{0} is not a factory plugin")]
+    NotFactory(PluginName),
+    /// Removal was requested for a host-reserved name; factory intent replaces source instead.
+    #[error("factory plugin {0} cannot be removed; register factory intent")]
+    FactoryRemoval(PluginName),
     /// The requested number is absent from both histories.
     #[error("unknown generation {0}")]
     UnknownGeneration(GenerationId),
+    /// No accepted change has this structural position.
+    #[error("unknown registration {registration} (latest: {latest})")]
+    UnknownRegistration {
+        /// Requested position.
+        registration: RegistrationId,
+        /// Latest accepted position.
+        latest: RegistrationId,
+    },
     /// The active configuration does not define this profile.
     #[error("unknown profile {0}")]
     UnknownProfile(String),
@@ -193,9 +241,9 @@ pub enum RegistryError {
     /// The host composition assigns a table to more than one owner.
     #[error("table {0} has multiple owners")]
     TableOwner(String),
-    /// No usable recovery generation exists.
-    #[error("{0} has no generation to roll back to")]
-    NoRollbackTarget(String),
+    /// No accepted change remains to roll back.
+    #[error("no registration can be rolled back")]
+    NoRollbackTarget,
     /// The active generation or target health changed while the target was prepared.
     #[error("{0}: the registry changed while preparing; retry")]
     Conflict(String),
@@ -206,13 +254,13 @@ impl Registry {
     pub async fn open<E, F>(
         deps: RegistryDeps,
         bootstrap: impl FnOnce(RegisteredIntent) -> F,
+        registry_error: impl Fn(RegistryError) -> E,
     ) -> Result<Arc<Self>, E>
     where
-        E: From<RegistryError>,
         F: std::future::Future<Output = Result<RegistrationRequest, E>>,
     {
-        configuration::check_owners(&deps.owners)?;
-        let (state, config) = startup::open(&deps, bootstrap).await?;
+        configuration::check_owners(&deps.owners).map_err(&registry_error)?;
+        let (state, config) = startup::open(&deps, bootstrap, &registry_error).await?;
         let admission = admission::evaluate(state.contents(), &deps.host_tool_names);
         let (views, _) = watch::channel(Arc::new(state.view(config, admission, &deps.factory)));
         Ok(Arc::new(Self {
@@ -251,16 +299,8 @@ impl Registry {
     }
 }
 
-/// Validate the directory and routing name accepted by every plugin entry point.
-pub fn validate_plugin_name(name: &str) -> Result<(), RegistryError> {
-    validate_name(name)
-}
-
-fn rejected(name: &str, reason: impl ToString) -> RegistryError {
-    RegistryError::Rejected {
-        name: name.into(),
-        reason: reason.to_string(),
-    }
+fn rejected(cause: Cause) -> RegistryError {
+    RegistryError::Rejected(vec![cause])
 }
 
 /// Failed durable writes leave the previous references authoritative for artifact retention.

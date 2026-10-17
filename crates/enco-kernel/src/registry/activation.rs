@@ -1,6 +1,6 @@
 //! Recovery follows retained references and never reconstructs intent.
 use super::*;
-use crate::Activation;
+use crate::ActivationWrite;
 
 pub(super) struct Recovery {
     pub target: Option<(PluginActivation, Loaded)>,
@@ -74,7 +74,7 @@ pub(super) async fn prepare(
 pub(super) async fn commit(
     deps: &RegistryDeps,
     state: &mut State,
-    change: &Activation,
+    change: &ActivationWrite,
 ) -> Result<(), RegistryError> {
     let result = async {
         factory::retain(deps, state, &change.plugins).await?;
@@ -146,10 +146,10 @@ pub(super) async fn restore(deps: &RegistryDeps, state: &mut State) -> Result<()
                 let mut restored = plugin;
                 restored.active = recovery.target.as_ref().map(|(id, _)| *id);
                 restored.rollback_target = None;
-                let change = Activation {
+                let change = ActivationWrite {
                     plugins: vec![restored],
                     failed: recovery.failed,
-                    ..Activation::default()
+                    ..ActivationWrite::default()
                 };
                 commit(deps, state, &change).await?;
                 if let Some((id, loaded)) = recovery.target {
@@ -221,7 +221,7 @@ impl Registry {
 struct RollbackPlan {
     expected: registration::Expected,
     registration: RegistrationId,
-    change: Activation,
+    change: ActivationWrite,
     recoveries: BTreeMap<PluginId, Vec<Candidate>>,
 }
 
@@ -233,8 +233,8 @@ fn rollback_plan(state: &State) -> Result<RollbackPlan, RegistryError> {
         .values()
         .rev()
         .find(|record| Some(record.id) != initial && effective(state, record))
-        .ok_or_else(|| RegistryError::NoRollbackTarget("registry".into()))?;
-    let mut change = Activation::default();
+        .ok_or(RegistryError::NoRollbackTarget)?;
+    let mut change = ActivationWrite::default();
     if let Some(config) = state
         .history
         .active_config

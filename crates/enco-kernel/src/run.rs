@@ -61,7 +61,7 @@ impl SessionActor {
                 break;
             }
         }
-        self.commit(vec![EntryBody::RunEnded { run, end: ending }], vec![])
+        self.commit(vec![EntryBody::RunEnded { run, end: ending }])
             .await?;
         Ok(())
     }

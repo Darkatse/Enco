@@ -3,6 +3,8 @@
 mod acceptance;
 #[path = "../src/client.rs"]
 mod client;
+#[path = "development/documents.rs"]
+mod documents;
 #[path = "../src/protocol.rs"]
 mod protocol;
 #[path = "development/sdk.rs"]
@@ -10,8 +12,8 @@ mod sdk;
 mod support;
 
 use enco_core::{
-    CallId, EntryBody, EventId, GenerationStatus, Outcome, PluginSettings, SessionId, Settlement,
-    code,
+    CallId, Entry, EntryBody, EventId, GenerationStatus, Outcome, PluginSettings, SessionId,
+    Settlement, code,
 };
 use enco_host::{SqliteStore, StorePaths};
 use enco_kernel::{CallContext, Runtime, Store};
@@ -19,7 +21,7 @@ use enco_wasm::WasmRuntime;
 use protocol::Command;
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
-use support::{Daemon, embeddings, finish, git, response, tool_message};
+use support::{Daemon, embeddings, finish, response, running_generation, tool_message};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument::WithSubscriber;
@@ -56,15 +58,12 @@ async fn cancelling_a_source_built_computing_plugin_settles_unknown_and_joins() 
     let status = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    let artifact = status["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["name"] == "fixture")
-        .unwrap()["active"]["artifact"]
+    let artifact = running_generation(&status["plugins"]["fixture"])["artifact"]
         .as_str()
         .unwrap()
         .parse()
@@ -120,7 +119,10 @@ async fn apply(daemon: &Daemon) -> Value {
     daemon
         .connect()
         .await
-        .request(Command::Apply {})
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
         .await
         .unwrap()
 }
@@ -134,6 +136,8 @@ fn write_config(daemon: &Daemon, document: &Value) {
 }
 
 const REGISTER: &str = "register changes";
+const RENAME: &str = "rename alpha to beta";
+const HISTORY: &str = "review the unregistered files";
 
 async fn echo_service() -> MockServer {
     let server = MockServer::start().await;
@@ -155,7 +159,26 @@ fn echo_reply(request: &wiremock::Request) -> ResponseTemplate {
         .iter()
         .any(|message| message["content"] == REGISTER)
     {
-        return response(tool_message("apply", "self_apply", json!({})), "tool_calls");
+        return response(
+            tool_message(
+                "apply",
+                "self_apply",
+                json!({"reason":"Register source and configuration"}),
+            ),
+            "tool_calls",
+        );
+    }
+    for (prompt, tool, arguments) in [
+        (
+            RENAME,
+            "plugin_rename",
+            json!({"name":"alpha", "to":"beta", "reason":"Give the plugin its new name"}),
+        ),
+        (HISTORY, "self_history", json!({"to":"workspace"})),
+    ] {
+        if messages.iter().any(|message| message["content"] == prompt) {
+            return response(tool_message(tool, tool, arguments), "tool_calls");
+        }
     }
     let call = |id: &str, name: &str| tool_message(id, name, json!({}))["tool_calls"][0].clone();
     let mut calls: Vec<_> = (0..enco_kernel::TRIAL_CALLS)
@@ -166,7 +189,7 @@ fn echo_reply(request: &wiremock::Request) -> ResponseTemplate {
     response(message, "tool_calls")
 }
 
-async fn tool_results(daemon: &Daemon, text: &str) -> Vec<Value> {
+async fn tool_results(daemon: &Daemon, text: &str) -> Vec<Entry> {
     let session = format!("tools-{}", SessionId::new());
     let mut client = daemon.connect().await;
     client
@@ -183,57 +206,36 @@ async fn tool_results(daemon: &Daemon, text: &str) -> Vec<Value> {
         })
         .await
         .unwrap();
-    let log = finish(&mut client).await;
-    let root = daemon.root.path();
-    let store = SqliteStore::open(StorePaths {
-        db: root.join(".data/enco.db"),
-        blobs: root.join(".data/blobs"),
-        artifacts: root.join(".data/artifacts"),
-    })
-    .await
-    .unwrap();
-    let mut results = Vec::new();
-    for entry in log {
-        if let EntryBody::ToolCallSettled {
-            outcome: Settlement::Ok,
-            content,
-            full,
-            ..
-        } = entry.body
-        {
-            let content = match full {
-                Some(hash) => String::from_utf8(store.get_blob(&hash).await.unwrap()).unwrap(),
-                None => content,
-            };
-            let value: Value = serde_json::from_str(&content).unwrap();
-            results.push(value);
-        }
-    }
-    results
+    finish(&mut client).await
 }
 
 async fn use_source(daemon: &Daemon) -> Value {
-    let status = tool_results(daemon, "exercise the plugin and inspect the node")
-        .await
-        .into_iter()
-        .find(|value| value.get("host").is_some())
-        .unwrap();
-    let cli = daemon
+    let entries = tool_results(daemon, "exercise the plugin and inspect the node").await;
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| matches!(
+                entry.body,
+                EntryBody::ToolCallSettled {
+                    outcome: Settlement::Ok,
+                    ..
+                }
+            ))
+            .count(),
+        enco_kernel::TRIAL_CALLS as usize + 1
+    );
+    let status = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    for key in ["host", "config", "registered", "registrations", "workspace"] {
-        assert_eq!(status[key], cli[key]);
-    }
-    let plugin = cli["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["name"] == "alpha")
-        .unwrap();
-    assert_eq!(plugin["active"]["status"], json!(GenerationStatus::Healthy));
+    assert_eq!(
+        running_generation(&status["plugins"]["alpha"])["status"],
+        json!(GenerationStatus::Healthy)
+    );
     status
 }
 
@@ -249,6 +251,20 @@ const OWNER_README: &str = concat!(
     "Owner examples\n"
 );
 
+fn write_owner_files(home: &Path) -> Vec<u8> {
+    let config_path = home.join("config.toml");
+    let config_bytes = format!(
+        "# Owner configuration notes\n{}",
+        std::fs::read_to_string(&config_path).unwrap()
+    )
+    .into_bytes();
+    std::fs::write(&config_path, &config_bytes).unwrap();
+    std::fs::create_dir_all(home.join("plugins/alpha/target")).unwrap();
+    std::fs::write(home.join("plugins/alpha/target/owner-cache"), b"keep").unwrap();
+    std::fs::write(home.join("plugins/alpha/.git"), b"owner metadata").unwrap();
+    config_bytes
+}
+
 #[tokio::test]
 async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
     let service = echo_service().await;
@@ -259,7 +275,7 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
         .connect()
         .await
         .request(Command::PluginScaffold {
-            name: "alpha".into(),
+            name: "alpha".parse().unwrap(),
         })
         .await
         .unwrap();
@@ -275,18 +291,17 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
         toml::from_str(&Daemon::config(&service, "openai-compatible")).unwrap();
     document["plugin"] = json!({"alpha": {"config": {"label": "value"}}});
     write_config(&daemon, &document);
-    let first = acceptance::apply_preserving_owner_history(&daemon).await;
-    let first_code = &first["registered"]["generations"][0];
-    let observed = use_source(&daemon).await;
-    let revision = observed["registered"]["base"]["revision"].as_str().unwrap();
-    let generated = std::fs::read_to_string(readme).unwrap();
-    assert!(
-        generated.starts_with("Owner introduction\n") && generated.ends_with("\nOwner examples\n")
-    );
-    assert!(
-        generated.contains("alpha_echo")
-            && generated.contains("Return the supplied object unchanged.")
-    );
+    let config_bytes = write_owner_files(&home);
+    let first = acceptance::register_with_agent(&daemon).await;
+    let first_code = &first["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|change| change["kind"] == "code" && change["name"] == "alpha")
+        .unwrap()["generation"];
+    use_source(&daemon).await;
+    let registration = serde_json::from_value(first["id"].clone()).unwrap();
+    check_readme(&readme);
     check_build_rejection(&daemon, &document, &source).await;
     std::fs::write(&source, code.replace("label", "caption")).unwrap();
     document["plugin"]["alpha"]["config"] = json!({"caption": "value"});
@@ -300,69 +315,96 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
         second["registered"]["generations"][0]["artifact"],
         first_code["artifact"]
     );
-    git(
-        &home,
-        &[
-            "restore",
-            "--source",
-            revision,
-            "--",
-            "plugins/alpha",
-            "config.toml",
-        ],
-    )
-    .await;
+    daemon
+        .connect()
+        .await
+        .request(Command::Rewind {
+            output: protocol::Output::Json,
+            arguments: enco_host::development::RewindArguments {
+                registration,
+                paths: None,
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(home.join("config.toml")).unwrap(),
+        config_bytes
+    );
+    assert_eq!(
+        std::fs::read(home.join("plugins/alpha/target/owner-cache")).unwrap(),
+        b"keep"
+    );
+    assert_eq!(
+        std::fs::read(home.join("plugins/alpha/.git")).unwrap(),
+        b"owner metadata"
+    );
     daemon.stop().await;
     daemon.restart_without(&["PATH"]).await;
     let restored = apply(&daemon).await;
     assert_eq!(restored["builds"][0]["reused"], true);
+    let restored_code = &restored["registered"]["generations"][0];
+    assert_eq!(restored_code["artifact"], first_code["artifact"]);
+    assert_eq!(restored_code["plugin"], first_code["plugin"]);
     assert_eq!(
-        restored["registered"]["generations"][0]["artifact"],
-        first_code["artifact"]
-    );
-    assert_eq!(
-        restored["registered"]["generations"][0]["plugin"],
-        first_code["plugin"]
-    );
-    assert_eq!(
-        restored["registered"]["generations"][0]["settings"]["config"],
+        restored_code["settings"]["config"],
         json!({"label":"value"})
     );
     let status = use_source(&daemon).await;
-    assert_eq!(status["workspace"]["configuration"]["state"], "unchanged");
+    assert_eq!(status["configuration"]["workspace"]["state"], "same");
     assert_eq!(
-        status["workspace"]["plugins"]["alpha"]["code"]["state"],
-        "unchanged"
+        status["plugins"]["alpha"]["workspace"]["code"]["state"],
+        "same"
     );
-    assert!(
-        status["plugins"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|plugin| plugin["name"] == "alpha")
-            .unwrap()["matches_registered"]
-            .as_bool()
-            .unwrap()
+    assert_eq!(
+        status["plugins"]["alpha"]["running"]["standing"],
+        json!({"standing": "registered", "differences": []})
     );
     check_rollback_does_not_replay_intent(&daemon).await;
     check_rename(&mut daemon, &mut document, &first_code["plugin"]).await;
     daemon.stop().await;
 }
 
+fn check_readme(readme: &Path) {
+    let generated = std::fs::read_to_string(readme).unwrap();
+    assert!(
+        generated.starts_with("Owner introduction\n") && generated.ends_with("\nOwner examples\n")
+    );
+    assert!(
+        generated.contains("alpha_echo")
+            && generated.contains("Return the supplied object unchanged.")
+    );
+}
+
 async fn check_rollback_does_not_replay_intent(daemon: &Daemon) {
     let mut client = daemon.connect().await;
     client.request(Command::Rollback {}).await.unwrap();
-    let before = client.request(Command::Status {}).await.unwrap();
+    let before = client
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
+        .await
+        .unwrap();
     assert!(apply(daemon).await["registered"].is_null());
-    let after = client.request(Command::Status {}).await.unwrap();
-    assert_eq!(after["config"]["active"], before["config"]["active"]);
+    let after = client
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        after["configuration"]["running"],
+        before["configuration"]["running"]
+    );
     assert_eq!(after["plugins"], before["plugins"]);
 }
 
 async fn check_rename(daemon: &mut Daemon, document: &mut Value, identity: &Value) {
     let rename = || Command::PluginRename {
-        name: "alpha".into(),
-        to: "beta".into(),
+        output: protocol::Output::Json,
+        name: "alpha".parse().unwrap(),
+        to: "beta".parse().unwrap(),
+        reason: None,
     };
     let error = daemon
         .connect()
@@ -382,67 +424,95 @@ async fn check_rename(daemon: &mut Daemon, document: &mut Value, identity: &Valu
         format!("{accepted}\n// Unregistered owner notes.\n"),
     )
     .unwrap();
-    daemon.connect().await.request(rename()).await.unwrap();
+    let renamed = tool_results(daemon, RENAME).await;
+    assert!(renamed.iter().any(|entry| matches!(
+        &entry.body,
+        EntryBody::ToolCallSettled {
+            outcome: Settlement::Ok,
+            ..
+        }
+    )));
+    let history = tool_results(daemon, HISTORY).await;
+    assert!(history.iter().any(|entry| matches!(&entry.body, EntryBody::ToolCallSettled { outcome: Settlement::Ok, content, .. } if content.contains("plugins/beta/src/lib.rs") && content.contains("Unregistered owner notes"))));
     let status = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    let plugin = status["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["name"] == "beta")
-        .unwrap();
-    assert_eq!(&plugin["id"], identity);
     assert_eq!(
-        plugin["active"]["id"],
+        status["recent_registrations"][0]["initiator"]["kind"],
+        "agent"
+    );
+    assert_eq!(
+        status["recent_registrations"][0]["initiator"]["reason"],
+        "Give the plugin its new name"
+    );
+    assert!(
+        status["recent_registrations"][0]["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| change["kind"] == "renamed"
+                && change["name"] == "beta"
+                && change["from"] == "alpha")
+    );
+    assert_eq!(&status["plugins"]["beta"]["running"]["id"], identity);
+    assert_eq!(
+        running_generation(&status["plugins"]["beta"])["id"],
         settings["registered"]["generations"][0]["id"]
     );
     assert_eq!(
-        status["workspace"]["plugins"]["beta"]["code"]["state"],
+        status["plugins"]["beta"]["workspace"]["code"]["state"],
         "unbuilt"
-    );
-    assert_eq!(
-        git(
-            daemon.root.path(),
-            &["show", "enco/registered:plugins/beta/src/lib.rs"]
-        )
-        .await,
-        accepted.trim()
     );
     assert!(
         std::fs::read_to_string(daemon.root.path().join("plugins/beta/src/lib.rs"))
             .unwrap()
             .contains("Unregistered owner notes")
     );
-    git(daemon.root.path(), &["add", "plugins/beta"]).await;
-    git(daemon.root.path(), &["mv", "plugins/beta", "plugins/alpha"]).await;
+    check_workspace_moves_do_not_rename_registered_plugin(daemon).await;
+}
+
+async fn check_workspace_moves_do_not_rename_registered_plugin(daemon: &mut Daemon) {
+    std::fs::rename(
+        daemon.root.path().join("plugins/beta"),
+        daemon.root.path().join("plugins/alpha"),
+    )
+    .unwrap();
     daemon.stop().await;
     daemon.restart().await;
     let restarted = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
     assert_eq!(
-        restarted["plugins"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|plugin| &plugin["id"] == identity)
-            .unwrap()["name"],
+        restarted["plugins"]["beta"]["running"]["running"]["name"],
         "beta"
     );
-    git(daemon.root.path(), &["mv", "plugins/alpha", "plugins/beta"]).await;
-    git(daemon.root.path(), &["add", "plugins/beta"]).await;
-    git(daemon.root.path(), &["mv", "plugins/beta", "plugins/gamma"]).await;
+    std::fs::rename(
+        daemon.root.path().join("plugins/alpha"),
+        daemon.root.path().join("plugins/beta"),
+    )
+    .unwrap();
+    std::fs::rename(
+        daemon.root.path().join("plugins/beta"),
+        daemon.root.path().join("plugins/gamma"),
+    )
+    .unwrap();
     let error = daemon
         .connect()
         .await
-        .request(Command::Apply {})
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
         .await
         .unwrap_err();
     assert!(error.to_string().contains("plugin_rename"));
@@ -471,22 +541,19 @@ async fn first_start_registers_a_source_provider_with_the_configuration_that_use
     let status = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    let plugin = status["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["name"] == "local")
-        .unwrap();
-    assert_eq!(plugin["active"]["origin"], "code");
+    let generation = running_generation(&status["plugins"]["local"]);
+    assert_eq!(generation["origin"], "code");
     assert_eq!(
-        plugin["active"]["registration"],
-        status["config"]["active"]["registration"]
+        generation["registration"],
+        status["configuration"]["running"]["registration"]
     );
     assert!(
-        status["config"]["unavailable_uses"]
+        status["configuration"]["unavailable_uses"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -494,7 +561,6 @@ async fn first_start_registers_a_source_provider_with_the_configuration_that_use
     assert!(server.received_requests().await.unwrap().is_empty());
     daemon.stop().await;
     let home = daemon.root.path();
-    let accepted = git(home, &["rev-parse", "enco/registered"]).await;
     for name in ["enco.db", "enco.db-wal", "enco.db-shm"] {
         let file = home.join(".data").join(name);
         if file.exists() {
@@ -502,20 +568,18 @@ async fn first_start_registers_a_source_provider_with_the_configuration_that_use
         }
     }
     daemon.restart().await;
-    assert_eq!(
-        git(daemon.root.path(), &["rev-parse", "enco/registered^"]).await,
-        accepted
-    );
     let rebuilt = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    assert_eq!(rebuilt["registrations"].as_array().unwrap().len(), 1);
+    assert_eq!(rebuilt["recent_registrations"].as_array().unwrap().len(), 1);
     assert_eq!(
-        rebuilt["config"]["active"]["document"],
-        status["config"]["active"]["document"]
+        rebuilt["configuration"]["running"]["registration"],
+        rebuilt["recent_registrations"][0]["id"]
     );
     check_references_keep_the_provider(&daemon, &rebuilt).await;
     assert!(server.received_requests().await.unwrap().is_empty());
@@ -527,8 +591,10 @@ async fn check_references_keep_the_provider(daemon: &Daemon, registered: &Value)
         .connect()
         .await
         .request(Command::PluginRename {
-            name: "local".into(),
-            to: "renamed".into(),
+            output: protocol::Output::Json,
+            name: "local".parse().unwrap(),
+            to: "renamed".parse().unwrap(),
+            reason: None,
         })
         .await
         .unwrap_err()
@@ -541,7 +607,10 @@ async fn check_references_keep_the_provider(daemon: &Daemon, registered: &Value)
     let error = daemon
         .connect()
         .await
-        .request(Command::Apply {})
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
         .await
         .unwrap_err()
         .to_string();
@@ -549,11 +618,19 @@ async fn check_references_keep_the_provider(daemon: &Daemon, registered: &Value)
     let rejected = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    assert_eq!(rejected["registrations"], registered["registrations"]);
-    assert_eq!(rejected["plugins"], registered["plugins"]);
+    assert_eq!(
+        rejected["recent_registrations"],
+        registered["recent_registrations"]
+    );
+    assert_eq!(
+        rejected["plugins"]["local"]["running"],
+        registered["plugins"]["local"]["running"]
+    );
 }
 
 async fn check_build_rejection(daemon: &Daemon, document: &Value, source: &Path) {
@@ -561,15 +638,16 @@ async fn check_build_rejection(daemon: &Daemon, document: &Value, source: &Path)
     let before = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    let revision = git(home, &["rev-parse", "enco/registered"]).await;
     daemon
         .connect()
         .await
         .request(Command::PluginScaffold {
-            name: "broken".into(),
+            name: "broken".parse().unwrap(),
         })
         .await
         .unwrap();
@@ -584,7 +662,10 @@ async fn check_build_rejection(daemon: &Daemon, document: &Value, source: &Path)
     let error = daemon
         .connect()
         .await
-        .request(Command::Apply {})
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
         .await
         .unwrap_err()
         .to_string();
@@ -595,17 +676,25 @@ async fn check_build_rejection(daemon: &Daemon, document: &Value, source: &Path)
     let full = error
         .lines()
         .find_map(|line| line.strip_prefix("Full log: "))
-        .unwrap();
+        .unwrap()
+        .trim_matches('`');
     assert!(std::fs::read_to_string(full).unwrap().contains("error"));
-    assert_eq!(git(home, &["rev-parse", "enco/registered"]).await, revision);
     let after = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    assert_eq!(after["registrations"], before["registrations"]);
-    assert_eq!(after["config"]["active"], before["config"]["active"]);
+    assert_eq!(
+        after["recent_registrations"],
+        before["recent_registrations"]
+    );
+    assert_eq!(
+        after["configuration"]["running"],
+        before["configuration"]["running"]
+    );
     std::fs::remove_dir_all(home.join("plugins/broken")).unwrap();
     write_config(daemon, document);
     let code = std::fs::read_to_string(source).unwrap();
@@ -619,5 +708,4 @@ async fn check_build_rejection(daemon: &Daemon, document: &Value, source: &Path)
     // The comment changed the source tree, so Cargo built it before comparing artifacts.
     assert_eq!(unchanged["builds"][0]["name"], "alpha");
     assert_eq!(unchanged["builds"][0]["reused"], false);
-    assert_eq!(git(home, &["rev-parse", "enco/registered"]).await, revision);
 }

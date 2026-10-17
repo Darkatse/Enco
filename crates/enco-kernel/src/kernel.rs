@@ -40,6 +40,8 @@ pub struct Kernel {
 /// Current node and Session execution state.
 #[derive(serde::Serialize)]
 pub struct Status {
+    /// Owner's timezone from the selected configuration.
+    pub timezone: Tz,
     /// Persistent node identity.
     pub node: NodeId,
     /// Policy observed at the next Round boundary.
@@ -106,6 +108,16 @@ pub enum KernelError {
     /// The requested profile is absent from the node configuration.
     #[error("unknown profile {0}")]
     UnknownProfile(String),
+}
+
+/// A delivery failure with the Session name resolved before presentation.
+#[derive(serde::Serialize)]
+pub struct DeliveryStatus {
+    /// Original delivery and settlement facts.
+    #[serde(flatten)]
+    pub settlement: DeliverySettlement,
+    /// The Session that produced the delivery.
+    pub session: SessionRef,
 }
 
 impl Kernel {
@@ -232,11 +244,26 @@ impl Kernel {
     }
 
     /// Read recent final failures, retaining their original Session and Log references.
-    pub async fn delivery_failures(
-        &self,
-        key: &str,
-    ) -> Result<Vec<DeliverySettlement>, KernelError> {
-        Ok(self.deps.store.delivery_failures(key).await?)
+    pub async fn delivery_failures(&self, key: &str) -> Result<Vec<DeliveryStatus>, KernelError> {
+        let failures = self.deps.store.delivery_failures(key).await?;
+        let mut result = Vec::with_capacity(failures.len());
+        for settlement in failures {
+            let id = settlement.delivery.session;
+            let session = self
+                .deps
+                .store
+                .session(id)
+                .await?
+                .ok_or(StoreError::UnknownSession(id))?;
+            result.push(DeliveryStatus {
+                settlement,
+                session: SessionRef {
+                    id,
+                    name: session.name,
+                },
+            });
+        }
+        Ok(result)
     }
 
     /// Subscribe to newly committed facts; Log remains the durable source.
@@ -276,6 +303,7 @@ impl Kernel {
 
     /// Inspect live state without involving the model.
     pub async fn status(&self) -> Result<Status, KernelError> {
+        let view = self.deps.registry.view();
         let node = self.deps.store.node().await?;
         let records = self.deps.store.sessions().await?;
         let handles = lock(&self.sessions);
@@ -291,19 +319,11 @@ impl Kernel {
             })
             .collect();
         Ok(Status {
+            timezone: view.config.kernel.timezone,
             node: node.id,
             safe_mode: node.safe_mode,
             composer: self.deps.snapshot.composer.code(),
-            profiles: self
-                .deps
-                .registry
-                .view()
-                .config
-                .kernel
-                .profiles
-                .keys()
-                .cloned()
-                .collect(),
+            profiles: view.config.kernel.profiles.keys().cloned().collect(),
             sessions,
             scheduler_stopped: self.schedules.stopped(),
         })

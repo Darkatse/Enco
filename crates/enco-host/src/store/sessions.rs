@@ -135,7 +135,7 @@ pub(super) fn pending(
         .prepare(
             "SELECT event
              FROM inbox
-             WHERE session_id=? AND consumed_seq IS NULL
+             WHERE session_id=?
              ORDER BY order_no",
         )
         .map_err(backend)?;

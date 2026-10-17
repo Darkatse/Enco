@@ -53,9 +53,7 @@ fn embed_sdk(root: &Path) -> Result<(), Box<dyn Error>> {
     collect_files(&sdk.join("src"), &mut files)?;
     collect_files(&sdk.join("wit"), &mut files)?;
     files.sort();
-    let mut source = String::from(
-        "pub(crate) const SDK: enco_host::development::Sdk = enco_host::development::Sdk { files: &[\n",
-    );
+    let mut source = String::from("pub(crate) const SDK_FILES: &[(&str, &[u8])] = &[\n");
     for path in files {
         let relative = path
             .strip_prefix(&sdk)?
@@ -66,7 +64,7 @@ fn embed_sdk(root: &Path) -> Result<(), Box<dyn Error>> {
             path.to_str().ok_or("SDK path is not UTF-8")?
         ));
     }
-    source.push_str("] };\n");
+    source.push_str("];\npub(crate) fn sdk() -> Result<enco_host::development::Sdk, enco_host::development::DevelopmentError> { enco_host::development::Sdk::new(SDK_FILES) }\n");
     for input in ["Cargo.toml", "Cargo.lock", "src", "wit"] {
         println!("cargo:rerun-if-changed={}", sdk.join(input).display());
     }

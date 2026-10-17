@@ -242,12 +242,7 @@ async fn evidence_is_isolated_and_regrading_uses_the_saved_trial() {
         std::fs::read_to_string(trial_dir.join("snapshot/mock/mail/requests.jsonl")).unwrap();
     assert!(requests.contains("/inbox"));
     let plugins = read(&trial_dir.join("snapshot/status.json"))["plugins"].clone();
-    let active = &plugins
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["name"] == "openai-compatible")
-        .unwrap()["active"];
+    let active = &plugins["openai-compatible"]["running"]["running"]["activation"]["generation"];
     assert_eq!(trial["generations"]["openai-compatible"], active["id"]);
     assert_eq!(
         report["variants"]["base"]["deploy"][0]["hash"],
@@ -457,16 +452,12 @@ async fn source_fixture_is_registered_offline_before_serving() {
     assert_eq!(trial["network_violations"], 0);
     let trial = directory.join(trial["dir"].as_str().unwrap());
     let status = read(&trial.join("snapshot/status.json"));
-    let plugin = status["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["name"] == "fixture")
-        .unwrap();
-    assert_eq!(plugin["active"]["origin"], "code");
+    let generation =
+        &status["plugins"]["fixture"]["running"]["running"]["activation"]["generation"];
+    assert_eq!(generation["origin"], "code");
     assert_eq!(
-        plugin["active"]["registration"],
-        status["config"]["active"]["registration"]
+        generation["registration"],
+        status["configuration"]["running"]["registration"]
     );
     assert!(trial.join("home/.enco/plugins/fixture/README.md").is_file());
     evaluation.finish().await;

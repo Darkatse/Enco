@@ -10,3 +10,6 @@ impl Clock for SystemClock {
         Utc::now().trunc_subsecs(3)
     }
 }
+
+/// Owner-local time shown in model context and operational documents.
+pub(crate) const LOCAL_TIME: &str = "%Y-%m-%d %H:%M, %A";

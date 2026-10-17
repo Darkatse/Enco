@@ -1,5 +1,5 @@
 use super::*;
-use crate::Activation;
+use crate::ActivationWrite;
 
 impl Registry {
     /// Only the current trial's attributable failures change health; late reports are harmless.
@@ -43,10 +43,9 @@ impl Registry {
         if !current_trial(&state, generation) {
             return Ok(());
         }
-        let name = state
-            .running_name(plugin)
-            .unwrap_or("stopped plugin")
-            .to_owned();
+        let name = state.running_name(plugin).cloned().ok_or_else(|| {
+            RegistryError::Intent(format!("plugin {plugin} on trial has no running name"))
+        })?;
         let mut restored = state.history.plugins[&plugin].clone();
         restored.active = recovery.target.as_ref().map(|(id, _)| *id);
         restored.rollback_target = None;
@@ -68,11 +67,11 @@ impl Registry {
             },
             received_at: self.deps.clock.now(),
         });
-        let change = Activation {
+        let change = ActivationWrite {
             plugins: vec![restored],
             failed,
             event,
-            ..Activation::default()
+            ..ActivationWrite::default()
         };
         activation::commit(&self.deps, &mut state, &change).await?;
         if let Some((id, loaded)) = recovery.target {

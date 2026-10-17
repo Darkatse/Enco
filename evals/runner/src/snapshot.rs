@@ -55,12 +55,19 @@ pub(crate) async fn export(enco: &Enco, directory: &Path, forbidden: &[&Path]) -
             .await?;
     }
     if let Some(status) = snapshot
-        .read::<Status>(enco, directory, "status", &["status"])
+        .read::<Status>(enco, directory, "status", &["status", "--json"])
         .await?
     {
-        for plugin in status.plugins {
-            if let (Some(name), Some(generation)) = (plugin.name, plugin.active) {
-                snapshot.metrics.generations.insert(name, generation.id);
+        for plugin in status.plugins.into_values().filter_map(|unit| unit.running) {
+            match plugin.running {
+                Running::Serving { name, activation }
+                | Running::Unavailable { name, activation } => {
+                    snapshot
+                        .metrics
+                        .generations
+                        .insert(name, activation.generation.id);
+                }
+                Running::Stopped => {}
             }
         }
     }

@@ -44,7 +44,7 @@ pub(super) fn events_in(
     let mut accepted = Vec::with_capacity(events.len());
     for event in events {
         let inserted = tx.execute(
-            "INSERT INTO inbox(event_id,session_id,event) VALUES (?,?,?) ON CONFLICT(event_id) DO NOTHING",
+            "INSERT INTO inbox(event_id,session_id,event) SELECT ?1,?2,?3 WHERE NOT EXISTS (SELECT 1 FROM log WHERE event_id=?1) ON CONFLICT(event_id) DO NOTHING",
             params![event.id.to_string(), event.session.to_string(), encode(event)?],
         ).map_err(backend)?;
         accepted.push(if inserted == 0 {

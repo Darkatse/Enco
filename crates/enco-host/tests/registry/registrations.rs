@@ -1,4 +1,4 @@
-use super::promote;
+use super::{active, promote};
 use crate::support::*;
 use enco_core::*;
 use enco_host::SqliteStore;
@@ -40,19 +40,13 @@ async fn repeated_factory_activation_does_not_make_an_undone_registration_effect
         configuration(),
     )
     .await;
-    let factory = registry.status().await.unwrap().plugins[0]
-        .active
-        .as_ref()
-        .unwrap()
-        .id;
+    let factory = active(&registry).await.id;
     let mut stale = source_request("fixture", b"custom");
     stale.base = registry
-        .status()
+        .registered_intent(None)
         .await
         .unwrap()
-        .registrations
-        .last()
-        .map(|r| r.id);
+        .registration();
     let custom = submit(&registry, source_request("fixture", b"custom"))
         .await
         .unwrap();
@@ -61,8 +55,8 @@ async fn repeated_factory_activation_does_not_make_an_undone_registration_effect
     let restored = submit(
         &registry,
         RegistrationRequest {
-            revision: "restore-factory".into(),
-            plugins: [("fixture".into(), PluginChange::Factory)].into(),
+            initiator: Initiator::Owner { reason: None },
+            plugins: [("fixture".parse().unwrap(), PluginChange::Factory)].into(),
             base: None,
             configuration: None,
         },
@@ -84,16 +78,9 @@ async fn repeated_factory_activation_does_not_make_an_undone_registration_effect
     );
     assert!(matches!(
         registry.rollback().await,
-        Err(RegistryError::NoRollbackTarget(_))
+        Err(RegistryError::NoRollbackTarget)
     ));
-    assert_eq!(
-        registry.status().await.unwrap().plugins[0]
-            .active
-            .as_ref()
-            .unwrap()
-            .id,
-        factory
-    );
+    assert_eq!(active(&registry).await.id, factory);
 }
 
 #[tokio::test]
@@ -114,8 +101,12 @@ async fn rename_round_trip_rolls_back_by_name_version() {
         submit(
             &registry,
             RegistrationRequest {
-                revision: format!("{name}-{to}"),
-                plugins: [(name.into(), PluginChange::Rename(to.into()))].into(),
+                initiator: Initiator::Owner { reason: None },
+                plugins: [(
+                    name.parse().unwrap(),
+                    PluginChange::Rename(to.parse().unwrap()),
+                )]
+                .into(),
                 base: None,
                 configuration: None,
             },
@@ -131,11 +122,11 @@ async fn rename_round_trip_rolls_back_by_name_version() {
             .iter()
             .find(|plugin| plugin.id == identity)
             .unwrap();
-        assert_eq!(plugin.name.as_deref(), expected);
+        assert_eq!(plugin.running.name().map(PluginName::as_str), expected);
     }
     assert!(matches!(
         registry.rollback().await,
-        Err(RegistryError::NoRollbackTarget(_))
+        Err(RegistryError::NoRollbackTarget)
     ));
 }
 
@@ -187,9 +178,7 @@ async fn retained_files_are_bounded_and_a_pinned_adapter_outlives_its_file() {
                 .count()
                 <= 2
         );
-        let status = registry.status().await.unwrap();
-        let plugin = &status.plugins[0];
-        assert_eq!(plugin.generations.len(), index + 3);
+        assert_eq!(store.registry().await.unwrap().generations.len(), index + 3);
     }
     assert!(matches!(
         store.artifact(&first.artifact).await,
@@ -221,11 +210,7 @@ async fn retained_files_are_bounded_and_a_pinned_adapter_outlives_its_file() {
         Err(StoreError::Artifact(_))
     ));
     assert_eq!(
-        reopened.status().await.unwrap().plugins[0]
-            .active
-            .as_ref()
-            .unwrap()
-            .artifact,
+        active(&reopened).await.artifact,
         ContentHash::of(b"version-10")
     );
 }
@@ -289,7 +274,7 @@ async fn owner_rollback_restores_only_the_still_effective_parts_of_the_latest_ba
     let batch = || {
         let mut request = source_request("a", b"a2");
         request.plugins.extend(source_request("b", b"b2").plugins);
-        request.configuration = Some(document.clone());
+        request.configuration = Some(configuration_source(document.clone()));
         request
     };
     let applied = submit(&registry, batch()).await.unwrap();
@@ -329,16 +314,21 @@ async fn owner_rollback_restores_only_the_still_effective_parts_of_the_latest_ba
         .await
         .unwrap();
     let after = registry.status().await.unwrap();
-    assert_eq!(after.config.active.id, before.config.active.id);
-    assert_eq!(after.registered.configuration.unwrap().document, document);
+    assert_eq!(after.config.running, before.config.running);
+    assert_eq!(after.registered.configuration().unwrap().document, document);
     for old in first.generations {
         let plugin = after
             .plugins
             .iter()
             .find(|plugin| plugin.id == old.plugin)
             .unwrap();
-        assert_eq!(plugin.active.as_ref().unwrap().id, old.id);
-        assert!(!plugin.matches_registered);
+        assert_eq!(running_generation(plugin).unwrap().id, old.id);
+        assert_eq!(
+            plugin.standing,
+            Standing::Registered {
+                differences: vec![Difference::Code]
+            }
+        );
     }
 }
 
@@ -376,14 +366,7 @@ async fn rejected_recovery_does_not_leave_staged_factory_bytes() {
         store.artifact(&ContentHash::of(FACTORY_BYTES)).await,
         Err(StoreError::Artifact(_))
     ));
-    assert_eq!(
-        registry.status().await.unwrap().plugins[0]
-            .active
-            .as_ref()
-            .unwrap()
-            .id,
-        second.id
-    );
+    assert_eq!(active(&registry).await.id, second.id);
 }
 
 #[tokio::test]
@@ -402,14 +385,7 @@ async fn cleanup_failure_reports_accepted_registration_and_rollback() {
         .await
         .unwrap();
     assert!(!accepted.warnings.is_empty());
-    assert_eq!(
-        registry.status().await.unwrap().plugins[0]
-            .active
-            .as_ref()
-            .unwrap()
-            .id,
-        accepted.generations[0].id
-    );
+    assert_eq!(active(&registry).await.id, accepted.generations[0].id);
     assert_eq!(
         store
             .registry()
@@ -423,11 +399,7 @@ async fn cleanup_failure_reports_accepted_registration_and_rollback() {
     let recovered = registry.rollback().await.unwrap();
     assert!(!recovered.warnings.is_empty());
     assert_eq!(
-        registry.status().await.unwrap().plugins[0]
-            .active
-            .as_ref()
-            .unwrap()
-            .artifact,
+        active(&registry).await.artifact,
         ContentHash::of(FACTORY_BYTES)
     );
     std::fs::remove_dir(obstruction).unwrap();
@@ -448,7 +420,7 @@ async fn rollback_of_deletion_restores_the_name_and_its_configuration_with_only_
             custom_config["endpoint"][endpoint]["plugin"] = "custom".into();
         }
         let mut request = source_request("custom", b"custom");
-        request.configuration = Some(custom_config.clone());
+        request.configuration = Some(configuration_source(custom_config.clone()));
         let added = submit(&registry, request).await.unwrap();
         let code = added.generations[0].clone();
         if healthy {
@@ -457,9 +429,9 @@ async fn rollback_of_deletion_restores_the_name_and_its_configuration_with_only_
         let deleted = submit(
             &registry,
             RegistrationRequest {
-                revision: "delete-and-rewire".into(),
-                plugins: [("custom".into(), PluginChange::Remove)].into(),
-                configuration: Some(configuration()),
+                initiator: Initiator::Owner { reason: None },
+                plugins: [("custom".parse().unwrap(), PluginChange::Remove)].into(),
+                configuration: Some(configuration_source(configuration())),
                 base: None,
             },
         )
@@ -470,17 +442,24 @@ async fn rollback_of_deletion_restores_the_name_and_its_configuration_with_only_
             deleted.registration.id
         );
         let status = registry.status().await.unwrap();
-        assert_eq!(status.config.active.document, custom_config);
+        assert_eq!(registry.view().config.document, custom_config);
         let restored = status
             .plugins
             .iter()
-            .find(|plugin| plugin.id == code.plugin)
-            .unwrap();
+            .find(|plugin| plugin.id == code.plugin);
+        assert_eq!(restored.is_some(), healthy);
         assert_eq!(
-            restored.active.as_ref().map(|record| record.id),
+            restored
+                .and_then(running_generation)
+                .map(|record| record.id),
             healthy.then_some(code.id)
         );
-        assert_eq!(restored.name.as_deref(), healthy.then_some("custom"));
+        assert_eq!(
+            restored
+                .and_then(|plugin| plugin.running.name())
+                .map(PluginName::as_str),
+            healthy.then_some("custom")
+        );
     }
 }
 
@@ -494,7 +473,7 @@ async fn rollback_restores_the_configuration_active_before_registration() {
         configuration(),
     )
     .await;
-    let original = registry.status().await.unwrap().config.active;
+    let original = registry.status().await.unwrap().config.running;
     let mut document = configuration();
     document["owner"]["timezone"] = "Europe/Paris".into();
     submit(&registry, configuration_request(document.clone()))
@@ -507,8 +486,11 @@ async fn rollback_restores_the_configuration_active_before_registration() {
         .unwrap();
     registry.rollback().await.unwrap();
     let status = registry.status().await.unwrap();
-    assert_eq!(status.config.active, original);
-    assert_eq!(status.registered.configuration, latest.configuration);
+    assert_eq!(status.config.running, original);
+    assert_eq!(
+        status.registered.configuration(),
+        latest.configuration.as_ref()
+    );
 }
 
 #[tokio::test]
@@ -521,23 +503,37 @@ async fn empty_requests_and_removal_of_reserved_factory_names_are_rejected() {
         configuration(),
     )
     .await;
-    let before = registry.status().await.unwrap().registrations;
-    for plugins in [
-        Default::default(),
-        [("fixture".into(), PluginChange::Remove)].into(),
-    ] {
-        let request = RegistrationRequest {
-            revision: "rejected".into(),
-            base: None,
-            configuration: None,
-            plugins,
-        };
-        assert!(matches!(
-            submit(&registry, request).await,
-            Err(RegistryError::Rejected { .. })
-        ));
-    }
-    assert_eq!(registry.status().await.unwrap().registrations, before);
+    let before = registry
+        .registered_intent(None)
+        .await
+        .unwrap()
+        .registration();
+    let request = |plugins| RegistrationRequest {
+        initiator: Initiator::Owner { reason: None },
+        base: None,
+        configuration: None,
+        plugins,
+    };
+    assert!(matches!(
+        submit(&registry, request(Default::default())).await,
+        Err(RegistryError::EmptyRequest)
+    ));
+    assert!(matches!(
+        submit(
+            &registry,
+            request([("fixture".parse().unwrap(), PluginChange::Remove)].into())
+        )
+        .await,
+        Err(RegistryError::FactoryRemoval(name)) if name.as_str() == "fixture"
+    ));
+    assert_eq!(
+        registry
+            .registered_intent(None)
+            .await
+            .unwrap()
+            .registration(),
+        before
+    );
 }
 
 #[tokio::test]
@@ -558,26 +554,39 @@ async fn new_source_cannot_bind_to_a_name_restored_only_by_rollback() {
     submit(
         &registry,
         RegistrationRequest {
-            revision: "a-to-b".into(),
+            initiator: Initiator::Owner { reason: None },
             base: None,
             configuration: None,
-            plugins: [("a".into(), PluginChange::Rename("b".into()))].into(),
+            plugins: [(
+                "a".parse().unwrap(),
+                PluginChange::Rename("b".parse().unwrap()),
+            )]
+            .into(),
         },
     )
     .await
     .unwrap();
     registry.rollback().await.unwrap();
-    let before = registry.status().await.unwrap().registrations;
+    let before = registry
+        .registered_intent(None)
+        .await
+        .unwrap()
+        .registration();
     let result = submit(&registry, source_request("a", b"new")).await;
-    assert!(matches!(result, Err(RegistryError::Rejected { .. })));
+    assert!(
+        matches!(&result, Err(RegistryError::Rejected(causes))
+            if matches!(causes.as_slice(), [Cause::NameTaken { name }] if name.as_str() == "a")),
+        "{:?}",
+        result.err()
+    );
     let status = registry.status().await.unwrap();
-    assert_eq!(status.registrations, before);
+    assert_eq!(status.registered.registration(), before);
     assert_eq!(status.registered.plugins["b"].id, old.plugin);
-    let running = status
+    let plugin = status
         .plugins
         .iter()
         .find(|plugin| plugin.id == old.plugin)
         .unwrap();
-    assert_eq!(running.name.as_deref(), Some("a"));
-    assert_eq!(running.active.as_ref().unwrap().id, old.id);
+    assert_eq!(plugin.running.name().map(PluginName::as_str), Some("a"));
+    assert_eq!(running_generation(plugin).unwrap().id, old.id);
 }

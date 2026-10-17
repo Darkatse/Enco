@@ -31,24 +31,41 @@ pub(crate) enum Command {
     ForgetMemory {
         memory_id: MemoryId,
     },
-    Status {},
+    Status {
+        output: Output,
+    },
     Sessions {},
     Log {
         session: String,
         after: Option<LogPos>,
     },
-    Apply {},
+    Apply {
+        output: Output,
+        reason: Option<Reason>,
+    },
+    History {
+        output: Output,
+        query: enco_host::development::HistoryQuery,
+    },
+    Rewind {
+        output: Output,
+        arguments: enco_host::development::RewindArguments,
+    },
     Rollback {},
     PluginDeploy {
-        name: String,
+        output: Output,
+        name: PluginName,
         path: std::path::PathBuf,
+        reason: Option<Reason>,
     },
     PluginScaffold {
-        name: String,
+        name: PluginName,
     },
     PluginRename {
-        name: String,
-        to: String,
+        output: Output,
+        name: PluginName,
+        to: PluginName,
+        reason: Option<Reason>,
     },
     Inspect {
         session: String,
@@ -79,4 +96,12 @@ pub(crate) enum ServerMessage {
         session: String,
         entry: Box<Entry>,
     },
+}
+
+/// Rendering happens beside the facts; clients choose the wire representation.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Output {
+    Json,
+    Document,
 }

@@ -115,13 +115,7 @@ async fn commits_must_continue_the_log_within_the_current_epoch() {
     bad.pos.seq = Seq(2);
     assert!(matches!(
         store
-            .commit(
-                event.session,
-                Commit {
-                    entries: vec![bad],
-                    consumed: vec![event.id]
-                }
-            )
+            .commit(event.session, Commit { entries: vec![bad] })
             .await,
         Err(StoreError::OutOfOrder { .. })
     ));
@@ -129,13 +123,7 @@ async fn commits_must_continue_the_log_within_the_current_epoch() {
     bad.pos.epoch = Epoch(2);
     assert!(matches!(
         store
-            .commit(
-                event.session,
-                Commit {
-                    entries: vec![bad],
-                    consumed: vec![event.id]
-                }
-            )
+            .commit(event.session, Commit { entries: vec![bad] })
             .await,
         Err(StoreError::Fenced { .. })
     ));
@@ -171,7 +159,6 @@ async fn a_commit_consuming_an_unaccepted_event_writes_nothing() {
                 event.session,
                 Commit {
                     entries: vec![entry, second],
-                    consumed: vec![event.id, missing.id]
                 }
             )
             .await
@@ -195,7 +182,6 @@ async fn committed_entries_consume_their_events_and_survive_reopening() {
             event.session,
             Commit {
                 entries: vec![entry.clone()],
-                consumed: vec![event.id],
             },
         )
         .await
@@ -215,6 +201,7 @@ async fn committed_entries_consume_their_events_and_survive_reopening() {
         reopened.log(event.session, None).await.unwrap(),
         vec![entry]
     );
+    assert!(reopened.pending(event.session).await.unwrap().is_empty());
     assert_eq!(
         reopened
             .accept(std::slice::from_ref(&event), None)
@@ -279,6 +266,17 @@ async fn schedule_cursor_and_inbox_delivery_commit_together() {
     // A duplicate Inbox ID fails after the cursor update; neither write may commit alone.
     assert!(store.fire_schedule(None, false, &event).await.is_err());
     assert_eq!(store.schedules(None).await.unwrap(), vec![schedule.clone()]);
+    store
+        .commit(
+            session.id,
+            Commit {
+                entries: vec![consumed(&event)],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(store.fire_schedule(None, false, &event).await.is_err());
+    assert_eq!(store.schedules(None).await.unwrap(), vec![schedule.clone()]);
     event.id = EventId::new();
     store.fire_schedule(None, false, &event).await.unwrap();
     let last = store.schedules(None).await.unwrap()[0].last.unwrap();
@@ -291,5 +289,5 @@ async fn schedule_cursor_and_inbox_delivery_commit_together() {
         store.fire_schedule(None, false, &stale).await,
         Err(StoreError::ScheduleNotActive(_))
     ));
-    assert_eq!(store.pending(session.id).await.unwrap().len(), 2);
+    assert_eq!(store.pending(session.id).await.unwrap().len(), 1);
 }

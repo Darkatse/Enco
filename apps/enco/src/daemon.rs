@@ -1,7 +1,7 @@
 use crate::{
     compose_root,
     paths::Paths,
-    protocol::{Command, Request, ServerMessage},
+    protocol::{Command, Output, Request, ServerMessage},
 };
 use anyhow::{Context, Result, bail};
 use enco_core::*;
@@ -285,7 +285,15 @@ async fn process(
                 .map_err(memory_error)?;
             json!({ "forgotten": forgotten })
         }
-        Command::Status {} => crate::status::read(application).await?,
+        Command::Status { output } => {
+            let status = crate::status::read(application)
+                .await
+                .map_err(|error| CommandError {
+                    code: error.code(),
+                    message: error.to_string(),
+                })?;
+            render(output, &status, || status.document())
+        }
         Command::Sessions {} => json!(kernel.sessions().await?),
         Command::Log {
             session: name,
@@ -294,13 +302,30 @@ async fn process(
             let session = existing_session(kernel, &name).await?;
             json!(kernel.log(session.id, after).await?)
         }
-        Command::Apply {} => json!(
-            application
+        Command::Apply { reason, output } => {
+            let applied = application
                 .development
-                .apply(kernel.registry(), stop)
+                .apply(kernel.registry(), Initiator::Owner { reason }, stop)
                 .await
-                .map_err(development_error)?
-        ),
+                .map_err(development_error)?;
+            render(output, &applied, || applied.document())
+        }
+        Command::History { query, output } => {
+            let history = application
+                .development
+                .history(kernel.registry(), query)
+                .await
+                .map_err(development_error)?;
+            render(output, &history, || history.document())
+        }
+        Command::Rewind { arguments, output } => {
+            let rewound = application
+                .development
+                .rewind(kernel.registry(), arguments, stop)
+                .await
+                .map_err(development_error)?;
+            render(output, &rewound, || rewound.document())
+        }
         Command::Rollback {} => json!(
             kernel
                 .registry()
@@ -308,29 +333,55 @@ async fn process(
                 .await
                 .map_err(KernelError::from)?
         ),
-        Command::PluginDeploy { name, path } => {
+        Command::PluginDeploy {
+            name,
+            path,
+            reason,
+            output,
+        } => {
             let bytes = tokio::fs::read(&path).await.map_err(|error| CommandError {
                 code: "bad_request",
                 message: format!("{}: {error}", path.display()),
             })?;
-            json!(
-                application
-                    .development
-                    .deploy(kernel.registry(), name, bytes, stop)
-                    .await
-                    .map_err(development_error)?
-            )
+            let registered = application
+                .development
+                .deploy(
+                    kernel.registry(),
+                    name,
+                    bytes,
+                    Initiator::Owner { reason },
+                    stop,
+                )
+                .await
+                .map_err(development_error)?;
+            render(output, &registered, || {
+                enco_host::development::registration_document(&registered)
+            })
         }
         Command::PluginScaffold { name } => {
             json!({ "files": application.development.scaffold(kernel.registry(), &name).await.map_err(development_error)? })
         }
-        Command::PluginRename { name, to } => json!(
-            application
+        Command::PluginRename {
+            name,
+            to,
+            reason,
+            output,
+        } => {
+            let registered = application
                 .development
-                .rename(kernel.registry(), &name, &to, stop)
+                .rename(
+                    kernel.registry(),
+                    &name,
+                    &to,
+                    Initiator::Owner { reason },
+                    stop,
+                )
                 .await
-                .map_err(development_error)?
-        ),
+                .map_err(development_error)?;
+            render(output, &registered, || {
+                enco_host::development::registration_document(&registered)
+            })
+        }
         Command::Inspect {
             session: name,
             attempt_id,
@@ -353,9 +404,20 @@ async fn process(
     })
 }
 
-fn development_error(error: enco_host::development::DevelopmentError) -> CommandError {
+fn development_error(failed: enco_host::development::Failed) -> CommandError {
     CommandError {
-        code: "development",
-        message: error.to_string(),
+        code: failed.code(),
+        message: failed.to_string(),
+    }
+}
+
+fn render(
+    output: Output,
+    facts: &impl serde::Serialize,
+    document: impl FnOnce() -> String,
+) -> serde_json::Value {
+    match output {
+        Output::Json => serde_json::json!(facts),
+        Output::Document => document().into(),
     }
 }

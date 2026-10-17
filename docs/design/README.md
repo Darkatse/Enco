@@ -60,7 +60,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 
 ### 值不可变，身份稳定，可变的只是引用
 
-内容一经记下就不再改变：制品与计划按内容寻址，配置文档与 Log 只追加。插件与 Session 是身份，跨越变化保持不变；变的只是身份此刻指向哪个值，由归属者移动。所以问"内容变没变"比较值，问"是不是同一个、同一次"比较身份与引用：同一份出厂代码可以激活多次，复制来的源码可能编出相同的字节，名字也会改回去。
+内容一经记下就不再改变：制品、计划与已登记的源码和配置文件按内容寻址，配置文档与 Log 只追加。这些值都存在 Enco 自己的库里：引用一旦指向库之外，接纳就依赖一个归属者管不到的存储。插件与 Session 是身份，跨越变化保持不变；变的只是身份此刻指向哪个值，由归属者移动。所以问"内容变没变"比较值，问"是不是同一个、同一次"比较身份与引用：同一份出厂代码可以激活多次，复制来的源码可能编出相同的字节，名字也会改回去。
 
 ### 在源头声明，不在下游防御
 
@@ -89,10 +89,10 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | Round | 一次模型请求及其全部工具调用与结果确认；一个 Event 唤醒的连续多个 Round 是一次 Run |
 | Log | 追加式事实，键为 `(epoch, seq)`；模型上下文的唯一来源 |
 | Capability | Tool、Provider、Channel、Context、Observer；ID 为 `(节点, 插件名, 名称)` |
-| Plugin / Generation | 能力的打包单位，名字是主人仓库中的目录名，身份是 ULID / 一份已登记、可以试用与回退的实现，由内容与从内容求出的声明组成 |
+| Plugin / Generation | 能力的打包单位，名字是主人 home 中 `plugins/` 下的目录名，身份是 ULID / 一份已登记、可以试用与回退的实现，由内容与从内容求出的声明组成 |
 | Host | 节点提供的机制：fs、exec、http、连接、定时、状态、blob、检索索引 |
 | Node | 一个运行中的内核及其 Host：完整节点、Edge 节点，或只参与控制平面的见证者 |
-| Space | 主人全部节点的集合；控制平面（成员、Binding、期望状态、git 引用）由共识维护 |
+| Space | 主人全部节点的集合；控制平面（成员、Binding、期望状态）由共识维护 |
 | Binding | `key → (node, epoch)`，单写者资源的所有权：Session 是粘滞所有权，渠道与定时是租约 |
 
 其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief；ContextPlan、Composer、Candidate、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
@@ -131,7 +131,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 |---|---|---|---|
 | Erlang | 隔离进程、邮箱、位置透明、supervision、热代码加载 | 归属者 actor 持有状态，代际是可替换的回调模块；健康门控是代际的 supervisor，父 Session 是子 Session 的 supervisor | 位置透明掩盖部分失败，netsplit 后要人工收拾，最多两个代码版本 → 远程调用显式返回 `unknown`，控制平面用共识，记录与钉住的实例数量不限，恢复只留两份制品 |
 | Plan 9 | 按进程组合的命名空间，`import`，`cpu` | 每个 Round 的能力快照是一个命名空间，由本地与远程导出的能力组成；roam 就是 `cpu` | 一切皆文件会丢失动作的语义 → 动作用类型化调用，文件投影只用于查看 |
-| Smalltalk | 活的 image，系统在运行中修改自己 | 自我修改的闭环，`status` 与 `inspect` | image 不可复现、会腐烂，包之间的方法覆盖让结果取决于加载顺序 → git、内容寻址的制品与代际；要改变一个插件的行为就改它的源码并登记 |
+| Smalltalk | 活的 image，系统在运行中修改自己 | 自我修改的闭环，`status` 与 `inspect` | image 不可复现、会腐烂，包之间的方法覆盖让结果取决于加载顺序 → 源码是意图，登记把源码与制品按内容寻址记进自己的库；要改变一个插件的行为就改它的源码并登记 |
 | Lisp | 代码即数据，eval 与 REPL，语言扩展自身 | Log 是数据；请求是 composer 对当前输入的纯函数，并作为数据记录；工具调用是被内核 eval 的程序 | 无限扩展导致方言碎片化 → 少量类型化的贡献与 WIT 契约 |
 
 ## 源码地图
@@ -150,7 +150,8 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | 记忆、渠道与 Telegram | `crates/enco-host/src/` 的 `memory/`、`channel/`、`telegram/` |
 | 插件运行时、宿主导入、凭证 | `crates/enco-wasm` |
 | 组合根、守护进程、本地协议与 CLI | `apps/enco/src` |
-| 插件的构建与已登记意图的链 | `crates/enco-host/src/development/`；分发的 SDK 在 `sdk/` |
+| 插件源码的值、构建、登记、历史与倒带 | `crates/enco-host/src/development/`；分发的 SDK 在 `sdk/` |
+| 完整状态、需要关注的情况与下一步 | `crates/enco-host/src/status/`，文档渲染在 `development/render/` |
 | 插件契约 | `sdk/wit/plugin.wit`，生成的 `sdk/wit/CONTRACT.md` |
 | 出厂插件 | `plugins/` |
 | 评测题与黑盒运行器 | `evals/` |

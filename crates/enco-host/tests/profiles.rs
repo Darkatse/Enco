@@ -329,15 +329,13 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
         provider.resume.notify_one();
     };
     let (result, ()) = tokio::join!(apply, assign);
-    let Err(RegistryError::Rejected { name, reason }) = result else {
+    let Err(RegistryError::Rejected(causes)) = result else {
         panic!("expected profile rejection");
     };
-    assert_eq!(name, "config");
     assert!(
-        reason.contains("main")
-            && reason.contains(&session.id.to_string())
-            && reason.contains("profile alternate"),
-        "{reason}"
+        matches!(causes.as_slice(), [Cause::ProfileInUse { profile, sessions }]
+            if profile == "alternate" && sessions.iter().eq([&session.name])),
+        "{causes:?}"
     );
     assert_eq!(kernel.registry().view().config.generation, before);
     kernel.set_profile(session.id, "default").await.unwrap();

@@ -20,18 +20,19 @@ CREATE TABLE log (
   at         TEXT NOT NULL,
   body       TEXT NOT NULL,              -- Serialized EntryBody
   kind       TEXT GENERATED ALWAYS AS (json_extract(body, '$.kind')) VIRTUAL,
+  event_id   TEXT GENERATED ALWAYS AS (CASE WHEN json_extract(body, '$.kind') = 'event_consumed' THEN json_extract(body, '$.event.id') END) VIRTUAL,
   PRIMARY KEY (session_id, epoch, seq)
 ) STRICT;
+
+CREATE UNIQUE INDEX log_event_id ON log(event_id) WHERE event_id IS NOT NULL;
 
 CREATE TABLE inbox (
   order_no       INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id       TEXT NOT NULL UNIQUE,
   session_id     TEXT NOT NULL REFERENCES sessions(id),
-  event          TEXT NOT NULL,          -- Serialized Event
-  consumed_epoch INTEGER,
-  consumed_seq   INTEGER
+  event          TEXT NOT NULL           -- Serialized Event
 ) STRICT;
-CREATE INDEX inbox_pending ON inbox(session_id, order_no) WHERE consumed_seq IS NULL;
+CREATE INDEX inbox_pending ON inbox(session_id, order_no);
 
 CREATE TABLE schedules (
   id             TEXT PRIMARY KEY,
@@ -68,8 +69,15 @@ CREATE INDEX delivery_failures ON deliveries(connection, order_no)
 -- A registration groups accepted content; runtime references may recover independently.
 CREATE TABLE registrations (
   id         INTEGER PRIMARY KEY,
-  revision   TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL
+  initiator  TEXT NOT NULL CHECK (initiator IN ('owner', 'host', 'agent')),
+  session    TEXT REFERENCES sessions(id),
+  call       TEXT,
+  reason     TEXT,
+  created_at TEXT NOT NULL,
+  CHECK ((initiator = 'agent') = (session IS NOT NULL)),
+  CHECK ((initiator = 'agent') = (call IS NOT NULL)),
+  CHECK (initiator <> 'host' OR reason IS NULL),
+  CHECK (initiator <> 'agent' OR reason IS NOT NULL)
 ) STRICT;
 
 CREATE TABLE generations (
@@ -107,6 +115,8 @@ CREATE TABLE registration_code (
   plugin_id    TEXT NOT NULL REFERENCES plugins(id),
   generation   INTEGER NOT NULL,
   intent       TEXT CHECK (intent IN ('directory', 'factory')),
+  source       TEXT,
+  CHECK ((intent IS 'directory') = (source IS NOT NULL)),
   PRIMARY KEY (registration, plugin_id),
   FOREIGN KEY (generation, plugin_id) REFERENCES plugin_generations(id, plugin_id) DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
@@ -132,6 +142,7 @@ CREATE TABLE config_generations (
   id       INTEGER PRIMARY KEY REFERENCES generations(id),
   registration INTEGER NOT NULL REFERENCES registrations(id),
   document TEXT NOT NULL,
+  source   TEXT NOT NULL,
   previous INTEGER REFERENCES config_generations(id)
 ) STRICT;
 

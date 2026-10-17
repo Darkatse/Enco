@@ -81,7 +81,7 @@ impl SessionActor {
             .map_or(1, |e| e.pos.seq.0 + 1);
         let recovery = crate::recovery::recover(&self.entries);
         if !recovery.is_empty() {
-            self.commit(recovery, vec![]).await?;
+            self.commit(recovery).await?;
         }
         loop {
             if self.deps.shutdown.is_cancelled() {
@@ -102,11 +102,7 @@ impl SessionActor {
         }
     }
 
-    pub(crate) async fn commit(
-        &mut self,
-        bodies: Vec<EntryBody>,
-        consumed: Vec<EventId>,
-    ) -> Result<(), StoreError> {
+    pub(crate) async fn commit(&mut self, bodies: Vec<EntryBody>) -> Result<(), StoreError> {
         let entries: Vec<_> = bodies
             .into_iter()
             .enumerate()
@@ -125,7 +121,6 @@ impl SessionActor {
                 self.session.id,
                 Commit {
                     entries: entries.clone(),
-                    consumed,
                 },
             )
             .await?;

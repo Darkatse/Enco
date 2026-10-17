@@ -256,7 +256,7 @@ fn history_sizes(
     Ok(sizes)
 }
 
-const LOCAL_TIME: &str = "%Y-%m-%d %H:%M, %A";
+use crate::clock::LOCAL_TIME;
 
 /// Describe the recorded circumstances of each input once for both reply and compaction.
 ///

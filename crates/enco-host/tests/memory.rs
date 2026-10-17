@@ -410,7 +410,7 @@ async fn register_previous_host_config(
     let mut deps = registry_deps(store, runtime, FACTORY_BYTES);
     deps.owners
         .iter_mut()
-        .find(|owner| owner.tables.contains(&"memory"))
+        .find(|owner| owner.tables.iter().any(|table| table.name() == "memory"))
         .unwrap()
         .declare = |_, _| Ok(vec![]);
     let registry = open_registry(deps, configuration_request(document.clone()))

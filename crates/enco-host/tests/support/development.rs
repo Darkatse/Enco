@@ -1,7 +1,7 @@
 use super::*;
 use enco_host::development;
 
-/// Host-facing tests use the real intent chain while replacing only the plugin runtime.
+/// Host-facing tests use the real content store while replacing only the plugin runtime.
 pub async fn open_home(
     root: &Path,
     store: Arc<SqliteStore>,
@@ -15,13 +15,13 @@ pub async fn open_home(
     }
     let development = development::Development::new(
         root.into(),
-        development::Sdk { files: &[] },
+        development::Sdk::new(&[]).unwrap(),
         store,
         deps.runtime.clone(),
     );
     deps.host_tool_names
         .extend(development_tool_specs().into_iter().map(|spec| spec.name));
-    let registry = development.open(deps, "fixture").await.unwrap();
+    let registry = development.open(deps).await.unwrap();
     (development, registry)
 }
 
@@ -38,46 +38,13 @@ pub async fn source_fixture(
     let directory = root.join(&relative);
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("source.txt"), bytes).unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let index = scratch.path().join("index");
-    for args in [vec!["read-tree", "--empty"], vec!["add", "--", &relative]] {
-        let status = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .env("GIT_INDEX_FILE", &index)
-            .args(args)
-            .status()
-            .await
-            .unwrap();
-        assert!(status.success());
-    }
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .env("GIT_INDEX_FILE", &index)
-        .arg("write-tree")
-        .output()
-        .await
-        .unwrap();
-    assert!(output.status.success());
-    let tree = String::from_utf8(output.stdout).unwrap();
-    let source = git(root, &["rev-parse", &format!("{}:{relative}", tree.trim())]).await;
-    let artifact = store.put_artifact(bytes).await.unwrap();
-    rusqlite::Connection::open(root.join("enco.db"))
-        .unwrap()
-        .execute(
-            "INSERT INTO builds(source,sdk,artifact,toolchain,created_at) VALUES (?,?,?,?,?)",
-            rusqlite::params![
-                source,
-                development::Sdk { files: &[] }.hash().to_string(),
-                artifact.to_string(),
-                "scripted compiler",
-                Utc::now().to_rfc3339()
-            ],
-        )
-        .unwrap();
+    retain_build(root, store, &directory, bytes).await;
     let applied = development
-        .apply(registry, &tokio_util::sync::CancellationToken::new())
+        .apply(
+            registry,
+            Initiator::Owner { reason: None },
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .unwrap();
     let registered = applied.registered.unwrap();
@@ -105,27 +72,43 @@ pub async fn scripted_home(
 
 pub async fn prepare_home(root: &Path, document: &serde_json::Value) {
     std::fs::write(root.join("config.toml"), toml::to_string(document).unwrap()).unwrap();
-    // These fixtures keep their store directly under the test root.
-    std::fs::write(
-        root.join(".gitignore"),
-        "enco.db*\n/blobs/\n/artifacts/\nmemory*\n",
-    )
-    .unwrap();
     development::Development::initialize(root).await.unwrap();
 }
 
-pub async fn git(root: &Path, args: &[&str]) -> String {
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
+pub async fn retain_build(root: &Path, store: &SqliteStore, directory: &Path, bytes: &[u8]) {
+    let source = development::tree::FileTree::read(directory)
         .await
+        .unwrap()
+        .hash();
+    let artifact = store.put_artifact(bytes).await.unwrap();
+    rusqlite::Connection::open(root.join("enco.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO builds(source,sdk,artifact,toolchain,created_at) VALUES (?,?,?,?,?) ON CONFLICT(source,sdk) DO UPDATE SET artifact=excluded.artifact,toolchain=excluded.toolchain,created_at=excluded.created_at",
+            rusqlite::params![
+                source.to_string(),
+                development::Sdk::new(&[]).unwrap().hash().to_string(),
+                artifact.to_string(),
+                "scripted compiler",
+                Utc::now().to_rfc3339()
+            ],
+        )
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+pub async fn current_status(
+    root: &Path,
+    development: &development::Development,
+    kernel: &Kernel,
+) -> enco_host::status::Status {
+    enco_host::status::Status {
+        development: development.status(kernel.registry()).await.unwrap(),
+        node: enco_host::status::Node {
+            version: "test".into(),
+            revision: "fixture".into(),
+            home: root.into(),
+            execution: kernel.status().await.unwrap(),
+            channels: vec![],
+        },
+    }
 }

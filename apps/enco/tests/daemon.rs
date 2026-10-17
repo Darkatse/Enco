@@ -94,14 +94,17 @@ async fn cli_to_wasm_to_http_records_a_reply() {
         .unwrap();
     assert!(output.status.success());
     let inspection: Inspection = serde_json::from_slice(&output.stdout).unwrap();
-    let plugins = client.request(Command::Status {}).await.unwrap()["plugins"].clone();
-    let active = plugins
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["name"] == "openai-compatible")
-        .unwrap();
-    assert_eq!(active["active"]["id"], json!(inspection.provider));
+    let plugins = client
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
+        .await
+        .unwrap()["plugins"]
+        .clone();
+    assert_eq!(
+        running_generation(&plugins["openai-compatible"])["id"],
+        json!(inspection.provider)
+    );
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
         .arg("log")
         .env("ENCO_HOME", daemon.root.path())
@@ -111,8 +114,15 @@ async fn cli_to_wasm_to_http_records_a_reply() {
     assert!(output.status.success());
     let log: Vec<Entry> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(log, entries);
-    let status = client.request(Command::Status {}).await.unwrap();
-    let id = status["sessions"][0]["session"]["id"].as_str().unwrap();
+    let status = client
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
+        .await
+        .unwrap();
+    let id = status["node"]["sessions"][0]["session"]["id"]
+        .as_str()
+        .unwrap();
     let by_id = client
         .request(Command::Log {
             session: id.into(),
@@ -131,16 +141,13 @@ async fn cli_deploys_a_caller_relative_artifact_that_survives_restart_and_rolls_
     let plugins = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap()["plugins"]
         .clone();
-    let active = &plugins
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["name"] == "openai-compatible")
-        .unwrap()["active"];
+    let active = running_generation(&plugins["openai-compatible"]);
     let generation = active["id"].clone();
     let hash = active["artifact"].as_str().unwrap();
     // The registry records the active code as a content-addressed artifact.
@@ -155,7 +162,13 @@ async fn cli_deploys_a_caller_relative_artifact_that_survives_restart_and_rolls_
     // CLI deployment resolves a caller-relative path and uses the daemon's registry.
     std::fs::write(daemon.root.path().join("replacement.wasm"), bytes).unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
-        .args(["plugin", "deploy", "openai-compatible", "replacement.wasm"])
+        .args([
+            "plugin",
+            "deploy",
+            "openai-compatible",
+            "replacement.wasm",
+            "--json",
+        ])
         .current_dir(daemon.root.path())
         .env("ENCO_HOME", daemon.root.path())
         .output()
@@ -166,46 +179,45 @@ async fn cli_deploys_a_caller_relative_artifact_that_survives_restart_and_rolls_
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let deployed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let revision = deployed["registration"]["revision"].as_str().unwrap();
-    assert_eq!(
-        git(
-            daemon.root.path(),
-            &["rev-parse", &format!("{revision}^{{tree}}")]
-        )
-        .await,
-        git(
-            daemon.root.path(),
-            &["rev-parse", &format!("{revision}^^{{tree}}")]
-        )
-        .await
-    );
-    let unchanged = daemon
-        .connect()
-        .await
-        .request(Command::Apply {})
-        .await
-        .unwrap();
-    assert!(unchanged["registered"].is_null());
-    assert_eq!(
-        git(daemon.root.path(), &["rev-parse", "enco/registered"]).await,
-        revision
-    );
-
-    assert_ne!(deployed["generations"][0]["id"], generation);
-    daemon.stop().await;
-    daemon.restart().await;
-    let mut client = daemon.connect().await;
-    let plugins = client.request(Command::Status {}).await.unwrap()["plugins"].clone();
-    assert_eq!(
-        plugins
+    let registered: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        registered["changes"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|plugin| plugin["name"] == "openai-compatible")
-            .unwrap()["active"],
-        deployed["generations"][0]
+            .any(|change| change["kind"] == "artifact" && change["name"] == "openai-compatible")
     );
+    let status = daemon
+        .connect()
+        .await
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
+        .await
+        .unwrap();
+    let deployed = running_generation(&status["plugins"]["openai-compatible"]).clone();
+    let unchanged = daemon
+        .connect()
+        .await
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
+        .await
+        .unwrap();
+    assert!(unchanged["registered"].is_null());
+    assert_ne!(deployed["id"], generation);
+    daemon.stop().await;
+    daemon.restart().await;
+    let mut client = daemon.connect().await;
+    let plugins = client
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
+        .await
+        .unwrap()["plugins"]
+        .clone();
+    assert_eq!(running_generation(&plugins["openai-compatible"]), &deployed);
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
         .arg("rollback")
         .env("ENCO_HOME", daemon.root.path())
@@ -466,7 +478,10 @@ compaction = ["alternate"]
     daemon
         .connect()
         .await
-        .request(Command::Apply {})
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
         .await
         .unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
@@ -498,8 +513,16 @@ compaction = ["alternate"]
     daemon.stop().await;
     daemon.restart().await;
     let mut client = daemon.connect().await;
-    let status = client.request(Command::Status {}).await.unwrap();
-    assert_eq!(status["sessions"][0]["session"]["profile"], "alternate");
+    let status = client
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        status["node"]["sessions"][0]["session"]["profile"],
+        "alternate"
+    );
     let attempt = entries
         .iter()
         .rev()

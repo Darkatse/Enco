@@ -37,7 +37,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
         .iter()
         .map(|(name, id, bytes)| {
             Ok(FactoryPlugin {
-                name: (*name).into(),
+                name: name.parse()?,
                 id: id.parse()?,
                 artifact: bytes.to_vec(),
             })
@@ -54,20 +54,18 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
         .map(|spec| spec.name)
         .collect();
     let runtime = Arc::new(WasmRuntime::new()?);
-    SDK.write(&paths.home).await?;
-    let development = Development::new(paths.home.clone(), SDK, store.clone(), runtime.clone());
+    let sdk = sdk()?;
+    sdk.write(&paths.home).await?;
+    let development = Development::new(paths.home.clone(), sdk, store.clone(), runtime.clone());
     let registry = development
-        .open(
-            RegistryDeps {
-                host_tool_names,
-                store: store.clone(),
-                runtime,
-                factory,
-                owners: enco_host::TABLE_OWNERS.into(),
-                clock: clock.clone(),
-            },
-            env!("ENCO_VERSION"),
-        )
+        .open(RegistryDeps {
+            host_tool_names,
+            store: store.clone(),
+            runtime,
+            factory,
+            owners: enco_host::TABLE_OWNERS.into(),
+            clock: clock.clone(),
+        })
         .await?;
     let memories = Memories::open(
         MemoryPaths {

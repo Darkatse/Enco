@@ -33,6 +33,12 @@ pub(in crate::registry) async fn accept(
         &prepared.plan.declaration.uses,
         &prepared.plan.previous_uses,
     )?;
+    let changes = state.registration_changes(
+        &numbered.write.registration,
+        &numbered.write.generations,
+        numbered.write.configuration.as_ref(),
+        &deps.owners,
+    )?;
     persist(deps, state, &numbered.write, &prepared).await?;
     let config = numbered
         .write
@@ -50,6 +56,7 @@ pub(in crate::registry) async fn accept(
         .collect();
     let result = Registered {
         registration: numbered.write.registration.clone(),
+        changes,
         generations: numbered.write.generations.clone(),
         configuration: numbered.write.configuration.clone(),
         probes: prepared.probes,
@@ -64,7 +71,7 @@ impl Numbered {
     fn new(deps: &RegistryDeps, state: &State, prepared: &Prepared) -> Result<Self, RegistryError> {
         let registration = RegistrationRecord {
             id: prepared.plan.expected.next,
-            revision: prepared.plan.revision.clone(),
+            initiator: prepared.plan.initiator.clone(),
             names: BTreeMap::new(),
             code: BTreeMap::new(),
             created_at: deps.clock.now(),
@@ -110,11 +117,12 @@ impl Numbered {
             }
             numbered.write.plugins.push(plugin);
         }
-        if let Some(document) = &prepared.plan.configuration {
+        if let Some(config) = &prepared.plan.configuration {
             numbered.write.configuration = Some(ConfigGeneration {
                 id: numbered.next,
                 registration: numbered.write.registration.id,
-                document: document.clone(),
+                document: config.document.clone(),
+                source: config.source,
                 previous: state.history.active_config,
                 created_at: numbered.write.registration.created_at,
             });
@@ -155,7 +163,10 @@ impl Numbered {
         match action {
             Action::Code(content) => {
                 let loaded = loaded.ok_or_else(|| {
-                    rejected(&plugin.id.to_string(), "code candidate was not loaded")
+                    RegistryError::Intent(format!(
+                        "code candidate for {} was not loaded",
+                        plugin.id
+                    ))
                 })?;
                 let id = self.add_generation(plugin.id, content, loaded);
                 plugin.rollback_target = next_rollback(&state.history, plugin);
@@ -193,7 +204,7 @@ impl Numbered {
 fn contents(
     state: &State,
     numbered: &Numbered,
-) -> Result<BTreeMap<String, Option<Loaded>>, RegistryError> {
+) -> Result<BTreeMap<PluginName, Option<Loaded>>, RegistryError> {
     let mut identities = state.history.plugins.clone();
     identities.extend(
         numbered
@@ -215,10 +226,10 @@ fn contents(
         }
         .and_then(|record| record.name.as_ref());
         let Some(name) = name else {
-            return Err(rejected(
-                &plugin.id.to_string(),
-                "active plugin has no routing name",
-            ));
+            return Err(RegistryError::Intent(format!(
+                "active plugin {} has no routing name",
+                plugin.id
+            )));
         };
         let loaded = numbered
             .loaded
@@ -226,10 +237,7 @@ fn contents(
             .or(state.loaded.get(&active.generation))
             .cloned();
         if contents.insert(name.clone(), loaded).is_some() {
-            return Err(rejected(
-                name,
-                "running name would belong to two identities",
-            ));
+            return Err(rejected(Cause::NameTaken { name: name.clone() }));
         }
     }
     Ok(contents)

@@ -126,7 +126,7 @@ impl TelegramSettings {
 
 /// Telegram owns its table and declares no model endpoints.
 pub const TABLE_OWNER: TableOwner = TableOwner {
-    tables: &["telegram"],
+    tables: &[enco_kernel::ConfigTable::Single("telegram")],
     declare: |document, _kernel| {
         TelegramSettings::from_document(document)?;
         Ok(vec![])

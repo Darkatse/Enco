@@ -1,4 +1,5 @@
 use super::*;
+use enco_core::Initiator;
 use enco_host::{
     SystemClock,
     development::{Development, Sdk},
@@ -20,21 +21,24 @@ const LABELLED_ECHO: &str = concat!(
 const DIRECT_ARTIFACT: &str = "plugins/sdk-test/target/wasm32-wasip2/release/plugin_sdk_test.wasm";
 
 fn with_label(label: &str) -> Sdk {
-    let files = SDK
-        .files
+    let files = SDK_FILES
         .iter()
         .map(|(path, bytes)| {
             if *path != "src/lib.rs" {
-                return (*path, *bytes);
+                return (*path, bytes.to_vec());
             }
             let library = std::str::from_utf8(bytes).unwrap();
             let source = format!("{library}\n{LABEL_FUNCTION} {{ {label:?} }}\n");
-            (*path, &*Box::leak(source.into_bytes().into_boxed_slice()))
+            (*path, source.into_bytes())
         })
         .collect::<Vec<_>>();
-    Sdk {
-        files: Box::leak(files.into_boxed_slice()),
-    }
+    Sdk::new(
+        &files
+            .iter()
+            .map(|(path, bytes)| (*path, bytes.as_slice()))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -60,20 +64,25 @@ async fn sdk_upgrades_and_downgrades_compare_built_artifacts_and_unchanged_sdk_s
         .unwrap(),
     );
     let (old, registry) = open(home, with_label("one"), store.clone(), runtime.clone()).await;
-    old.scaffold(&registry, "sdk-test").await.unwrap();
+    old.scaffold(&registry, &"sdk-test".parse().unwrap())
+        .await
+        .unwrap();
     let source = home.join("plugins/sdk-test/src/lib.rs");
     let text = std::fs::read_to_string(&source)
         .unwrap()
         .replace(ECHO, LABELLED_ECHO);
     std::fs::write(&source, text).unwrap();
     let cancel = CancellationToken::new();
-    let first = old.apply(&registry, &cancel).await.unwrap();
+    let first = old
+        .apply(&registry, Initiator::Owner { reason: None }, &cancel)
+        .await
+        .unwrap();
     assert!(!first.builds[0].reused);
     assert_lock_keeps_sdk_versions(home);
     let artifact = first.registered.as_ref().unwrap().generations[0].artifact;
-    let before = old.status(&registry).await.unwrap().1;
+    let before = old.status(&registry).await.unwrap();
     build_from_directory(home).await;
-    let after = old.status(&registry).await.unwrap().1;
+    let after = old.status(&registry).await.unwrap();
     assert_eq!(
         serde_json::to_value(before).unwrap(),
         serde_json::to_value(after).unwrap()
@@ -88,12 +97,12 @@ async fn sdk_upgrades_and_downgrades_compare_built_artifacts_and_unchanged_sdk_s
             .await
             .unwrap();
     }
-    assert_eq!(
-        old.status(&registry).await.unwrap().1.plugins["sdk-test"].sdk_changed,
-        Some(false)
-    );
+    assert!(!earlier_sdk(&old, &registry).await);
     // Empty build evidence proves the unchanged-source path never invokes Cargo.
-    let unchanged = old.apply(&registry, &cancel).await.unwrap();
+    let unchanged = old
+        .apply(&registry, Initiator::Owner { reason: None }, &cancel)
+        .await
+        .unwrap();
     assert!(unchanged.builds.is_empty() && unchanged.registered.is_none());
     // Two owners model switching hosts back and forth while retaining the same registry.
     let newer = Development::new(
@@ -102,41 +111,43 @@ async fn sdk_upgrades_and_downgrades_compare_built_artifacts_and_unchanged_sdk_s
         store.clone(),
         runtime.clone(),
     );
-    assert_eq!(
-        newer.status(&registry).await.unwrap().1.plugins["sdk-test"].sdk_changed,
-        Some(true)
-    );
-    let upgraded = newer.apply(&registry, &cancel).await.unwrap();
+    assert!(earlier_sdk(&newer, &registry).await);
+    let upgraded = newer
+        .apply(&registry, Initiator::Owner { reason: None }, &cancel)
+        .await
+        .unwrap();
     assert!(!upgraded.builds[0].reused);
     assert_ne!(
         upgraded.registered.unwrap().generations[0].artifact,
         artifact
     );
-    assert_eq!(
-        newer.status(&registry).await.unwrap().1.plugins["sdk-test"].sdk_changed,
-        Some(false)
-    );
-    assert_eq!(
-        old.status(&registry).await.unwrap().1.plugins["sdk-test"].sdk_changed,
-        Some(true)
-    );
-    let downgraded = old.apply(&registry, &cancel).await.unwrap();
+    assert!(!earlier_sdk(&newer, &registry).await);
+    assert!(earlier_sdk(&old, &registry).await);
+    let downgraded = old
+        .apply(&registry, Initiator::Owner { reason: None }, &cancel)
+        .await
+        .unwrap();
     assert!(downgraded.builds[0].reused);
     assert_eq!(
         downgraded.registered.unwrap().generations[0].artifact,
         artifact
     );
-    assert_eq!(
-        old.status(&registry).await.unwrap().1.plugins["sdk-test"].sdk_changed,
-        Some(false)
-    );
+    assert!(!earlier_sdk(&old, &registry).await);
     assert!(
-        old.apply(&registry, &cancel)
+        old.apply(&registry, Initiator::Owner { reason: None }, &cancel)
             .await
             .unwrap()
             .builds
             .is_empty()
     );
+}
+
+async fn earlier_sdk(development: &Development, registry: &enco_kernel::Registry) -> bool {
+    development.status(registry).await.unwrap().plugins["sdk-test"]
+        .registered
+        .as_ref()
+        .unwrap()
+        .earlier_sdk
 }
 
 async fn open(
@@ -147,24 +158,21 @@ async fn open(
 ) -> (Arc<Development>, Arc<enco_kernel::Registry>) {
     let old = Development::new(home.into(), sdk, store.clone(), runtime.clone());
     let registry = old
-        .open(
-            RegistryDeps {
-                store: store.clone(),
-                runtime: runtime.clone(),
-                host_tool_names: Default::default(),
-                factory: FACTORY
-                    .iter()
-                    .map(|(name, id, bytes)| FactoryPlugin {
-                        name: (*name).into(),
-                        id: id.parse().unwrap(),
-                        artifact: bytes.to_vec(),
-                    })
-                    .collect(),
-                owners: enco_host::TABLE_OWNERS.into(),
-                clock: Arc::new(SystemClock),
-            },
-            "old SDK",
-        )
+        .open(RegistryDeps {
+            store: store.clone(),
+            runtime: runtime.clone(),
+            host_tool_names: Default::default(),
+            factory: FACTORY
+                .iter()
+                .map(|(name, id, bytes)| FactoryPlugin {
+                    name: (*name).parse().unwrap(),
+                    id: id.parse().unwrap(),
+                    artifact: bytes.to_vec(),
+                })
+                .collect(),
+            owners: enco_host::TABLE_OWNERS.into(),
+            clock: Arc::new(SystemClock),
+        })
         .await
         .unwrap();
     (old, registry)
@@ -204,9 +212,18 @@ async fn build_from_directory(home: &Path) {
             .any(|path| Path::new(path).ends_with(DIRECT_ARTIFACT)),
         "Cargo did not report {DIRECT_ARTIFACT}"
     );
+    let directory = home.join("plugins/sdk-test");
+    let before = enco_host::development::tree::FileTree::read(&directory)
+        .await
+        .unwrap()
+        .hash();
+    std::fs::write(home.join(DIRECT_ARTIFACT), b"ignored build output").unwrap();
     assert_eq!(
-        git(home, &["check-ignore", DIRECT_ARTIFACT]).await,
-        DIRECT_ARTIFACT
+        enco_host::development::tree::FileTree::read(&directory)
+            .await
+            .unwrap()
+            .hash(),
+        before
     );
 }
 
@@ -223,7 +240,7 @@ fn assert_lock_keeps_sdk_versions(home: &Path) {
             })
             .collect()
     };
-    let sdk = versions(std::str::from_utf8(SDK.lock().unwrap()).unwrap());
+    let sdk = versions(std::str::from_utf8(sdk().unwrap().lock().unwrap()).unwrap());
     let plugin =
         versions(&std::fs::read_to_string(home.join("plugins/sdk-test/Cargo.lock")).unwrap());
     let missing: Vec<_> = sdk.difference(&plugin).collect();

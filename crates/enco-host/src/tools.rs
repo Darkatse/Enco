@@ -1,5 +1,5 @@
 pub(crate) mod args;
-mod development;
+pub(crate) mod development;
 mod files;
 pub use development::{development_tool_specs, development_tools, self_status_spec};
 mod shell;
@@ -12,14 +12,15 @@ use std::{
 };
 
 /// Minimal repair tools, also required by ordinary Agent Sessions.
-pub const LIFELINE: [&str; 7] = [
+pub const LIFELINE: [&str; 8] = [
     "fs_read",
     "fs_write",
     "fs_edit",
     "fs_list",
     "shell_exec",
-    "self_status",
-    "self_apply",
+    crate::development::STATUS,
+    crate::development::APPLY,
+    crate::development::REWIND,
 ];
 
 /// Native capabilities share the workspace path rules and ordinary Tool dispatch.

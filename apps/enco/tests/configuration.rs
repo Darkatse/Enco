@@ -54,7 +54,10 @@ async fn apply(daemon: &Daemon, document: &Value) -> Result<Value, String> {
     daemon
         .connect()
         .await
-        .request(Command::Apply {})
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
         .await
         .map(|value| value["registered"].clone())
         .map_err(|error| error.to_string())
@@ -64,9 +67,11 @@ async fn config_status(daemon: &Daemon) -> Value {
     daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
-        .unwrap()["config"]
+        .unwrap()["configuration"]
         .clone()
 }
 
@@ -75,18 +80,8 @@ async fn first_registration_adopts_config_toml_without_model_requests() {
     let server = MockServer::start().await;
     let mut daemon = Daemon::start(&server, "openai-compatible").await;
     let status = config_status(&daemon).await;
-    let generations = status["generations"].as_array().unwrap();
-    assert_eq!(generations.len(), 1);
-    assert_eq!(status["active"], generations[0]);
-    assert_eq!(
-        status["active"],
-        daemon
-            .connect()
-            .await
-            .request(Command::Status {})
-            .await
-            .unwrap()["registered"]["configuration"]
-    );
+    assert_eq!(status["running"], status["registered"]);
+    assert!(status["running"]["registration"].is_number());
     assert!(server.received_requests().await.unwrap().is_empty());
     daemon.stop().await;
 }
@@ -120,8 +115,8 @@ async fn each_owner_rejects_its_invalid_table_without_registering() {
         assert!(expected.iter().all(|part| error.contains(part)), "{error}");
     }
     assert_eq!(
-        config_status(&daemon).await["generations"],
-        before["generations"]
+        config_status(&daemon).await["registered"],
+        before["registered"]
     );
     assert!(server.received_requests().await.unwrap().is_empty());
     daemon.stop().await;
@@ -138,14 +133,14 @@ async fn reply_endpoints_the_service_rejects_are_not_registered() {
         let error = apply(&daemon, &candidate).await.unwrap_err();
         assert!(
             error.contains("profile default.reply")
-                && error.contains("endpoint chat")
+                && error.contains("endpoint.chat")
                 && error.contains("provider."),
             "{error}"
         );
     }
     assert_eq!(
-        config_status(&daemon).await["generations"],
-        before["generations"]
+        config_status(&daemon).await["registered"],
+        before["registered"]
     );
     daemon.stop().await;
 }
@@ -173,8 +168,8 @@ async fn applying_calls_only_the_changed_endpoint_once() {
     let again = apply(&daemon, &candidate).await.unwrap();
     assert!(again["registration"].is_null());
     assert_eq!(
-        config_status(&daemon).await["active"],
-        applied["configuration"]
+        config_status(&daemon).await["running"]["generation"],
+        applied["configuration"]["id"]
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     daemon.stop().await;
@@ -195,52 +190,63 @@ async fn restart_restores_the_active_generation_whatever_config_toml_holds() {
         std::fs::write(daemon.root.path().join("config.toml"), text).unwrap();
         daemon.restart().await;
         let status = config_status(&daemon).await;
-        assert_eq!(status["active"], registered["active"]);
-        assert_eq!(status["generations"], registered["generations"]);
+        assert_eq!(status["running"], registered["running"]);
+        assert_eq!(status["registered"], registered["registered"]);
         let status = daemon
             .connect()
             .await
-            .request(Command::Status {})
+            .request(Command::Status {
+                output: protocol::Output::Json,
+            })
             .await
             .unwrap();
-        let comparison = &status["workspace"]["configuration"];
+        let comparison = &status["configuration"]["workspace"];
         assert_eq!(
             comparison["state"],
-            if unreadable { "unknown" } else { "changed" }
+            if unreadable { "unreadable" } else { "changed" }
         );
         if unreadable {
-            assert!(
-                comparison["reason"]
-                    .as_str()
-                    .unwrap()
-                    .contains("config.toml")
+            assert_eq!(
+                comparison["path"],
+                json!(daemon.root.path().join("config.toml"))
             );
+            assert_eq!(comparison["problem"]["problem"], "toml");
         }
     }
     daemon.stop().await;
 }
 
 #[tokio::test]
-async fn git_restores_earlier_intent_and_the_running_document_after_owner_rollback() {
+async fn rewind_restores_earlier_intent_and_the_running_document_after_owner_rollback() {
     let server = model_service().await;
     let mut original = configuration(&server);
     // A second embedding endpoint lets the last edit change only the memory table.
     original["endpoint"]["spare"] = original["endpoint"]["embed"].clone();
     let mut daemon = Daemon::start_config(&toml::to_string(&original).unwrap()).await;
     let root = daemon.root.path().to_path_buf();
-    let first_revision = git(&root, &["rev-parse", "enco/registered"]).await;
+    let first = config_status(&daemon).await["running"]["registration"].clone();
     let mut changed = original.clone();
     changed["owner"]["timezone"] = "America/New_York".into();
     let second = apply(&daemon, &changed).await.unwrap()["configuration"].clone();
-    git(
-        &root,
-        &["restore", "--source", &first_revision, "--", "config.toml"],
-    )
-    .await;
+    daemon
+        .connect()
+        .await
+        .request(Command::Rewind {
+            output: protocol::Output::Json,
+            arguments: enco_host::development::RewindArguments {
+                registration: serde_json::from_value(first).unwrap(),
+                paths: Some(vec!["config.toml".parse().unwrap()]),
+            },
+        })
+        .await
+        .unwrap();
     let undo = daemon
         .connect()
         .await
-        .request(Command::Apply {})
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
         .await
         .unwrap();
     let third = &undo["registered"]["configuration"];
@@ -255,26 +261,33 @@ async fn git_restores_earlier_intent_and_the_running_document_after_owner_rollba
     let status = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    assert_eq!(status["config"]["active"], second);
-    assert_eq!(&status["registered"]["configuration"], third);
+    assert_eq!(
+        status["configuration"]["running"]["generation"],
+        second["id"]
+    );
+    assert_eq!(
+        status["configuration"]["registered"]["generation"],
+        third["id"]
+    );
     assert!(server.received_requests().await.unwrap().is_empty());
     // Start from the running document, so editing one table cannot re-register the undone one.
-    let running = status["registrations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|registration| registration["id"] == second["registration"])
-        .unwrap()["revision"]
-        .as_str()
+    daemon
+        .connect()
+        .await
+        .request(Command::Rewind {
+            output: protocol::Output::Json,
+            arguments: enco_host::development::RewindArguments {
+                registration: serde_json::from_value(second["registration"].clone()).unwrap(),
+                paths: Some(vec!["config.toml".parse().unwrap()]),
+            },
+        })
+        .await
         .unwrap();
-    git(
-        &root,
-        &["restore", "--source", running, "--", "config.toml"],
-    )
-    .await;
     let mut edited: Value =
         toml::from_str(&std::fs::read_to_string(root.join("config.toml")).unwrap()).unwrap();
     assert_eq!(edited, second["document"]);
@@ -361,10 +374,12 @@ async fn switch_bot(fail_settlement: bool) {
     let status = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    let channel = &status["channels"][0];
+    let channel = &status["node"]["channels"][0];
     assert_eq!(channel["running"], true);
     let failures = channel["recent_failures"].as_array().unwrap();
     if fail_settlement {
@@ -436,17 +451,27 @@ async fn restart_restores_registered_configuration_without_credentials() {
     let mut document = configuration(&server);
     document["telegram"] = json!({"token_env": "ENCO_TEST_TELEGRAM_TOKEN", "owner_user_id": 9, "api_base": server.uri()});
     let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
-    let before = config_status(&daemon).await["active"].clone();
+    let before = config_status(&daemon).await["running"].clone();
     daemon.stop().await;
     daemon
         .restart_without(&["ENCO_TEST_API_KEY", "ENCO_TEST_TELEGRAM_TOKEN"])
         .await;
     let mut client = daemon.connect().await;
-    let status = client.request(Command::Status {}).await.unwrap();
-    assert_eq!(status["config"]["active"], before);
-    assert!(status["config"]["invalid"].as_array().unwrap().is_empty());
+    let status = client
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
+        .await
+        .unwrap();
+    assert_eq!(status["configuration"]["running"], before);
     assert!(
-        status["channels"][0]["stopped"]
+        status["configuration"]["invalid"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        status["node"]["channels"][0]["stopped"]
             .as_str()
             .unwrap()
             .contains("ENCO_TEST_TELEGRAM_TOKEN")

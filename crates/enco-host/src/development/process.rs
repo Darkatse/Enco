@@ -26,18 +26,19 @@ pub(super) async fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .spawn()?;
+        .spawn()
+        .map_err(host)?;
     let pid = child
         .id()
-        .ok_or_else(|| DevelopmentError::Build("build process has no PID".into()))?;
+        .ok_or_else(|| DevelopmentError::Host("build process has no PID".into()))?;
     let mut stdout = child
         .stdout
         .take()
-        .ok_or_else(|| DevelopmentError::Build("build stdout is not piped".into()))?;
+        .ok_or_else(|| DevelopmentError::Host("build stdout is not piped".into()))?;
     let mut stderr = child
         .stderr
         .take()
-        .ok_or_else(|| DevelopmentError::Build("build stderr is not piped".into()))?;
+        .ok_or_else(|| DevelopmentError::Host("build stderr is not piped".into()))?;
     let stdout = tokio::spawn(async move {
         let mut bytes = Vec::new();
         stdout.read_to_end(&mut bytes).await?;
@@ -49,19 +50,19 @@ pub(super) async fn run(
         Ok::<_, std::io::Error>(bytes)
     });
     let (status, cancelled) = tokio::select! {
-        status = child.wait() => (status?, false),
+        status = child.wait() => (status.map_err(host)?, false),
         _ = cancel.cancelled() => {
-            let killed = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{pid}")]).output().await?;
-            if !killed.status.success() && child.try_wait()?.is_none() {
-                return Err(DevelopmentError::Build(format!("cannot stop build group {pid}: {}", String::from_utf8_lossy(&killed.stderr))));
+            let killed = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{pid}")]).output().await.map_err(host)?;
+            if !killed.status.success() && child.try_wait().map_err(host)?.is_none() {
+                return Err(DevelopmentError::Host(format!("cannot stop build group {pid}: {}", String::from_utf8_lossy(&killed.stderr))));
             }
-            (child.wait().await?, true)
+            (child.wait().await.map_err(host)?, true)
         }
     };
     let stdout = stdout.await;
     let stderr = stderr.await;
-    let stdout = stdout.map_err(|error| DevelopmentError::Build(error.to_string()))??;
-    let stderr = stderr.map_err(|error| DevelopmentError::Build(error.to_string()))??;
+    let stdout = stdout.map_err(host)?.map_err(host)?;
+    let stderr = stderr.map_err(host)?.map_err(host)?;
     if cancelled {
         return Err(DevelopmentError::Cancelled);
     }
@@ -70,4 +71,9 @@ pub(super) async fn run(
         stdout,
         stderr,
     })
+}
+
+/// The build process is the host's own machinery; its failures are host failures.
+fn host(error: impl std::fmt::Display) -> DevelopmentError {
+    DevelopmentError::Host(error.to_string())
 }

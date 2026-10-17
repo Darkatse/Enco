@@ -5,7 +5,6 @@ use enco_core::*;
 use enco_kernel::{CallContext, Tool};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
-use tokio::io::AsyncWriteExt;
 
 pub(super) enum Kind {
     Read,
@@ -114,10 +113,12 @@ impl FileTool {
             Kind::Read => read(&path, args, ctx.result_budget).await,
             Kind::Write => {
                 let content = string(args, "content")?;
-                let path = atomic_write(&path, content, ctx.call).await?;
+                let path = crate::file::write(&path, content.as_bytes())
+                    .await
+                    .map_err(|error| io(&path, error))?;
                 Ok(json!({ "path": path, "bytes": content.len() }))
             }
-            Kind::Edit => edit(&path, args, ctx.call).await,
+            Kind::Edit => edit(&path, args).await,
             Kind::List => list(&path).await,
         }
     }
@@ -175,7 +176,7 @@ fn line_header(first: u64, last: u64, total: u64) -> String {
     }
 }
 
-async fn edit(path: &Path, args: &Map<String, Value>, call: CallId) -> Result<Value, Failure> {
+async fn edit(path: &Path, args: &Map<String, Value>) -> Result<Value, Failure> {
     let old = string(args, "old_string")?;
     let new = string(args, "new_string")?;
     let all = boolean(args, "replace_all", false)?;
@@ -203,7 +204,9 @@ async fn edit(path: &Path, args: &Map<String, Value>, call: CallId) -> Result<Va
             ),
         ));
     }
-    let path = atomic_write(path, &text.replace(old, new), call).await?;
+    let path = crate::file::write(path, text.replace(old, new).as_bytes())
+        .await
+        .map_err(|error| io(path, error))?;
     Ok(json!({ "path": path, "replacements": count }))
 }
 
@@ -229,41 +232,4 @@ async fn list(path: &Path) -> Result<Value, Failure> {
     }
     entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     Ok(json!(entries))
-}
-
-async fn atomic_write(path: &Path, content: &str, call: CallId) -> Result<PathBuf, Failure> {
-    // Replace the existing target, preserving both symlinks and its permissions.
-    let (path, permissions) = match tokio::fs::canonicalize(path).await {
-        Ok(target) => {
-            let metadata = tokio::fs::metadata(&target)
-                .await
-                .map_err(|e| io(&target, e))?;
-            (target, Some(metadata.permissions()))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (path.to_path_buf(), None),
-        Err(error) => return Err(io(path, error)),
-    };
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| io(&path, e))?;
-    }
-    let temp = path.with_extension(format!("enco-tmp-{call}"));
-    let mut file = tokio::fs::File::create(&temp)
-        .await
-        .map_err(|e| io(&path, e))?;
-    let result = async {
-        file.write_all(content.as_bytes()).await?;
-        if let Some(permissions) = permissions {
-            file.set_permissions(permissions).await?;
-        }
-        file.sync_all().await?;
-        tokio::fs::rename(&temp, &path).await
-    }
-    .await;
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&temp).await;
-    }
-    result.map_err(|e| io(&path, e))?;
-    Ok(path)
 }

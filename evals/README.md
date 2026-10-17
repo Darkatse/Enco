@@ -266,8 +266,8 @@ data = "hidden/mocks/mail/inbox.json"  # 初始数据；省略时为空
 - 集合按 REST 的习惯访问：`GET /<名字>` 列出，查询参数按字段过滤（值按字符串比较），`fields=a,b` 只返回这些字段；`GET`、`PATCH`、`DELETE /<名字>/<id>` 读取、合并、删除；`POST /<名字>` 追加，正文可以是 JSON 或表单，没有 `id` 时依次分配。
 - 收到的每个请求记入 `requests.jsonl`，结束时全部集合写入 `state.json`。
 - 占位符：`{{mock:<名字>}}` 是 mock 的地址，即 `http://<host>`；`{{time:<偏移>}}` 与 `{{date:<偏移>}}` 是相对于试验开始时刻（取整到分钟）的时间与日期，按题目的时区写成 RFC 3339 与 `YYYY-MM-DD`。偏移可以组合 `d`、`h`、`m`、`s`，例如 `-3h05m14s`，也可以用 `b` 数工作日（周一到周五），例如 `+2b`；`0` 是开始时刻本身。日期可以加格式：`|zh` 写成"10 月 13 日（周二）"，`|en` 写成 "October 13, 2026"。`home/` 中的文本文件、路由的 `body` 文件与集合的初始数据在试验开始时替换；`reference` 在评分时按同一个开始时刻替换，评判因此看到与 Agent 相同的日期。数据里写具体日期而不写"本周四"，题目才不随试验落在星期几而变。
-- 题目的 `home/plugins/` 可以携带完整的插件源码目录。运行器复制 home 后调用被测二进制的 `enco init`，再在试跑代理之外按 SDK 与各插件自带的锁预取依赖，新建插件的第一份锁也取自 SDK，所以版本在试跑之间不变；被测进程共用运行器的 `CARGO_HOME`，设置 `CARGO_NET_OFFLINE=true`，首次启动把插件与配置一起登记，在 `refs/enco/registered` 上写下完整意图；主人的分支与索引保持不变。运行器环境须提供 Cargo、rustc 与 `wasm32-wasip2` 目标。源码不依赖评测仓库，只依赖 home 下宿主分发的 `../../sdk`。
-- 状态与插件历史统一导出为 `snapshot/status.json`，代际指标从其中的 `plugins` 读取。
+- 题目的 `home/plugins/` 可以携带完整的插件源码目录。运行器复制 home 后调用被测二进制的 `enco init`，再在试跑代理之外按 SDK 与各插件自带的锁预取依赖，新建插件的第一份锁也取自 SDK，所以版本在试跑之间不变；被测进程共用运行器的 `CARGO_HOME`，设置 `CARGO_NET_OFFLINE=true`，首次启动把插件与配置一起登记，源码与配置由 Enco 的内容库保存，不依赖 Git。每个插件的 `.gitignore` 声明不计入的构建产物。运行器环境须提供 Cargo、rustc 与 `wasm32-wasip2` 目标。源码不依赖评测仓库，只依赖 home 下宿主分发的 `../../sdk`。
+- 当前状态（含最近几次登记）导出为 `snapshot/status.json`，代际指标从其中的 `plugins` 读取；完整登记历史按需经 `enco history --json` 查询，并用返回的游标经 `enco history --json --before <registration>` 向前翻页。
 - 夹具命令（例如 `home/bin/mail`）用 POSIX sh 与 curl 编写，不引入其他运行时。运行器保留文件的可执行位，并把被测 home 的 `bin/` 放在 PATH 最前面，所以夹具命令优先于系统里的同名命令（例如 macOS 的 `/usr/bin/mail`）。
 
 ## 题目自检
@@ -310,7 +310,7 @@ recall = "fail"        # 列出的评分项必须得到这个结局
 | [`daily-briefing`](tasks/daily-briefing/task.toml) | 助理 | 主人真实的每日早报：周期定时，经命令行工具收邮件、读新闻，遵守常驻偏好，汇报，发信，不执行邮件里的注入指令 | 无，M18 的周期定时就是基线 |
 | [`live-lookup`](tasks/live-lookup/task.toml) | 助理 | 实时信息：官网拦截读取时经回退读到最新的召回更新，压过过时的新闻、搜索摘要与传言，对照邮箱里的每一笔订单作答，不理会仿冒的退款邮件 | M23 的 web 插件：搜索与 Exa 回退 |
 
-后续的 `adapter-drift`、`build-from-spec` 与 `many-tools` 题目设计见 [M25](../docs/plan/M25.md)，夹具与评分齐备后再加入可运行题集。
+后续的 `adapter-drift`、`build-from-spec` 与 `many-tools` 题目设计见 [M26](../docs/plan/M26.md)，夹具与评分齐备后再加入可运行题集。
 
 ## 隔离
 

@@ -46,7 +46,12 @@ async fn node_lock_is_held_while_serving_and_until_shutdown_is_quiescent() {
     let mut daemon = Daemon::start(&server, "openai-compatible").await;
     reject_second_serve(daemon.root.path()).await;
     let mut client = daemon.connect().await;
-    client.request(Command::Status {}).await.unwrap();
+    client
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
+        .await
+        .unwrap();
 
     // fs_read does not observe cancellation, so a FIFO read holds shutdown open
     // until this test closes its writer, without sleeps.

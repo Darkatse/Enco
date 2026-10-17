@@ -3,8 +3,8 @@ use super::*;
 
 pub(in crate::registry) struct Plan {
     pub expected: Expected,
-    pub revision: String,
-    pub configuration: Option<serde_json::Value>,
+    pub initiator: Initiator,
+    pub configuration: Option<ConfigurationSource>,
     pub declaration: Declaration,
     pub previous_uses: Vec<Use>,
     pub plugins: BTreeMap<PluginId, PlannedPlugin>,
@@ -17,7 +17,7 @@ pub(in crate::registry) struct Content {
 }
 
 pub(in crate::registry) struct PlannedPlugin {
-    pub name: Option<String>,
+    pub name: Option<PluginName>,
     pub action: Action,
     pub intent: Option<CodeIntent>,
 }
@@ -36,12 +36,12 @@ pub(in crate::registry) struct Prepared {
 }
 
 impl Prepared {
-    pub fn loaded_for(&self, name: &str) -> Option<&Loaded> {
+    pub fn loaded_for(&self, name: &PluginName) -> Option<&Loaded> {
         let (id, _) = self
             .plan
             .plugins
             .iter()
-            .find(|(_, plugin)| plugin.name.as_deref() == Some(name))?;
+            .find(|(_, plugin)| plugin.name.as_ref() == Some(name))?;
         self.loaded.get(id)
     }
 }
@@ -56,17 +56,17 @@ pub(in crate::registry) async fn plan(
         return Err(RegistryError::Conflict("registration baseline".into()));
     }
     if request.configuration.is_none() && request.plugins.is_empty() {
-        return Err(rejected("registration", "no changes supplied"));
+        return Err(RegistryError::EmptyRequest);
     }
     let declaration = match &request.configuration {
-        Some(document) => configuration::declare_valid(document, &deps.owners)?,
+        Some(config) => configuration::declare_valid(&config.document, &deps.owners)?,
         None => current
             .map(Declaration::from_active)
             .ok_or_else(|| RegistryError::Bootstrap("configuration document is missing".into()))?,
     };
     let mut plan = Plan {
         expected: Expected::capture(state),
-        revision: request.revision,
+        initiator: request.initiator,
         configuration: request.configuration,
         declaration,
         previous_uses: current.map_or_else(Vec::new, |config| config.uses.clone()),
@@ -83,13 +83,12 @@ pub(in crate::registry) async fn plan(
 async fn plan_plugin(
     deps: &RegistryDeps,
     state: &State,
-    identities: &BTreeMap<String, PluginId>,
+    identities: &BTreeMap<PluginName, PluginId>,
     current: Option<&ActiveConfig>,
     plan: &mut Plan,
-    name: String,
+    name: PluginName,
     change: PluginChange,
 ) -> Result<(), RegistryError> {
-    validate_name(&name)?;
     let factory = deps.factory.iter().find(|factory| factory.name == name);
     let registered = identities.get(&name).copied();
     // A direct artifact replaces the code running under the name; intent follows registered names.
@@ -100,7 +99,7 @@ async fn plan_plugin(
     };
     let id = existing.unwrap_or_default();
     let intent = match &change {
-        PluginChange::Code(_) => Some(CodeIntent::Directory),
+        PluginChange::Code { source, .. } => Some(CodeIntent::Directory { source: *source }),
         PluginChange::Factory => Some(CodeIntent::Factory),
         _ => None,
     };
@@ -111,8 +110,8 @@ async fn plan_plugin(
         .cloned()
         .unwrap_or_default();
     let action = match change {
-        PluginChange::Code(source) => Action::Code(Content {
-            bytes: match source {
+        PluginChange::Code { artifact, .. } => Action::Code(Content {
+            bytes: match artifact {
                 ArtifactSource::Bytes(bytes) => bytes,
                 ArtifactSource::Stored(hash) => deps.store.artifact(&hash).await?,
             },
@@ -129,7 +128,7 @@ async fn plan_plugin(
             },
         }),
         PluginChange::Factory => {
-            let factory = factory.ok_or_else(|| rejected(&name, "not a factory plugin"))?;
+            let factory = factory.ok_or_else(|| RegistryError::NotFactory(name.clone()))?;
             let generation = state.factory[&factory.id];
             if settings == PluginSettings::default() {
                 let loaded = state.loaded[&generation].clone();
@@ -145,10 +144,7 @@ async fn plan_plugin(
             }
         }
         PluginChange::Remove if factory.is_some() => {
-            return Err(rejected(
-                &name,
-                "factory plugins cannot be removed; register factory intent",
-            ));
+            return Err(RegistryError::FactoryRemoval(name));
         }
         PluginChange::Remove => {
             if existing.is_none() {
@@ -184,33 +180,34 @@ async fn plan_plugin(
 pub(in crate::registry) fn check_rename(
     deps: &RegistryDeps,
     state: &State,
-    identities: &BTreeMap<String, PluginId>,
+    identities: &BTreeMap<PluginName, PluginId>,
     current: Option<&ActiveConfig>,
-    name: &str,
-    to: &str,
+    name: &PluginName,
+    to: &PluginName,
 ) -> Result<(), RegistryError> {
-    validate_name(name)?;
-    validate_name(to)?;
     let id = *identities
         .get(name)
-        .ok_or_else(|| RegistryError::UnknownPlugin(name.into()))?;
-    if deps
-        .factory
-        .iter()
-        .any(|factory| factory.name == name || factory.name == to)
-    {
-        return Err(rejected(name, "factory names are reserved"));
+        .ok_or_else(|| RegistryError::UnknownPlugin(name.clone()))?;
+    for reserved in [name, to] {
+        if deps.factory.iter().any(|factory| factory.name == *reserved) {
+            return Err(rejected(Cause::NameReserved {
+                name: reserved.clone(),
+            }));
+        }
     }
     if let Some(current) = current {
-        let mut references = users(&current.uses, name);
+        let mut by: Vec<_> = users(&current.uses, name)
+            .into_iter()
+            .map(|user| Referrer::User { user })
+            .collect();
         if current.plugins.contains_key(name) {
-            references.push(format!("plugin.{name}"));
+            by.push(Referrer::Settings);
         }
-        if !references.is_empty() {
-            return Err(rejected(
-                name,
-                format!("still referenced by {}", references.join(", ")),
-            ));
+        if !by.is_empty() {
+            return Err(rejected(Cause::Referenced {
+                name: name.clone(),
+                by,
+            }));
         }
     }
     if identities.get(to).is_some_and(|other| *other != id)
@@ -219,7 +216,7 @@ pub(in crate::registry) fn check_rename(
             .get(to)
             .is_some_and(|other| *other != id)
     {
-        return Err(rejected(to, "name is already registered"));
+        return Err(rejected(Cause::NameTaken { name: to.clone() }));
     }
     Ok(())
 }
@@ -227,7 +224,7 @@ pub(in crate::registry) fn check_rename(
 async fn plan_settings(
     deps: &RegistryDeps,
     state: &State,
-    identities: &BTreeMap<String, PluginId>,
+    identities: &BTreeMap<PluginName, PluginId>,
     plan: &mut Plan,
 ) -> Result<(), RegistryError> {
     if plan.configuration.is_none() {
@@ -235,8 +232,9 @@ async fn plan_settings(
     }
     let previous = state
         .registered_config()
-        .map(|config| settings(&config.document))
-        .transpose()?
+        .map(|config| plugin_settings(&config.document))
+        .transpose()
+        .map_err(RegistryError::Config)?
         .unwrap_or_default();
     let names: std::collections::BTreeSet<_> = previous
         .keys()
@@ -254,7 +252,11 @@ async fn plan_settings(
                     .iter()
                     .find_map(|(id, plugin)| (plugin.name.as_ref() == Some(name)).then_some(*id))
             })
-            .ok_or_else(|| rejected(name, "settings require a plugin in this registration"))?;
+            .ok_or_else(|| {
+                rejected(Cause::SettingsWithoutPlugin {
+                    plugin: name.clone(),
+                })
+            })?;
         if plan.plugins.contains_key(&id) {
             continue;
         }
@@ -267,10 +269,9 @@ async fn plan_settings(
         let (bytes, based_on) = match state.active(id) {
             Some(record) => (artifact(deps, record).await?, record.id),
             None => {
-                return Err(rejected(
-                    name,
-                    "no code is running; register source together with these settings",
-                ));
+                return Err(rejected(Cause::SettingsWithoutCode {
+                    plugin: name.clone(),
+                }));
             }
         };
         plan.plugins.insert(
@@ -311,27 +312,25 @@ pub(in crate::registry) async fn prepare(
     plan: Plan,
 ) -> Result<Prepared, RegistryError> {
     let mut loaded = BTreeMap::new();
-    let mut errors = Vec::new();
+    let mut causes = Vec::new();
     for (id, plugin) in &plan.plugins {
-        let candidate = match &plugin.action {
-            Action::Code(content) => Some(load(deps.runtime.as_ref(), content).await),
-            Action::Existing(_, loaded) => Some(probe(loaded.clone()).await),
-            Action::Remove | Action::Rename => None,
+        let (Some(name), Some(candidate)) = (&plugin.name, plugin.candidate()) else {
+            continue;
         };
-        if let Some(candidate) = candidate {
-            match candidate {
-                Ok(value) => {
-                    loaded.insert(*id, value);
-                }
-                Err(error) => errors.push(format!(
-                    "{}: {error}",
-                    plugin.name.as_deref().unwrap_or("removed plugin")
-                )),
+        let result = match &plugin.action {
+            Action::Code(content) => load(deps.runtime.as_ref(), content, name, candidate).await,
+            Action::Existing(_, existing) => probe(existing.clone(), name, candidate).await,
+            Action::Remove | Action::Rename => continue,
+        };
+        match result {
+            Ok(value) => {
+                loaded.insert(*id, value);
             }
+            Err(cause) => causes.push(cause),
         }
     }
-    if !errors.is_empty() {
-        return Err(rejected("registration", errors.join("\n")));
+    if !causes.is_empty() {
+        return Err(RegistryError::Rejected(causes));
     }
     Ok(Prepared {
         plan,
@@ -340,19 +339,47 @@ pub(in crate::registry) async fn prepare(
     })
 }
 
-async fn load(runtime: &dyn Runtime, content: &Content) -> Result<Loaded, String> {
+impl PlannedPlugin {
+    /// What the candidate changes, which decides the part a load failure concerns.
+    fn candidate(&self) -> Option<Proposed> {
+        match &self.action {
+            Action::Existing(..) => Some(Proposed::Factory),
+            Action::Code(content) => Some(match (self.intent, content.origin) {
+                (Some(CodeIntent::Factory), _) => Proposed::Factory,
+                (_, Origin::Settings { .. }) => Proposed::Settings,
+                (Some(CodeIntent::Directory { .. }) | None, _) => Proposed::Code,
+            }),
+            Action::Remove | Action::Rename => None,
+        }
+    }
+}
+
+async fn load(
+    runtime: &dyn Runtime,
+    content: &Content,
+    name: &PluginName,
+    candidate: Proposed,
+) -> Result<Loaded, Cause> {
     let loaded = runtime
         .load(&content.bytes, &content.settings)
         .await
-        .map_err(|error| error.to_string())?;
-    probe(loaded).await
+        .map_err(|error| Cause::Load {
+            plugin: name.clone(),
+            candidate,
+            error,
+        })?;
+    probe(loaded, name, candidate).await
 }
 
-async fn probe(loaded: Loaded) -> Result<Loaded, String> {
+async fn probe(loaded: Loaded, name: &PluginName, candidate: Proposed) -> Result<Loaded, Cause> {
     loaded
         .lifecycle
         .probe()
         .await
-        .map_err(|failure| format!("probe failed: {}: {}", failure.code, failure.message))?;
+        .map_err(|failure| Cause::Probe {
+            plugin: name.clone(),
+            candidate,
+            failure,
+        })?;
     Ok(loaded)
 }

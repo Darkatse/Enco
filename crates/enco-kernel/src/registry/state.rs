@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Activation, RegistrationWrite, RegistryState};
+use crate::{ActivationWrite, RegistrationWrite, RegistryState};
 use std::collections::BTreeSet;
 
 /// Persisted references own lifetime; loaded adapters and names are projections.
@@ -32,13 +32,13 @@ impl State {
             .get(&plugin)
     }
 
-    pub fn running_name(&self, plugin: PluginId) -> Option<&str> {
+    pub fn running_name(&self, plugin: PluginId) -> Option<&PluginName> {
         let record = self.history.plugins.get(&plugin)?;
         record.active?;
-        self.name_at(plugin, record.named_by)?.name.as_deref()
+        self.name_at(plugin, record.named_by)?.name.as_ref()
     }
 
-    pub fn running_names(&self) -> BTreeMap<String, PluginId> {
+    pub fn running_names(&self) -> BTreeMap<PluginName, PluginId> {
         self.history
             .plugins
             .keys()
@@ -47,9 +47,36 @@ impl State {
     }
 
     /// Accepted names remain distinct from names changed by mechanical recovery.
-    pub fn registered_names(&self) -> BTreeMap<String, PluginId> {
+    pub fn registered_names(&self) -> BTreeMap<PluginName, PluginId> {
+        self.registered_names_at(None)
+    }
+
+    pub fn registrations_through(
+        &self,
+        at: Option<RegistrationId>,
+    ) -> std::collections::btree_map::Range<'_, RegistrationId, RegistrationRecord> {
+        self.history.registrations.range((
+            std::ops::Bound::Unbounded,
+            at.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Included),
+        ))
+    }
+
+    pub fn registered_name(
+        &self,
+        plugin: PluginId,
+        at: Option<RegistrationId>,
+    ) -> Option<(RegistrationId, &RegisteredName)> {
+        self.registrations_through(at)
+            .rev()
+            .find_map(|(id, registration)| registration.names.get(&plugin).map(|name| (*id, name)))
+    }
+
+    pub fn registered_names_at(
+        &self,
+        at: Option<RegistrationId>,
+    ) -> BTreeMap<PluginName, PluginId> {
         let mut names = BTreeMap::new();
-        for registration in self.history.registrations.values() {
+        for (_, registration) in self.registrations_through(at) {
             for (id, registered) in &registration.names {
                 names.retain(|_, plugin| plugin != id);
                 if let Some(name) = &registered.name {
@@ -61,7 +88,16 @@ impl State {
     }
 
     pub fn registered_config(&self) -> Option<&ConfigGeneration> {
-        self.history.config_generations.values().next_back()
+        self.registered_config_at(None)
+    }
+
+    pub fn registered_config_at(&self, at: Option<RegistrationId>) -> Option<&ConfigGeneration> {
+        let (last, _) = self.registrations_through(at).next_back()?;
+        self.history
+            .config_generations
+            .values()
+            .rev()
+            .find(|config| config.registration <= *last)
     }
 
     /// Settings preserve their exact code provenance, even when bytes match another generation.
@@ -75,13 +111,47 @@ impl State {
         generation
     }
 
+    /// The one derivation of where a generation's code came from, for both layers.
+    pub fn provenance(&self, generation: GenerationId) -> CodeProvenance {
+        let generation = self.code_generation(generation);
+        let code = &self.history.generations[&generation];
+        let intent = code.origin.registration().map(|registration| {
+            (
+                registration,
+                self.history.registrations[&registration].code[&code.plugin].intent,
+            )
+        });
+        let source = match intent {
+            None | Some((_, Some(CodeIntent::Factory))) => CodeSource::Factory,
+            Some((registration, Some(CodeIntent::Directory { .. }))) => {
+                CodeSource::Directory { registration }
+            }
+            Some((_, None)) => CodeSource::Artifact,
+        };
+        CodeProvenance { generation, source }
+    }
+
+    pub fn activation(&self, reference: PluginActivation) -> Result<Activation, RegistryError> {
+        let generation = self
+            .history
+            .generations
+            .get(&reference.generation)
+            .ok_or(RegistryError::UnknownGeneration(reference.generation))?
+            .clone();
+        Ok(Activation {
+            code: self.provenance(generation.id),
+            generation,
+            registration: reference.registration,
+        })
+    }
+
     pub fn active(&self, plugin: PluginId) -> Option<&GenerationRecord> {
         self.history
             .generations
             .get(&self.history.plugins.get(&plugin)?.active?.generation)
     }
 
-    pub fn contents(&self) -> BTreeMap<String, Option<Loaded>> {
+    pub fn contents(&self) -> BTreeMap<PluginName, Option<Loaded>> {
         self.running_names()
             .into_iter()
             .map(|(name, id)| {
@@ -136,7 +206,7 @@ impl State {
         self.loaded.extend(loaded);
     }
 
-    pub fn activated(&mut self, change: &Activation) {
+    pub fn activated(&mut self, change: &ActivationWrite) {
         self.history.plugins.extend(
             change
                 .plugins

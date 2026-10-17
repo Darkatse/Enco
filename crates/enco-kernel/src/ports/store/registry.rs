@@ -32,7 +32,7 @@ pub struct RegistrationWrite {
 
 /// Mechanical recovery moves references; it never creates new intent.
 #[derive(Default, Clone)]
-pub struct Activation {
+pub struct ActivationWrite {
     /// Final runtime references for affected identities.
     pub plugins: Vec<PluginRecord>,
     /// Configuration to activate, or leave unchanged when absent.

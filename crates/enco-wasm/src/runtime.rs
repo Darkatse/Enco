@@ -9,7 +9,7 @@ use crate::{
     plugin::WasmPlugin,
 };
 use async_trait::async_trait;
-use enco_core::{ContentHash, Failure, PluginSettings};
+use enco_core::{ContentHash, Failure, PluginSettings, code};
 use enco_kernel::{Credential, Decision, Embedding, LoadError, Loaded, Provider, Runtime};
 use std::sync::Arc;
 use wasmtime::component::{Component, HasSelf, Linker};
@@ -107,7 +107,7 @@ impl Runtime for WasmRuntime {
             .transpose()
             .map_err(load_error)?;
         if completion.is_none() && embedding.is_none() && decision.is_none() && tools.is_none() {
-            return Err(LoadError(
+            return Err(LoadError::Component(
                 "component exports none of completion, embedding, decision or tools".into(),
             ));
         }
@@ -125,9 +125,9 @@ impl Runtime for WasmRuntime {
         let description = plugin
             .describe(&settings.config)
             .await
-            .map_err(failure_load_error)?;
+            .map_err(describe_error)?;
         let config_schema = serde_json::from_str(&description.config_schema)
-            .map_err(|e| LoadError(format!("configuration schema is not JSON: {e}")))?;
+            .map_err(|e| LoadError::Component(format!("configuration schema is not JSON: {e}")))?;
         plugin.placements = credentials::placements(&description.credentials, settings)?;
         let unavailable = credentials::resolve(&plugin.placements, settings, None).err();
         let plugin = Arc::new(plugin);
@@ -135,7 +135,7 @@ impl Runtime for WasmRuntime {
             Some(pre) => Some(
                 crate::tools::load(plugin.clone(), pre)
                     .await
-                    .map_err(failure_load_error)?,
+                    .map_err(LoadError::Plugin)?,
             ),
             None => None,
         };
@@ -172,30 +172,35 @@ impl Runtime for WasmRuntime {
     }
 }
 
-fn failure_load_error(failure: Failure) -> LoadError {
-    LoadError(format!("{}: {}", failure.code, failure.message))
+/// A component that rejects its configuration reports `config.invalid` from `describe`.
+fn describe_error(failure: Failure) -> LoadError {
+    if failure.code == code::CONFIG_INVALID {
+        LoadError::Settings(failure.message)
+    } else {
+        LoadError::Plugin(failure)
+    }
 }
 
 fn load_error(error: impl std::fmt::Display) -> LoadError {
-    LoadError(error.to_string())
+    LoadError::Component(error.to_string())
 }
 
 fn check_imports(component: &Component, engine: &wasmtime::Engine) -> Result<(), LoadError> {
     for (name, _) in component.component_type().imports(engine) {
         if name.starts_with("enco:plugin/completion@") {
-            return Err(LoadError("plugins cannot import completion; model calls must be recorded as Attempts by the kernel".into()));
+            return Err(LoadError::Component("plugins cannot import completion; model calls must be recorded as Attempts by the kernel".into()));
         }
         if let Some(version) = name
             .strip_prefix("enco:plugin/host@")
             .or_else(|| name.strip_prefix("enco:plugin/types@"))
         {
             if !same_major(version) {
-                return Err(LoadError(format!(
+                return Err(LoadError::Component(format!(
                     "built against enco:plugin@{version}; this host links enco:plugin@{CONTRACT_VERSION}, rebuild the plugin"
                 )));
             }
         } else if !name.starts_with("wasi:") {
-            return Err(LoadError(format!(
+            return Err(LoadError::Component(format!(
                 "unsupported plugin import {name}; only host interfaces are available"
             )));
         }

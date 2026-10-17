@@ -113,12 +113,12 @@ fn plugin_generation(registry: &Registry) -> GenerationId {
 }
 
 #[tokio::test]
-async fn configuration_changes_tools_at_the_next_round_and_git_restores_settings() {
+async fn configuration_changes_tools_at_the_next_round_and_rewind_restores_settings() {
     let root = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![
         calls(vec![
             call("fixture_read", "{}"),
-            call("self_apply", "{}"),
+            call("self_apply", r#"{"reason":"Apply test intent"}"#),
             call("fixture_read", "{}"),
         ]),
         calls(vec![call("fixture_read", "{}")]),
@@ -132,7 +132,12 @@ async fn configuration_changes_tools_at_the_next_round_and_git_restores_settings
         json!({"fixture": {"config": {"label": "old"}, "secrets": {"service": "OLD_KEY"}}});
     let (development, registry, store) =
         scripted_home(root.path(), runtime, document.clone(), vec![]).await;
-    let initial = registry.registered_intent().await.base.unwrap().revision;
+    let initial = registry
+        .registered_intent(None)
+        .await
+        .unwrap()
+        .registration()
+        .unwrap();
     let old = plugin_generation(&registry);
     document["plugin"]["fixture"] =
         json!({"config": {"label": "new"}, "secrets": {"service": "NEW_KEY"}});
@@ -197,28 +202,42 @@ async fn configuration_changes_tools_at_the_next_round_and_git_restores_settings
             expected
         );
     }
-    restore_config(root.path(), &initial, &registry, &development).await;
+    restore_config(initial, &registry, &development).await;
     let status = registry.status().await.unwrap();
-    let restored = status.plugins[0].active.as_ref().unwrap();
+    let restored = running_generation(&status.plugins[0]).unwrap();
     assert_eq!(restored.settings.config, json!({"label":"old"}));
     assert_eq!(restored.settings.secrets["service"], "OLD_KEY");
-    assert!(status.plugins[0].matches_registered);
+    assert_eq!(
+        status.plugins[0].standing,
+        Standing::Registered {
+            differences: vec![]
+        }
+    );
     kernel.shutdown().await.unwrap();
 }
 
 async fn restore_config(
-    root: &Path,
-    revision: &str,
+    registration: RegistrationId,
     registry: &Registry,
     development: &development::Development,
 ) {
-    git(
-        root,
-        &["restore", "--source", revision, "--", "config.toml"],
-    )
-    .await;
     development
-        .apply(registry, &CancellationToken::new())
+        .rewind(
+            registry,
+            development::RewindArguments {
+                registration,
+                paths: Some(vec![IntentPath::Configuration]),
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    development
+        .apply(
+            registry,
+            Initiator::Owner { reason: None },
+            &CancellationToken::new(),
+        )
         .await
         .unwrap();
 }
@@ -242,8 +261,9 @@ async fn failed_bound_code_stops_later_calls_until_the_next_round() {
     let broken = development
         .deploy(
             &registry,
-            "fixture".into(),
+            "fixture".parse().unwrap(),
             b"trap".to_vec(),
+            Initiator::Owner { reason: None },
             &CancellationToken::new(),
         )
         .await
@@ -452,21 +472,20 @@ async fn registrations_and_configuration_reject_native_and_plugin_tool_name_conf
     let mut document = configuration();
     document["plugin"] = json!({"fixture": {"config": {"tool":"fs_read"}}});
     let before = store.registry().await.unwrap();
-    let rejected = submit(&registry, configuration_request(document.clone()))
-        .await
-        .err()
-        .unwrap();
-    assert!(rejected.to_string().contains("fs_read") && rejected.to_string().contains("native"));
-    assert!(
-        submit(
-            &registry,
-            artifact_request("native-copy", b"native".to_vec())
-        )
-        .await
-        .err()
-        .unwrap()
-        .to_string()
-        .contains("fs_read")
+    let host = |plugin: &str, tool: &str| (plugin.parse().unwrap(), tool.into(), ToolOwner::Host);
+    assert_eq!(
+        tool_conflicts(submit(&registry, configuration_request(document.clone())).await),
+        [host("fixture", "fs_read")]
+    );
+    assert_eq!(
+        tool_conflicts(
+            submit(
+                &registry,
+                artifact_request("native-copy", b"native".to_vec())
+            )
+            .await
+        ),
+        [host("native-copy", "fs_read")]
     );
     assert_eq!(
         store.registry().await.unwrap().generations,
@@ -480,22 +499,43 @@ async fn registrations_and_configuration_reject_native_and_plugin_tool_name_conf
         .await
         .unwrap();
     document["plugin"]["fixture"]["config"]["tool"] = "other_read".into();
-    assert!(
-        submit(&registry, configuration_request(document))
-            .await
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("other_read")
+    assert_eq!(
+        tool_conflicts(submit(&registry, configuration_request(document)).await),
+        [(
+            "fixture".parse().unwrap(),
+            "other_read".into(),
+            ToolOwner::Plugins(vec!["other".parse().unwrap()])
+        )]
     );
-    assert!(
-        submit(&registry, artifact_request("third", b"other".to_vec()))
-            .await
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("other_read")
-    );
+    let exporters: [PluginName; 2] = ["other".parse().unwrap(), "third".parse().unwrap()];
+    let conflicts =
+        tool_conflicts(submit(&registry, artifact_request("third", b"other".to_vec())).await);
+    assert!(!conflicts.is_empty());
+    for (plugin, tool, with) in conflicts {
+        assert_eq!(tool, "other_read");
+        assert!(exporters.contains(&plugin));
+        assert!(matches!(with, ToolOwner::Plugins(others)
+            if others.iter().all(|other| exporters.contains(other) && *other != plugin)));
+    }
+}
+
+#[expect(
+    clippy::panic,
+    reason = "any other outcome fails the test with what was returned"
+)]
+fn tool_conflicts(
+    result: Result<Registered, RegistryError>,
+) -> Vec<(PluginName, String, ToolOwner)> {
+    let Err(RegistryError::Rejected(causes)) = result else {
+        panic!("expected the registration to be rejected");
+    };
+    causes
+        .into_iter()
+        .map(|cause| match cause {
+            Cause::ToolConflict { plugin, tool, with } => (plugin, tool, with),
+            other => panic!("expected only tool conflicts, got {other}"),
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -527,8 +567,9 @@ async fn mechanical_rollback_excludes_both_conflicts_and_keeps_native_tools_runn
         development
             .deploy(
                 &registry,
-                name.into(),
+                name.parse().unwrap(),
                 bytes.to_vec(),
+                Initiator::Owner { reason: None },
                 &CancellationToken::new(),
             )
             .await
@@ -555,18 +596,25 @@ async fn mechanical_rollback_excludes_both_conflicts_and_keeps_native_tools_runn
     )
     .await;
     let status = registry.status().await.unwrap();
-    for name in ["first", "second"] {
+    for (name, other, generation) in [
+        ("first", "second", first.id),
+        ("second", "first", second.id),
+    ] {
         let plugin = status
             .plugins
             .iter()
-            .find(|plugin| plugin.name.as_deref() == Some(name))
+            .find(|plugin| plugin.name.as_str() == name)
             .unwrap();
-        let reason = plugin.unavailable.as_ref().unwrap();
-        assert!(reason.contains("shared_read") && reason.contains("first, second"));
-        assert_eq!(
-            plugin.active.as_ref().unwrap().id,
-            if name == "first" { first.id } else { second.id }
-        );
+        let Running::Unavailable {
+            activation, causes, ..
+        } = &plugin.running
+        else {
+            panic!("{name} should be selected but unavailable");
+        };
+        assert!(matches!(causes.as_slice(),
+            [Cause::ToolConflict { tool, with: ToolOwner::Plugins(others), .. }]
+            if tool == "shared_read" && others.iter().map(PluginName::as_str).eq([other])));
+        assert_eq!(activation.generation.id, generation);
     }
     let kernel = Kernel::start(kernel_deps(
         root.path(),
@@ -592,7 +640,10 @@ async fn mechanical_rollback_excludes_both_conflicts_and_keeps_native_tools_runn
 #[tokio::test]
 async fn self_apply_moves_the_next_attempt_and_memory_call_to_the_restored_code() {
     let root = tempfile::tempdir().unwrap();
-    let previous = ScriptedProvider::new(vec![calls(vec![call("self_apply", "{}")])]);
+    let previous = ScriptedProvider::new(vec![calls(vec![call(
+        "self_apply",
+        r#"{"reason":"Apply test intent"}"#,
+    )])]);
     let restored = ScriptedProvider::new(vec![reply("factory code")]);
     *restored.embedding_failure.lock().unwrap() = Some(Failure {
         code: code::PROVIDER_NETWORK.into(),

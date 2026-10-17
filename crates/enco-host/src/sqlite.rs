@@ -55,3 +55,13 @@ pub(crate) fn optional_unsigned(row: &Row<'_>, col: usize) -> rusqlite::Result<O
         _ => unsigned(row, col).map(Some),
     }
 }
+
+pub(crate) fn optional_text<T: DeserializeOwned>(
+    row: &Row<'_>,
+    col: usize,
+) -> rusqlite::Result<Option<T>> {
+    match row.get_ref(col)? {
+        rusqlite::types::ValueRef::Null => Ok(None),
+        _ => text(row, col).map(Some),
+    }
+}

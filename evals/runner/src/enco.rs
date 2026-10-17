@@ -96,7 +96,7 @@ impl Enco {
             if let Some(status) = self.child.try_wait()? {
                 bail!("enco serve exited during startup: {status}; see daemon.log");
             }
-            match self.command_until(&["status"], deadline).await {
+            match self.command_until(&["status", "--json"], deadline).await {
                 Ok(_) => return Ok(()),
                 Err(error) if Instant::now() >= deadline => {
                     return Err(error).context("enco serve did not become ready");
@@ -158,7 +158,7 @@ impl Enco {
             .artifact
             .to_str()
             .context("artifact path is not UTF-8")?;
-        self.command(&["plugin", "deploy", &deploy.plugin, artifact])
+        self.command(&["plugin", "deploy", &deploy.plugin, artifact, "--json"])
             .await
             .with_context(|| format!("deploy {}", deploy.plugin))?;
         Ok(())
@@ -176,8 +176,9 @@ impl Enco {
     pub(crate) async fn idle(&self, deadline: Instant) -> Result<()> {
         let mut timed_out = false;
         loop {
-            let status: output::Status = serde_json::from_value(self.command(&["status"]).await?)?;
-            let running: Vec<_> = status.sessions.iter().filter(|s| s.running).collect();
+            let status: output::Status =
+                serde_json::from_value(self.command(&["status", "--json"]).await?)?;
+            let running: Vec<_> = status.node.sessions.iter().filter(|s| s.running).collect();
             if running.is_empty() {
                 ensure!(
                     !timed_out,

@@ -1,5 +1,5 @@
 //! Which change wins when another commit lands while a generation is still loading.
-use super::{deploy_artifact, fault, loaded, open, promote};
+use super::{active, deploy_artifact, fault, loaded, open, promote};
 use crate::support::*;
 use async_trait::async_trait;
 use enco_core::*;
@@ -20,7 +20,9 @@ struct PausedLoad {
 impl Runtime for PausedLoad {
     async fn load(&self, artifact: &[u8], config: &PluginSettings) -> Result<Loaded, LoadError> {
         if self.unavailable.lock().unwrap().as_ref() == Some(&ContentHash::of(artifact)) {
-            return Err(LoadError("temporarily unavailable adapter".into()));
+            return Err(LoadError::Component(
+                "temporarily unavailable adapter".into(),
+            ));
         }
         let result = self.runtime.load(artifact, config).await;
         let pause = self
@@ -66,9 +68,8 @@ async fn registration_cannot_overwrite_a_rollback_committed_during_loading() {
     };
     let (result, ()) = tokio::join!(deploy, rollback);
     assert!(matches!(result, Err(RegistryError::Conflict(_))));
-    let status = registry.status().await.unwrap().plugins.remove(0);
-    assert_eq!(status.generations.len(), 3);
-    assert_eq!(status.active.unwrap().id, one.id);
+    assert_eq!(store.registry().await.unwrap().generations.len(), 3);
+    assert_eq!(active(&registry).await.id, one.id);
 }
 
 #[tokio::test]
@@ -133,11 +134,13 @@ async fn registration_discards_preparation_when_its_plugin_or_configuration_chan
         };
         let (result, ()) = tokio::join!(deploy, change);
         assert!(matches!(result, Err(RegistryError::Conflict(_))));
-        let status = registry.status().await.unwrap().plugins.remove(0);
         assert!(
-            status
+            store
+                .registry()
+                .await
+                .unwrap()
                 .generations
-                .iter()
+                .values()
                 .all(|record| record.artifact != ContentHash::of(b"late"))
         );
         let first: &[u8] = if change_config {
@@ -145,7 +148,7 @@ async fn registration_discards_preparation_when_its_plugin_or_configuration_chan
         } else {
             b"winner"
         };
-        assert_eq!(status.active.unwrap().artifact, ContentHash::of(first));
+        assert_eq!(active(&registry).await.artifact, ContentHash::of(first));
     }
 }
 
@@ -183,18 +186,10 @@ async fn rollback_cannot_overwrite_a_registration_committed_during_loading() {
         rollback.await.unwrap(),
         Err(RegistryError::Conflict(_))
     ));
-    let status = registry.status().await.unwrap().plugins.remove(0);
-    assert_eq!(status.generations.len(), 4);
-    assert_eq!(status.active.unwrap().id, three.id);
+    assert_eq!(store.registry().await.unwrap().generations.len(), 4);
+    assert_eq!(active(&registry).await.id, three.id);
     registry.rollback().await.unwrap();
-    assert_eq!(
-        registry.status().await.unwrap().plugins[0]
-            .active
-            .as_ref()
-            .unwrap()
-            .id,
-        two.id
-    );
+    assert_eq!(active(&registry).await.id, two.id);
 }
 
 #[tokio::test]

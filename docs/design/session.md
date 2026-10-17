@@ -14,9 +14,9 @@ Event 的规范消息只是生产者当时写下的文字：主人的话、Agent
 
 ### 位置由归属者分配，Store 只检查
 
-每个 Session 有一个 actor，它是这个 Session 的 Log 唯一的写者，按 `(epoch, seq)` 分配位置。Store 在同一个事务里检查前置条件：Binding 指向本节点且 epoch 一致，位置紧接着已有的最大位置，被消费的 Inbox 行都有对应的 `EventConsumed`。"只有归属者在写"因此是可以验证的事实。前置条件不成立说明前提已被破坏，actor 记下原因并停止，不尝试修补。
+每个 Session 有一个 actor，它是这个 Session 的 Log 唯一的写者，按 `(epoch, seq)` 分配位置。Store 在同一个事务里检查前置条件：Binding 指向本节点且 epoch 一致，位置紧接着已有的最大位置，每条 `EventConsumed` 都对应本 Session 一条内容相同的待消费 Inbox 行。"只有归属者在写"因此是可以验证的事实。前置条件不成立说明前提已被破坏，actor 记下原因并停止，不尝试修补。
 
-Inbox 是这个归属者的邮箱：任何人都可以投递，投递以 Event ID 去重，所以客户端可以放心重发；消费只经上面的提交。投递的顺序由提交序号决定，接收时间只用于展示。
+Inbox 是这个归属者的邮箱：任何人都可以投递，投递以 Event ID 去重，所以客户端可以放心重发；消费只经上面的提交。消费把 Event 原样记进 `EventConsumed`，同一次提交把它移出 Inbox，所以 Inbox 只放尚未消费的输入，一条输入只存在一处；去重同时看 Inbox 与 Log。投递的顺序由提交序号决定，接收时间只用于展示。
 
 落点：`Store::commit` 的前置条件。
 
@@ -86,7 +86,7 @@ CLI 与渠道的输入都经内核的 `accept` 进入 Inbox；内部的归属者
 
 ### 分身就是 Session
 
-多模型协作不需要新概念。需要另一套模型、composer 或上下文时，就委派给子 Session，父子构成 Erlang 式的监督树：子 Session 每结束一次 Run，内核就在同一次提交中给父 Session 发出一次回报；父 Session 只看到以 Event 到达的内容，父子只经 Event 交互，各自的 actor 始终能处理自己的 Inbox；取消沿树向下传播。同一个工作区同一时间只由一个 Session 写入，需要并行写就各用一个工作区，由父 Session 经 git 合并。指挥与专家、门面与幕后这类拓扑，都是 profile、Skill 与 composer 的组合。
+多模型协作不需要新概念。需要另一套模型、composer 或上下文时，就委派给子 Session，父子构成 Erlang 式的监督树：子 Session 每结束一次 Run，内核就在同一次提交中给父 Session 发出一次回报；父 Session 只看到以 Event 到达的内容，父子只经 Event 交互，各自的 actor 始终能处理自己的 Inbox；取消沿树向下传播。同一个工作区同一时间只由一个 Session 写入，需要并行写就各用一个工作区，由父 Session 合并，例如用 git。指挥与专家、门面与幕后这类拓扑，都是 profile、Skill 与 composer 的组合。
 
 ### 主人确认是一种 Event 加一个等待中的命令
 

@@ -50,7 +50,7 @@ pub(in crate::store) fn read(connection: &Connection) -> Result<RegistryState, S
         )?,
         config_generations: query(
             connection,
-            "SELECT g.id, c.registration, c.document, c.previous, g.created_at
+            "SELECT g.id, c.registration, c.document, c.previous, g.created_at, c.source
              FROM config_generations c JOIN generations g ON g.id = c.id
              ORDER BY g.id",
             |row| {
@@ -61,6 +61,7 @@ pub(in crate::store) fn read(connection: &Connection) -> Result<RegistryState, S
                         id,
                         registration: RegistrationId(rows::unsigned(row, 1)?),
                         document: rows::document(row, 2)?,
+                        source: rows::text(row, 5)?,
                         previous: optional_unsigned(row, 3)?.map(GenerationId),
                         created_at: rows::text(row, 4)?,
                     },
@@ -81,14 +82,14 @@ fn registrations(
 ) -> Result<BTreeMap<RegistrationId, RegistrationRecord>, StoreError> {
     let mut registrations: BTreeMap<_, _> = query(
         connection,
-        "SELECT id,revision,created_at FROM registrations ORDER BY id",
+        "SELECT id,initiator,created_at,session,call,reason FROM registrations ORDER BY id",
         |row| {
             let id = RegistrationId(rows::unsigned(row, 0)?);
             Ok((
                 id,
                 RegistrationRecord {
                     id,
-                    revision: row.get(1)?,
+                    initiator: initiator(row)?,
                     names: BTreeMap::new(),
                     code: BTreeMap::new(),
                     created_at: rows::text(row, 2)?,
@@ -104,7 +105,7 @@ fn registrations(
                 RegistrationId(rows::unsigned(row, 0)?),
                 rows::text(row, 1)?,
                 RegisteredName {
-                    name: row.get(2)?,
+                    name: crate::sqlite::optional_text(row, 2)?,
                     previous: optional_unsigned(row, 3)?.map(RegistrationId),
                 },
             ))
@@ -119,17 +120,21 @@ fn registrations(
     }
     let code = query::<_, Vec<_>>(
         connection,
-        "SELECT registration,plugin_id,generation,intent FROM registration_code ORDER BY registration",
+        "SELECT registration,plugin_id,generation,intent,source FROM registration_code ORDER BY registration",
         |row| {
             Ok((
                 RegistrationId(rows::unsigned(row, 0)?),
                 rows::text(row, 1)?,
                 RegisteredCode {
                     generation: GenerationId(rows::unsigned(row, 2)?),
-                    intent: row
-                        .get::<_, Option<String>>(3)?
-                        .map(|_| rows::text(row, 3))
-                        .transpose()?,
+                    intent: match row.get::<_, Option<String>>(3)?.as_deref() {
+                        Some("directory") => Some(CodeIntent::Directory {
+                            source: rows::text(row, 4)?,
+                        }),
+                        Some("factory") => Some(CodeIntent::Factory),
+                        None => None,
+                        Some(kind) => return Err(invalid_kind(3, kind)),
+                    },
                 },
             ))
         },
@@ -179,4 +184,27 @@ fn origin(row: &Row<'_>) -> rusqlite::Result<Origin> {
             ));
         }
     })
+}
+
+fn initiator(row: &Row<'_>) -> rusqlite::Result<Initiator> {
+    Ok(match row.get::<_, String>(1)?.as_str() {
+        "owner" => Initiator::Owner {
+            reason: crate::sqlite::optional_text(row, 5)?,
+        },
+        "host" => Initiator::Host,
+        "agent" => Initiator::Agent {
+            session: rows::text(row, 3)?,
+            call: rows::text(row, 4)?,
+            reason: rows::text(row, 5)?,
+        },
+        kind => return Err(invalid_kind(1, kind)),
+    })
+}
+
+fn invalid_kind(column: usize, kind: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        format!("unknown registry kind {kind}").into(),
+    )
 }

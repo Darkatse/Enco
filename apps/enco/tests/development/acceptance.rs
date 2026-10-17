@@ -1,130 +1,121 @@
 use super::*;
 
 #[tokio::test]
-async fn first_start_requires_git_and_rejects_a_failed_source_build() {
-    for missing_git in [false, true] {
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path();
-        let server = MockServer::start().await;
-        std::fs::write(
-            home.join("config.toml"),
-            Daemon::config(&server, "openai-compatible"),
-        )
+async fn first_start_rejects_a_failed_source_build() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path();
+    let server = MockServer::start().await;
+    std::fs::write(
+        home.join("config.toml"),
+        Daemon::config(&server, "openai-compatible"),
+    )
+    .unwrap();
+    support::initialize(home).await;
+    support::build_target(home, "bootstrap-failure");
+    support::copy_directory(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/test-fixture"),
+        &home.join("plugins/fixture"),
+    );
+    std::fs::write(
+        home.join("plugins/fixture/src/lib.rs"),
+        "fn invalid() { ??? }",
+    )
+    .unwrap();
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"));
+    command
+        .arg("serve")
+        .env("ENCO_HOME", home)
+        .env("CARGO_NET_OFFLINE", "true")
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(60), command.output())
+        .await
+        .unwrap()
         .unwrap();
-        support::initialize(home).await;
-        support::build_target(home, "bootstrap-failure");
-        support::copy_directory(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/test-fixture"),
-            &home.join("plugins/fixture"),
-        );
-        std::fs::write(
-            home.join("plugins/fixture/src/lib.rs"),
-            "fn invalid() { ??? }",
-        )
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("cargo clippy"), "{error}");
+    let store = SqliteStore::open(StorePaths {
+        db: home.join(".data/enco.db"),
+        blobs: home.join(".data/blobs"),
+        artifacts: home.join(".data/artifacts"),
+    })
+    .await
+    .unwrap();
+    let state = store.registry().await.unwrap();
+    assert!(state.registrations.is_empty() && state.active_config.is_none());
+}
+
+pub(super) async fn register_with_agent(daemon: &Daemon) -> Value {
+    let entries = tool_results(daemon, REGISTER).await;
+    let call = entries
+        .iter()
+        .find_map(|entry| match &entry.body {
+            EntryBody::ToolCallSettled {
+                call,
+                outcome: Settlement::Ok,
+                ..
+            } => Some(*call),
+            _ => None,
+        })
         .unwrap();
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"));
-        command
-            .arg("serve")
-            .env("ENCO_HOME", home)
-            .env("CARGO_NET_OFFLINE", "true")
-            .kill_on_drop(true);
-        if missing_git {
-            command.env("PATH", home.join("absent-bin"));
-        }
-        let output = tokio::time::timeout(Duration::from_secs(60), command.output())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(!output.status.success());
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            error.contains(if missing_git {
-                "git rev-parse --show-toplevel"
-            } else {
-                "cargo clippy failed"
-            }),
-            "{error}"
-        );
-        let store = SqliteStore::open(StorePaths {
-            db: home.join(".data/enco.db"),
-            blobs: home.join(".data/blobs"),
-            artifacts: home.join(".data/artifacts"),
+    let status = daemon
+        .connect()
+        .await
+        .request(Command::Status {
+            output: protocol::Output::Json,
         })
         .await
         .unwrap();
-        let state = store.registry().await.unwrap();
-        assert!(state.registrations.is_empty() && state.active_config.is_none());
-    }
-}
-
-pub(super) async fn apply_preserving_owner_history(daemon: &Daemon) -> Value {
-    let home = daemon.root.path();
-    std::fs::write(home.join("owner-notes"), "Owner version").unwrap();
-    git(home, &["add", "owner-notes"]).await;
-    git(
-        home,
-        &[
-            "-c",
-            "user.name=Owner",
-            "-c",
-            "user.email=owner@localhost",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "-m",
-            "Owner history",
-        ],
-    )
-    .await;
-    std::fs::write(home.join("owner-notes"), "Staged owner edit").unwrap();
-    git(home, &["add", "owner-notes", "config.toml"]).await;
-    std::fs::write(home.join("owner-notes"), "Unstaged owner edit").unwrap();
-    let index = std::fs::read(home.join(".git/index")).unwrap();
-    let head = std::fs::read(home.join(".git/HEAD")).unwrap();
-    let branches = git(home, &["for-each-ref", "refs/heads/"]).await;
-    let applied = tool_results(daemon, REGISTER)
+    let registered = status["recent_registrations"][0].clone();
+    assert_eq!(registered["initiator"]["kind"], "agent");
+    assert_eq!(registered["initiator"]["call"], json!(call));
+    let log = daemon
+        .connect()
         .await
-        .into_iter()
-        .find(|value| value.get("builds").is_some())
+        .request(Command::Log {
+            session: registered["initiator"]["session"]["id"]
+                .as_str()
+                .unwrap()
+                .into(),
+            after: None,
+        })
+        .await
         .unwrap();
-    assert_eq!(std::fs::read(home.join(".git/index")).unwrap(), index);
-    assert_eq!(std::fs::read(home.join(".git/HEAD")).unwrap(), head);
-    assert_eq!(git(home, &["for-each-ref", "refs/heads/"]).await, branches);
+    let log: Vec<Entry> = serde_json::from_value(log).unwrap();
+    assert!(log.iter().any(
+        |entry| matches!(entry.body, EntryBody::ToolCallStarted { call: id, .. } if id == call)
+    ));
     assert_eq!(
-        std::fs::read_to_string(home.join("owner-notes")).unwrap(),
-        "Unstaged owner edit"
+        registered["initiator"]["reason"],
+        "Register source and configuration"
     );
-    let revision = applied["registered"]["registration"]["revision"]
-        .as_str()
-        .unwrap();
-    assert_eq!(
-        git(
-            home,
-            &["show", "-s", "--format=%an <%ae>%n%cn <%ce>", revision]
-        )
-        .await,
-        "Enco <enco@localhost>\nEnco <enco@localhost>"
-    );
-    let tree = git(home, &["rev-parse", &format!("{revision}:plugins/alpha")]).await;
+    let home = daemon.root.path();
+    let source = enco_host::development::tree::FileTree::read(&home.join("plugins/alpha"))
+        .await
+        .unwrap()
+        .hash();
     let record: (String, String, String) = rusqlite::Connection::open(home.join(".data/enco.db"))
         .unwrap()
         .query_row(
             "SELECT sdk,artifact,toolchain FROM builds WHERE source=?",
-            [&tree],
+            [source.to_string()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(record.0, super::sdk::SDK.hash().to_string());
+    assert_eq!(record.0, super::sdk::sdk().unwrap().hash().to_string());
     assert_eq!(
         record.1,
-        applied["registered"]["generations"][0]["artifact"]
+        registered["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|change| change["kind"] == "code" && change["name"] == "alpha")
+            .unwrap()["generation"]["artifact"]
             .as_str()
             .unwrap()
     );
     assert!(record.2.contains("rustc ") && record.2.contains("host:"));
-    applied
+    registered
 }
 
 #[tokio::test]
@@ -137,7 +128,7 @@ async fn restoring_older_source_rebuilds_pruned_bytes_and_deletion_survives_rest
         .connect()
         .await
         .request(Command::PluginScaffold {
-            name: "alpha".into(),
+            name: "alpha".parse().unwrap(),
         })
         .await
         .unwrap();
@@ -147,30 +138,30 @@ async fn restoring_older_source_rebuilds_pruned_bytes_and_deletion_survives_rest
     for label in ["one", "two", "three"] {
         std::fs::write(&source, template.replace("Echo an input object", label)).unwrap();
         let applied = apply(&daemon).await;
-        let status = use_source(&daemon).await;
+        use_source(&daemon).await;
         versions.push((
-            status["registered"]["base"]["revision"]
-                .as_str()
-                .unwrap()
-                .to_owned(),
+            serde_json::from_value::<enco_core::RegistrationId>(
+                applied["registered"]["registration"]["id"].clone(),
+            )
+            .unwrap(),
             applied["registered"]["generations"][0].clone(),
         ));
     }
     let original = &versions[0].1;
     let hash = original["artifact"].as_str().unwrap();
     assert!(!home.join(format!(".data/artifacts/{hash}.wasm")).exists());
-    git(
-        &home,
-        &[
-            "restore",
-            "--source",
-            &versions[0].0,
-            "--",
-            "plugins/alpha",
-            "config.toml",
-        ],
-    )
-    .await;
+    daemon
+        .connect()
+        .await
+        .request(Command::Rewind {
+            output: protocol::Output::Json,
+            arguments: enco_host::development::RewindArguments {
+                registration: versions[0].0,
+                paths: None,
+            },
+        })
+        .await
+        .unwrap();
     let restored = apply(&daemon).await;
     assert_eq!(restored["builds"][0]["reused"], false);
     assert_eq!(
@@ -178,7 +169,7 @@ async fn restoring_older_source_rebuilds_pruned_bytes_and_deletion_survives_rest
         original["artifact"]
     );
     use_source(&daemon).await;
-    delete_and_recreate(&mut daemon, &service, original, &versions[0].0).await;
+    delete_and_recreate(&mut daemon, &service, original, versions[0].0).await;
     daemon.stop().await;
 }
 
@@ -186,31 +177,23 @@ async fn delete_and_recreate(
     daemon: &mut Daemon,
     service: &MockServer,
     original: &Value,
-    revision: &str,
+    registration: enco_core::RegistrationId,
 ) {
     let home = daemon.root.path().to_path_buf();
-    let before = daemon
-        .connect()
-        .await
-        .request(Command::Status {})
-        .await
-        .unwrap();
     let requests_before = service.received_requests().await.unwrap().len();
     std::fs::remove_dir_all(home.join("plugins/alpha")).unwrap();
     let deleted = apply(daemon).await;
     assert!(deleted["registered"]["registration"].is_object());
-    let tool_absent = tool_results(daemon, "exercise the plugin and inspect the node").await;
-    let status = tool_absent
-        .iter()
-        .find(|value| value.get("host").is_some())
+    tool_results(daemon, "exercise the plugin and inspect the node").await;
+    let status = daemon
+        .connect()
+        .await
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
+        .await
         .unwrap();
-    let plugin = status["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["id"] == original["plugin"])
-        .unwrap();
-    assert!(plugin["active"].is_null() && plugin["name"].is_null());
+    assert!(status["plugins"].get("alpha").is_none());
     let requests = service.received_requests().await.unwrap();
     let request = requests
         .iter()
@@ -230,29 +213,25 @@ async fn delete_and_recreate(
     let status = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    let plugin = status["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["id"] == original["plugin"])
-        .unwrap();
-    assert!(plugin["active"].is_null());
-    let old = before["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["id"] == original["plugin"])
-        .unwrap();
-    assert_eq!(plugin["generations"], old["generations"]);
+    assert!(status["plugins"].get("alpha").is_none());
     // Recreating the accepted source still acquires a new identity, even with identical bytes.
-    git(
-        &home,
-        &["restore", "--source", revision, "--", "plugins/alpha"],
-    )
-    .await;
+    daemon
+        .connect()
+        .await
+        .request(Command::Rewind {
+            output: protocol::Output::Json,
+            arguments: enco_host::development::RewindArguments {
+                registration,
+                paths: Some(vec!["plugins/alpha".parse().unwrap()]),
+            },
+        })
+        .await
+        .unwrap();
     let added = apply(daemon).await;
     assert_eq!(added["builds"][0]["reused"], true);
     assert_ne!(
@@ -285,13 +264,18 @@ async fn a_failed_probe_is_rejected_by_both_source_and_cli_artifact_registration
     let before = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
     let rejected = daemon
         .connect()
         .await
-        .request(Command::Apply {})
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
         .await
         .unwrap_err()
         .to_string();
@@ -314,14 +298,18 @@ async fn a_failed_probe_is_rejected_by_both_source_and_cli_artifact_registration
     let after = daemon
         .connect()
         .await
-        .request(Command::Status {})
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
         .await
         .unwrap();
-    assert_eq!(after["registered"], before["registered"]);
-    assert_eq!(after["plugins"], before["plugins"]);
     assert_eq!(
-        git(&home, &["rev-parse", "enco/registered"]).await,
-        before["registered"]["base"]["revision"].as_str().unwrap()
+        after["recent_registrations"],
+        before["recent_registrations"]
     );
+    for (name, unit) in before["plugins"].as_object().unwrap() {
+        assert_eq!(after["plugins"][name]["running"], unit["running"]);
+        assert_eq!(after["plugins"][name]["registered"], unit["registered"]);
+    }
     daemon.stop().await;
 }

@@ -87,7 +87,7 @@ impl MemorySettings {
 
 /// The same parser supplies admission and runtime consumers.
 pub const TABLE_OWNER: TableOwner = TableOwner {
-    tables: &["memory"],
+    tables: &[enco_kernel::ConfigTable::Single("memory")],
     declare: |document, kernel| Ok(MemorySettings::from_document(document, kernel)?.uses()),
 };
 

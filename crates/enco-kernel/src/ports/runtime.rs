@@ -69,10 +69,20 @@ pub struct Credential {
     pub prefix: String,
 }
 
-/// Compilation, import validation or component description failed.
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct LoadError(pub String);
+/// Why a component cannot be loaded, attributed to its code or to the settings it was given.
+#[derive(Debug, Clone, serde::Serialize, thiserror::Error)]
+#[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
+pub enum LoadError {
+    /// This host cannot compile, link or instantiate the component, or its declarations are invalid.
+    #[error("{0}")]
+    Component(String),
+    /// The settings cannot be used with this component.
+    #[error("{0}")]
+    Settings(String),
+    /// The component reported a failure while describing itself or its tools.
+    #[error("{}: {}", .0.code, .0.message)]
+    Plugin(Failure),
+}
 
 /// Component lifecycle shared by all exported interfaces.
 #[async_trait]

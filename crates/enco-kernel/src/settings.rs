@@ -1,6 +1,6 @@
 //! The kernel-owned configuration tables and their declared uses.
 use crate::{Budget, CompletionEndpoint, Endpoints, Need, Profile, Use};
-use enco_core::{DEFAULT_PROFILE, ProviderSettings, Tz};
+use enco_core::{DEFAULT_PROFILE, PluginName, ProviderSettings, Tz};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -27,7 +27,7 @@ pub struct Endpoint {
     /// Name of the configured model service.
     pub name: String,
     /// Registered plugin name whose exports serve this endpoint.
-    pub plugin: String,
+    pub plugin: PluginName,
     /// Durable parameters copied into AttemptStarted.
     pub settings: ProviderSettings,
 }
@@ -93,7 +93,7 @@ impl Default for Run {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawEndpoint {
-    plugin: String,
+    plugin: PluginName,
     base_url: String,
     model: String,
     api_key_env: Option<String>,
@@ -120,27 +120,34 @@ struct RawProfile {
     requires_lifeline: bool,
 }
 
+/// Named endpoint entries: `[endpoint.<name>]`.
+pub const ENDPOINT_TABLE: crate::ConfigTable = crate::ConfigTable::Named("endpoint");
+/// Named profile entries: `[profile.<name>]`.
+pub const PROFILE_TABLE: crate::ConfigTable = crate::ConfigTable::Named("profile");
+
 impl KernelSettings {
     /// Table ownership used by the registry's declaration evaluation.
-    pub const TABLES: [&'static str; 4] = ["owner", "run", "endpoint", "profile"];
+    pub const TABLES: [crate::ConfigTable; 4] = [
+        crate::ConfigTable::Single("owner"),
+        crate::ConfigTable::Single("run"),
+        ENDPOINT_TABLE,
+        PROFILE_TABLE,
+    ];
 
     /// Parse and validate only the kernel-owned tables.
     pub fn from_document(document: &Value) -> Result<Self, SettingsError> {
         let owner: Owner = parse_table(document, "owner")?;
         let run: Run = parse_table::<Option<Run>>(document, "run")?.unwrap_or_default();
-        let raw: BTreeMap<String, Value> = parse_table(document, "endpoint")?;
+        let raw: BTreeMap<String, Value> = parse_table(document, ENDPOINT_TABLE.name())?;
         let mut endpoints = BTreeMap::new();
         for (name, value) in raw {
-            let table = format!("endpoint.{name}");
+            let table = format!("{}.{name}", ENDPOINT_TABLE.name());
             let raw: RawEndpoint =
                 serde_json::from_value(value).map_err(|error| SettingsError::new(&table, error))?;
-            if raw.plugin.trim().is_empty()
-                || raw.base_url.trim().is_empty()
-                || raw.model.trim().is_empty()
-            {
+            if raw.base_url.trim().is_empty() || raw.model.trim().is_empty() {
                 return Err(SettingsError::new(
                     table,
-                    "plugin, base_url and model must not be empty",
+                    "base_url and model must not be empty",
                 ));
             }
             endpoints.insert(
@@ -162,10 +169,10 @@ impl KernelSettings {
                 },
             );
         }
-        let raw: BTreeMap<String, Value> = parse_table(document, "profile")?;
+        let raw: BTreeMap<String, Value> = parse_table(document, PROFILE_TABLE.name())?;
         if !raw.contains_key(DEFAULT_PROFILE) {
             return Err(SettingsError::new(
-                "profile.default",
+                format!("{}.{DEFAULT_PROFILE}", PROFILE_TABLE.name()),
                 "required for new Sessions",
             ));
         }
@@ -176,7 +183,7 @@ impl KernelSettings {
             profiles: BTreeMap::new(),
         };
         for (name, value) in raw {
-            let table = format!("profile.{name}");
+            let table = format!("{}.{name}", PROFILE_TABLE.name());
             let raw: RawProfile =
                 serde_json::from_value(value).map_err(|error| SettingsError::new(&table, error))?;
             let endpoints = |purpose: &str, names: &[String]| {

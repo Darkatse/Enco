@@ -5,21 +5,30 @@ use std::collections::BTreeSet;
 pub(super) async fn open<E, F>(
     deps: &RegistryDeps,
     bootstrap: impl FnOnce(RegisteredIntent) -> F,
+    registry_error: &impl Fn(RegistryError) -> E,
 ) -> Result<(State, ActiveConfig), E>
 where
-    E: From<RegistryError>,
     F: std::future::Future<Output = Result<RegistrationRequest, E>>,
 {
-    let (mut state, current) = restore(deps).await?;
+    let (mut state, current) = restore(deps).await.map_err(registry_error)?;
     let config = match current {
         Some(config) => config,
         None => {
-            let request = bootstrap(state.registered_intent(&deps.factory)).await?;
-            register(deps, &mut state, request).await?
+            let request = bootstrap(
+                state
+                    .registered_intent(&deps.factory, None)
+                    .map_err(registry_error)?,
+            )
+            .await?;
+            register(deps, &mut state, request)
+                .await
+                .map_err(registry_error)?
         }
     };
     let references: Vec<_> = state.history.plugins.values().cloned().collect();
-    factory::retain(deps, &state, &references).await?;
+    factory::retain(deps, &state, &references)
+        .await
+        .map_err(registry_error)?;
     state.release();
     cleanup_artifacts(deps, &state).await;
     Ok((state, config))

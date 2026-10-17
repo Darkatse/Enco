@@ -17,9 +17,9 @@
 
 在 Enco 仓库内用 `cargo xtask build-factory` 构建宿主自带制品（产物在 `target/factory/<name>.wasm`）。每个目录自带依赖锁、lint 表与默认 Wasm 目标，也可以进入目录直接运行 `cargo build`。
 
-修改运行中节点的插件时，把整个目录复制到 `$ENCO_HOME/plugins/<name>/`，改好源码与配置，再经 `self_apply` 或 `enco apply` 一起登记。首次构建写出 README 生成区，区外文字保留。每次接纳写入 Enco 自己的链，不改主人的分支与索引。撤销一次登记对文件的修改时，用 `git restore --source=<提交>^ -- <路径>` 从它的父提交取回相关路径，再登记；未跟踪的新目录须自行删除。删除出厂插件的覆盖目录并登记，会恢复出厂代码。改名使用 `plugin_rename` 或 `enco plugin rename <name> <to>`，以保留身份。
+修改运行中节点的插件时，把整个目录复制到 `$ENCO_HOME/plugins/<name>/`，改好源码与配置，再经 `self_apply` 或 `enco apply` 一起登记。首次构建写出 README 生成区，区外文字保留。源码以目录自己的 `.gitignore` 为准，骨架与自带插件的 `.gitignore` 列出了 `target/` 与 `.DS_Store`，Enco 本身不另设默认规则；上级目录与 Git 的规则不参与。每次接纳把源码与配置存入 Enco 的内容库，经 `enco history` 查看，经 `enco rewind <登记编号>` 倒带文件后再登记。删除出厂插件的覆盖目录并登记，会恢复出厂代码。改名使用 `plugin_rename` 或 `enco plugin rename <name> <to>`，以保留身份。
 
-`enco plugin deploy <name> <path>` 供主人与评测运行器直接登记没有源码的制品，它在 Enco 的链上写一个树不变的提交，不推进源码意图。
+`enco plugin deploy <name> <path>` 供主人与评测运行器直接登记没有源码的制品，不推进源码意图。
 
 ## 配置
 
@@ -36,4 +36,4 @@ tinyfish = "TINYFISH_KEY"
 
 `config` 是插件配置；`secrets` 把凭证名映射到环境变量名，不填写密钥值。
 
-工具行为以当前代际的工具描述为准；已登记的设置、不可用原因和历史通过 `self_status` 查看。开发契约见 [CONTRACT.md](../sdk/wit/CONTRACT.md)，模型服务配置示例见 [deepseek-gemini.toml](../examples/deepseek-gemini.toml)。
+工具行为以当前代际的工具描述为准；当前三层状态与不可用原因通过 `self_status` 查看，登记历史通过 `self_history` 查看。开发契约见 [CONTRACT.md](../sdk/wit/CONTRACT.md)，模型服务配置示例见 [deepseek-gemini.toml](../examples/deepseek-gemini.toml)。

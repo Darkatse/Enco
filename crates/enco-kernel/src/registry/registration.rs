@@ -29,7 +29,11 @@ impl Expected {
 
 impl Registry {
     /// Check the same rename candidate before the host moves its source directory.
-    pub async fn check_rename(&self, name: &str, to: &str) -> Result<(), RegistryError> {
+    pub async fn check_rename(
+        &self,
+        name: &PluginName,
+        to: &PluginName,
+    ) -> Result<(), RegistryError> {
         let state = self.state.lock().await;
         let view = self.view();
         let identities = state.registered_identities(&self.deps.factory);
@@ -83,13 +87,11 @@ impl Registry {
             }
             let (loaded, generation) = match prepared.loaded_for(&usage.endpoint.plugin) {
                 Some(loaded) => (loaded, None),
-                None => {
-                    let (generation, loaded) = view
-                        .exports
-                        .loaded(&usage.endpoint.plugin)
-                        .map_err(|failure| rejected(&usage.endpoint.plugin, failure.message))?;
-                    (loaded, Some(generation))
-                }
+                None => match view.exports.loaded(&usage.endpoint.plugin) {
+                    Some(Ok((generation, loaded))) => (loaded, Some(generation)),
+                    Some(Err(_)) => return Err(rejected(admission::plugin_unavailable(usage))),
+                    None => return Err(rejected(admission::unknown_plugin(usage))),
+                },
             };
             let outcome = match probe::call(loaded, usage).await {
                 Ok(result) => {
@@ -101,13 +103,11 @@ impl Registry {
                 Err(failure) => Err(failure),
             };
             outcome.map_err(|failure| {
-                rejected(
-                    "config",
-                    format!(
-                        "{} (endpoint {}): {}: {}",
-                        usage.user, usage.endpoint.name, failure.code, failure.message
-                    ),
-                )
+                rejected(Cause::Use {
+                    user: usage.user.clone(),
+                    endpoint: usage.endpoint.name.clone(),
+                    failure,
+                })
             })?;
             prepared.probes.push(Probe {
                 user: usage.user.clone(),
@@ -117,15 +117,6 @@ impl Registry {
         }
         Ok(())
     }
-}
-
-fn settings(
-    document: &serde_json::Value,
-) -> Result<BTreeMap<String, PluginSettings>, RegistryError> {
-    document.get("plugin").map_or_else(
-        || Ok(BTreeMap::new()),
-        |value| serde_json::from_value(value.clone()).map_err(|error| rejected("plugin", error)),
-    )
 }
 
 fn empty_plugin(id: PluginId) -> PluginRecord {
