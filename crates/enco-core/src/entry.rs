@@ -251,20 +251,22 @@ impl AttemptResult {
         match self {
             Self::Failed { failure } => Some(failure.clone()),
             Self::Completed { message, stop, .. } => {
-                if purpose == AttemptPurpose::Reply && message.tool_calls().next().is_some() {
-                    return None;
-                }
-                if !message.joined_text().trim().is_empty() {
-                    return None;
-                }
-                let missing = match purpose {
-                    AttemptPurpose::Reply => "no text or tool calls",
-                    AttemptPurpose::Compaction => "an empty summary",
+                let empty = message.joined_text().trim().is_empty();
+                let problem = match purpose {
+                    // A cut-off summary would replace history it never finished covering.
+                    AttemptPurpose::Compaction if *stop == StopReason::MaxTokens => {
+                        "a summary cut off at max_output_tokens"
+                    }
+                    AttemptPurpose::Compaction if empty => "an empty summary",
+                    AttemptPurpose::Reply if empty && message.tool_calls().next().is_none() => {
+                        "no text or tool calls"
+                    }
+                    AttemptPurpose::Reply | AttemptPurpose::Compaction => return None,
                 };
                 Some(Failure {
                     code: crate::code::PROVIDER_BAD_RESPONSE.into(),
                     message: format!(
-                        "provider returned {missing}; stop: {}",
+                        "provider returned {problem}; stop: {}",
                         serde_json::json!(stop)
                     ),
                     retryable: false,

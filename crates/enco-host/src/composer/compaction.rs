@@ -68,7 +68,7 @@ impl Compaction {
                 (item.pos, chunk)
             })
             .collect();
-        let max_output_tokens = budget.max_output_tokens.get().min(COMPACTION_OUTPUT_TOKENS);
+        let max_output_tokens = budget.max_output_tokens.get();
         // Estimating parts separately never undercounts their concatenation.
         let overhead = estimate_tokens(COMPACTION_PROMPT)
             .saturating_add(estimate_tokens(&header))

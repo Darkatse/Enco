@@ -584,45 +584,61 @@ async fn safe_mode_keeps_factory_combinations_exhausted_and_context_is_sampled_o
 }
 
 #[tokio::test]
-async fn compaction_fallback_recomposes_for_its_own_budget() {
-    let dir = tempfile::tempdir().unwrap();
-    let replies = ScriptedProvider::new(reads(6).chain([reply("done")]).collect());
-    let primary = ScriptedProvider::new(vec![reply("")]);
-    let backup = ScriptedProvider::new((0..16).map(|_| reply("a concise summary")).collect());
-    let provider = Arc::new(Models(BTreeMap::from([
-        ("fixture", replies as Arc<dyn Provider>),
-        ("summary", primary.clone() as Arc<dyn Provider>),
-        ("backup-summary", backup.clone() as Arc<dyn Provider>),
-    ])));
-    let mut document = configuration();
-    narrow(&mut document["endpoint"]["reply"], 6000);
-    document["endpoint"]["compaction"]["model"] = "summary".into();
-    document["endpoint"]["backup"] = document["endpoint"]["compaction"].clone();
-    document["endpoint"]["backup"]["model"] = "backup-summary".into();
-    document["endpoint"]["backup"]["window_tokens"] = 4000.into();
-    document["endpoint"]["backup"]["max_output_tokens"] = 256.into();
-    document["profile"]["default"]["compaction"] = json!(["compaction", "backup"]);
-    let (kernel, _) = kernel_configured(dir.path(), provider, document, vec![], |_| {}).await;
-    write_history(dir.path());
-    let log = send(&kernel, "read and summarize").await;
-    assert!(matches!(
-        log.last().unwrap().body,
-        EntryBody::RunEnded {
-            end: RunEnd::Completed,
-            ..
+async fn an_empty_or_cut_off_summary_falls_back_to_the_next_compaction_budget() {
+    let cut_off = Completion {
+        stop: StopReason::MaxTokens,
+        ..reply("The owner asked to read the history and").unwrap()
+    };
+    for unusable in [reply(""), Ok(cut_off)] {
+        let dir = tempfile::tempdir().unwrap();
+        let replies = ScriptedProvider::new(reads(6).chain([reply("done")]).collect());
+        let primary = ScriptedProvider::new(vec![unusable]);
+        let backup = ScriptedProvider::new((0..16).map(|_| reply("a concise summary")).collect());
+        let provider = Arc::new(Models(BTreeMap::from([
+            ("fixture", replies as Arc<dyn Provider>),
+            ("summary", primary.clone() as Arc<dyn Provider>),
+            ("backup-summary", backup.clone() as Arc<dyn Provider>),
+        ])));
+        let mut document = configuration();
+        narrow(&mut document["endpoint"]["reply"], 6000);
+        document["endpoint"]["compaction"]["model"] = "summary".into();
+        document["endpoint"]["backup"] = document["endpoint"]["compaction"].clone();
+        document["endpoint"]["backup"]["model"] = "backup-summary".into();
+        document["endpoint"]["backup"]["window_tokens"] = 4000.into();
+        document["endpoint"]["backup"]["max_output_tokens"] = 256.into();
+        document["profile"]["default"]["compaction"] = json!(["compaction", "backup"]);
+        let (kernel, _) = kernel_configured(dir.path(), provider, document, vec![], |_| {}).await;
+        write_history(dir.path());
+        let log = send(&kernel, "read and summarize").await;
+        assert!(matches!(
+            log.last().unwrap().body,
+            EntryBody::RunEnded {
+                end: RunEnd::Completed,
+                ..
+            }
+        ));
+        // Each compaction model gets the output budget its endpoint declares.
+        {
+            let requests = primary.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].max_output_tokens, Some(8192));
         }
-    ));
-    assert_eq!(primary.requests.lock().unwrap().len(), 1);
-    {
-        let requests = backup.requests.lock().unwrap();
-        assert!(!requests.is_empty());
-        assert!(
-            requests
-                .iter()
-                .all(|request| request.max_output_tokens == Some(256) && request.tools.is_empty())
-        );
+        {
+            let requests = backup.requests.lock().unwrap();
+            assert!(!requests.is_empty());
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.max_output_tokens == Some(256)
+                        && request.tools.is_empty())
+            );
+        }
+        assert!(log.iter().all(|entry| !matches!(
+            &entry.body,
+            EntryBody::Compacted { summary, .. } if summary != "a concise summary"
+        )));
+        kernel.shutdown().await.unwrap();
     }
-    kernel.shutdown().await.unwrap();
 }
 
 struct ObservedComposer {
