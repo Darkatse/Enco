@@ -113,6 +113,8 @@ pub enum Need {
     Completion {
         /// Whether normal requests include tools.
         tools: bool,
+        /// Output budget that normal requests declare.
+        max_output_tokens: std::num::NonZeroU32,
     },
     /// Embeddings of the configured width.
     Embedding {

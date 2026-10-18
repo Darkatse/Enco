@@ -4,7 +4,10 @@ use crate::{ProviderRequest, Question, QuestionKind, limits::*};
 /// A new use is checked against its candidate code, before that code receives a generation ID.
 pub(super) async fn call(loaded: &Loaded, usage: &Use) -> Result<Probed, Failure> {
     match usage.need {
-        Need::Completion { tools } => {
+        Need::Completion {
+            tools,
+            max_output_tokens,
+        } => {
             let provider =
                 usage
                     .endpoint
@@ -19,7 +22,7 @@ pub(super) async fn call(loaded: &Loaded, usage: &Use) -> Result<Probed, Failure
                         } else {
                             vec![]
                         },
-                        max_output_tokens: Some(CONFIG_PROBE_MAX_TOKENS),
+                        max_output_tokens: Some(max_output_tokens.get()),
                     },
                 )
                 .await;

@@ -15,7 +15,6 @@ pub(crate) const RECURRENCE_CHECK: usize = 100;
 pub const TRIAL_CALLS: u32 = 5;
 
 pub(crate) const CONFIG_PROBE_PROMPT: &str = "Reply with the single word OK.";
-pub(crate) const CONFIG_PROBE_MAX_TOKENS: u32 = 16;
 
 pub(crate) const CONFIG_PROBE_QUESTION: &str = "Does the state ask for the word OK?";
 pub(crate) static CONFIG_PROBE_TOOL: std::sync::LazyLock<enco_core::ToolSpec> =

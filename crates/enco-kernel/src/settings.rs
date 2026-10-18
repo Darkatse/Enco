@@ -259,7 +259,10 @@ impl KernelSettings {
                     endpoints.iter().map(move |endpoint| Use {
                         user: format!("profile {name}.{purpose}"),
                         endpoint: endpoint.endpoint.clone(),
-                        need: Need::Completion { tools },
+                        need: Need::Completion {
+                            tools,
+                            max_output_tokens: endpoint.budget.max_output_tokens,
+                        },
                     })
                 })
             })

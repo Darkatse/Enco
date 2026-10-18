@@ -164,6 +164,7 @@ async fn applying_calls_only_the_changed_endpoint_once() {
     assert_eq!(requests[0].url.path(), "/chat/completions");
     let probe: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(probe["model"], "cheap");
+    assert_eq!(probe["max_tokens"], 8192);
     assert!(probe.get("tools").is_none());
     let again = apply(&daemon, &candidate).await.unwrap();
     assert!(again["registration"].is_null());
