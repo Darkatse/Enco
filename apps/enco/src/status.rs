@@ -98,6 +98,7 @@ impl Tool for StatusTool {
         match read(&application).await {
             Ok(status) => Outcome::Ok {
                 value: status.document().into(),
+                images: Vec::new(),
             },
             Err(error) => Outcome::Failed {
                 failure: Failure {

@@ -485,6 +485,7 @@ async fn restart_restores_registered_configuration_without_credentials() {
         .unwrap();
     client
         .send(Command::Send {
+            images: Vec::new(),
             session: "main".into(),
             text: "hello".into(),
             event_id: EventId::new(),

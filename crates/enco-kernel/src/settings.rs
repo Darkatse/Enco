@@ -1,10 +1,10 @@
 //! The kernel-owned configuration tables and their declared uses.
 use crate::{Budget, CompletionEndpoint, Endpoints, Need, Profile, Use};
-use enco_core::{DEFAULT_PROFILE, PluginName, ProviderSettings, Tz};
+use enco_core::{DEFAULT_PROFILE, Modality, PluginName, ProviderSettings, Tz};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     num::{NonZeroU32, NonZeroUsize},
 };
 
@@ -43,6 +43,8 @@ pub struct EndpointSpec {
     pub max_output_tokens: Option<NonZeroU32>,
     /// Embedding width, if applicable.
     pub dimensions: Option<NonZeroUsize>,
+    /// Non-text input capabilities declared by the owner.
+    pub accepts: BTreeSet<Modality>,
 }
 
 /// A configuration error attributed to the table that owns it.
@@ -102,6 +104,8 @@ struct RawEndpoint {
     window_tokens: Option<NonZeroU32>,
     max_output_tokens: Option<NonZeroU32>,
     dimensions: Option<NonZeroUsize>,
+    #[serde(default)]
+    accepts: BTreeSet<Modality>,
 }
 
 fn empty_options() -> Value {
@@ -166,6 +170,7 @@ impl KernelSettings {
                     window_tokens: raw.window_tokens,
                     max_output_tokens: raw.max_output_tokens,
                     dimensions: raw.dimensions,
+                    accepts: raw.accepts,
                 },
             );
         }
@@ -238,6 +243,7 @@ impl KernelSettings {
         }
         Ok(CompletionEndpoint {
             endpoint: spec.endpoint.clone(),
+            accepts: spec.accepts.clone(),
             budget: Budget {
                 context_tokens,
                 max_output_tokens,
@@ -251,17 +257,22 @@ impl KernelSettings {
             .iter()
             .flat_map(|(name, profile)| {
                 [
-                    ("reply", &profile.reply, true),
-                    ("compaction", &profile.compaction, false),
+                    ("reply", &profile.reply, true, true),
+                    ("compaction", &profile.compaction, false, false),
                 ]
                 .into_iter()
-                .flat_map(move |(purpose, endpoints, tools)| {
+                .flat_map(move |(purpose, endpoints, tools, media)| {
                     endpoints.iter().map(move |endpoint| Use {
                         user: format!("profile {name}.{purpose}"),
                         endpoint: endpoint.endpoint.clone(),
                         need: Need::Completion {
                             tools,
                             max_output_tokens: endpoint.budget.max_output_tokens,
+                            accepts: if media {
+                                endpoint.accepts.clone()
+                            } else {
+                                BTreeSet::new()
+                            },
                         },
                     })
                 })

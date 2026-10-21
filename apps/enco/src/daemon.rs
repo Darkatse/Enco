@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use enco_core::*;
-use enco_kernel::{Accepted, Kernel, KernelError, Scheduled};
+use enco_kernel::{Accepted, ImageError, Kernel, KernelError, Scheduled};
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
 use tokio::{
@@ -230,10 +230,38 @@ async fn process(
         Command::Send {
             session: name,
             text,
+            images,
             event_id,
         } => {
+            let mut stored = Vec::new();
+            for path in images {
+                if !path.is_absolute() {
+                    return Err(CommandError {
+                        code: "bad_request",
+                        message: format!("image path must be absolute: {}", path.display()),
+                    });
+                }
+                let bytes = tokio::fs::read(&path).await.map_err(|error| CommandError {
+                    code: "bad_request",
+                    message: format!("{}: {error}", path.display()),
+                })?;
+                stored.push(
+                    kernel
+                        .store_image(&bytes)
+                        .await
+                        .map_err(|error| CommandError {
+                            code: match error {
+                                ImageError::Unsupported | ImageError::TooLarge { .. } => {
+                                    "bad_request"
+                                }
+                                ImageError::Store(_) => "kernel",
+                            },
+                            message: format!("{}: {error}", path.display()),
+                        })?,
+                );
+            }
             let session = kernel.open_session(&name).await?;
-            let accepted = kernel.submit(session.id, event_id, text).await?;
+            let accepted = kernel.submit(session.id, event_id, text, stored).await?;
             let accepted = match accepted {
                 Accepted::New => "new",
                 Accepted::Duplicate => "duplicate",

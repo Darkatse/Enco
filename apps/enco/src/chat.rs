@@ -33,7 +33,7 @@ pub(crate) async fn chat(paths: &Paths, session: String) -> Result<()> {
                     "" => {},
                     _ => {
                         client.send(Command::Send {
-                            session: session.clone(), text: line, event_id: EventId::new(),
+                            session: session.clone(), text: line, images: Vec::new(), event_id: EventId::new(),
                         }).await?;
                     }
                 }

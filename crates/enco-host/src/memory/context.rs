@@ -23,10 +23,13 @@ impl ContextSource for MemoryContextSource {
             .await
             .map_err(|e| ContextError(e.to_string()))?;
         let mut omitted = vec![];
-        if query.new_input
-            && let Some(event) = &query.latest_event
-        {
-            let text = event.canonical_message().joined_text();
+        let text = query
+            .latest_event
+            .as_ref()
+            .filter(|_| query.new_input)
+            .map(|event| event.canonical_message().joined_text())
+            .filter(|text| !text.is_empty());
+        if let Some(text) = text {
             let recall = self
                 .memories
                 .recall(&text, MEMORY_RECALL_DEFAULT as usize, &query.cancel)

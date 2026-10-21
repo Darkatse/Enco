@@ -46,11 +46,23 @@ impl SessionActor {
             .map(|t| (t.id.clone(), t.spec.clone()))
             .collect();
         let previous_plan = self.previous_plan(&mut context.omitted).await?;
+        let transcript = crate::transcript::project(&self.entries);
+        let image_paths = transcript
+            .items
+            .iter()
+            .flat_map(|item| &item.message.parts)
+            .filter_map(|part| match part {
+                Part::Image(image) => {
+                    Some((image.content, self.deps.store.blob_path(&image.content)))
+                }
+                _ => None,
+            })
+            .collect();
         Ok(ComposeInput {
             now,
             timezone,
             session: self.session.clone(),
-            transcript: crate::transcript::project(&self.entries),
+            transcript,
             previous_plan,
             context,
             unavailable: snapshot.unavailable.clone(),
@@ -59,6 +71,7 @@ impl SessionActor {
             reply,
             compaction,
             compactions_left: limits::MAX_COMPACTIONS_PER_ROUND,
+            image_paths,
         })
     }
 

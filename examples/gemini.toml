@@ -1,0 +1,35 @@
+[owner]
+timezone = "America/New_York"
+
+[endpoint.chat]
+plugin = "gemini"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+model = "gemini-3.8-flash"
+accepts = ["image"]
+api_key_env = "GEMINI_KEY"
+
+window_tokens = 128000
+max_output_tokens = 8192
+
+[profile.default]
+reply = ["chat"]
+compaction = ["chat"]
+
+[endpoint.embed]
+plugin = "gemini"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+model = "gemini-embedding-2"
+dimensions = 768
+options = { outputDimensionality = 768 }
+api_key_env = "GEMINI_KEY"
+
+[memory]
+embedding = "embed"
+# relevance = "relevance"
+
+# Optional relevance filtering for automatically recalled memories.
+# [endpoint.relevance]
+# plugin = "typesafe"
+# base_url = "https://api.typesafe.ai/v1"
+# model = "jev-latest"
+# api_key_env = "TYPESAFE_API_KEY"

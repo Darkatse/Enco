@@ -107,11 +107,13 @@ cargo run -p enco -- chat      # 在另一个终端中
 
 `enco init` 创建插件目录，并把宿主自带的 SDK 写到 `sdk/`。插件源码放在 `plugins/<名字>/` 下，也可以用 `enco plugin scaffold <名字>` 创建工具插件。每个插件是独立的 Cargo 工作区，以 `../../sdk` 为路径依赖；目录自己的 `.gitignore` 决定哪些文件计入源码，不需要 Git。
 
-改好源码与 `config.toml` 后，执行 `enco apply --reason "说明修改意图"`，一起构建并登记发生变化的意图。主人可以省略理由，Agent 的 `self_apply` 必须填写。`enco status` 与 `self_status` 按单元并排展示运行中、已登记与工作区的事实；脚本使用 `enco status --json`。`enco rollback` 以一次登记为单位机械回退仍在生效的部分，不需要 Cargo 或模型调用。重启恢复已登记的状态。数据库模式版本 9 需要新库。
+改好源码与 `config.toml` 后，执行 `enco apply --reason "说明修改意图"`，一起构建并登记发生变化的意图。主人可以省略理由，Agent 的 `self_apply` 必须填写。`enco status` 与 `self_status` 按单元并排展示运行中、已登记与工作区的事实；脚本使用 `enco status --json`。`enco rollback` 以一次登记为单位机械回退仍在生效的部分，不需要 Cargo 或模型调用。重启恢复已登记的状态。数据库模式版本 10 需要新库。
 
 已接纳的源码与配置存在 Enco 自己的内容库中。`enco history` 列出登记，`enco history --to <登记编号>` 查看一次修改，`enco history --to workspace` 查看未登记的修改。撤销文件意图时，用 `enco rewind <登记编号> [config.toml | plugins/<名字> ...]` 倒带，核对文件后再 apply。不写路径时，只选择那次登记之后变过的单元，并拒绝覆盖未登记的修改；显式路径表示允许覆盖这些单元。被忽略的文件保留，目录中还有这些文件时拒绝删除目录。插件名字保持现在的名字。Agent 经 `self_history` 与 `self_rewind` 使用同一入口。
 
-常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`。启用 Telegram 时，取消配置示例中 `[telegram]` 段的注释，填写主人的 user ID 并导出 token 环境变量。`/session` 切换 Session，`/cancel` 取消当前 Run；`enco status` 列出渠道状态以及最近失败或未知的投递。
+补全 endpoint 默认只接受文本；在 endpoint 中加上 `accepts = ["image"]` 即可发送图片。`enco send --image <path>` 接受 PNG、JPEG 和 WebP，可重复，也可不附文字；Agent 通过 `fs_read` 读取这些图片。单张上限 10 MB，每次请求图片合计上限 32 MB。
+
+常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`。启用 Telegram 时，取消配置示例中 `[telegram]` 段的注释，填写主人的 user ID 并导出 token 环境变量。照片与图片文件连同 caption 进入同一条消息；不支持的附件会如实告知 Agent。`/session` 切换 Session，`/cancel` 取消当前 Run；`enco status` 列出渠道状态以及最近失败或未知的投递。
 
 设置 `ENCO_HOME` 可以使用 `~/.enco` 以外的目录。提交改动前请运行 `cargo xtask check`。
 

@@ -26,7 +26,7 @@ pub(crate) fn request(request: ProviderRequest) -> wire::Request {
     }
 }
 
-fn message(message: Message) -> wit::Message {
+fn message(message: Message<ImageData>) -> wit::Message {
     let role = match message.role {
         Role::System => wit::Role::System,
         Role::User => wit::Role::User,
@@ -38,6 +38,14 @@ fn message(message: Message) -> wit::Message {
         .into_iter()
         .map(|part| match part {
             Part::Text { text } => wit::Part::Text(text),
+            Part::Image(image) => wit::Part::Image(wit::Image {
+                format: match image.format {
+                    ImageFormat::Png => wit::ImageFormat::Png,
+                    ImageFormat::Jpeg => wit::ImageFormat::Jpeg,
+                    ImageFormat::Webp => wit::ImageFormat::Webp,
+                },
+                data: image.data,
+            }),
             Part::ToolCall(call) => wit::Part::ToolCall(wit::ToolCall {
                 id: call.provider_id,
                 name: call.name,
@@ -84,6 +92,9 @@ pub(crate) fn completion(completion: wire::Completion) -> Result<Completion, Fai
                 wit::Part::Extension(extension) => Part::Extension(Extension {
                     data: serde_json::from_str(&extension.data).map_err(|e| bad(e.to_string()))?,
                 }),
+                wit::Part::Image(_) => {
+                    return Err(bad("assistant completion cannot contain a canonical image"));
+                }
                 wit::Part::ToolResult(_) => {
                     return Err(bad("assistant completion cannot contain a tool result"));
                 }

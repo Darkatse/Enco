@@ -3,21 +3,29 @@ use crate::{ProviderRequest, Question, QuestionKind, limits::*};
 
 /// A new use is checked against its candidate code, before that code receives a generation ID.
 pub(super) async fn call(loaded: &Loaded, usage: &Use) -> Result<Probed, Failure> {
-    match usage.need {
+    match &usage.need {
         Need::Completion {
             tools,
             max_output_tokens,
+            accepts,
         } => {
             let provider =
                 usage
                     .endpoint
                     .export(loaded, loaded.completion.as_ref(), "completion")?;
+            let mut message = Message::text(Role::User, CONFIG_PROBE_PROMPT);
+            if accepts.contains(&Modality::Image) {
+                message.parts.push(Part::Image(ImageData {
+                    format: ImageFormat::Png,
+                    data: CONFIG_PROBE_IMAGE.to_vec(),
+                }));
+            }
             let result = provider
                 .complete(
                     &usage.endpoint.settings,
                     ProviderRequest {
-                        messages: vec![Message::text(Role::User, CONFIG_PROBE_PROMPT)],
-                        tools: if tools {
+                        messages: vec![message],
+                        tools: if *tools {
                             vec![CONFIG_PROBE_TOOL.clone()]
                         } else {
                             vec![]

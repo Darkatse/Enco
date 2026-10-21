@@ -34,6 +34,8 @@ pub enum Outcome {
     Ok {
         /// Result returned by the tool.
         value: Value,
+        /// Image bytes handed to the kernel's shared ingestion boundary at settlement.
+        images: Vec<Vec<u8>>,
     },
     /// The operation failed with known effects, including cases that never began execution.
     Failed {

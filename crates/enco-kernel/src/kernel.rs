@@ -202,6 +202,7 @@ impl Kernel {
         session: SessionId,
         event_id: EventId,
         text: String,
+        images: Vec<Image>,
     ) -> Result<Accepted, KernelError> {
         let accepted = self
             .accept(
@@ -209,7 +210,11 @@ impl Kernel {
                     id: event_id,
                     session,
                     source: EventSource::Cli,
-                    body: EventBody::UserMessage { text },
+                    body: EventBody::UserMessage {
+                        text,
+                        images,
+                        unviewable: vec![],
+                    },
                     received_at: self.deps.clock.now(),
                 }],
                 None,

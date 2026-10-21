@@ -41,16 +41,48 @@ pub struct Input {
     /// Adapter-provided label retained for diagnostics, not interpreted by the connection.
     pub conversation_type: String,
     pub direct: bool,
-    /// Unsupported content retains its metadata without producing an action.
-    pub action: Option<Action>,
+    pub action: Option<Action<Attachment>>,
 }
 
 /// Meaning interpreted by the host, independent of protocol command syntax.
-pub enum Action {
-    Message(String),
+pub enum Action<T = Attachment> {
+    Message(MessageContent<T>),
     Sessions,
     SelectSession(String),
     Cancel,
+}
+
+pub struct Attachment {
+    pub what: String,
+    pub locator: String,
+}
+
+#[derive(Debug)]
+pub enum AttachmentContent {
+    Image(Vec<u8>),
+    Unavailable(String),
+}
+
+pub struct MessageContent<T> {
+    pub text: String,
+    pub images: Vec<T>,
+    pub unviewable: Vec<Unviewable>,
+}
+
+impl<T> From<String> for MessageContent<T> {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            images: Vec::new(),
+            unviewable: Vec::new(),
+        }
+    }
+}
+
+impl<T> From<&str> for MessageContent<T> {
+    fn from(text: &str) -> Self {
+        text.to_owned().into()
+    }
 }
 
 /// Protocol evidence used by the common retry and settlement path.
@@ -76,6 +108,8 @@ pub trait Adapter: Send + Sync {
     /// Read replayable updates using committed state; cancellation has no external effect.
     /// Each returned update carries the protocol state after accepting that update.
     async fn poll(&self, protocol: Value) -> Result<Vec<Update>, Fault>;
+    /// Fetch a protocol-owned attachment after authorization; reads have no external effect.
+    async fn fetch(&self, locator: &str) -> Result<AttachmentContent, Fault>;
     /// Split a nonempty logical message into nonempty protocol-sized parts, preserving all text.
     fn split(&self, text: &str) -> Vec<String>;
     /// Perform one bounded attempt. Never retry internally or drop an in-flight side effect.

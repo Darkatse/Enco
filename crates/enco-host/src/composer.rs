@@ -1,4 +1,5 @@
 mod compaction;
+mod images;
 mod recovery;
 
 use crate::limits::*;
@@ -52,6 +53,7 @@ impl Composer for FactoryComposer {
         let (system, sources) = self.system(input, budget, &pinned, &mut omitted);
         let system_tokens = estimate_tokens(&system);
         let history = annotated_history(input);
+        let selected_images = images::selected(input, &mut omitted);
         let items = reply_items(
             input,
             PlanItem::Message {
@@ -59,6 +61,7 @@ impl Composer for FactoryComposer {
                 sources,
             },
             &history,
+            &selected_images,
             &mut memory_budget,
             &mut omitted,
         );
@@ -124,6 +127,16 @@ impl FactoryComposer {
         ));
         let mut sources = Vec::new();
         recovery::append(&mut text, input);
+        if !input.reply.accepts.contains(&Modality::Image)
+            && input.transcript.items.iter().any(|item| {
+                item.message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, Part::Image(_)))
+            })
+        {
+            text.push_str("\n\nThis reply model cannot view images. Their descriptions include file paths; use tools to work with those files when needed.");
+        }
         append_instructions(
             &mut text,
             &mut sources,
@@ -148,23 +161,27 @@ fn reply_items(
     input: &ComposeInput,
     head: PlanItem,
     history: &[(&TranscriptItem, String)],
+    selected_images: &std::collections::BTreeSet<LogPos>,
     memory_budget: &mut u32,
     omitted: &mut Vec<Omission>,
 ) -> Vec<PlanItem> {
     let previous = input.previous_plan.as_ref().filter(|plan| {
         plan.items.first() == Some(&head)
             && plan.items.iter().all(|item| match item {
-                PlanItem::Log { pos } => input
-                    .transcript
-                    .items
-                    .binary_search_by_key(pos, |item| item.pos)
-                    .is_ok(),
+                PlanItem::Log { pos, images } => {
+                    *images == selected_images.contains(pos)
+                        && input
+                            .transcript
+                            .items
+                            .binary_search_by_key(pos, |item| item.pos)
+                            .is_ok()
+                }
                 PlanItem::Message { .. } => true,
             })
     });
     let mut items = previous.map_or_else(|| vec![head], |plan| plan.items.clone());
     let after = items.iter().rev().find_map(|item| match item {
-        PlanItem::Log { pos } => Some(*pos),
+        PlanItem::Log { pos, .. } => Some(*pos),
         _ => None,
     });
     let latest_input = input
@@ -209,7 +226,10 @@ fn reply_items(
                 sources,
             });
         }
-        items.push(PlanItem::Log { pos: item.pos });
+        items.push(PlanItem::Log {
+            pos: item.pos,
+            images: selected_images.contains(&item.pos),
+        });
     }
     items
 }
@@ -239,15 +259,17 @@ fn history_sizes(
             PlanItem::Message { message, .. } => {
                 pending = pending.saturating_add(encoded_tokens(message)?)
             }
-            PlanItem::Log { pos } => {
+            PlanItem::Log { pos, images } => {
                 let index = transcript
                     .items
                     .binary_search_by_key(pos, |item| item.pos)
                     .map_err(|_| {
                         ComposeError::Invalid(format!("Log position {pos:?} is not visible"))
                     })?;
-                let size =
-                    pending.saturating_add(encoded_tokens(&transcript.items[index].message)?);
+                let size = pending.saturating_add(images::message_tokens(
+                    &transcript.items[index].message,
+                    *images,
+                )?);
                 sizes.push((*pos, size));
                 pending = 0;
             }
@@ -289,6 +311,7 @@ fn annotated_history(input: &ComposeInput) -> Vec<(&TranscriptItem, String)> {
                 for part in [
                     previous_end.and_then(work_stopped),
                     producer(&event.body, input.timezone),
+                    images::attachments(input, &event.body),
                 ]
                 .into_iter()
                 .flatten()

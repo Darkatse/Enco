@@ -24,12 +24,16 @@ pub fn run(metadata: &[Metadata]) -> Result<()> {
             documentation.push(command);
         }
     }
+    let enco = metadata[0].target_directory.join("debug/enco");
+    // Each test build writes `enco` anew, and macOS spends about two seconds on the first run
+    // of a new executable; paying it here keeps it out of every test's deadline.
+    super::run(enco.as_str(), &["--version"])?;
     // Interleave workspaces so the evaluator's deliberate timeout starts alongside application tests.
     let mut commands = Vec::new();
     while groups.iter().any(|group| group.len() != 0) {
         for group in &mut groups {
             if let Some((name, mut command)) = group.next() {
-                command.env("ENCO_BIN", metadata[0].target_directory.join("debug/enco"));
+                command.env("ENCO_BIN", &enco);
                 // With up to five harnesses, five test threads kept builds and cancellation responsive.
                 if std::env::var_os("RUST_TEST_THREADS").is_none() {
                     command.env("RUST_TEST_THREADS", "5");

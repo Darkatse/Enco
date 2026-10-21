@@ -62,7 +62,7 @@ impl Compaction {
                                 clip(&result.content)
                             ));
                         }
-                        Part::Extension(_) => {}
+                        Part::Extension(_) | Part::Image(_) => {}
                     }
                 }
                 (item.pos, chunk)

@@ -3,9 +3,10 @@ use crate::bindings;
 pub use crate::http::{apply_options, post};
 pub use bindings::enco::plugin::{host, types};
 pub use bindings::exports::enco::plugin::completion::{Completion, Request, StopReason, Usage};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 pub use types::Settings;
 use types::{Failure, Message, Part, Role};
+mod messages;
 
 pub fn failure(code: &str, message: impl Into<String>, retryable: bool) -> Failure {
     Failure {
@@ -17,6 +18,10 @@ pub fn failure(code: &str, message: impl Into<String>, retryable: bool) -> Failu
 
 pub fn bad(message: impl Into<String>) -> Failure {
     failure("provider.bad_response", message, false)
+}
+
+pub fn bad_request(message: impl Into<String>) -> Failure {
+    failure("provider.bad_request", message, false)
 }
 
 /// Providers currently accept only the empty configuration; service parameters belong to callers.
@@ -35,11 +40,7 @@ pub fn empty_config(config: &str) -> Result<(), Failure> {
 }
 
 pub async fn complete(settings: Settings, request: Request) -> Result<Completion, Failure> {
-    let messages = request
-        .messages
-        .iter()
-        .map(message)
-        .collect::<Result<Vec<_>, _>>()?;
+    let messages = messages::encode(&request.messages)?;
     let mut body = json!({ "model": settings.model, "messages": messages });
     if !request.tools.is_empty() {
         let tools = request
@@ -47,7 +48,7 @@ pub async fn complete(settings: Settings, request: Request) -> Result<Completion
             .iter()
             .map(|tool| {
                 let parameters = serde_json::from_str::<Value>(&tool.input_schema)
-                    .map_err(|e| failure("provider.bad_request", e.to_string(), false))?;
+                    .map_err(|e| bad_request(e.to_string()))?;
                 Ok(json!({
                     "type": "function",
                     "function": {
@@ -136,63 +137,6 @@ pub async fn embed(settings: Settings, inputs: Vec<String>) -> Result<Vec<Vec<f3
     Ok(embeddings.into_iter().map(|(_, vector)| vector).collect())
 }
 
-fn message(message: &Message) -> Result<Value, Failure> {
-    let text = message
-        .parts
-        .iter()
-        .filter_map(|p| {
-            if let Part::Text(t) = p {
-                Some(t.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(match message.role {
-        Role::System => json!({ "role": "system", "content": text }),
-        Role::User => json!({ "role": "user", "content": text }),
-        Role::Tool => {
-            let [Part::ToolResult(result)] = message.parts.as_slice() else {
-                return Err(failure(
-                    "provider.bad_request",
-                    "tool message must have one result",
-                    false,
-                ));
-            };
-            json!({ "role": "tool", "tool_call_id": result.call_id, "content": result.content })
-        }
-        Role::Assistant => {
-            let calls: Vec<_> = message
-                .parts
-                .iter()
-                .filter_map(|part| match part {
-                    Part::ToolCall(call) => Some(wire_call(call)),
-                    _ => None,
-                })
-                .collect();
-            // Chat Completions allows a null content only beside tool calls.
-            let content = if text.is_empty() && !calls.is_empty() {
-                Value::Null
-            } else {
-                json!(text)
-            };
-            let mut wire = json!({ "role": "assistant", "content": content });
-            if !calls.is_empty() {
-                wire["tool_calls"] = json!(calls);
-            }
-            for part in &message.parts {
-                if let Part::Extension(extension) = part {
-                    let rest = serde_json::from_str(&extension.data)
-                        .map_err(|e| failure("provider.bad_request", e.to_string(), false))?;
-                    restore(&mut wire, rest)?;
-                }
-            }
-            wire
-        }
-    })
-}
-
 fn wire_call(call: &types::ToolCall) -> Value {
     json!({
         "id": call.id,
@@ -201,51 +145,20 @@ fn wire_call(call: &types::ToolCall) -> Value {
     })
 }
 
-/// What `wire` carries beyond `canonical`, in the shape of `wire`, or null when nothing.
-fn residue(wire: Value, canonical: &Value) -> Value {
+/// What `wire` carries beyond `canonical`, in the shape of `wire`; `http::merge` puts it back.
+fn residue(wire: Value, canonical: &Value) -> Map<String, Value> {
     let (Value::Object(mut wire), Value::Object(canonical)) = (wire, canonical) else {
-        return Value::Null;
+        return Map::new();
     };
     for (key, canonical) in canonical {
         if let Some(value) = wire.remove(key) {
             let rest = residue(value, canonical);
-            if !rest.is_null() {
-                wire.insert(key.clone(), rest);
+            if !rest.is_empty() {
+                wire.insert(key.clone(), Value::Object(rest));
             }
         }
     }
-    if wire.is_empty() {
-        Value::Null
-    } else {
-        Value::Object(wire)
-    }
-}
-
-/// Puts back what `residue` took from the wire; a residue never replaces a canonical value.
-fn restore(canonical: &mut Value, rest: Value) -> Result<(), Failure> {
-    match (canonical, rest) {
-        (_, Value::Null) => Ok(()),
-        (Value::Object(canonical), Value::Object(rest)) => {
-            for (key, value) in rest {
-                match canonical.get_mut(&key) {
-                    Some(slot) => restore(slot, value)?,
-                    None => {
-                        canonical.insert(key, value);
-                    }
-                }
-            }
-            Ok(())
-        }
-        (Value::Array(canonical), Value::Array(rest)) if canonical.len() == rest.len() => canonical
-            .iter_mut()
-            .zip(rest)
-            .try_for_each(|(canonical, rest)| restore(canonical, rest)),
-        _ => Err(failure(
-            "provider.bad_request",
-            "extension conflicts with canonical message fields",
-            false,
-        )),
-    }
+    wire
 }
 
 fn parse_completion(response: Value) -> Result<Completion, Failure> {
@@ -303,8 +216,9 @@ fn parse_message(value: Option<&Value>) -> Result<Message, Failure> {
         rests.push(residue(call, &wire_call(&parsed)));
         parts.push(Part::ToolCall(parsed));
     }
-    // Fields a service attaches to a call, such as thought signatures, go back with that call.
-    if rests.iter().any(|rest| !rest.is_null()) {
+    // `merge` aligns calls by position, so `{}` holds the place of a call with nothing extra.
+    if rests.iter().any(|rest| !rest.is_empty()) {
+        let rests = rests.into_iter().map(Value::Object).collect();
         wire.insert("tool_calls".into(), Value::Array(rests));
     }
     if !wire.is_empty() {

@@ -18,6 +18,7 @@ use support::*;
 async fn run(client: &mut client::Client, session: &str, text: &str) -> Vec<Entry> {
     client
         .send(Command::Send {
+            images: Vec::new(),
             session: session.into(),
             text: text.into(),
             event_id: EventId::new(),

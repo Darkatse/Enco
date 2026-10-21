@@ -36,6 +36,8 @@ pub struct ComposeInput {
     pub compaction: Option<Budget>,
     /// Compactions this Round still allows; at zero the composer must return a plan or fail.
     pub compactions_left: u32,
+    /// Local blob addresses supplied by the store for image annotations.
+    pub image_paths: std::collections::HashMap<ContentHash, std::path::PathBuf>,
 }
 
 /// The reason for the Round's fixed recovery mode.
@@ -52,6 +54,8 @@ pub enum SafeMode {
 pub struct ReplyTarget {
     /// Limits of the selected model.
     pub budget: Budget,
+    /// Non-text inputs accepted by the selected reply endpoint.
+    pub accepts: std::collections::BTreeSet<Modality>,
     /// Candidates before it that are unavailable or exhausted in this Run, in configured order.
     pub skipped: Vec<EndpointFailure>,
 }

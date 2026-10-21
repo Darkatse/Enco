@@ -118,7 +118,10 @@ async fn collect_output(
                      Redirect their output to a file (cmd > out.log 2>&1 &)."
                 );
             }
-            return Ok(Outcome::Ok { value });
+            return Ok(Outcome::Ok {
+                value,
+                images: vec![],
+            });
         }
         tokio::select! {
             biased;

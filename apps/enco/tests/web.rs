@@ -75,6 +75,7 @@ async fn send(daemon: &Daemon) -> Vec<Entry> {
         .unwrap();
     client
         .request(Command::Send {
+            images: Vec::new(),
             session: "main".into(),
             event_id: EventId::new(),
             text: "read the news".into(),

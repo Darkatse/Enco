@@ -71,6 +71,7 @@ impl Tools for Echo {
             Outcome::Failed { failure: fault() }
         } else {
             Outcome::Ok {
+                images: Vec::new(),
                 value: self.label.clone().into(),
             }
         }
@@ -97,7 +98,7 @@ async fn send(kernel: &Kernel) -> Vec<Entry> {
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "work".into())
+        .submit(session.id, EventId::new(), "work".into(), Vec::new())
         .await
         .unwrap();
     finish(&mut rx).await
@@ -335,6 +336,7 @@ impl Tools for Ordered {
         }
         self.events.lock().unwrap().push(format!("end:{label}"));
         Outcome::Ok {
+            images: Vec::new(),
             value: label.into(),
         }
     }
@@ -400,6 +402,7 @@ impl Tools for Cancelling {
         self.cancelled.wait().await;
         self.finish.wait().await;
         Outcome::Ok {
+            images: Vec::new(),
             value: json!("quiescent"),
         }
     }
@@ -422,7 +425,7 @@ async fn shutdown_signals_the_whole_batch_and_waits_for_every_settlement() {
     let kernel = tool_kernel(root.path(), loaded).await;
     let session = kernel.open_session("main").await.unwrap();
     kernel
-        .submit(session.id, EventId::new(), "work".into())
+        .submit(session.id, EventId::new(), "work".into(), Vec::new())
         .await
         .unwrap();
     waiting.entered.wait().await;

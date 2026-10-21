@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) fn render_text(outcome: &Outcome) -> String {
     match outcome {
-        Outcome::Ok { value } => match value {
+        Outcome::Ok { value, .. } => match value {
             serde_json::Value::String(s) => s.clone(),
             _ => format!("{value:#}"),
         },
@@ -17,7 +17,27 @@ pub(crate) fn render_text(outcome: &Outcome) -> String {
 }
 
 impl SessionActor {
-    async fn settle(&mut self, call: CallId, outcome: Outcome) -> Result<(), StoreError> {
+    async fn settle(&mut self, call: CallId, mut outcome: Outcome) -> Result<(), StoreError> {
+        let mut stored = Vec::new();
+        if let Outcome::Ok { images, .. } = &outcome {
+            for bytes in images {
+                match crate::image::store(self.deps.store.as_ref(), bytes).await {
+                    Ok(image) => stored.push(image),
+                    Err(crate::ImageError::Store(error)) => return Err(error),
+                    Err(error) => {
+                        outcome = Outcome::Failed {
+                            failure: Failure {
+                                code: code::TOOL_FAILED.into(),
+                                message: error.to_string(),
+                                retryable: false,
+                            },
+                        };
+                        stored.clear();
+                        break;
+                    }
+                }
+            }
+        }
         let mut content = render_text(&outcome);
         let mut full = None;
         if content.len() > limits::TOOL_RESULT_INLINE_BYTES {
@@ -31,11 +51,20 @@ impl SessionActor {
             ));
             full = Some(hash);
         }
+        for image in &stored {
+            content.push_str(&format!(
+                "\n[image: {}, {} bytes; file: {}]",
+                image.format.mime(),
+                image.size,
+                self.deps.store.blob_path(&image.content).display()
+            ));
+        }
         self.commit(vec![EntryBody::ToolCallSettled {
             call,
             outcome: Settlement::from(&outcome),
             content,
             full,
+            images: stored,
         }])
         .await
     }

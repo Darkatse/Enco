@@ -122,6 +122,8 @@ impl Connection {
         let (batches, mut incoming) = mpsc::channel(1);
         self.readers.spawn(transport::poll(
             self.adapter.clone(),
+            self.kernel.clone(),
+            self.owner_id.clone(),
             self.state.protocol.clone(),
             batches,
             self.stop.clone(),
@@ -237,28 +239,16 @@ impl Connection {
         Ok(())
     }
 
-    async fn accept(&mut self, update: Update) -> Result<(), ChannelError> {
+    async fn accept(&mut self, update: transport::Prepared) -> Result<(), ChannelError> {
         let mut state = self.state.clone();
         state.protocol = update.protocol;
-        let Some(input) = update.input else {
+        let Some(transport::OwnerInput {
+            conversation: target,
+            action,
+        }) = update.owner
+        else {
             return self.commit(state, &[], None).await;
         };
-        let (sender, action) = match (input.sender, input.action) {
-            (Some(sender), Some(action)) if input.direct && sender == self.owner_id => {
-                (sender, action)
-            }
-            (sender, _) => {
-                tracing::info!(
-                    channel = %self.identity.channel,
-                    sender_id = sender.as_deref().unwrap_or("unknown"),
-                    chat_id = %input.conversation,
-                    chat_type = %input.conversation_type,
-                    "channel input ignored"
-                );
-                return self.commit(state, &[], None).await;
-            }
-        };
-        let target = input.conversation;
         let selected = match &action {
             Action::SelectSession(name) => Some(self.kernel.open_session(name).await?.id),
             Action::Message(_) if !state.chats.contains_key(&target) => {
@@ -269,7 +259,7 @@ impl Connection {
         if let Some(session) = selected {
             state.chats.insert(target.clone(), session);
         }
-        let events = if let Action::Message(text) = &action {
+        let events = if let Action::Message(message) = &action {
             let session = state.chats[&target];
             state.outbound.entry(session).or_default();
             vec![Event {
@@ -279,9 +269,13 @@ impl Connection {
                     channel: self.identity.channel.clone(),
                     account: self.identity.account.clone(),
                     conversation: target.clone(),
-                    sender,
+                    sender: self.owner_id.clone(),
                 },
-                body: EventBody::UserMessage { text: text.clone() },
+                body: EventBody::UserMessage {
+                    text: message.text.clone(),
+                    images: message.images.clone(),
+                    unviewable: message.unviewable.clone(),
+                },
                 received_at: self.clock.now(),
             }]
         } else {

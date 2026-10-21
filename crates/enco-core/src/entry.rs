@@ -1,7 +1,7 @@
 use crate::{
     AttemptId, CallId, CapabilityId, CodeRef, ContentHash, DateTime, Effect, Event, Failure,
-    GenerationId, LogPos, Message, Part, Role, RoundId, RunId, Settlement, ToolCall, ToolResult,
-    Utc,
+    GenerationId, Image, LogPos, Message, Part, Role, RoundId, RunId, Settlement, ToolCall,
+    ToolResult, Utc,
 };
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +86,8 @@ pub enum EntryBody {
         content: String,
         /// Address of the complete result when its inline text was truncated.
         full: Option<ContentHash>,
+        /// Images stored by the settlement before this entry was committed.
+        images: Vec<Image>,
     },
     /// All proposed calls have been settled and the Round has ended.
     RoundEnded {
@@ -230,15 +232,18 @@ impl EntryBody {
                 call: id,
                 outcome,
                 content,
+                images,
                 ..
             } => call.map(|call| Message {
                 role: Role::Tool,
-                parts: vec![Part::ToolResult(ToolResult {
+                parts: std::iter::once(Part::ToolResult(ToolResult {
                     call: *id,
                     provider_id: call.provider_id.clone(),
                     content: content.clone(),
                     is_error: !matches!(outcome, Settlement::Ok),
-                })],
+                }))
+                .chain(images.iter().cloned().map(Part::Image))
+                .collect(),
             }),
             _ => None,
         }

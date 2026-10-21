@@ -61,7 +61,7 @@ async fn edits_require_unique_matches_and_reads_observe_line_ranges() {
     )
     .await;
     assert!(matches!(replaced, Outcome::Ok { .. }));
-    let Outcome::Ok { value } = call(
+    let Outcome::Ok { value, .. } = call(
         &*read,
         serde_json::json!({ "path": "note", "offset": 3, "limit": 1 }),
     )
@@ -79,7 +79,7 @@ async fn edits_require_unique_matches_and_reads_observe_line_ranges() {
 async fn shell_drains_both_pipes_preserves_exit_status_and_reports_timeout() {
     let dir = tempfile::tempdir().unwrap();
     let shell = find(&native_tools(dir.path().to_owned()), "shell_exec");
-    let Outcome::Ok { value } = call(
+    let Outcome::Ok { value, .. } = call(
         &*shell,
         serde_json::json!({ "command": "printf out; printf err >&2; exit 7" }),
     )
@@ -125,7 +125,7 @@ async fn background_command_returns_collected_output_after_shell_exit() {
         .args(["-TERM", pid.trim()])
         .status()
         .unwrap();
-    let Outcome::Ok { value } = result.expect("shell waited for the inherited pipes") else {
+    let Outcome::Ok { value, .. } = result.expect("shell waited for the inherited pipes") else {
         panic!("the shell exited successfully");
     };
     assert_eq!(value["exit_code"], 0);
@@ -185,7 +185,7 @@ async fn writes_through_symlinks_preserve_the_link_and_update_its_target() {
             "edited",
         ),
     ] {
-        let Outcome::Ok { value } = call(&*find(&tools, name), args).await else {
+        let Outcome::Ok { value, .. } = call(&*find(&tools, name), args).await else {
             panic!("write through symlink failed");
         };
         assert_eq!(value["path"], serde_json::json!(actual_path));
@@ -196,4 +196,28 @@ async fn writes_through_symlinks_preserve_the_link_and_update_its_target() {
         );
         assert_eq!(std::fs::read_to_string(&target).unwrap(), expected);
     }
+}
+
+#[tokio::test]
+async fn file_reads_return_images_and_reject_other_binary_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let read = find(&native_tools(dir.path().to_owned()), "fs_read");
+    let image = b"\x89PNG\r\n\x1a\nimage bytes";
+    std::fs::write(dir.path().join("image"), image).unwrap();
+    let Outcome::Ok { value, images } = call(&*read, serde_json::json!({ "path": "image" })).await
+    else {
+        panic!("image read failed");
+    };
+    assert_eq!(images, vec![image.to_vec()]);
+    assert_eq!(value["path"], serde_json::json!(dir.path().join("image")));
+    std::fs::write(dir.path().join("binary"), [0xff, 0xfe]).unwrap();
+    let Outcome::Failed { failure } = call(&*read, serde_json::json!({ "path": "binary" })).await
+    else {
+        panic!("unsupported binary content was accepted");
+    };
+    assert!(
+        failure
+            .message
+            .contains("UTF-8 text or a PNG, JPEG or WebP image")
+    );
 }

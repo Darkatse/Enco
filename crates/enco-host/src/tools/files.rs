@@ -35,8 +35,9 @@ impl Tool for FileTool {
             Kind::Read => (
                 "fs_read",
                 format!(
-                    "Read a UTF-8 file by line range. Relative paths use the workspace; absolute paths \
-                     are allowed. offset starts at 1 and limit defaults to {FILE_READ_DEFAULT_LINES}. \
+                    "Read a PNG, JPEG or WebP image, or a UTF-8 file by line range. \
+                     Relative paths use the workspace; absolute paths are allowed. For text, offset \
+                     starts at 1 and limit defaults to {FILE_READ_DEFAULT_LINES}. \
                      Results may end before limit to fit the result budget; the header gives the \
                      offset to continue reading. A single line longer than the budget comes back \
                      truncated; read it by byte range in the shell, for example with tail -c and head -c."
@@ -96,7 +97,7 @@ impl Tool for FileTool {
     async fn call(&self, ctx: CallContext, args: Map<String, Value>) -> Outcome {
         let result = self.execute(&args, &ctx).await;
         match result {
-            Ok(value) => Outcome::Ok { value },
+            Ok(outcome) => outcome,
             Err(failure) => Outcome::Failed { failure },
         }
     }
@@ -107,10 +108,10 @@ impl FileTool {
         &self,
         args: &Map<String, Value>,
         ctx: &CallContext,
-    ) -> Result<Value, Failure> {
+    ) -> Result<Outcome, Failure> {
         let path = resolve_path(&self.workspace, string(args, "path")?);
-        match self.kind {
-            Kind::Read => read(&path, args, ctx.result_budget).await,
+        let value = match self.kind {
+            Kind::Read => return read(&path, args, ctx.result_budget).await,
             Kind::Write => {
                 let content = string(args, "content")?;
                 let path = crate::file::write(&path, content.as_bytes())
@@ -120,7 +121,11 @@ impl FileTool {
             }
             Kind::Edit => edit(&path, args).await,
             Kind::List => list(&path).await,
-        }
+        }?;
+        Ok(Outcome::Ok {
+            value,
+            images: Vec::new(),
+        })
     }
 }
 
@@ -128,7 +133,7 @@ fn io(path: &Path, error: std::io::Error) -> Failure {
     failure(code::TOOL_FAILED, format!("{}: {error}", path.display()))
 }
 
-async fn read(path: &Path, args: &Map<String, Value>, budget: usize) -> Result<Value, Failure> {
+async fn read(path: &Path, args: &Map<String, Value>, budget: usize) -> Result<Outcome, Failure> {
     let offset = integer(args, "offset", 1, 1, u64::MAX)?;
     let limit = integer(
         args,
@@ -137,17 +142,36 @@ async fn read(path: &Path, args: &Map<String, Value>, budget: usize) -> Result<V
         1,
         FILE_READ_MAX_LINES,
     )? as usize;
-    let text = tokio::fs::read_to_string(path)
+    let bytes = tokio::fs::read(path)
         .await
-        .map_err(|e| io(path, e))?;
+        .map_err(|error| io(path, error))?;
+    if ImageFormat::detect(&bytes).is_some() {
+        return Ok(Outcome::Ok {
+            value: json!({ "path": path }),
+            images: vec![bytes],
+        });
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|error| {
+        failure(
+            code::TOOL_FAILED,
+            format!(
+                "{}: expected UTF-8 text or a PNG, JPEG or WebP image: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    Ok(Outcome::Ok {
+        value: read_text(text, offset, limit, budget),
+        images: Vec::new(),
+    })
+}
+
+fn read_text(text: &str, offset: u64, limit: usize, budget: usize) -> Value {
     let total = text.lines().count() as u64;
     let start = usize::try_from(offset - 1).unwrap_or(usize::MAX);
     let mut lines = text.lines().skip(start).take(limit);
     let Some(first) = lines.next() else {
-        return Ok(Value::String(format!(
-            "{}\n",
-            line_header(offset, offset - 1, total)
-        )));
+        return Value::String(format!("{}\n", line_header(offset, offset - 1, total)));
     };
     // Always return one whole line; the kernel truncates a single oversized line.
     let mut content = first.to_owned();
@@ -162,7 +186,7 @@ async fn read(path: &Path, args: &Map<String, Value>, budget: usize) -> Result<V
         content.push_str(line);
         header = next_header;
     }
-    Ok(Value::String(format!("{header}\n{content}")))
+    Value::String(format!("{header}\n{content}"))
 }
 
 fn line_header(first: u64, last: u64, total: u64) -> String {

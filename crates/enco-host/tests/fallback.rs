@@ -92,7 +92,7 @@ async fn send(kernel: &Kernel, text: &str) -> Vec<Entry> {
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), text.into())
+        .submit(session.id, EventId::new(), text.into(), Vec::new())
         .await
         .unwrap();
     finish(&mut rx).await
@@ -215,7 +215,7 @@ async fn exhausted_combinations_survive_unrelated_registration_and_reset_with_th
             } if message.joined_text().is_empty() && usage.output_tokens == 1))
             );
             // Recorded as returned, the empty reply is still not part of the conversation.
-            let unusable = |message: &Message| {
+            let unusable = |message: &Message<ImageData>| {
                 message.role == Role::Assistant
                     && message.joined_text().is_empty()
                     && message.tool_calls().next().is_none()

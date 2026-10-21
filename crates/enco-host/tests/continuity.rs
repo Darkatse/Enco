@@ -91,7 +91,11 @@ async fn requests_keep_a_stable_prefix_and_date_inputs_across_dst() {
             id: EventId::new(),
             session: session.id,
             source: EventSource::Cli,
-            body: EventBody::UserMessage { text: text.into() },
+            body: EventBody::UserMessage {
+                images: Vec::new(),
+                unviewable: Vec::new(),
+                text: text.into(),
+            },
             received_at: now.to_utc(),
         });
         kernel.accept(&inputs, None).await.unwrap();
@@ -294,7 +298,10 @@ async fn outgrow_the_window(kernel: &Kernel, memories: &Memories) -> (SessionId,
     let history = (0..6).map(|n| format!("History {n}: {}", "some detailed history ".repeat(150)));
     let mut ends = vec![];
     for text in std::iter::once("History before failure".to_owned()).chain(history) {
-        kernel.submit(session, EventId::new(), text).await.unwrap();
+        kernel
+            .submit(session, EventId::new(), text, Vec::new())
+            .await
+            .unwrap();
         ends.push(finish(&mut rx).await.pop().unwrap().body);
     }
     (session, ends)
@@ -335,7 +342,10 @@ async fn compaction_requests_carry_arrival_times_and_failures_but_not_pinned_mem
     let mut summarized_outcome = false;
     for (attempt, request) in attempts.into_iter().zip(requests) {
         let inspection = kernel.inspect(session, Some(attempt)).await.unwrap();
-        assert_eq!(inspection.request, request);
+        assert_eq!(
+            serde_json::to_value(&inspection.request).unwrap(),
+            serde_json::to_value(&request).unwrap()
+        );
         if inspection.purpose == AttemptPurpose::Compaction {
             let text = request.messages[1].joined_text();
             assert!(text.contains(ARRIVAL), "{text}");
@@ -371,7 +381,12 @@ async fn after_restart_requests_start_from_the_summary_and_pinned_memory() {
     let (kernel, _memories) = small_windows(dir.path(), provider.clone()).await;
     let mut rx = kernel.subscribe(session).unwrap();
     kernel
-        .submit(session, EventId::new(), "What do you remember?".into())
+        .submit(
+            session,
+            EventId::new(),
+            "What do you remember?".into(),
+            Vec::new(),
+        )
         .await
         .unwrap();
     let entries = finish(&mut rx).await;
@@ -588,7 +603,12 @@ async fn invalid_schedule_arguments_leave_no_records_and_allow_correction() {
             reply("please correct the rule"),
         ]);
         kernel
-            .submit(session.id, EventId::new(), "set a reminder".into())
+            .submit(
+                session.id,
+                EventId::new(),
+                "set a reminder".into(),
+                Vec::new(),
+            )
             .await
             .unwrap();
         let entries = finish(&mut rx).await;
@@ -610,7 +630,12 @@ async fn invalid_schedule_arguments_leave_no_records_and_allow_correction() {
         reply("scheduled"),
     ]);
     kernel
-        .submit(session.id, EventId::new(), "use eight o'clock".into())
+        .submit(
+            session.id,
+            EventId::new(),
+            "use eight o'clock".into(),
+            Vec::new(),
+        )
         .await
         .unwrap();
     let entries = finish(&mut rx).await;
@@ -660,6 +685,7 @@ fn a_compaction_only_round_after_a_summary_cannot_produce_an_empty_summary_reque
         seq: Seq(seq),
     };
     let mut input = ComposeInput {
+        image_paths: Default::default(),
         now,
         timezone: Tz::UTC,
         session: SessionRecord {
@@ -689,6 +715,7 @@ fn a_compaction_only_round_after_a_summary_cannot_produce_an_empty_summary_reque
         tools: vec![],
         safe_mode: None,
         reply: ReplyTarget {
+            accepts: Default::default(),
             budget: Budget {
                 context_tokens: 5000.try_into().unwrap(),
                 max_output_tokens: 512.try_into().unwrap(),

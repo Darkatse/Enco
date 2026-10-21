@@ -1,6 +1,9 @@
 //! Telegram-specific configuration, transport evidence and text limits.
+mod attachments;
 mod supervisor;
-use crate::channel::{Action, Adapter, ChannelError, Fault, Identity, Input, Update};
+use crate::channel::{
+    Action, Adapter, AttachmentContent, ChannelError, Fault, Identity, Input, Update,
+};
 use async_trait::async_trait;
 use enco_core::Failure;
 use enco_kernel::{SettingsError, TableOwner, parse_table};
@@ -193,7 +196,8 @@ struct TelegramUpdate {
 struct TelegramMessage {
     chat: Chat,
     from: Option<User>,
-    text: Option<String>,
+    #[serde(flatten)]
+    content: attachments::Content,
 }
 
 #[derive(Deserialize)]
@@ -240,7 +244,7 @@ impl Adapter for Telegram {
                     sender: message.from.map(|sender| sender.id.to_string()),
                     direct: message.chat.kind == "private",
                     conversation_type: message.chat.kind,
-                    action: message.text.map(parse_action),
+                    action: message.content.action(),
                 });
                 Ok(Update {
                     protocol: json!({"offset": offset}),
@@ -248,6 +252,17 @@ impl Adapter for Telegram {
                 })
             })
             .collect()
+    }
+
+    async fn fetch(&self, locator: &str) -> Result<AttachmentContent, Fault> {
+        match attachments::fetch(self, locator).await {
+            Ok(bytes) => Ok(AttachmentContent::Image(bytes)),
+            // Telegram refused this file for good; the connection itself is still usable.
+            Err(error) if !error.fatal && !error.unknown && !error.failure.retryable => {
+                Ok(AttachmentContent::Unavailable(error.failure.message))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn split(&self, text: &str) -> Vec<String> {
@@ -279,7 +294,7 @@ fn parse_action(text: String) -> Action {
         ("/session", "") => Action::Sessions,
         ("/session", name) => Action::SelectSession(name.into()),
         ("/cancel", "") => Action::Cancel,
-        _ => Action::Message(text),
+        _ => Action::Message(text.into()),
     }
 }
 

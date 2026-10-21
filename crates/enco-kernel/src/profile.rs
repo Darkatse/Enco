@@ -7,6 +7,8 @@ pub struct CompletionEndpoint {
     pub endpoint: Endpoint,
     /// Context window and reserved output of this model.
     pub budget: Budget,
+    /// Non-text inputs accepted by this model.
+    pub accepts: std::collections::BTreeSet<enco_core::Modality>,
 }
 
 /// Session policy sampled once at the start of a Round.

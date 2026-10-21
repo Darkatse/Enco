@@ -14,11 +14,11 @@ pub trait Provider: Send + Sync {
 }
 
 /// A canonical model request. Session requests resolve a frozen, recorded plan;
-/// registry probes contain only fixed validation text.
+/// registry probes contain only fixed validation content.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ProviderRequest {
+pub struct ProviderRequest<I = ImageData> {
     /// Canonical messages in request order.
-    pub messages: Vec<Message>,
+    pub messages: Vec<Message<I>>,
     /// Frozen definitions disclosed to the model.
     pub tools: Vec<ToolSpec>,
     /// Optional output limit.

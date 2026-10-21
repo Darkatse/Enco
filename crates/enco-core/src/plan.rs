@@ -29,6 +29,8 @@ pub enum PlanItem {
     Log {
         /// Entry whose canonical message is resolved from this Session’s Log.
         pos: LogPos,
+        /// Whether this whole entry's images accompany its text in the request.
+        images: bool,
     },
 }
 

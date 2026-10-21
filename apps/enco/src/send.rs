@@ -7,7 +7,12 @@ use anyhow::{Context, Result, bail};
 use enco_core::{Entry, EntryBody, EventId, LogPos, RunEnd, RunId};
 use serde_json::Value;
 
-pub(crate) async fn wait(paths: &Paths, session: String, text: String) -> Result<Value> {
+pub(crate) async fn wait(
+    paths: &Paths,
+    session: String,
+    text: String,
+    images: Vec<std::path::PathBuf>,
+) -> Result<Value> {
     let mut client = Client::connect(&paths.socket()).await?;
     client
         .request(Command::Subscribe {
@@ -19,6 +24,7 @@ pub(crate) async fn wait(paths: &Paths, session: String, text: String) -> Result
         .send(Command::Send {
             session: session.clone(),
             text,
+            images,
             event_id,
         })
         .await?;

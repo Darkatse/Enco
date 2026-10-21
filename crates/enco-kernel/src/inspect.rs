@@ -15,7 +15,7 @@ pub struct Inspection {
     /// Recorded invocation parameters, excluding the credential itself.
     pub settings: ProviderSettings,
     /// Exact canonical request at this Attempt's Log position.
-    pub request: ProviderRequest,
+    pub request: ProviderRequest<Image>,
     /// Frozen plan, including each inline message's sources and all recorded omissions.
     pub plan: ContextPlan,
     /// Recorded settlement, absent while the Attempt is unsettled.

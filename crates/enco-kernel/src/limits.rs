@@ -14,6 +14,11 @@ pub(crate) const RECURRENCE_CHECK: usize = 100;
 /// Successful trial calls required before a generation becomes a rollback target.
 pub const TRIAL_CALLS: u32 = 5;
 
+/// Maximum original bytes accepted for one image.
+pub const IMAGE_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+pub(crate) const CONFIG_PROBE_IMAGE: &[u8] = include_bytes!("image/probe.png");
+
 pub(crate) const CONFIG_PROBE_PROMPT: &str = "Reply with the single word OK.";
 
 pub(crate) const CONFIG_PROBE_QUESTION: &str = "Does the state ask for the word OK?";

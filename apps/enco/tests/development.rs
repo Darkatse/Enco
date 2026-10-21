@@ -200,6 +200,7 @@ async fn tool_results(daemon: &Daemon, text: &str) -> Vec<Entry> {
         .unwrap();
     client
         .request(Command::Send {
+            images: Vec::new(),
             session: session.clone(),
             text: text.into(),
             event_id: EventId::new(),

@@ -41,7 +41,7 @@ impl Node {
 
     async fn run(&mut self, text: &str) -> Vec<Entry> {
         self.kernel
-            .submit(self.session, EventId::new(), text.into())
+            .submit(self.session, EventId::new(), text.into(), Vec::new())
             .await
             .unwrap();
         finish(&mut self.rx).await
@@ -325,7 +325,10 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
             .inspect(callers.node.session, Some(start.0))
             .await
             .unwrap();
-        assert_eq!(inspected.request, request);
+        assert_eq!(
+            serde_json::to_value(&inspected.request).unwrap(),
+            serde_json::to_value(&request).unwrap()
+        );
         assert_eq!(inspected.settings, callers.settings);
     }
     let notices: Vec<_> = entries
@@ -343,7 +346,9 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
     assert!(
         callers.provider.requests.lock().unwrap()[1]
             .messages
-            .contains(&notices[0].canonical_message())
+            .iter()
+            .any(|message| serde_json::to_value(message).unwrap()
+                == serde_json::to_value(notices[0].canonical_message()).unwrap())
     );
     assert_eq!(
         callers

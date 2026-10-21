@@ -1,4 +1,4 @@
-use crate::CallId;
+use crate::{CallId, Image};
 use serde::{Deserialize, Serialize};
 
 /// The speaker in a canonical model message.
@@ -17,17 +17,17 @@ pub enum Role {
 
 /// Provider-independent message; this shape is part of the Log format.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Message {
+pub struct Message<I = Image> {
     /// Speaker of this message.
     pub role: Role,
     /// Content in provider order.
-    pub parts: Vec<Part>,
+    pub parts: Vec<Part<I>>,
 }
 
 /// Typed content of a canonical message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Part {
+pub enum Part<I = Image> {
     /// UTF-8 text visible to the model.
     Text {
         /// Text visible to the model as part of this message.
@@ -39,6 +39,8 @@ pub enum Part {
     ToolResult(ToolResult),
     /// Adapter-specific fields, such as reasoning, replayed only by their originating Provider.
     Extension(Extension),
+    /// Image input, represented by a recorded reference or resolved request bytes.
+    Image(I),
 }
 
 /// A proposed invocation; arguments are normalized only when dispatched.
@@ -74,7 +76,20 @@ pub struct Extension {
     pub data: serde_json::Value,
 }
 
-impl Message {
+impl<I> Part<I> {
+    /// The same part under another image type; an image is handed back for the caller to convert.
+    pub fn retype<J>(self) -> Result<Part<J>, I> {
+        match self {
+            Self::Text { text } => Ok(Part::Text { text }),
+            Self::ToolCall(call) => Ok(Part::ToolCall(call)),
+            Self::ToolResult(result) => Ok(Part::ToolResult(result)),
+            Self::Extension(extension) => Ok(Part::Extension(extension)),
+            Self::Image(image) => Err(image),
+        }
+    }
+}
+
+impl<I> Message<I> {
     /// Construct a text-only message.
     pub fn text(role: Role, text: impl Into<String>) -> Self {
         Self {

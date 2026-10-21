@@ -262,3 +262,49 @@ async fn configuration_probes_report_trial_health_even_when_configuration_is_rej
         broken
     );
 }
+
+#[tokio::test]
+async fn changing_only_image_acceptance_probes_before_registering_configuration() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![
+        Err(fault(code::PROVIDER_BAD_REQUEST)),
+        reply("image accepted"),
+    ]);
+    let (registry, _) = registry_configured(
+        root.path(),
+        loaded(provider.clone()),
+        configuration(),
+        vec![],
+    )
+    .await;
+    assert!(provider.requests.lock().unwrap().is_empty());
+    let before = registry.view().config.document.clone();
+    let mut document = before.clone();
+    document["endpoint"]["reply"]["accepts"] = serde_json::json!(["image"]);
+    let rejected = submit(&registry, configuration_request(document.clone())).await;
+    assert!(matches!(rejected, Err(RegistryError::Rejected(_))));
+    assert_eq!(registry.view().config.document, before);
+    submit(&registry, configuration_request(document.clone()))
+        .await
+        .unwrap();
+    assert_eq!(registry.view().config.document, document);
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        let images: Vec<_> = request
+            .messages
+            .iter()
+            .flat_map(|message| &message.parts)
+            .filter_map(|part| match part {
+                Part::Image(image) => Some(image),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].format, ImageFormat::Png);
+        assert_eq!(
+            images[0].data,
+            include_bytes!("../../../enco-kernel/src/image/probe.png")
+        );
+    }
+}

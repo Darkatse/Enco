@@ -30,7 +30,7 @@ async fn open(root: &Path, embedding: Arc<dyn Embedding>) -> Arc<Memories> {
 async fn send(kernel: &Kernel, session: SessionId, text: &str) {
     let mut rx = kernel.subscribe(session).unwrap();
     kernel
-        .submit(session, EventId::new(), text.into())
+        .submit(session, EventId::new(), text.into(), Vec::new())
         .await
         .unwrap();
     let entries = finish(&mut rx).await;
@@ -161,6 +161,42 @@ async fn recalled_sources_keep_corrections_and_deduplicate_after_restart() {
         assert_eq!(*hash, ContentHash::of(expected.as_bytes()));
         assert!(note.contains(expected));
     }
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_input_without_text_recalls_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![reply("seen")]);
+    let (kernel, memories) =
+        kernel_with_memory(dir.path(), provider.clone(), configuration(), |_| {}).await;
+    memories
+        .save("Owner likes tea".into(), false)
+        .await
+        .unwrap();
+    // Recall would embed the input, and a failed embedding leaves its omission in the plan.
+    *provider.embedding_failure.lock().unwrap() = Some(Failure {
+        code: "provider.server".into(),
+        message: "embedding down".into(),
+        retryable: false,
+    });
+    let image = kernel
+        .store_image(include_bytes!("../../enco-kernel/src/image/probe.png"))
+        .await
+        .unwrap();
+    let session = kernel.open_session("main").await.unwrap();
+    let mut rx = kernel.subscribe(session.id).unwrap();
+    kernel
+        .submit(session.id, EventId::new(), String::new(), vec![image])
+        .await
+        .unwrap();
+    finish(&mut rx).await;
+    let plan = kernel.inspect(session.id, None).await.unwrap().plan;
+    assert!(
+        plan.omitted
+            .iter()
+            .all(|omission| omission.source != "memory:semantic")
+    );
     kernel.shutdown().await.unwrap();
 }
 

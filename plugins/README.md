@@ -5,6 +5,7 @@
 | 位置 | 职责 |
 |---|---|
 | `openai-compatible/src/lib.rs` | OpenAI-Compatible 入口：Chat Completions 与 embeddings |
+| `gemini/src/lib.rs`、`request.rs`、`response.rs` | Gemini Generate Content 与批量 embeddings |
 | `deepseek/src/lib.rs` | DeepSeek 入口：只导出 completion |
 | `typesafe/src/lib.rs`、`protocol.rs` | TypeSafe 入口与 System One 协议：只导出 decision |
 | `web/src/lib.rs`、`config.rs` | web 工具声明、配置与服务声明 |

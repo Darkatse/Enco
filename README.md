@@ -103,15 +103,18 @@ Edit `~/.enco/config.toml` (examples are in [`examples/`](examples/)), export th
 ```bash
 cargo run -p enco -- serve     # start the service
 cargo run -p enco -- chat      # in another terminal
+cargo run -p enco -- send --image photo.png "Describe this image"
 ```
 
 `enco init` creates the plugin directory and writes the bundled SDK to `sdk/`. Put plugin sources in `plugins/<name>/`, or use `enco plugin scaffold <name>` to start a tool plugin. Each plugin is a standalone Cargo workspace that depends on `../../sdk`. Its own `.gitignore` determines which files belong to its source value; Git is not required.
 
-After editing source or `config.toml`, run `enco apply --reason "Describe the change"` to build and register all changed intent together. The reason is optional for the owner and required for the agent's `self_apply`. `enco status` and `self_status` show running, registered and workspace facts together for each unit. Use `enco status --json` for scripts. `enco rollback` mechanically restores the still-effective parts of the latest registration without Cargo or model calls. Restarts restore registered state. Schema version 9 requires a new database.
+After editing source or `config.toml`, run `enco apply --reason "Describe the change"` to build and register all changed intent together. The reason is optional for the owner and required for the agent's `self_apply`. `enco status` and `self_status` show running, registered and workspace facts together for each unit. Use `enco status --json` for scripts. `enco rollback` mechanically restores the still-effective parts of the latest registration without Cargo or model calls. Restarts restore registered state. Schema version 10 requires a new database.
 
 Accepted source and configuration live in Enco's own content store. Use `enco history` to list registrations, `enco history --to <registration>` for one change, or `enco history --to workspace` for unregistered edits. To undo file intent, run `enco rewind <registration> [config.toml | plugins/<name> ...]`, review the files, then apply again. With no paths, rewind selects units changed since that registration and refuses to overwrite unregistered edits; explicit paths authorize overwriting those units. Ignored files survive, and a directory containing them cannot be removed. Plugin names stay current. The agent uses `self_history` and `self_rewind` through the same entry points.
 
-Standing instructions live in `~/.enco/AGENTS.md`; runtime data lives in `~/.enco/.data/`. To enable Telegram, uncomment the `[telegram]` block in the config example, set your user ID, and export the token variable. `/session` selects a Session, `/cancel` cancels its Run, and `enco status` lists channel health and recent failed or uncertain deliveries.
+Completion endpoints accept text by default; add `accepts = ["image"]` to an endpoint to send images to it. `enco send --image <path>` accepts PNG, JPEG and WebP, may be repeated, and also works without text. The agent can read these images with `fs_read`. Images are limited to 10 MB each and 32 MB per request.
+
+Standing instructions live in `~/.enco/AGENTS.md`; runtime data lives in `~/.enco/.data/`. To enable Telegram, uncomment the `[telegram]` block in the config example, set your user ID, and export the token variable. Photos and image documents enter the same message as their caption; unsupported attachments are reported to the agent. `/session` selects a Session, `/cancel` cancels its Run, and `enco status` lists channel health and recent failed or uncertain deliveries.
 
 Set `ENCO_HOME` to use a directory other than `~/.enco`. Run `cargo xtask check` before sending changes.
 

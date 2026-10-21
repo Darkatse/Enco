@@ -91,7 +91,10 @@ impl Tool for ScheduleTool {
 
     async fn call(&self, ctx: CallContext, args: Map<String, Value>) -> Outcome {
         match self.execute(ctx.session, args).await {
-            Ok(value) => Outcome::Ok { value },
+            Ok(value) => Outcome::Ok {
+                value,
+                images: vec![],
+            },
             Err(failure) => Outcome::Failed { failure },
         }
     }

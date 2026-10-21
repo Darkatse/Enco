@@ -15,7 +15,12 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "write a note".into())
+        .submit(
+            session.id,
+            EventId::new(),
+            "write a note".into(),
+            Vec::new(),
+        )
         .await
         .unwrap();
     let entries = finish(&mut rx).await;
@@ -30,12 +35,15 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
     assert_eq!(starts.len(), requests.len());
     for ((attempt, _), request) in starts.iter().zip(&requests) {
         assert_eq!(
-            &kernel
-                .inspect(session.id, Some(*attempt))
-                .await
-                .unwrap()
-                .request,
-            request
+            serde_json::to_value(
+                kernel
+                    .inspect(session.id, Some(*attempt))
+                    .await
+                    .unwrap()
+                    .request
+            )
+            .unwrap(),
+            serde_json::to_value(request).unwrap()
         );
     }
     // The next process must continue from the Log even if the last plan was removed.
@@ -49,7 +57,7 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
     assert_eq!(kernel.log(session.id, None).await.unwrap(), entries);
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "continue".into())
+        .submit(session.id, EventId::new(), "continue".into(), Vec::new())
         .await
         .unwrap();
     finish(&mut rx).await;
@@ -94,7 +102,7 @@ async fn file_pages_preserve_complete_lines_and_oversized_lines_use_the_shared_f
             reply("page read"),
         ]);
         kernel
-            .submit(session.id, EventId::new(), "next page".into())
+            .submit(session.id, EventId::new(), "next page".into(), Vec::new())
             .await
             .unwrap();
         let entries = finish(&mut rx).await;
@@ -136,7 +144,12 @@ async fn file_pages_preserve_complete_lines_and_oversized_lines_use_the_shared_f
         reply("long line read"),
     ]);
     kernel
-        .submit(session.id, EventId::new(), "read the long line".into())
+        .submit(
+            session.id,
+            EventId::new(),
+            "read the long line".into(),
+            Vec::new(),
+        )
         .await
         .unwrap();
     let entries = finish(&mut rx).await;
@@ -180,7 +193,12 @@ async fn unavailable_calls_and_invalid_arguments_are_settled_without_dispatch() 
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "test failures".into())
+        .submit(
+            session.id,
+            EventId::new(),
+            "test failures".into(),
+            Vec::new(),
+        )
         .await
         .unwrap();
     let entries = finish(&mut rx).await;
@@ -239,7 +257,7 @@ async fn retries_reuse_the_frozen_plan_and_nonretryable_failures_end_the_run() {
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "hello".into())
+        .submit(session.id, EventId::new(), "hello".into(), Vec::new())
         .await
         .unwrap();
     let entries = finish(&mut rx).await;
@@ -257,7 +275,7 @@ async fn retries_reuse_the_frozen_plan_and_nonretryable_failures_end_the_run() {
         assert_eq!(requests[0], requests[1]);
     }
     kernel
-        .submit(session.id, EventId::new(), "again".into())
+        .submit(session.id, EventId::new(), "again".into(), Vec::new())
         .await
         .unwrap();
     let entries = finish(&mut rx).await;
@@ -307,7 +325,7 @@ async fn changed_tool_definitions_are_rejected_before_any_provider_request() {
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "hello".into())
+        .submit(session.id, EventId::new(), "hello".into(), Vec::new())
         .await
         .unwrap();
     let log = finish(&mut rx).await;

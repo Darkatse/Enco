@@ -478,7 +478,12 @@ async fn large_history_results_keep_a_unit_summary_and_save_the_full_diff() {
     let session = kernel.open_session("review").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "review pending intent".into())
+        .submit(
+            session.id,
+            EventId::new(),
+            "review pending intent".into(),
+            Vec::new(),
+        )
         .await
         .unwrap();
     let log = finish(&mut rx).await;

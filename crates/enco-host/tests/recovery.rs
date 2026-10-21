@@ -72,6 +72,7 @@ impl Tool for GatedTool {
         ctx.cancel.cancelled().await;
         self.finished.store(true, Ordering::SeqCst);
         Outcome::Ok {
+            images: Vec::new(),
             value: serde_json::json!("local write completed"),
         }
     }
@@ -131,7 +132,7 @@ async fn aborted_provider_request_is_settled_without_automatic_resumption() {
         })
         .await
         .unwrap();
-    old.submit(session.id, EventId::new(), "hello".into())
+    old.submit(session.id, EventId::new(), "hello".into(), Vec::new())
         .await
         .unwrap();
     observed(&provider.entered).await;
@@ -155,7 +156,7 @@ async fn aborted_provider_request_is_settled_without_automatic_resumption() {
     assert!(next.requests.lock().unwrap().is_empty());
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "continue".into())
+        .submit(session.id, EventId::new(), "continue".into(), Vec::new())
         .await
         .unwrap();
     assert!(matches!(
@@ -197,7 +198,7 @@ async fn recovery_distinguishes_started_effects_from_calls_never_dispatched() {
             })
             .await
             .unwrap();
-        old.submit(session.id, EventId::new(), "two calls".into())
+        old.submit(session.id, EventId::new(), "two calls".into(), Vec::new())
             .await
             .unwrap();
         observed(&tool.entered).await;
@@ -248,7 +249,7 @@ async fn cancellation_reaches_context_and_shutdown_waits_for_tool_settlement() {
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "hello".into())
+        .submit(session.id, EventId::new(), "hello".into(), Vec::new())
         .await
         .unwrap();
     observed(&source.entered).await;
@@ -282,7 +283,7 @@ async fn cancellation_reaches_context_and_shutdown_waits_for_tool_settlement() {
     .await;
     let session = kernel.open_session("main").await.unwrap();
     kernel
-        .submit(session.id, EventId::new(), "work".into())
+        .submit(session.id, EventId::new(), "work".into(), Vec::new())
         .await
         .unwrap();
     observed(&tool.entered).await;
@@ -348,7 +349,7 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
     )
     .unwrap();
     kernel
-        .submit(session.id, EventId::new(), "hello".into())
+        .submit(session.id, EventId::new(), "hello".into(), Vec::new())
         .await
         .unwrap();
     let log = finish(&mut rx).await;
@@ -439,14 +440,14 @@ async fn normal_mode_resumes_with_the_repaired_context() {
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel.set_safe_mode(true).await.unwrap();
     kernel
-        .submit(session.id, EventId::new(), "repair".into())
+        .submit(session.id, EventId::new(), "repair".into(), Vec::new())
         .await
         .unwrap();
     finish(&mut rx).await;
     std::fs::write(dir.path().join("AGENTS.md"), "Call the owner River.").unwrap();
     kernel.set_safe_mode(false).await.unwrap();
     kernel
-        .submit(session.id, EventId::new(), "hello again".into())
+        .submit(session.id, EventId::new(), "hello again".into(), Vec::new())
         .await
         .unwrap();
     finish(&mut rx).await;

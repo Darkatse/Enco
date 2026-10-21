@@ -1,4 +1,7 @@
-use crate::{DateTime, EventId, Message, Role, RolledBack, ScheduleId, SessionId, Utc};
+use crate::{
+    DateTime, EventId, Image, Message, Part, Role, RolledBack, ScheduleId, SessionId, Unviewable,
+    Utc,
+};
 use serde::{Deserialize, Serialize};
 
 /// A deduplicated input delivered through the Inbox.
@@ -54,6 +57,10 @@ pub enum EventBody {
     UserMessage {
         /// Text supplied by the owner.
         text: String,
+        /// Images stored before this Event was accepted.
+        images: Vec<Image>,
+        /// Attachments whose content could not be accepted as images.
+        unviewable: Vec<Unviewable>,
     },
     /// A reminder reaching its scheduled time.
     Reminder {
@@ -69,12 +76,23 @@ pub enum EventBody {
 }
 
 impl Event {
-    /// The sole mapping from Inbox input to a model message: the text its producer wrote.
+    /// The sole mapping from Inbox input to a model message: the content its producer supplied.
     /// The composer narrates the circumstances, such as arrival and planned times.
+    /// Input without text, such as a photo alone, has no text part.
     pub fn canonical_message(&self) -> Message {
-        let (EventBody::GenerationRolledBack { text, .. }
-        | EventBody::UserMessage { text }
-        | EventBody::Reminder { text, .. }) = &self.body;
-        Message::text(Role::User, text)
+        let (text, images) = match &self.body {
+            EventBody::UserMessage { text, images, .. } => (text, images.as_slice()),
+            EventBody::GenerationRolledBack { text, .. } | EventBody::Reminder { text, .. } => {
+                (text, &[][..])
+            }
+        };
+        let text = (!text.is_empty()).then(|| Part::Text { text: text.clone() });
+        Message {
+            role: Role::User,
+            parts: text
+                .into_iter()
+                .chain(images.iter().cloned().map(Part::Image))
+                .collect(),
+        }
     }
 }

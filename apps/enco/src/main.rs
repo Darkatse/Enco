@@ -71,7 +71,11 @@ enum Action {
         session: String,
         #[arg(long)]
         wait: bool,
-        text: String,
+        /// Attach a PNG, JPEG or WebP image; repeat for multiple images.
+        #[arg(long = "image")]
+        images: Vec<PathBuf>,
+        #[arg(required_unless_present = "images")]
+        text: Option<String>,
     },
     Schedules {
         #[arg(long)]
@@ -215,18 +219,24 @@ async fn main() -> Result<()> {
         Action::Send {
             session,
             text,
+            images,
             wait: true,
         } => {
-            println!("{:#}", send::wait(&paths, session, text).await?);
+            println!(
+                "{:#}",
+                send::wait(&paths, session, text.unwrap_or_default(), absolute(images)?).await?
+            );
             return Ok(());
         }
         Action::Send {
             session,
             text,
+            images,
             wait: false,
         } => Command::Send {
             session,
-            text,
+            text: text.unwrap_or_default(),
+            images: absolute(images)?,
             event_id: EventId::new(),
         },
         Action::Schedules { cancel } => match cancel {
@@ -310,6 +320,14 @@ async fn init(paths: &Paths) -> Result<()> {
 const EXAMPLE_TIMEZONE: &str = "timezone = \"America/New_York\"";
 
 /// Create a file unless it exists; return whether it was created.
+/// The daemon reads these paths from its own working directory.
+fn absolute(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+    Ok(paths
+        .iter()
+        .map(std::path::absolute)
+        .collect::<Result<_, _>>()?)
+}
+
 async fn create_new(path: &Path, bytes: &[u8]) -> Result<bool> {
     match tokio::fs::OpenOptions::new()
         .write(true)

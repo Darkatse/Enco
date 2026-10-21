@@ -46,6 +46,7 @@ async fn remember_owner() -> (MockServer, Daemon, client::Client, Vec<Entry>) {
         .unwrap();
     client
         .send(Command::Send {
+            images: Vec::new(),
             session: "main".into(),
             text: "remember my name".into(),
             event_id: EventId::new(),
@@ -105,6 +106,7 @@ async fn the_next_input_indexes_a_saved_memory_and_admin_can_forget_it() {
     let (server, mut daemon, mut client, _) = remember_owner().await;
     client
         .send(Command::Send {
+            images: Vec::new(),
             session: "main".into(),
             text: "What is my name?".into(),
             event_id: EventId::new(),

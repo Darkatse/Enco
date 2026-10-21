@@ -52,7 +52,10 @@ impl Tool for DevelopmentHandler {
             Err(failure) => Err(failure),
         };
         match result {
-            Ok(value) => Outcome::Ok { value },
+            Ok(value) => Outcome::Ok {
+                value,
+                images: vec![],
+            },
             Err(failure) => Outcome::Failed { failure },
         }
     }

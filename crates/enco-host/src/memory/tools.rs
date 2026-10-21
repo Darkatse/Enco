@@ -113,7 +113,10 @@ impl Tool for MemoryTool {
 
     async fn call(&self, ctx: CallContext, args: Map<String, Value>) -> Outcome {
         match self.execute(&ctx, &args).await {
-            Ok(value) => Outcome::Ok { value },
+            Ok(value) => Outcome::Ok {
+                value,
+                images: vec![],
+            },
             Err(failure) => Outcome::Failed { failure },
         }
     }

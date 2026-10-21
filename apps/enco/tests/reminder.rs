@@ -44,6 +44,7 @@ async fn model_created_schedules_can_be_listed_and_cancelled_through_the_cli() {
         .unwrap();
     client
         .send(Command::Send {
+            images: Vec::new(),
             session: "main".into(),
             text: "remind me".into(),
             event_id: EventId::new(),

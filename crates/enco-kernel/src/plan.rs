@@ -16,7 +16,34 @@ pub(crate) fn validate(
     if plan.items.is_empty() {
         return Err(PlanError("no messages".into()));
     }
-    validate_messages(&messages(plan, &input.transcript)?)?;
+    for item in &plan.items {
+        if let PlanItem::Message { message, .. } = item
+            && message
+                .parts
+                .iter()
+                .any(|part| !matches!(part, Part::Text { .. }))
+        {
+            return Err(PlanError("inline messages must contain only text".into()));
+        }
+    }
+    let messages = messages(plan, &input.transcript)?;
+    let images: Vec<_> = messages
+        .iter()
+        .flat_map(|(message, _)| &message.parts)
+        .filter_map(|part| match part {
+            Part::Image(image) => Some(image),
+            _ => None,
+        })
+        .collect();
+    if !images.is_empty()
+        && (purpose == AttemptPurpose::Compaction
+            || !input.reply.accepts.contains(&Modality::Image))
+    {
+        return Err(PlanError(
+            "this request target does not accept images".into(),
+        ));
+    }
+    validate_messages(&messages)?;
     let mut names = HashSet::new();
     for (id, spec) in &plan.tools {
         if !names.insert(&spec.name)
@@ -49,7 +76,7 @@ pub(crate) fn resolve(
     transcript: &Transcript,
     exports: &Exports,
     target: PluginId,
-) -> Result<ProviderRequest, PlanError> {
+) -> Result<ProviderRequest<Image>, PlanError> {
     Ok(ProviderRequest {
         messages: messages(plan, transcript)?
             .into_iter()
@@ -60,9 +87,8 @@ pub(crate) fn resolve(
                     role: message.role,
                     parts: message
                         .parts
-                        .iter()
+                        .into_iter()
                         .filter(|part| own_extensions || !matches!(part, Part::Extension(_)))
-                        .cloned()
                         .collect(),
                 }
             })
@@ -72,39 +98,51 @@ pub(crate) fn resolve(
     })
 }
 
-fn messages<'a>(
-    plan: &'a ContextPlan,
-    transcript: &'a Transcript,
-) -> Result<Vec<(&'a Message, Option<GenerationId>)>, PlanError> {
-    plan.items
-        .iter()
-        .map(|item| match item {
-            PlanItem::Message { message, .. } => Ok((message, None)),
-            PlanItem::Log { pos } => transcript
-                .items
-                .binary_search_by_key(pos, |item| item.pos)
-                .map(|index| {
-                    let item = &transcript.items[index];
-                    (&item.message, item.generation)
-                })
-                .map_err(|_| {
-                    PlanError(format!(
-                        "Log position {pos:?} is not in the recorded transcript"
-                    ))
-                }),
-        })
-        .collect()
+/// An entry with nothing left once its images stay behind, such as a photo alone, sends no
+/// message; the composer's note before it describes the entry.
+fn messages(
+    plan: &ContextPlan,
+    transcript: &Transcript,
+) -> Result<Vec<(Message, Option<GenerationId>)>, PlanError> {
+    let mut messages = Vec::with_capacity(plan.items.len());
+    for item in &plan.items {
+        match item {
+            PlanItem::Message { message, .. } => messages.push((message.clone(), None)),
+            PlanItem::Log { pos, images } => {
+                let item = transcript
+                    .items
+                    .binary_search_by_key(pos, |item| item.pos)
+                    .map(|index| &transcript.items[index])
+                    .map_err(|_| {
+                        PlanError(format!(
+                            "Log position {pos:?} is not in the recorded transcript"
+                        ))
+                    })?;
+                let mut message = item.message.clone();
+                if !images {
+                    message.parts.retain(|part| !matches!(part, Part::Image(_)));
+                }
+                if !message.parts.is_empty() {
+                    messages.push((message, item.generation));
+                }
+            }
+        }
+    }
+    Ok(messages)
 }
 
-fn validate_messages(messages: &[(&Message, Option<GenerationId>)]) -> Result<(), PlanError> {
+fn validate_messages(messages: &[(Message, Option<GenerationId>)]) -> Result<(), PlanError> {
     let mut pending = std::collections::HashMap::new();
     for (message, _) in messages {
         if message.role == Role::Tool {
-            let [Part::ToolResult(result)] = message.parts.as_slice() else {
-                return Err(PlanError(
-                    "tool message must have exactly one result".into(),
-                ));
+            let Some((Part::ToolResult(result), images)) = message.parts.split_first() else {
+                return Err(PlanError("tool message must start with its result".into()));
             };
+            if images.iter().any(|part| !matches!(part, Part::Image(_))) {
+                return Err(PlanError(
+                    "tool result may only be followed by images".into(),
+                ));
+            }
             if pending.remove(&result.call) != Some(result.provider_id.as_str()) {
                 return Err(PlanError("tool result has no matching pending call".into()));
             }
@@ -118,7 +156,8 @@ fn validate_messages(messages: &[(&Message, Option<GenerationId>)]) -> Result<()
         for part in &message.parts {
             match (&message.role, part) {
                 (Role::System | Role::User | Role::Assistant, Part::Text { .. })
-                | (Role::Assistant, Part::Extension(_)) => {}
+                | (Role::Assistant, Part::Extension(_))
+                | (Role::User, Part::Image(_)) => {}
                 (Role::Assistant, Part::ToolCall(call)) => {
                     if pending.insert(call.id, call.provider_id.as_str()).is_some() {
                         return Err(PlanError("duplicate call identity".into()));

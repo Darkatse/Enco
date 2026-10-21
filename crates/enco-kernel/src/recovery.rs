@@ -123,6 +123,7 @@ fn settle_round(entries: &[Entry], result: &mut Vec<EntryBody>) {
             outcome: Settlement::from(&outcome),
             content,
             full: None,
+            images: vec![],
         });
     }
 }

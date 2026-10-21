@@ -68,6 +68,7 @@ async fn change_profile_during_compaction(
                     main,
                     EventId::new(),
                     format!("History {n}: {}", "some detailed history ".repeat(150)),
+                    Vec::new(),
                 )
                 .await
                 .unwrap();
@@ -162,7 +163,12 @@ async fn profile_changes_bind_at_round_boundaries() {
         );
         let mut other_rx = kernel.subscribe(other.id).unwrap();
         kernel
-            .submit(other.id, EventId::new(), "independent profile".into())
+            .submit(
+                other.id,
+                EventId::new(),
+                "independent profile".into(),
+                Vec::new(),
+            )
             .await
             .unwrap();
         finish(&mut other_rx).await;
@@ -210,14 +216,14 @@ async fn a_session_whose_profile_was_rolled_back_away_remains_recoverable() {
     let (kernel, _) = support::kernel(dir.path(), scripted.clone()).await;
     let mut rx = kernel.subscribe(main.id).unwrap();
     kernel
-        .submit(main.id, EventId::new(), "continue".into())
+        .submit(main.id, EventId::new(), "continue".into(), Vec::new())
         .await
         .unwrap();
     assert!(matches!(&finish(&mut rx).await.last().unwrap().body,
     EntryBody::RunEnded { end: RunEnd::Failed { failure }, .. } if failure.code == code::PROFILE_UNKNOWN));
     let mut other_rx = kernel.subscribe(other.id).unwrap();
     kernel
-        .submit(other.id, EventId::new(), "still works".into())
+        .submit(other.id, EventId::new(), "still works".into(), Vec::new())
         .await
         .unwrap();
     assert!(matches!(
@@ -233,7 +239,7 @@ async fn a_session_whose_profile_was_rolled_back_away_remains_recoverable() {
     ));
     kernel.set_profile(main.id, "default").await.unwrap();
     kernel
-        .submit(main.id, EventId::new(), "recovered".into())
+        .submit(main.id, EventId::new(), "recovered".into(), Vec::new())
         .await
         .unwrap();
     assert!(matches!(
@@ -275,6 +281,7 @@ async fn history_too_large_for_the_compaction_window_fails_only_when_the_reply_n
                 session.id,
                 EventId::new(),
                 "some detailed history ".repeat(150),
+                Vec::new(),
             )
             .await
             .unwrap();

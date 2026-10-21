@@ -47,6 +47,7 @@ async fn submit(daemon: &Daemon, session: &str, text: &str) -> Vec<Entry> {
         .unwrap();
     client
         .send(Command::Send {
+            images: Vec::new(),
             session: session.into(),
             text: text.into(),
             event_id: EventId::new(),
@@ -59,7 +60,14 @@ async fn submit(daemon: &Daemon, session: &str, text: &str) -> Vec<Entry> {
 #[tokio::test]
 async fn cli_to_wasm_to_http_records_a_reply() {
     let server = hello_service().await;
-    let mut daemon = Daemon::start(&server, "openai-compatible").await;
+    let config = Daemon::config(&server, "openai-compatible")
+        .replace("[endpoint.chat]", "[endpoint.chat]\naccepts = [\"image\"]");
+    let mut daemon = Daemon::start_config(&config).await;
+    std::fs::write(
+        daemon.root.path().join("photo.png"),
+        include_bytes!("fixtures/pixel.png"),
+    )
+    .unwrap();
     let mut client = daemon.connect().await;
     client
         .request(Command::Subscribe {
@@ -68,7 +76,8 @@ async fn cli_to_wasm_to_http_records_a_reply() {
         .await
         .unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
-        .args(["send", "--wait", "hello"])
+        .args(["send", "--wait", "--image", "photo.png"])
+        .current_dir(daemon.root.path())
         .env("ENCO_HOME", daemon.root.path())
         .output()
         .await
@@ -76,6 +85,10 @@ async fn cli_to_wasm_to_http_records_a_reply() {
     assert!(output.status.success());
     let waited: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let entries = finish(&mut client).await;
+    assert!(entries.iter().any(|entry| matches!(&entry.body,
+        EntryBody::EventConsumed { event: Event { body: EventBody::UserMessage { text, images, unviewable }, .. } }
+            if text.is_empty() && images.len() == 1 && images[0].format == ImageFormat::Png && unviewable.is_empty()
+    )));
     let ended = entries.last().unwrap();
     let EntryBody::RunEnded { run, end } = &ended.body else {
         panic!("Run did not end");
@@ -278,6 +291,7 @@ async fn credentials_stay_at_the_service_origin_and_out_of_recorded_results() {
             .unwrap();
         client
             .send(Command::Send {
+                images: Vec::new(),
                 session: session.into(),
                 text: "hello".into(),
                 event_id: EventId::new(),
@@ -349,6 +363,7 @@ async fn unusable_completions_fail_the_run_and_stay_out_of_later_requests() {
     for text in ["first", "second", "third"] {
         client
             .send(Command::Send {
+                images: Vec::new(),
                 session: "main".into(),
                 text: text.into(),
                 event_id: EventId::new(),
@@ -731,7 +746,7 @@ async fn completion_imports_are_rejected_before_linking_a_plugin() {
     let runtime = WasmRuntime::new().unwrap();
     let error = runtime
         .load(
-            br#"(component (import "enco:plugin/completion@0.4.0" (instance)))"#,
+            br#"(component (import "enco:plugin/completion@0.5.0" (instance)))"#,
             &PluginSettings::default(),
         )
         .await

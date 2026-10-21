@@ -156,6 +156,9 @@ impl SessionActor {
         let request =
             crate::plan::resolve(&plan, transcript, selection.exports(), choice.export.plugin)
                 .map_err(|error| failed(code::PLAN_INVALID, error.to_string()))?;
+        let request = crate::image::resolve(request, self.deps.store.as_ref())
+            .await
+            .map_err(|error| failed(code::CONTEXT_FAILED, format!("image content: {error}")))?;
         let bytes = serde_json::to_vec(&plan)
             .map_err(|error| failed(code::PLAN_INVALID, error.to_string()))?;
         let hash = self.deps.store.put_blob(&bytes).await?;

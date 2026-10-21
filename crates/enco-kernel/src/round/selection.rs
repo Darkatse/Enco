@@ -32,6 +32,7 @@ impl<'p> Selection<'p> {
             .map_err(|failure| RoundError::Failed(failure.clone()))?;
         Ok(ReplyTarget {
             budget: choice.endpoint.budget,
+            accepts: choice.endpoint.accepts.clone(),
             skipped: self.reply.skipped.clone(),
         })
     }

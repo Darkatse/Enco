@@ -107,7 +107,7 @@ pub struct Use {
 }
 
 /// A use's interface and behavior requirements, shared by wiring checks and real probes.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Need {
     /// A completion endpoint, optionally with tool definitions.
     Completion {
@@ -115,6 +115,8 @@ pub enum Need {
         tools: bool,
         /// Output budget that normal requests declare.
         max_output_tokens: std::num::NonZeroU32,
+        /// Non-text inputs used by these completion calls.
+        accepts: std::collections::BTreeSet<Modality>,
     },
     /// Embeddings of the configured width.
     Embedding {

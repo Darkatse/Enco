@@ -5,7 +5,10 @@ use async_trait::async_trait;
 use enco_core::*;
 use enco_host::{
     SqliteStore,
-    channel::{Action, Adapter, Channel, Fault, Identity, Input, Update},
+    channel::{
+        Action, Adapter, Attachment, AttachmentContent, Channel, Fault, Identity, Input,
+        MessageContent, Update,
+    },
 };
 use enco_kernel::{ConnectionWrite, Kernel, Store};
 use serde_json::{Value, json};
@@ -19,10 +22,16 @@ struct Send {
     result: oneshot::Sender<Result<(), Fault>>,
 }
 
+struct Fetch {
+    locator: String,
+    result: oneshot::Sender<Result<AttachmentContent, Fault>>,
+}
+
 struct ControlledChannel {
     updates: Mutex<mpsc::Receiver<Vec<Update>>>,
     polls: mpsc::UnboundedSender<Value>,
     sends: mpsc::UnboundedSender<Send>,
+    fetches: mpsc::UnboundedSender<Fetch>,
 }
 
 #[async_trait]
@@ -39,6 +48,16 @@ impl Adapter for ControlledChannel {
     async fn poll(&self, protocol: Value) -> Result<Vec<Update>, Fault> {
         self.polls.send(protocol).unwrap();
         Ok(self.updates.lock().await.recv().await.unwrap())
+    }
+    async fn fetch(&self, locator: &str) -> Result<AttachmentContent, Fault> {
+        let (result, receive) = oneshot::channel();
+        self.fetches
+            .send(Fetch {
+                locator: locator.into(),
+                result,
+            })
+            .unwrap();
+        receive.await.unwrap()
     }
     fn split(&self, text: &str) -> Vec<String> {
         vec![text.into()]
@@ -64,6 +83,7 @@ struct Harness {
     updates: mpsc::Sender<Vec<Update>>,
     polling: mpsc::UnboundedReceiver<Value>,
     sending: mpsc::UnboundedReceiver<Send>,
+    fetching: mpsc::UnboundedReceiver<Fetch>,
 }
 
 async fn harness(root: &Path, provider: Arc<ScriptedProvider>) -> Harness {
@@ -71,10 +91,12 @@ async fn harness(root: &Path, provider: Arc<ScriptedProvider>) -> Harness {
     let (updates, rx) = mpsc::channel(4);
     let (polls, polling) = mpsc::unbounded_channel();
     let (sends, sending) = mpsc::unbounded_channel();
+    let (fetches, fetching) = mpsc::unbounded_channel();
     let adapter = Arc::new(ControlledChannel {
         updates: Mutex::new(rx),
         polls,
         sends,
+        fetches,
     });
     Harness {
         kernel: Arc::new(kernel),
@@ -83,6 +105,7 @@ async fn harness(root: &Path, provider: Arc<ScriptedProvider>) -> Harness {
         updates,
         polling,
         sending,
+        fetching,
     }
 }
 
@@ -213,7 +236,7 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
     assert_eq!(receive(&mut polling).await, json!(3));
     let mut entries = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "local".into())
+        .submit(session.id, EventId::new(), "local".into(), Vec::new())
         .await
         .unwrap();
     finish(&mut entries).await;
@@ -244,6 +267,7 @@ async fn a_delivery_left_unsettled_by_a_crash_is_recorded_as_unknown_on_restart(
         updates,
         mut polling,
         mut sending,
+        ..
     } = harness(dir.path(), provider).await;
     // An earlier delivery whose outcome is unknown; shutdown settles it.
     let channel = start(&kernel, &adapter);
@@ -262,7 +286,7 @@ async fn a_delivery_left_unsettled_by_a_crash_is_recorded_as_unknown_on_restart(
     let session = kernel.open_session("main").await.unwrap();
     let mut entries = kernel.subscribe(session.id).unwrap();
     kernel
-        .submit(session.id, EventId::new(), "local".into())
+        .submit(session.id, EventId::new(), "local".into(), Vec::new())
         .await
         .unwrap();
     finish(&mut entries).await;
@@ -342,5 +366,128 @@ async fn a_fatal_send_failure_stops_the_connection_as_status() {
     assert!(!status.running);
     assert!(status.stopped.unwrap().contains("channel.http.401"));
     assert!(status.recent_failures.is_empty()); // Command receipts never become Log deliveries.
+    kernel.shutdown().await.unwrap();
+}
+
+const PNG: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0,
+    0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3, 2, 0,
+    239, 163, 175, 75, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
+
+fn photo() -> Action {
+    Action::Message(MessageContent {
+        text: "caption".into(),
+        images: vec![Attachment {
+            what: "photo".into(),
+            locator: "file-id".into(),
+        }],
+        unviewable: Vec::new(),
+    })
+}
+
+#[tokio::test]
+async fn attachments_are_authorized_before_fetch_and_retry_after_the_committed_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![
+        reply("seed"),
+        reply("first"),
+        reply("image"),
+        reply("unavailable"),
+    ]);
+    let Harness {
+        kernel,
+        store,
+        adapter,
+        updates,
+        mut polling,
+        mut sending,
+        mut fetching,
+    } = harness(dir.path(), provider).await;
+    let channel = start(&kernel, &adapter);
+    receive(&mut polling).await;
+    updates
+        .send(vec![update(0, Action::Message("seed".into()))])
+        .await
+        .unwrap();
+    receive(&mut polling).await;
+    let mut foreign = update(1, photo());
+    foreign.input.as_mut().unwrap().sender = Some("stranger".into());
+    updates
+        .send(vec![
+            foreign,
+            update(2, Action::Message("first".into())),
+            update(3, photo()),
+        ])
+        .await
+        .unwrap();
+    let fetch = receive(&mut fetching).await;
+    assert_eq!(fetch.locator, "file-id");
+    // A pending download leaves the connection free to deliver an earlier Round.
+    let delivery = receive(&mut sending).await;
+    assert_eq!(delivery.text, "seed");
+    delivery.result.send(Ok(())).unwrap();
+    let mut error = lost_response();
+    error.retry_after = Some(Duration::ZERO);
+    fetch.result.send(Err(error)).unwrap();
+    assert_eq!(receive(&mut polling).await, json!(2));
+    assert!(fetching.try_recv().is_err());
+    receive(&mut sending).await.result.send(Ok(())).unwrap();
+
+    updates.send(vec![update(3, photo())]).await.unwrap();
+    let bytes = PNG.to_vec();
+    receive(&mut fetching)
+        .await
+        .result
+        .send(Ok(AttachmentContent::Image(bytes.clone())))
+        .unwrap();
+    assert_eq!(receive(&mut polling).await, json!(3));
+    receive(&mut sending).await.result.send(Ok(())).unwrap();
+
+    updates.send(vec![update(4, photo())]).await.unwrap();
+    receive(&mut fetching)
+        .await
+        .result
+        .send(Ok(AttachmentContent::Unavailable(
+            "getFile returned HTTP 403".into(),
+        )))
+        .unwrap();
+    assert_eq!(receive(&mut polling).await, json!(4));
+    receive(&mut sending).await.result.send(Ok(())).unwrap();
+    channel.shutdown().await.unwrap();
+    let session = kernel.open_session("main").await.unwrap();
+    let events: Vec<_> = kernel
+        .log(session.id, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| match entry.body {
+            EntryBody::EventConsumed { event } => Some(event.body),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events.len(), 4);
+    let EventBody::UserMessage {
+        text,
+        images,
+        unviewable,
+    } = &events[2]
+    else {
+        panic!("expected owner message")
+    };
+    assert_eq!(text, "caption");
+    assert!(unviewable.is_empty());
+    assert_eq!(images.len(), 1);
+    assert_eq!(store.get_blob(&images[0].content).await.unwrap(), bytes);
+    let EventBody::UserMessage {
+        images, unviewable, ..
+    } = &events[3]
+    else {
+        panic!("expected owner message")
+    };
+    assert!(images.is_empty());
+    assert!(
+        matches!(&unviewable[0].reason, UnviewableReason::Unavailable(reason) if reason.contains("403"))
+    );
     kernel.shutdown().await.unwrap();
 }

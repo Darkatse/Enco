@@ -153,7 +153,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | 插件源码的值、构建、登记、历史与倒带 | `crates/enco-host/src/development/`；分发的 SDK 在 `sdk/` |
 | 完整状态、需要关注的情况与下一步 | `crates/enco-host/src/status/`，文档渲染在 `development/render/` |
 | 插件契约 | `sdk/wit/plugin.wit`，生成的 `sdk/wit/CONTRACT.md` |
-| 出厂插件 | `plugins/` |
+| 出厂插件：Chat Completions、Gemini 原生协议、结构化决策与网页 | `plugins/` |
 | 评测题与黑盒运行器 | `evals/` |
 | 门禁：`cargo xtask check` | `xtask/` |
 

@@ -107,6 +107,7 @@ fn outcome(outcome: crate::bindings::enco::plugin::types::Outcome) -> Result<Out
     use crate::bindings::enco::plugin::types::Outcome as Wire;
     Ok(match outcome {
         Wire::Ok(value) => Outcome::Ok {
+            images: vec![],
             value: serde_json::from_str(&value)
                 .map_err(|error| convert::bad(format!("tool result is not JSON: {error}")))?,
         },

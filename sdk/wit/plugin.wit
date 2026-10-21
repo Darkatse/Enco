@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.4.0;
+package enco:plugin@0.5.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -21,8 +21,14 @@ interface types {
     /// Opaque adapter fields. The host replays them only to their originating plugin identity.
     record extension { data: json }
 
-    /// Ordered text, tool interactions and opaque extensions within a message.
-    variant part { text(string), tool-call(tool-call), tool-result(tool-result), extension(extension) }
+    /// Image encodings that every supported service accepts.
+    enum image-format { png, jpeg, webp }
+
+    /// An image in a message: the stored bytes, not base64.
+    record image { format: image-format, data: list<u8> }
+
+    /// Ordered text, images, tool interactions and opaque extensions within a message.
+    variant part { text(string), tool-call(tool-call), tool-result(tool-result), extension(extension), image(image) }
 
     /// A canonical message sent to or returned by the model.
     record message { role: role, parts: list<part> }
@@ -99,6 +105,7 @@ interface completion {
     use types.{failure, message, tool-spec, settings};
 
     /// The frozen messages, disclosed tools and output budget for one completion.
+    /// User messages may include images; tool messages contain one result followed by any images.
     record request { messages: list<message>, tools: list<tool-spec>, max-output-tokens: option<u32> }
 
     /// Token counts reported by the service, including cache hits when available.
@@ -108,6 +115,7 @@ interface completion {
     enum stop-reason { end-turn, tool-calls, max-tokens, other }
 
     /// A completed model attempt. `message.role` must be assistant.
+    /// Canonical parts are text, tool calls and extensions; generated images stay in extensions.
     record completion { message: message, usage: usage, stop-reason: stop-reason }
 
     /// Perform one non-streaming completion.
