@@ -48,7 +48,7 @@ pub enum Part<I = Image> {
 pub struct ToolCall {
     /// Fresh identity assigned by the host adapter when accepting a Completion.
     pub id: CallId,
-    /// Original service call ID, retained when returning tool results.
+    /// Original service call ID, empty when the service assigned none.
     pub provider_id: String,
     /// Tool name selected by the model from the disclosed definitions.
     pub name: String,

@@ -1,6 +1,6 @@
 use enco_sdk::protocol::{
     Request, Settings, apply_options, bad_request,
-    types::{Failure, Image, Message, Part, Role, ToolCall, ToolSpec},
+    types::{Failure, Image, Message, Part, Role, ToolCall, ToolResult, ToolSpec},
 };
 use serde_json::{Value, json};
 
@@ -101,32 +101,50 @@ fn wire_part(part: &Part) -> Result<Value, Failure> {
     }
 }
 
+/// The protocol pairs a call and its result by ID, or by order when the service gave the call
+/// none; the kernel settles results in call order.
 fn results(assistant: &Message, tools: &[&Message]) -> Result<Value, Failure> {
+    let results: Vec<_> = tools
+        .iter()
+        .filter_map(|message| match message.parts.first() {
+            Some(Part::ToolResult(result)) => Some((*message, result)),
+            _ => None,
+        })
+        .collect();
+    let mut unnamed = results
+        .iter()
+        .filter(|(_, result)| result.call_id.is_empty());
     let parts = assistant
         .parts
         .iter()
         .filter_map(|part| match part {
-            Part::ToolCall(call) => Some(function_response(call, tools)),
+            Part::ToolCall(call) => Some(call),
             _ => None,
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|call| {
+            let found = if call.id.is_empty() {
+                unnamed.next()
+            } else {
+                results.iter().find(|(_, result)| result.call_id == call.id)
+            };
+            let (message, result) =
+                found.ok_or_else(|| bad_request(format!("missing result for {}", call.name)))?;
+            Ok(function_response(call, message, result))
+        })
+        .collect::<Result<Vec<_>, Failure>>()?;
     Ok(json!({"role": "user", "parts": parts}))
 }
 
-fn function_response(call: &ToolCall, tools: &[&Message]) -> Result<Value, Failure> {
-    let (message, result) = tools
-        .iter()
-        .find_map(|message| match message.parts.first() {
-            Some(Part::ToolResult(result)) if result.call_id == call.id => Some((message, result)),
-            _ => None,
-        })
-        .ok_or_else(|| bad_request(format!("missing result for {}", call.id)))?;
+fn function_response(call: &ToolCall, message: &Message, result: &ToolResult) -> Value {
     let response = if result.is_error {
         json!({"error": result.content})
     } else {
         json!({"output": result.content})
     };
-    let mut wire = json!({"id": call.id, "name": call.name, "response": response});
+    let mut wire = json!({"name": call.name, "response": response});
+    if !call.id.is_empty() {
+        wire["id"] = json!(call.id);
+    }
     let images = message
         .parts
         .iter()
@@ -138,7 +156,7 @@ fn function_response(call: &ToolCall, tools: &[&Message]) -> Result<Value, Failu
     if !images.is_empty() {
         wire["parts"] = json!(images);
     }
-    Ok(json!({"functionResponse": wire}))
+    json!({"functionResponse": wire})
 }
 
 fn inline(image: &Image) -> Value {

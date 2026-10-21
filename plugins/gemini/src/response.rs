@@ -43,8 +43,8 @@ fn canonical_parts(content: &Object) -> Result<Vec<Part>, Failure> {
         let part = object(part, "part")?;
         if let Some(call) = part.get("functionCall") {
             let call = object(call, "functionCall")?;
-            let id = required(call, "id")?;
-            if !ids.insert(id) {
+            let id = read(call, "id", Value::as_str)?;
+            if !id.is_empty() && !ids.insert(id) {
                 return Err(bad(format!("duplicate function call ID {id}")));
             }
             parts.push(Part::ToolCall(ToolCall {
@@ -122,7 +122,7 @@ fn object<'a>(value: &'a Value, what: &str) -> Result<&'a Object, Failure> {
         .ok_or_else(|| bad(format!("invalid {what}")))
 }
 
-/// A field Enco cannot do without, such as a call's ID, which this plugin never invents.
+/// A field the protocol itself requires, such as a call's name.
 fn required<'a>(value: &'a Object, name: &str) -> Result<&'a str, Failure> {
     value
         .get(name)

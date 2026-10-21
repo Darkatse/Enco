@@ -12,7 +12,7 @@ interface types {
     /// Identifies the speaker of a canonical model message.
     enum role { system, user, assistant, tool }
 
-    /// A proposed tool invocation. `id` is the original service-assigned call ID.
+    /// A proposed tool invocation. `id` is the original service-assigned call ID, empty when the service assigns none.
     record tool-call { id: string, name: string, arguments: string }
 
     /// A tool settlement. `call-id` refers to the original `tool-call.id`.

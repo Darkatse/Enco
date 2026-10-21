@@ -82,7 +82,7 @@ Identifies the speaker of a canonical model message.
 
 #### record `tool-call`
 
-A proposed tool invocation. `id` is the original service-assigned call ID.
+A proposed tool invocation. `id` is the original service-assigned call ID, empty when the service assigns none.
 
 | Field | Type | Description |
 |---|---|---|

@@ -66,6 +66,29 @@ fn results_return_in_call_order_as_one_user_content() -> Result<(), Failure> {
 }
 
 #[test]
+fn calls_without_ids_take_their_results_in_order() -> Result<(), Failure> {
+    let unnamed = |name: &str| json!({"functionCall": {"name": name, "args": {}}});
+    let assistant = response::completion(reply(
+        json!({"role": "model", "parts": [unnamed("first"), unnamed("second")]}),
+        "STOP",
+    ))?;
+    assert_eq!(assistant.stop_reason, StopReason::ToolCalls);
+    let body = request::completion(
+        &settings(json!({})),
+        request(vec![assistant.message, result("", false), result("", true)]),
+    )?;
+    let responses = &body["contents"][1]["parts"];
+    assert_eq!(responses[0]["functionResponse"]["name"], "first");
+    assert_eq!(responses[1]["functionResponse"]["name"], "second");
+    assert_eq!(
+        responses[1]["functionResponse"]["response"],
+        json!({"error": "result "})
+    );
+    assert!(responses[0]["functionResponse"].get("id").is_none());
+    Ok(())
+}
+
+#[test]
 fn only_calls_from_other_services_carry_the_placeholder_signature() -> Result<(), Failure> {
     let own = response::completion(reply(
         json!({"role": "model", "parts": [call("a")]}),
