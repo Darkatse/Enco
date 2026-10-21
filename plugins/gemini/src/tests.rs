@@ -89,6 +89,20 @@ fn calls_without_ids_take_their_results_in_order() -> Result<(), Failure> {
 }
 
 #[test]
+fn null_args_read_as_empty_arguments() -> Result<(), Failure> {
+    let reply = response::completion(reply(
+        json!({"role": "model", "parts": [{"functionCall": {"name": "self_status", "args": null}}]}),
+        "STOP",
+    ))?;
+    assert!(matches!(
+        reply.message.parts.first(),
+        Some(Part::ToolCall(call)) if call.arguments == "{}"
+    ));
+    assert_eq!(reply.stop_reason, StopReason::ToolCalls);
+    Ok(())
+}
+
+#[test]
 fn only_calls_from_other_services_carry_the_placeholder_signature() -> Result<(), Failure> {
     let own = response::completion(reply(
         json!({"role": "model", "parts": [call("a")]}),

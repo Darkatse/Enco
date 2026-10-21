@@ -41,7 +41,7 @@ fn canonical_parts(content: &Object) -> Result<Vec<Part>, Failure> {
     let mut ids = HashSet::new();
     for part in read(content, "parts", list)? {
         let part = object(part, "part")?;
-        if let Some(call) = part.get("functionCall") {
+        if let Some(call) = field(part, "functionCall") {
             let call = object(call, "functionCall")?;
             let id = read(call, "id", Value::as_str)?;
             if !id.is_empty() && !ids.insert(id) {
@@ -52,7 +52,7 @@ fn canonical_parts(content: &Object) -> Result<Vec<Part>, Failure> {
                 name: required(call, "name")?.into(),
                 arguments: Value::Object(read(call, "args", message)?).to_string(),
             }));
-        } else if let Some(text) = part.get("text") {
+        } else if let Some(text) = field(part, "text") {
             let text = text.as_str().ok_or_else(|| bad("invalid text"))?;
             if !read(part, "thought", Value::as_bool)? {
                 parts.push(Part::Text(text.into()));
@@ -94,17 +94,22 @@ pub fn embeddings(response: Value, inputs: usize) -> Result<Vec<Vec<f32>>, Failu
         .collect()
 }
 
-/// Reads a field as proto3 JSON writes it: an absent field holds its type's default (an
-/// empty list or message, an unspecified enum, zero, false), so only a present field of
-/// the wrong type makes a response malformed.
+/// A set field. ProtoJSON reads `null` as unset, the same as an absent key; no field read
+/// here has the `google.protobuf.Value` type, the one exception.
+fn field<'a>(object: &'a Object, name: &str) -> Option<&'a Value> {
+    object.get(name).filter(|value| !value.is_null())
+}
+
+/// An unset field holds its type's default (an empty list or message, an unspecified enum,
+/// zero, false), so only a set field of the wrong type makes a response malformed.
 fn read<'a, T: Default>(
-    value: &'a Object,
+    object: &'a Object,
     name: &str,
     typed: fn(&'a Value) -> Option<T>,
 ) -> Result<T, Failure> {
-    match value.get(name) {
+    match field(object, name) {
         None => Ok(T::default()),
-        Some(field) => typed(field).ok_or_else(|| bad(format!("invalid {name}"))),
+        Some(value) => typed(value).ok_or_else(|| bad(format!("invalid {name}"))),
     }
 }
 
@@ -124,8 +129,7 @@ fn object<'a>(value: &'a Value, what: &str) -> Result<&'a Object, Failure> {
 
 /// A field the protocol itself requires, such as a call's name.
 fn required<'a>(value: &'a Object, name: &str) -> Result<&'a str, Failure> {
-    value
-        .get(name)
+    field(value, name)
         .and_then(Value::as_str)
         .ok_or_else(|| bad(format!("missing string {name}")))
 }
