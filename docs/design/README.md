@@ -28,7 +28,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 
 ## 不变式
 
-下面七条是设计的主干。专题中的每个判断都从其中某一条推出；推不出来的，要么是一条新的不变式，经主人确认后写进这里，要么不属于设计。
+下面八条是设计的主干。专题中的每个判断都从其中某一条推出；推不出来的，要么是一条新的不变式，经主人确认后写进这里，要么不属于设计。
 
 **模型可见 ⟺ 已记录。** 进入模型请求的一切，都先成为 Log 中的记录。请求只有一个构造者，即本 Session 的 composer：它把组装结果冻结为 ContextPlan，按内容寻址记录，此后重试、查看与审计都只解析这份记录，不重新组装。所以 Session 可以只凭 Log 重建，换代码、换机器、崩溃之后都能继续。
 
@@ -43,6 +43,8 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 **双向不泄露。** 插件只看得到 WIT，这由 Wasm 物理保证；内核与宿主不按插件或服务的身份写业务分支，服务之间的差异由插件声明的能力表达，这由依赖方向与公开契约保证；插件之间只经导入的接口交互，由内核转发。宿主按操作系统平台做适配是它的正常职责。
 
 **外部效果如实结算。** 调用的结局只有 `ok`、`failed`、`unknown` 三种。请求发出之后无法确认的，就是 `unknown`；有副作用的调用结局为 `unknown` 时不自动重试，由看得到记录的一方决定。trap 撤销不了已经发生的效果，所以重投以记录为准。
+
+**外部进入 ⟺ 已映射且已钉住。** 外部是 Enco 无法设计、也无法控制的一切：第三方服务、模型服务、网页、文档、命令输出与聊天协议；能登记的插件与配置不属于外部。外部产生的内容先按原样记录，再由已登记的映射器译成规范值；外部声明的契约（例如一份工具目录）以定本写进意图，随代际固定，内容与定本不符就是带出处的失败。映射器只翻译，不做任何 I/O，规范值由内核自己的类型接纳，此后各层信任它。所以外部的变化只在一个位置、以一种失败出现，修复也只有登记这一条路。这一条与上一条互为对偶：上一条管出去的效果，这一条管进来的内容。
 
 **单机是分布式的退化形式。** 单节点就是所有 Binding 都指向自己、控制平面只有一个投票者的情形，与多节点是同一套代码。事后补上代价很高的数据形态从第一天就固定（见多节点专题）；顺序来自结构，而不来自时钟。
 
@@ -88,14 +90,14 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | Session | 身份 + Log + 工作区 + 配置（composer、按 Attempt 用途选用的 endpoint，可以取自命名的 profile）；单写者；可以有父 Session |
 | Round | 一次模型请求及其全部工具调用与结果确认；一个 Event 唤醒的连续多个 Round 是一次 Run |
 | Log | 追加式事实，键为 `(epoch, seq)`；模型上下文的唯一来源 |
-| Capability | Tool、Provider、Channel、Context、Observer；ID 为 `(节点, 插件名, 名称)` |
+| Capability | Tool、Provider、Channel、Context、Observer、Mapper；ID 为 `(节点, 插件名, 名称)` |
 | Plugin / Generation | 能力的打包单位，名字是主人 home 中 `plugins/` 下的目录名，身份是 ULID / 一份已登记、可以试用与回退的实现，由内容与从内容求出的声明组成 |
 | Host | 节点提供的机制：fs、exec、http、连接、定时、状态、blob、检索索引 |
 | Node | 一个运行中的内核及其 Host：完整节点、Edge 节点，或只参与控制平面的见证者 |
 | Space | 主人全部节点的集合；控制平面（成员、Binding、期望状态）由共识维护 |
 | Binding | `key → (node, epoch)`，单写者资源的所有权：Session 是粘滞所有权，渠道与定时是租约 |
 
-其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief；ContextPlan、Composer、Candidate、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
+其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief；ContextPlan、Composer、Candidate、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store；外部、Mapper（映射器）、定本。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
 
 扩展只有两种形态：
 
@@ -125,7 +127,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 5. 事实            → 写入本地 Log，按 epoch 栅栏异步复制到 Space
 ```
 
-## 四个透镜
+## 五个透镜
 
 | 透镜 | 做到极致的地方 | Enco 拿走的 | 它的教训与 Enco 的对策 |
 |---|---|---|---|
@@ -133,6 +135,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | Plan 9 | 按进程组合的命名空间，`import`，`cpu` | 每个 Round 的能力快照是一个命名空间，由本地与远程导出的能力组成；roam 就是 `cpu` | 一切皆文件会丢失动作的语义 → 动作用类型化调用，文件投影只用于查看 |
 | Smalltalk | 活的 image，系统在运行中修改自己 | 自我修改的闭环，`status` 与 `inspect` | image 不可复现、会腐烂，包之间的方法覆盖让结果取决于加载顺序 → 源码是意图，登记把源码与制品按内容寻址记进自己的库；要改变一个插件的行为就改它的源码并登记 |
 | Lisp | 代码即数据，eval 与 REPL，语言扩展自身 | Log 是数据；请求是 composer 对当前输入的纯函数，并作为数据记录；工具调用是被内核 eval 的程序 | 无限扩展导致方言碎片化 → 少量类型化的贡献与 WIT 契约 |
+| 边界类型 | 外部数据在边界上一次译成静态类型：F# 与 Idris 的类型提供器、Elm 的 decoder、Typed Racket 的 `require/typed` 与归责、TypeScript 的内容映射器 | 外部只经映射器进入；映射器的结果由内核自己的类型接纳，此后就是证明；失败指回外部与原文 | 提供器现查活的数据源使构建不确定，生成的代码绕过检查；切在紧耦合处的细粒度边界可慢百倍；TS 的映射器是任意进程，只能靠信任开关 → 映射器是零导入的 Wasm 组件，对定本与原文的纯函数；契约以定本钉进代际；边界只切在整份外部内容上 |
 
 ## 源码地图
 
@@ -164,7 +167,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | [代际](generations.md) | 自我修改：登记、生效、恢复与宿主例外 |
 | [Session](session.md) | Log、Round、请求的唯一构造路径、Attempt、恢复与取消、定时 |
 | [上下文与手册](context.md) | 内核、composer 与 Provider 的分工，渐进式披露，一份文档两种读者 |
-| [插件](plugins.md) | 边界与契约、插件只响应调用、Store、命名与身份、接线与准入、配置与密钥、原生能力 |
+| [插件](plugins.md) | 边界与契约、插件只响应调用、Store、命名与身份、接线与准入、外部的映射与定本、配置与密钥、原生能力 |
 | [渠道](channels.md) | 连接 actor、事件的转移、投递的结算 |
 | [记忆](memory.md) | 权威与派生索引、索引提名而权威裁决、相关性过滤 |
 | [多节点](space.md) | CP、粘滞所有权与租约、invoke 与 roam、两种同步、移动端 |

@@ -68,6 +68,10 @@ P0 runs on macOS and Linux as a background service with a command-line client; s
 
 The whole system is described with ten concepts and two rules for mutable state. Each piece of state has one owner that applies changes in order, and callbacks return their writes for the owner to commit in one transaction. Chat connections, stateful tools and derived indexes all follow these two rules instead of each having a framework of its own. The design keeps a fixed vocabulary, so each word names one thing.
 
+### Type mapping for externalities (MCP)
+
+Some things Enco can neither design nor control: third-party tool servers such as MCP, model services, web pages, documents, command output and chat protocols. They enter only through mappers. A mapper is a WebAssembly component with no imports, so all it can do is translate raw content into Enco's own types: it needs no trust, and the same input always gives the same result. The raw content is recorded, so a new version of a mapper can be replayed against everything seen before and compared with the old one. A service's contract, such as a tool server's catalog, is pinned as a normalized file in the owner's intent and registered like plugin source; when the service changes, the difference is reported as drift instead of silently changing what the model sees. MCP is the first user. Model providers follow together with streaming: they become pure encoders and decoders, the host makes the HTTP requests and sends them only to the configured endpoint, and raw responses are kept for replay.
+
 ## Roadmap
 
 | Phase | Goal | Status |
@@ -147,7 +151,7 @@ Enco takes design ideas from these projects:
 - [SillyTavern](https://github.com/SillyTavern/SillyTavern): its prompt manager is why request assembly is a plugin chosen per conversation.
 - [Zed](https://zed.dev/): evolving a WIT contract by keeping older versions linked.
 
-The design also draws on four older systems. Erlang gave the idea of processes that own their state and swap code under supervision. Plan 9 gave per-process namespaces and the `import` and `cpu` commands, which became the capability snapshot of a round, `invoke` and `roam`. Smalltalk showed a live system that changes itself while running. Lisp treats code as data, and Enco treats its log and every model request the same way.
+The design also looks through five lenses. Erlang gave the idea of processes that own their state and swap code under supervision. Plan 9 gave per-process namespaces and the `import` and `cpu` commands, which became the capability snapshot of a round, `invoke` and `roam`. Smalltalk showed a live system that changes itself while running. Lisp treats code as data, and Enco treats its log and every model request the same way. Boundary types translate foreign data once, at the edge, into a language's own types: F# and Idris type providers, Elm decoders, Typed Racket's typed imports with blame, and [TypeScript's content mappers](https://github.com/microsoft/typescript-go/pull/4712). Enco's mappers follow them, and add what their history taught: mappers cannot perform I/O, and external contracts are pinned instead of queried live.
 
 Enco is built on [Wasmtime](https://wasmtime.dev/), [tokio](https://tokio.rs/) and [SQLite](https://sqlite.org/). Memory recall uses [TriviumDB](https://github.com/YoKONCy/TriviumDB) by [@YoKONCy](https://github.com/YoKONCy).
 

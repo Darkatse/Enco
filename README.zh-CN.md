@@ -68,6 +68,10 @@ P0 在 macOS 和 Linux 上以后台服务加命令行客户端的形式运行，
 
 整个系统用十个概念和两条规则来描述可变状态：每份状态只有一个归属者，由它按顺序处理变更；回调把写入作为返回值交出，由归属者在一个事务中提交。聊天连接、有状态的工具和派生索引都遵循这两条规则，没有各自的一套框架。设计固定了术语，每个词只指一样东西。
 
+### 外部性的类型映射（MCP）
+
+有些东西 Enco 既无法设计，也无法控制：MCP 这类第三方工具服务、模型服务、网页、文档、命令输出和聊天协议。它们只经映射器进入。映射器是不带任何导入的 WebAssembly 组件，能做的只有把原文翻译成 Enco 自己的类型：它不需要信任，同样的输入总得到同样的结果。原文会被记录，所以映射器的新版本可以在以前见过的全部内容上重放，与旧版本逐条比较。服务的契约（例如工具服务的工具目录）规范化后作为定本写进意图，与插件源码一样登记；服务一旦变化，差异报告为漂移，而不是悄悄改变模型看到的东西。MCP 是第一个使用者。模型服务商随流式补全一起跟进：插件只做编码与解码，HTTP 由宿主发出、只发往配置的 endpoint，原始响应留作重放。
+
 ## 路线图
 
 | 阶段 | 目标 | 状态 |
@@ -144,7 +148,7 @@ Enco 的设计借鉴了这些项目：
 - [SillyTavern](https://github.com/SillyTavern/SillyTavern)：因为它的 prompt manager，请求组装被设计成每段会话可以各自选择的插件。
 - [Zed](https://zed.dev/)：同时链接旧版本 world 来演进 WIT 契约。
 
-整体设计还借鉴了四个更早的系统。Erlang 提供了进程持有自身状态、在监督下替换代码的思路。Plan 9 的进程命名空间与 `import`、`cpu` 命令，对应到每个 Round 的能力快照、`invoke` 与 `roam`。Smalltalk 展示了一个在运行中修改自身的系统。Lisp 把代码当作数据，Enco 也把日志和每一次模型请求当作数据。
+整体设计还通过五个透镜审视自己。Erlang 提供了进程持有自身状态、在监督下替换代码的思路。Plan 9 的进程命名空间与 `import`、`cpu` 命令，对应到每个 Round 的能力快照、`invoke` 与 `roam`。Smalltalk 展示了一个在运行中修改自身的系统。Lisp 把代码当作数据，Enco 也把日志和每一次模型请求当作数据。边界类型在边界上把外来数据一次翻译成语言自己的类型：F# 与 Idris 的类型提供器、Elm 的 decoder、带归责的 Typed Racket 类型化导入，以及 [TypeScript 的内容映射器](https://github.com/microsoft/typescript-go/pull/4712)。Enco 的映射器沿用这一思路，并补上它们的历史教训：映射器不能做 I/O，外部契约钉住而不是现查。
 
 Enco 基于 [Wasmtime](https://wasmtime.dev/)、[tokio](https://tokio.rs/) 与 [SQLite](https://sqlite.org/) 构建。记忆召回使用 [@YoKONCy](https://github.com/YoKONCy) 的 [TriviumDB](https://github.com/YoKONCy/TriviumDB)。
 
