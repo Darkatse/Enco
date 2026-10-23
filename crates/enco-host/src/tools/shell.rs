@@ -66,9 +66,9 @@ impl Shell {
             1,
             SHELL_MAX_TIMEOUT_MS,
         )?;
-        let cwd = match args.get("cwd") {
+        let cwd = match optional_string(args, "cwd")? {
             None => self.workspace.clone(),
-            Some(_) => resolve_path(&self.workspace, string(args, "cwd")?),
+            Some(cwd) => resolve_path(&self.workspace, cwd),
         };
         let child = Command::new("sh")
             .args(["-c", command])
@@ -121,6 +121,7 @@ async fn collect_output(
             return Ok(Outcome::Ok {
                 value,
                 images: vec![],
+                outgoing: None,
             });
         }
         tokio::select! {

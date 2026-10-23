@@ -116,6 +116,7 @@ impl Tool for MemoryTool {
             Ok(value) => Outcome::Ok {
                 value,
                 images: vec![],
+                outgoing: None,
             },
             Err(failure) => Outcome::Failed { failure },
         }

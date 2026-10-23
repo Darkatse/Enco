@@ -41,7 +41,7 @@ pub(crate) async fn chat(paths: &Paths, session: String) -> Result<()> {
             line = client.reader.next_line() => {
                 let Some(line) = line? else { return Ok(()); };
                 match serde_json::from_str::<ServerMessage>(&line)? {
-                    ServerMessage::Entry { entry, .. } => render(*entry, &mut purposes, &mut safe_noted),
+                    ServerMessage::Entry { entry, .. } => render(paths, *entry, &mut purposes, &mut safe_noted),
                     ServerMessage::Error { code, message, .. } => eprintln!("! {code}: {message}"),
                     ServerMessage::Ok { .. } => {},
                 }
@@ -50,7 +50,12 @@ pub(crate) async fn chat(paths: &Paths, session: String) -> Result<()> {
     }
 }
 
-fn render(entry: Entry, purposes: &mut HashMap<AttemptId, AttemptPurpose>, safe_noted: &mut bool) {
+fn render(
+    paths: &Paths,
+    entry: Entry,
+    purposes: &mut HashMap<AttemptId, AttemptPurpose>,
+    safe_noted: &mut bool,
+) {
     match entry.body {
         EntryBody::RunStarted { .. } => *safe_noted = false,
         EntryBody::EventConsumed {
@@ -97,15 +102,39 @@ fn render(entry: Entry, purposes: &mut HashMap<AttemptId, AttemptPurpose>, safe_
             }
         }
         EntryBody::ToolCallStarted { capability, .. } => println!("  → {}", capability.name),
-        EntryBody::ToolCallSettled { outcome, .. } => match outcome {
-            Settlement::Ok => println!("  ← ok"),
-            Settlement::Failed { failure } => println!("  ← failed: {}", failure.code),
-            Settlement::Unknown { failure } => println!("  ← unknown: {}", failure.code),
-        },
+        EntryBody::ToolCallSettled {
+            outcome, outgoing, ..
+        } => {
+            match outcome {
+                Settlement::Ok => println!("  ← ok"),
+                Settlement::Failed { failure } => println!("  ← failed: {}", failure.code),
+                Settlement::Unknown { failure } => println!("  ← unknown: {}", failure.code),
+            }
+            if let Some(outgoing) = outgoing {
+                println!("{}", outgoing_text(paths, &outgoing));
+            }
+        }
         EntryBody::Compacted { .. } => println!("  (context compacted)"),
         EntryBody::RunEnded { end, .. } if end != RunEnd::Completed => {
             eprintln!("! run ended: {end:?}")
         }
         _ => {}
     }
+}
+
+fn outgoing_text(paths: &Paths, outgoing: &Outgoing) -> String {
+    let mut text = outgoing.text.clone();
+    if let Some(file) = &outgoing.file {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        let path = enco_host::blob_path(&paths.blobs(), &file.content);
+        text.push_str(&format!(
+            "📎 {} ({} bytes): {}",
+            file.name,
+            file.size,
+            path.display()
+        ));
+    }
+    text
 }

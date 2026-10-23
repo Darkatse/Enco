@@ -1,6 +1,8 @@
 //! Fixed P0 policy limits; these are not runtime configuration.
 pub(crate) const FILE_READ_DEFAULT_LINES: u64 = 2_000;
 pub(crate) const FILE_READ_MAX_LINES: u64 = 10_000;
+// Telegram states its upload limits in MB; decimal bytes stay within either reading.
+pub(crate) const MESSAGE_FILE_MAX_BYTES: u64 = 50_000_000;
 pub(crate) const SHELL_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub(crate) const SHELL_MAX_TIMEOUT_MS: u64 = 1_800_000;
 pub(crate) const SHELL_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -24,6 +26,10 @@ pub(crate) const CHANNEL_MAX_BACKOFF: std::time::Duration = std::time::Duration:
 pub(crate) const CHANNEL_WAKE_CAPACITY: usize = 32;
 pub(crate) const TELEGRAM_POLL_SECONDS: u64 = 30;
 pub(crate) const TELEGRAM_SEND_SECONDS: u64 = 15;
+pub(crate) const TELEGRAM_UPLOAD_SECONDS: u64 = 120;
+pub(crate) const TELEGRAM_PHOTO_MAX_BYTES: usize = 10_000_000;
+pub(crate) const TELEGRAM_PHOTO_MAX_DIMENSION_SUM: usize = 10_000;
+pub(crate) const TELEGRAM_PHOTO_MAX_ASPECT_RATIO: usize = 20;
 pub(crate) const TELEGRAM_MESSAGE_CHARS: usize = 32768;
 pub(crate) const RECENT_DELIVERY_FAILURES: u32 = 10;
 pub(crate) const BUILD_DIAGNOSTICS: usize = 12;

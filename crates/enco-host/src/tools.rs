@@ -1,6 +1,7 @@
 pub(crate) mod args;
 pub(crate) mod development;
 mod files;
+mod message;
 pub use development::{development_tool_specs, development_tools, self_status_spec};
 mod shell;
 
@@ -34,6 +35,9 @@ pub fn native_tools(workspace: PathBuf) -> Vec<Arc<dyn Tool>> {
             }) as Arc<dyn Tool>
         })
         .collect();
+    tools.push(Arc::new(message::MessageSend {
+        workspace: workspace.clone(),
+    }));
     tools.push(Arc::new(shell::Shell { workspace }));
     tools
 }

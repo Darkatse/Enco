@@ -88,6 +88,8 @@ pub enum EntryBody {
         full: Option<ContentHash>,
         /// Images stored by the settlement before this entry was committed.
         images: Vec<Image>,
+        /// Owner-directed content accepted with this settlement.
+        outgoing: Option<crate::Outgoing>,
     },
     /// All proposed calls have been settled and the Round has ended.
     RoundEnded {

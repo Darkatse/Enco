@@ -83,12 +83,24 @@ pub(crate) enum EntryBody {
         call: String,
         outcome: Settlement,
         content: String,
+        outgoing: Option<Outgoing>,
     },
     RunEnded {
         end: RunEnd,
     },
     #[serde(other)]
     Other,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Outgoing {
+    pub(crate) text: String,
+    pub(crate) file: Option<OutgoingFile>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct OutgoingFile {
+    pub(crate) name: String,
 }
 
 #[derive(Deserialize)]

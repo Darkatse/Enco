@@ -1,4 +1,5 @@
 mod accept;
+mod blob;
 mod commit;
 mod connections;
 mod content;
@@ -8,6 +9,7 @@ mod schedules;
 mod sessions;
 
 use async_trait::async_trait;
+pub use blob::blob_path;
 use enco_core::*;
 use enco_kernel::*;
 use rusqlite::{Connection, TransactionBehavior};
@@ -18,7 +20,7 @@ use std::{
 
 /// `PRAGMA user_version` covers SQLite and its referenced plans. Until P4, persistent
 /// format changes require a new database; opening never migrates or deletes the old one.
-const SCHEMA_VERSION: u32 = 10;
+const SCHEMA_VERSION: u32 = 11;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -330,8 +332,7 @@ impl Store for SqliteStore {
     }
 
     fn blob_path(&self, hash: &ContentHash) -> PathBuf {
-        let address = hash.to_string();
-        self.paths.blobs.join(&address[..2]).join(address)
+        blob_path(&self.paths.blobs, hash)
     }
 }
 

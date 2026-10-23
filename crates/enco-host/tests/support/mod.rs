@@ -505,6 +505,7 @@ impl Tool for TestStatus {
     ) -> Outcome {
         Outcome::Ok {
             images: Vec::new(),
+            outgoing: None,
             value: serde_json::json!(self.0.status().await.unwrap().plugins),
         }
     }

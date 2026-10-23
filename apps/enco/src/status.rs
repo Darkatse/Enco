@@ -99,6 +99,7 @@ impl Tool for StatusTool {
             Ok(status) => Outcome::Ok {
                 value: status.document().into(),
                 images: Vec::new(),
+                outgoing: None,
             },
             Err(error) => Outcome::Failed {
                 failure: Failure {

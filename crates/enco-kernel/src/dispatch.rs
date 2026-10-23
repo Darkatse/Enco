@@ -38,6 +38,13 @@ impl SessionActor {
                 }
             }
         }
+        let outgoing = if let Outcome::Ok { outgoing, .. } = &mut outcome
+            && let Some(outgoing) = outgoing.take()
+        {
+            Some(crate::outgoing::store(self.deps.store.as_ref(), outgoing).await?)
+        } else {
+            None
+        };
         let mut content = render_text(&outcome);
         let mut full = None;
         if content.len() > limits::TOOL_RESULT_INLINE_BYTES {
@@ -65,6 +72,7 @@ impl SessionActor {
             content,
             full,
             images: stored,
+            outgoing,
         }])
         .await
     }

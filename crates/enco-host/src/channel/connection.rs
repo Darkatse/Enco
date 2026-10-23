@@ -1,5 +1,5 @@
 use super::{projection, transport, *};
-use enco_kernel::ConnectionWrite;
+use enco_kernel::{ConnectionWrite, StoreError};
 use std::collections::{BTreeSet, VecDeque};
 use tokio::{
     sync::{broadcast, mpsc},
@@ -224,7 +224,7 @@ impl Connection {
                     event = entries.recv() => event,
                 };
                 match event {
-                    Ok(Entry { body: EntryBody::RoundEnded { .. } | EntryBody::RunEnded { .. }, .. })
+                    Ok(Entry { body: EntryBody::RoundEnded { .. } | EntryBody::RunEnded { .. } | EntryBody::ToolCallSettled { outgoing: Some(_), .. }, .. })
                     | Err(broadcast::error::RecvError::Lagged(_)) => {
                         tokio::select! {
                             _ = stop.cancelled() => return Ok(()),
@@ -334,15 +334,17 @@ impl Connection {
             return Ok(());
         }
         if let Some(Receipt { target, text }) = self.receipts.pop_front() {
-            self.in_flight = Some(InFlight::Receipt(self.send(target, text)));
+            self.in_flight = Some(InFlight::Receipt(
+                self.send(target, Outgoing { text, file: None }),
+            ));
             return Ok(());
         }
         while let Some(session) = self.dirty.pop_first() {
             let mut cursor = self.state.outbound[&session].clone();
             let previous = cursor.processed;
             let entries = self.kernel.log(session, cursor.processed).await?;
-            let text = projection::project(&mut cursor, &self.identity, session, entries);
-            if let Some((delivery, mut text)) = text {
+            let outgoing = projection::project(&mut cursor, &self.identity, session, entries);
+            if let Some((delivery, mut message)) = outgoing {
                 let target = delivery.target.clone();
                 if self.state.chats.get(&target) != Some(&session) {
                     let record = self
@@ -352,12 +354,37 @@ impl Connection {
                         .into_iter()
                         .find(|s| s.id == session)
                         .ok_or(KernelError::UnknownSession(session))?;
-                    text = format!("[{}]\n\n{text}", record.name);
+                    message.text = format!("[{}]\n\n{}", record.name, message.text);
                 }
+                let file = match message.file {
+                    Some(file) => match self.kernel.outgoing_file(&file).await {
+                        Ok(file) => Some(file),
+                        Err(KernelError::Store(error @ StoreError::Blob(_))) => {
+                            self.settle(
+                                delivery,
+                                Settlement::Failed {
+                                    failure: Failure {
+                                        code: "channel.file_unavailable".into(),
+                                        message: error.to_string(),
+                                        retryable: false,
+                                    },
+                                },
+                            )
+                            .await?;
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    },
+                    None => None,
+                };
+                let message = Outgoing {
+                    text: message.text,
+                    file,
+                };
                 let mut state = self.state.clone();
                 state.sending = Some(delivery.clone());
                 self.commit(state, &[], None).await?;
-                self.in_flight = Some(InFlight::Delivery(delivery, self.send(target, text)));
+                self.in_flight = Some(InFlight::Delivery(delivery, self.send(target, message)));
                 break;
             }
             if previous != cursor.processed {
@@ -369,11 +396,11 @@ impl Connection {
         Ok(())
     }
 
-    fn send(&self, target: String, text: String) -> JoinHandle<transport::Sent> {
+    fn send(&self, target: String, message: Outgoing<FileData>) -> JoinHandle<transport::Sent> {
         tokio::spawn(transport::send(
             self.adapter.clone(),
             target,
-            text,
+            message,
             self.stop.clone(),
         ))
     }

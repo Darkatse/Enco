@@ -18,7 +18,7 @@ pub struct ToolSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Effect {
-    /// No external mutation; interruption can be retried.
+    /// No effects beyond content committed with settlement; interruption can be retried.
     ReadOnly,
     /// Repeating the same operation produces the same intended effect.
     Idempotent,
@@ -36,6 +36,8 @@ pub enum Outcome {
         value: Value,
         /// Image bytes handed to the kernel's shared ingestion boundary at settlement.
         images: Vec<Vec<u8>>,
+        /// Owner-directed content accepted atomically with this call's settlement.
+        outgoing: Option<crate::Outgoing<crate::FileData>>,
     },
     /// The operation failed with known effects, including cases that never began execution.
     Failed {

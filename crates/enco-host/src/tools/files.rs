@@ -125,6 +125,7 @@ impl FileTool {
         Ok(Outcome::Ok {
             value,
             images: Vec::new(),
+            outgoing: None,
         })
     }
 }
@@ -149,6 +150,7 @@ async fn read(path: &Path, args: &Map<String, Value>, budget: usize) -> Result<O
         return Ok(Outcome::Ok {
             value: json!({ "path": path }),
             images: vec![bytes],
+            outgoing: None,
         });
     }
     let text = std::str::from_utf8(&bytes).map_err(|error| {
@@ -163,6 +165,7 @@ async fn read(path: &Path, args: &Map<String, Value>, budget: usize) -> Result<O
     Ok(Outcome::Ok {
         value: read_text(text, offset, limit, budget),
         images: Vec::new(),
+        outgoing: None,
     })
 }
 

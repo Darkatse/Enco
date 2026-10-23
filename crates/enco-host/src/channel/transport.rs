@@ -166,15 +166,15 @@ pub(super) struct Sent {
 pub(super) async fn send(
     adapter: Arc<dyn Adapter>,
     target: String,
-    text: String,
+    message: Outgoing<FileData>,
     stop: CancellationToken,
 ) -> Sent {
-    let parts = adapter.split(&text);
-    for (part, text) in parts.iter().enumerate() {
+    let parts = adapter.split(message);
+    for (part, message) in parts.iter().enumerate() {
         let mut delay = Duration::from_secs(1);
         for attempt in 1..=CHANNEL_SEND_ATTEMPTS {
             // A send future has effects: await it even after cancellation.
-            match adapter.send(&target, text).await {
+            match adapter.send(&target, message).await {
                 Ok(()) => break,
                 Err(mut error) => {
                     if !error.unknown

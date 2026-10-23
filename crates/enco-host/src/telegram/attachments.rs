@@ -1,4 +1,4 @@
-use super::{Fault, Telegram, http_error, invalid_response, network, parse_action};
+use super::{Body, Fault, Telegram, http_error, invalid_response, network, parse_action};
 use crate::channel::{Action, Attachment, MessageContent};
 use enco_core::{Unviewable, UnviewableReason};
 use serde::Deserialize;
@@ -93,7 +93,7 @@ impl Content {
 
 pub(super) async fn fetch(telegram: &Telegram, file_id: &str) -> Result<Vec<u8>, Fault> {
     let file = telegram
-        .request("getFile", json!({"file_id": file_id}), 30)
+        .request("getFile", Body::Json(json!({"file_id": file_id})), 30)
         .await?;
     let path = file
         .get("file_path")

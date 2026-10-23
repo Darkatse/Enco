@@ -73,6 +73,7 @@ impl Tool for GatedTool {
         self.finished.store(true, Ordering::SeqCst);
         Outcome::Ok {
             images: Vec::new(),
+            outgoing: None,
             value: serde_json::json!("local write completed"),
         }
     }
@@ -210,9 +211,12 @@ async fn recovery_distinguishes_started_effects_from_calls_never_dispatched() {
         let first_outcome = log
             .iter()
             .find_map(|e| match &e.body {
-                EntryBody::ToolCallSettled { call, outcome, .. } if *call == first.id => {
-                    Some(outcome)
-                }
+                EntryBody::ToolCallSettled {
+                    call,
+                    outcome,
+                    outgoing: None,
+                    ..
+                } if *call == first.id => Some(outcome),
                 _ => None,
             })
             .unwrap();

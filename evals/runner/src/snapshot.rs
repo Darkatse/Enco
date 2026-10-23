@@ -201,7 +201,18 @@ impl Snapshot {
                     call,
                     outcome,
                     content,
+                    outgoing,
                 } => {
+                    if let Some(outgoing) = outgoing {
+                        transcript.push_str(&format!(
+                            "## assistant message to owner\n{}\n",
+                            outgoing.text
+                        ));
+                        if let Some(file) = outgoing.file {
+                            transcript.push_str(&format!("[Attached file: {}]\n", file.name));
+                        }
+                        transcript.push('\n');
+                    }
                     settlements.insert(call, (outcome, content));
                 }
                 EntryBody::RunEnded {
@@ -265,6 +276,44 @@ fn references(arguments: &str, path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_messages_follow_log_order_and_include_attachment_names() {
+        let log = serde_json::json!([
+            {"body": {"kind": "event_consumed", "event": {"body": {"kind": "user_message", "text": "Prepare a report."}}}},
+            {"body": {"kind": "attempt_started", "attempt": "a", "purpose": "reply", "round": "r"}},
+            {"body": {"kind": "attempt_settled", "attempt": "a", "result": {
+                "kind": "completed",
+                "message": {"parts": [
+                    {"kind": "tool_call", "id": "progress", "name": "message_send", "arguments": "{}"},
+                    {"kind": "tool_call", "id": "file", "name": "message_send", "arguments": "{}"}
+                ]},
+                "usage": {"input_tokens": 1, "output_tokens": 2, "cached_input_tokens": null}
+            }}},
+            {"body": {"kind": "tool_call_settled", "call": "progress", "outcome": {"kind": "ok"}, "content": "recorded",
+                "outgoing": {"text": "Preparing the report.", "file": null}}},
+            {"body": {"kind": "tool_call_settled", "call": "file", "outcome": {"kind": "ok"}, "content": "recorded",
+                "outgoing": {"text": "", "file": {"name": "report.pdf", "size": 6, "content": "hash"}}}},
+            {"body": {"kind": "attempt_started", "attempt": "b", "purpose": "reply", "round": "s"}},
+            {"body": {"kind": "attempt_settled", "attempt": "b", "result": {
+                "kind": "completed", "message": {"parts": [{"kind": "text", "text": "Done."}]},
+                "usage": {"input_tokens": 3, "output_tokens": 4, "cached_input_tokens": null}
+            }}}
+        ]);
+        let mut snapshot = Snapshot::default();
+        let mut calls = Vec::new();
+        let transcript = snapshot
+            .project("main", serde_json::from_value(log).unwrap(), &mut calls)
+            .unwrap();
+        assert_eq!(
+            transcript,
+            "## owner\nPrepare a report.\n\n\
+             ## assistant message to owner\nPreparing the report.\n\n\
+             ## assistant message to owner\n\n[Attached file: report.pdf]\n\n\
+             ## assistant\nDone.\n\n"
+        );
+        assert_eq!(calls.len(), 2);
+    }
 
     #[test]
     fn integrity_checks_match_complete_paths() {

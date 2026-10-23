@@ -55,6 +55,7 @@ impl Tool for DevelopmentHandler {
             Ok(value) => Outcome::Ok {
                 value,
                 images: vec![],
+                outgoing: None,
             },
             Err(failure) => Outcome::Failed { failure },
         }

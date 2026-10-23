@@ -98,7 +98,7 @@ pub struct Fault {
 }
 
 /// Native adapter boundary, replaced by the channel plugin boundary in P3.
-/// Outbound text is Markdown, authored by its producer and mapped to the channel protocol here.
+/// Outbound Markdown and optional files are mapped to the channel protocol here.
 #[async_trait]
 pub trait Adapter: Send + Sync {
     /// Declare the connection identity; it must remain stable for this adapter instance.
@@ -110,10 +110,11 @@ pub trait Adapter: Send + Sync {
     async fn poll(&self, protocol: Value) -> Result<Vec<Update>, Fault>;
     /// Fetch a protocol-owned attachment after authorization; reads have no external effect.
     async fn fetch(&self, locator: &str) -> Result<AttachmentContent, Fault>;
-    /// Split a nonempty logical message into nonempty protocol-sized parts, preserving all text.
-    fn split(&self, text: &str) -> Vec<String>;
+    /// Preserve all text; attach the file to the last part, or a separate final part.
+    /// Each part has text or a file; a file-only message produces exactly one part.
+    fn split(&self, message: Outgoing<FileData>) -> Vec<Outgoing<FileData>>;
     /// Perform one bounded attempt. Never retry internally or drop an in-flight side effect.
-    async fn send(&self, target: &str, text: &str) -> Result<(), Fault>;
+    async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<(), Fault>;
 }
 
 #[derive(Debug, thiserror::Error)]

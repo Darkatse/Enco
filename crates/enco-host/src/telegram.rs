@@ -1,18 +1,25 @@
 //! Telegram-specific configuration, transport evidence and text limits.
 mod attachments;
+mod outgoing;
 mod supervisor;
 use crate::channel::{
     Action, Adapter, AttachmentContent, ChannelError, Fault, Identity, Input, Update,
 };
 use async_trait::async_trait;
-use enco_core::Failure;
+use enco_core::{Failure, FileData, Outgoing};
 use enco_kernel::{SettingsError, TableOwner, parse_table};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{num::NonZeroU64, time::Duration};
 pub use supervisor::TelegramChannel;
 
-use crate::limits::{TELEGRAM_MESSAGE_CHARS, TELEGRAM_POLL_SECONDS, TELEGRAM_SEND_SECONDS};
+use crate::limits::TELEGRAM_POLL_SECONDS;
+
+/// Bot API request body; files are uploaded as multipart.
+enum Body {
+    Json(Value),
+    Multipart(reqwest::multipart::Form),
+}
 
 pub struct Telegram {
     client: reqwest::Client,
@@ -51,12 +58,16 @@ impl Telegram {
         })
     }
 
-    async fn request(&self, method: &str, body: Value, timeout: u64) -> Result<Value, Fault> {
-        let response = self
+    async fn request(&self, method: &str, body: Body, timeout: u64) -> Result<Value, Fault> {
+        let request = self
             .client
             .post(format!("{}/bot{}/{}", self.base, self.token, method))
-            .json(&body)
-            .timeout(Duration::from_secs(timeout))
+            .timeout(Duration::from_secs(timeout));
+        let request = match body {
+            Body::Json(body) => request.json(&body),
+            Body::Multipart(form) => request.multipart(form),
+        };
+        let response = request
             .send()
             .await
             .map_err(|error| network(method, error))?;
@@ -226,7 +237,7 @@ impl Adapter for Telegram {
 
     async fn poll(&self, protocol: Value) -> Result<Vec<Update>, Fault> {
         let protocol: Protocol = serde_json::from_value(protocol).map_err(|_| invalid_state())?;
-        let value = self.request("getUpdates", json!({"offset": protocol.offset, "timeout": TELEGRAM_POLL_SECONDS, "allowed_updates": ["message"]}), TELEGRAM_POLL_SECONDS + 10).await?;
+        let value = self.request("getUpdates", Body::Json(json!({"offset": protocol.offset, "timeout": TELEGRAM_POLL_SECONDS, "allowed_updates": ["message"]})), TELEGRAM_POLL_SECONDS + 10).await?;
         let updates: Vec<TelegramUpdate> =
             serde_json::from_value(value).map_err(|_| invalid_response("getUpdates"))?;
         updates
@@ -265,22 +276,12 @@ impl Adapter for Telegram {
         }
     }
 
-    fn split(&self, text: &str) -> Vec<String> {
-        split(text)
+    fn split(&self, message: Outgoing<FileData>) -> Vec<Outgoing<FileData>> {
+        outgoing::split(message)
     }
 
-    async fn send(&self, target: &str, text: &str) -> Result<(), Fault> {
-        let value = self
-            .request(
-                "sendRichMessage",
-                json!({"chat_id": target, "rich_message": {"markdown": text}}),
-                TELEGRAM_SEND_SECONDS,
-            )
-            .await?;
-        if value.get("message_id").and_then(Value::as_i64).is_none() {
-            return Err(invalid_response("sendRichMessage"));
-        }
-        Ok(())
+    async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<(), Fault> {
+        outgoing::send(self, target, message).await
     }
 }
 
@@ -296,22 +297,6 @@ fn parse_action(text: String) -> Action {
         ("/cancel", "") => Action::Cancel,
         _ => Action::Message(text.into()),
     }
-}
-
-fn split(mut text: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    while !text.is_empty() {
-        let mut end = text
-            .char_indices()
-            .nth(TELEGRAM_MESSAGE_CHARS)
-            .map_or(text.len(), |(index, _)| index);
-        if end < text.len() {
-            end = text[..end].rfind('\n').map_or(end, |index| index + 1);
-        }
-        parts.push(text[..end].into());
-        text = &text[end..];
-    }
-    parts
 }
 
 fn network(method: &str, error: reqwest::Error) -> Fault {

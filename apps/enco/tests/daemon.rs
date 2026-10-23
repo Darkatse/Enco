@@ -644,6 +644,13 @@ async fn wasm_embedding_preserves_batch_order_and_rejects_reserved_options() {
     );
 }
 
+fn telegram_text(text: &str) -> Outgoing<FileData> {
+    Outgoing {
+        text: text.into(),
+        file: None,
+    }
+}
+
 #[tokio::test]
 async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
     use enco_host::{
@@ -668,10 +675,13 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
     assert!(updates[2].input.as_ref().unwrap().action.is_none());
     assert_eq!(updates[2].protocol["offset"], 11);
     let text = format!("{}\n{}", "🌱".repeat(32767), "汉字".repeat(18000));
-    let parts = telegram.split(&text);
-    assert!(parts.iter().all(|s| s.chars().count() <= 32768));
-    assert_eq!(parts.concat(), text);
-    assert!(parts[0].ends_with('\n'));
+    let parts = telegram.split(telegram_text(&text));
+    assert!(parts.iter().all(|s| s.text.chars().count() <= 32768));
+    assert_eq!(
+        parts.iter().map(|s| s.text.as_str()).collect::<String>(),
+        text
+    );
+    assert!(parts[0].text.ends_with('\n'));
     let markdown = "# Title\n\n**bold** and ||spoiler||\n\n```rust\nlet x = 1;\n```\n";
     let success = Mock::given(path("/bot42:test-secret/sendRichMessage"))
         .and(wiremock::matchers::body_json(
@@ -684,7 +694,7 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
         .expect(1)
         .mount_as_scoped(&server)
         .await;
-    telegram.send("1", markdown).await.unwrap();
+    telegram.send("1", &telegram_text(markdown)).await.unwrap();
     drop(success);
     for (status, body, unknown, retry, fatal) in [
         (
@@ -728,7 +738,10 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
             .respond_with(ResponseTemplate::new(status).set_body_json(body))
             .mount_as_scoped(&server)
             .await;
-        let error = telegram.send("1", "hello").await.unwrap_err();
+        let error = telegram
+            .send("1", &telegram_text("hello"))
+            .await
+            .unwrap_err();
         assert_eq!(
             (error.unknown, error.failure.retryable, error.fatal),
             (unknown, retry, fatal)

@@ -8,6 +8,7 @@ mod image;
 mod inspect;
 mod kernel;
 mod limits;
+mod outgoing;
 mod plan;
 mod ports;
 mod profile;

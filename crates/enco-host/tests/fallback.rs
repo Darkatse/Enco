@@ -659,7 +659,7 @@ impl Composer for ObservedComposer {
     clippy::panic,
     reason = "calibration fails the test if the composer does not report its needed size"
 )]
-async fn measured_reply_window() -> u32 {
+async fn measured_reply_window(failure: &Failure) -> u32 {
     let root = tempfile::tempdir().unwrap();
     let inputs = Arc::new(Mutex::new(Vec::new()));
     let provider = ScriptedProvider::new(reads(2).chain([reply("read")]).collect());
@@ -685,12 +685,28 @@ async fn measured_reply_window() -> u32 {
         // Ask the real composer for its needed size, with compaction disabled for this probe.
         input.reply.budget.context_tokens = std::num::NonZeroU32::MIN;
         input.compactions_left = 0;
-        let Err(ComposeError::ContextOverflow { needed, .. }) = composer.compose(&input) else {
-            panic!("calibration must report the complete request size");
-        };
-        costs.insert(reads, needed);
+        for safe in [false, true] {
+            if safe {
+                input.safe_mode = Some(SafeMode::Failed(failure.clone()));
+                input
+                    .tools
+                    .retain(|(_, tool)| enco_host::LIFELINE.contains(&tool.name.as_str()));
+            }
+            let Err(ComposeError::ContextOverflow { needed, .. }) = composer.compose(&input) else {
+                panic!("calibration must report the complete request size");
+            };
+            costs.insert((reads, safe), needed);
+        }
     }
-    let (one, two) = (costs[&1], costs[&2]);
+    // One read must fit normally; two must overflow even with the smaller lifeline catalog.
+    let (one, two) = (
+        costs[&(1, false)],
+        costs[&(2, false)].min(costs[&(2, true)]),
+    );
+    assert!(
+        one < two,
+        "history must outgrow both tool catalogs: {costs:?}"
+    );
     let window = one + (two - one) / 2;
     assert!(one < window && window < two);
     window
@@ -717,7 +733,7 @@ async fn without_a_compaction_model_only_a_reply_that_fits_proceeds() {
     let mut document = configuration();
     narrow(
         &mut document["endpoint"]["reply"],
-        measured_reply_window().await,
+        measured_reply_window(&summary_down).await,
     );
     document["endpoint"]["compaction"]["model"] = "summary".into();
     let (kernel, _) = kernel_configured(dir.path(), provider, document, vec![], |_| {}).await;

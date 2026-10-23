@@ -204,7 +204,8 @@ async fn file_reads_return_images_and_reject_other_binary_content() {
     let read = find(&native_tools(dir.path().to_owned()), "fs_read");
     let image = b"\x89PNG\r\n\x1a\nimage bytes";
     std::fs::write(dir.path().join("image"), image).unwrap();
-    let Outcome::Ok { value, images } = call(&*read, serde_json::json!({ "path": "image" })).await
+    let Outcome::Ok { value, images, .. } =
+        call(&*read, serde_json::json!({ "path": "image" })).await
     else {
         panic!("image read failed");
     };
@@ -220,4 +221,56 @@ async fn file_reads_return_images_and_reject_other_binary_content() {
             .message
             .contains("UTF-8 text or a PNG, JPEG or WebP image")
     );
+}
+
+#[tokio::test]
+async fn message_send_requires_content_and_reads_one_bounded_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let send = find(&native_tools(dir.path().to_owned()), "message_send");
+    for args in [
+        serde_json::json!({}),
+        serde_json::json!({"text": " \n"}),
+        serde_json::json!({"text": 1}),
+        serde_json::json!({"file": null}),
+    ] {
+        assert!(
+            matches!(call(&*send, args).await, Outcome::Failed { failure }
+            if failure.code == code::TOOL_INVALID_ARGUMENTS)
+        );
+    }
+    assert!(matches!(
+        call(&*send, serde_json::json!({"file": "missing"})).await,
+        Outcome::Failed { failure } if failure.code == code::TOOL_FAILED
+    ));
+
+    let path = dir.path().join("report.pdf");
+    std::fs::write(&path, b"report bytes").unwrap();
+    let Outcome::Ok {
+        outgoing: Some(outgoing),
+        ..
+    } = call(
+        &*send,
+        serde_json::json!({"text": "**Report**", "file": path}),
+    )
+    .await
+    else {
+        panic!("message was rejected");
+    };
+    assert_eq!(outgoing.text, "**Report**");
+    assert_eq!(
+        outgoing.file,
+        Some(FileData {
+            name: "report.pdf".into(),
+            data: b"report bytes".to_vec(),
+        })
+    );
+
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(50_000_001)
+        .unwrap();
+    assert!(matches!(
+        call(&*send, serde_json::json!({"file": "report.pdf"})).await,
+        Outcome::Failed { failure } if failure.code == code::TOOL_FAILED && failure.message.contains("exceeds")
+    ));
 }

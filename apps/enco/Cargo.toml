@@ -23,6 +23,7 @@ dirs = { workspace = true }
 iana-time-zone.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 rusqlite.workspace = true
 tempfile.workspace = true
 wiremock.workspace = true

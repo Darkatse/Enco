@@ -72,6 +72,7 @@ impl Tools for Echo {
         } else {
             Outcome::Ok {
                 images: Vec::new(),
+                outgoing: None,
                 value: self.label.clone().into(),
             }
         }
@@ -337,6 +338,7 @@ impl Tools for Ordered {
         self.events.lock().unwrap().push(format!("end:{label}"));
         Outcome::Ok {
             images: Vec::new(),
+            outgoing: None,
             value: label.into(),
         }
     }
@@ -403,6 +405,7 @@ impl Tools for Cancelling {
         self.finish.wait().await;
         Outcome::Ok {
             images: Vec::new(),
+            outgoing: None,
             value: json!("quiescent"),
         }
     }

@@ -26,6 +26,7 @@ croner = "4.0.1"
 iana-time-zone = "0.1.65"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 triviumdb = "=0.8.8"                     # 0.x, pinned exactly; only the derived memory index
+imagesize = { version = "0.15.0", default-features = false, features = ["png", "jpeg", "webp"] }
 reqwest = "0.13.5"                       # 默认使用 rustls
 wasmtime = "49.0.1"                      # 默认 feature 已含 component-model-async
 wasmtime-wasi = "49.0.1"

@@ -18,6 +18,16 @@ pub(crate) fn string<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a
         .ok_or_else(|| invalid(format!("{name} must be a string")))
 }
 
+pub(crate) fn optional_string<'a>(
+    args: &'a Map<String, Value>,
+    name: &str,
+) -> Result<Option<&'a str>, Failure> {
+    match args.get(name) {
+        None => Ok(None),
+        Some(_) => string(args, name).map(Some),
+    }
+}
+
 pub(crate) fn integer(
     args: &Map<String, Value>,
     name: &str,

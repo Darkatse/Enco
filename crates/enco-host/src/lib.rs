@@ -21,7 +21,7 @@ pub use memory::{
     Memories, MemoryContextSource, MemoryError, MemoryList, MemoryPaths, Recall, memory_tool_specs,
     memory_tools,
 };
-pub use store::{SqliteStore, StorePaths};
+pub use store::{SqliteStore, StorePaths, blob_path};
 pub use telegram::Telegram;
 pub use tools::{
     LIFELINE, development_tool_specs, development_tools, native_tools, self_status_spec,

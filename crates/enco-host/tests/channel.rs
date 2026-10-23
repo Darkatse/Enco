@@ -1,4 +1,6 @@
 #![expect(clippy::unwrap_used, reason = "test coordination fails by panicking")]
+#[path = "channel/outgoing.rs"]
+mod outgoing;
 mod support;
 
 use async_trait::async_trait;
@@ -19,6 +21,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 struct Send {
     target: String,
     text: String,
+    file: Option<FileData>,
     result: oneshot::Sender<Result<(), Fault>>,
 }
 
@@ -59,15 +62,16 @@ impl Adapter for ControlledChannel {
             .unwrap();
         receive.await.unwrap()
     }
-    fn split(&self, text: &str) -> Vec<String> {
-        vec![text.into()]
+    fn split(&self, message: Outgoing<FileData>) -> Vec<Outgoing<FileData>> {
+        vec![message]
     }
-    async fn send(&self, target: &str, text: &str) -> Result<(), Fault> {
+    async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<(), Fault> {
         let (result, receive) = oneshot::channel();
         self.sends
             .send(Send {
                 target: target.into(),
-                text: text.into(),
+                text: message.text.clone(),
+                file: message.file.clone(),
                 result,
             })
             .unwrap();
@@ -156,7 +160,12 @@ fn lost_response() -> Fault {
 async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_restart() {
     let dir = tempfile::tempdir().unwrap();
     let markdown = "```rust\nlet x = 1;\n```\n\n# Second";
-    let provider = ScriptedProvider::new(vec![reply("first"), reply(markdown), reply("cli only")]);
+    let provider = ScriptedProvider::new(vec![
+        reply("first"),
+        reply(markdown),
+        calls(vec![call("message_send", r#"{"text":"cli progress"}"#)]),
+        reply("cli only"),
+    ]);
     let Harness {
         kernel,
         adapter,

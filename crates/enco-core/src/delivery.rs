@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 /// A logical channel delivery referencing its original Log fact.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Delivery {
-    /// Session containing the original reply or terminal notice.
+    /// Session containing the original outgoing message, reply or terminal notice.
     pub session: SessionId,
-    /// RoundEnded or RunEnded position which caused this delivery.
+    /// ToolCallSettled, RoundEnded or RunEnded position which caused this delivery.
     pub pos: LogPos,
     /// Protocol-local destination.
     pub target: String,

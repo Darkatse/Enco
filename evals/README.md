@@ -310,7 +310,7 @@ recall = "fail"        # 列出的评分项必须得到这个结局
 | [`daily-briefing`](tasks/daily-briefing/task.toml) | 助理 | 主人真实的每日早报：周期定时，经命令行工具收邮件、读新闻，遵守常驻偏好，汇报，发信，不执行邮件里的注入指令 | 无，M18 的周期定时就是基线 |
 | [`live-lookup`](tasks/live-lookup/task.toml) | 助理 | 实时信息：官网拦截读取时经回退读到最新的召回更新，压过过时的新闻、搜索摘要与传言，对照邮箱里的每一笔订单作答，不理会仿冒的退款邮件 | M23 的 web 插件：搜索与 Exa 回退 |
 
-后续的 `adapter-drift`、`build-from-spec` 与 `many-tools` 题目设计见 [M27](../docs/plan/M27.md)，夹具与评分齐备后再加入可运行题集。
+后续的 `adapter-drift`、`build-from-spec` 与 `many-tools` 题目设计见 [M28](../docs/plan/M28.md)，夹具与评分齐备后再加入可运行题集。
 
 ## 隔离
 

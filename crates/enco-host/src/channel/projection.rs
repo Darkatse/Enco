@@ -1,18 +1,18 @@
 use super::{Cursor, Identity};
 use enco_core::*;
 
-/// Read complete boundaries only: an unfinished Round is re-read on the next wake.
+/// Advance through settled messages and complete boundaries; leave unfinished replies for the next wake.
 pub(super) fn project(
     cursor: &mut Cursor,
     identity: &Identity,
     session: SessionId,
     entries: Vec<Entry>,
-) -> Option<(Delivery, String)> {
+) -> Option<(Delivery, Outgoing)> {
     let mut target = cursor.target.clone();
     let mut reply_attempt = None;
     let mut reply = String::new();
     for entry in entries {
-        let text = match entry.body {
+        let outgoing = match entry.body {
             EntryBody::EventConsumed { event } => {
                 match event.source {
                     EventSource::Cli => target = None,
@@ -49,10 +49,17 @@ pub(super) fn project(
                 reply = message.joined_text();
                 continue;
             }
+            EntryBody::ToolCallSettled {
+                outgoing: Some(message),
+                ..
+            } => Some(message),
             EntryBody::RoundEnded { end, .. } => {
-                matches!(end, RoundEnd::Replied).then(|| std::mem::take(&mut reply))
+                matches!(end, RoundEnd::Replied).then(|| Outgoing {
+                    text: std::mem::take(&mut reply),
+                    file: None,
+                })
             }
-            EntryBody::RunEnded { end, .. } => match end {
+            EntryBody::RunEnded { end, .. } => (match end {
                 RunEnd::Completed => None,
                 RunEnd::Cancelled => Some("Run cancelled.".into()),
                 RunEnd::Interrupted => {
@@ -60,19 +67,20 @@ pub(super) fn project(
                 }
                 RunEnd::BudgetExhausted => Some("Run reached its Round limit.".into()),
                 RunEnd::Failed { failure } => Some(format!("Run failed: {}", failure.message)),
-            },
+            })
+            .map(|text| Outgoing { text, file: None }),
             _ => continue,
         };
         cursor.processed = Some(entry.pos);
         cursor.target = target.clone();
-        if let (Some(target), Some(text)) = (target.clone(), text) {
+        if let (Some(target), Some(outgoing)) = (target.clone(), outgoing) {
             return Some((
                 Delivery {
                     session,
                     pos: entry.pos,
                     target,
                 },
-                text,
+                outgoing,
             ));
         }
     }
