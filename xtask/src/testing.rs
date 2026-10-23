@@ -34,7 +34,7 @@ pub fn run(metadata: &[Metadata]) -> Result<()> {
         for group in &mut groups {
             if let Some((name, mut command)) = group.next() {
                 command.env("ENCO_BIN", &enco);
-                // With up to five harnesses, five test threads kept builds and cancellation responsive.
+                // More threads run more cold plugin builds at once, and their tests miss deadlines.
                 if std::env::var_os("RUST_TEST_THREADS").is_none() {
                     command.env("RUST_TEST_THREADS", "5");
                 }

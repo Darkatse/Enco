@@ -1,6 +1,5 @@
 #![expect(clippy::unwrap_used, reason = "test helpers fail by panicking")]
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 mod admission;
 mod callers;

@@ -3,7 +3,7 @@
     clippy::expect_used,
     reason = "helpers outside #[test] functions fail the test by panicking"
 )]
-mod support;
+use crate::support;
 
 use async_trait::async_trait;
 use enco_core::*;

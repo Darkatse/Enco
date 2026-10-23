@@ -2,11 +2,7 @@
     clippy::unwrap_used,
     reason = "helpers outside #[test] functions fail the test by panicking"
 )]
-#[path = "../src/client.rs"]
-mod client;
-
-#[path = "../src/protocol.rs"]
-mod protocol;
+use crate::protocol;
 
 use enco_core::*;
 use enco_kernel::{Inspection, Runtime};
@@ -18,7 +14,7 @@ use wiremock::{
     matchers::{header, path},
 };
 
-mod support;
+use crate::support;
 
 use support::*;
 

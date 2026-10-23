@@ -3,12 +3,9 @@
     clippy::unwrap_used,
     reason = "helpers outside #[test] functions fail the test by panicking"
 )]
-#[path = "../src/client.rs"]
-mod client;
+use crate::{client, protocol};
 
-#[path = "../src/protocol.rs"]
-mod protocol;
-mod support;
+use crate::support;
 
 use enco_core::*;
 use protocol::Command;
@@ -86,7 +83,7 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
         );
     }
     let mut daemon =
-        Daemon::start_config(include_str!("../../../examples/deepseek-gemini.toml")).await;
+        Daemon::start_config(include_str!("../../../../examples/deepseek-gemini.toml")).await;
     std::fs::write(
         daemon.root.path().join("AGENTS.md"),
         "This is an isolated validation workspace. Perform only the requested synthetic operations. \

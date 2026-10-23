@@ -2,7 +2,7 @@
     clippy::unwrap_used,
     reason = "helpers outside #[test] functions fail the test by panicking"
 )]
-mod support;
+use crate::support;
 use chrono::SubsecRound;
 use enco_core::*;
 use enco_host::SqliteStore;

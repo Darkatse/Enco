@@ -1,7 +1,6 @@
 #![expect(clippy::unwrap_used, reason = "test coordination fails by panicking")]
-#[path = "channel/outgoing.rs"]
 mod outgoing;
-mod support;
+use crate::support;
 
 use async_trait::async_trait;
 use enco_core::*;

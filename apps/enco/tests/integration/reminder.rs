@@ -1,9 +1,6 @@
-#[path = "../src/client.rs"]
-mod client;
+use crate::protocol;
 
-#[path = "../src/protocol.rs"]
-mod protocol;
-mod support;
+use crate::support;
 
 use enco_core::*;
 use protocol::Command;

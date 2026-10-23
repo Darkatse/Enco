@@ -304,7 +304,7 @@ async fn changing_only_image_acceptance_probes_before_registering_configuration(
         assert_eq!(images[0].format, ImageFormat::Png);
         assert_eq!(
             images[0].data,
-            include_bytes!("../../../enco-kernel/src/image/probe.png")
+            include_bytes!("../../../../enco-kernel/src/image/probe.png")
         );
     }
 }

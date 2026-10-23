@@ -2,11 +2,8 @@
     clippy::unwrap_used,
     reason = "fixture helpers fail the test by panicking"
 )]
-#[path = "../src/client.rs"]
-mod client;
-#[path = "../src/protocol.rs"]
-mod protocol;
-mod support;
+use crate::protocol;
+use crate::support;
 
 use enco_core::{EntryBody, EventId, RunEnd, code};
 use protocol::Command;

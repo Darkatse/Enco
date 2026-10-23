@@ -1,10 +1,9 @@
-#![allow(
-    dead_code,
+#![expect(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
     clippy::print_stderr,
-    reason = "shared test support: each test binary uses a subset of these helpers, which fail the test by panicking"
+    reason = "shared test support fails the test by panicking"
 )]
 pub mod bot;
 

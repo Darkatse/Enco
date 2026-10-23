@@ -1,9 +1,6 @@
 #![expect(clippy::unwrap_used, reason = "test helpers fail by panicking")]
-#[path = "../src/client.rs"]
-mod client;
-#[path = "../src/protocol.rs"]
-mod protocol;
-mod support;
+use crate::protocol;
+use crate::support;
 
 use enco_core::*;
 use enco_kernel::{Inspection, Runtime};

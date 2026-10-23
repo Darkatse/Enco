@@ -2,7 +2,7 @@
     clippy::unwrap_used,
     reason = "helpers outside #[test] functions fail the test by panicking"
 )]
-mod support;
+use crate::support;
 
 use async_trait::async_trait;
 use enco_core::*;
@@ -181,7 +181,7 @@ async fn an_input_without_text_recalls_nothing() {
         retryable: false,
     });
     let image = kernel
-        .store_image(include_bytes!("../../enco-kernel/src/image/probe.png"))
+        .store_image(include_bytes!("../../../enco-kernel/src/image/probe.png"))
         .await
         .unwrap();
     let session = kernel.open_session("main").await.unwrap();

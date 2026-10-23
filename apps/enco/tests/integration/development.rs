@@ -1,15 +1,9 @@
 #![expect(clippy::unwrap_used, reason = "test failures retain their context")]
-#[path = "development/acceptance.rs"]
 mod acceptance;
-#[path = "../src/client.rs"]
-mod client;
-#[path = "development/documents.rs"]
+use crate::protocol;
 mod documents;
-#[path = "../src/protocol.rs"]
-mod protocol;
-#[path = "development/sdk.rs"]
 mod sdk;
-mod support;
+use crate::support;
 
 use enco_core::{
     CallId, Entry, EntryBody, EventId, GenerationStatus, Outcome, PluginSettings, SessionId,

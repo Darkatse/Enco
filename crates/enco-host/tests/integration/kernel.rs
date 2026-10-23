@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use enco_core::*;
 use enco_host::SqliteStore;

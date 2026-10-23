@@ -2,12 +2,9 @@
     clippy::unwrap_used,
     reason = "helpers outside #[test] functions fail the test by panicking"
 )]
-#[path = "../src/client.rs"]
-mod client;
+use crate::{client, protocol};
 
-#[path = "../src/protocol.rs"]
-mod protocol;
-mod support;
+use crate::support;
 
 use enco_core::*;
 use protocol::Command;

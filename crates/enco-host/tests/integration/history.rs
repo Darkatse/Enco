@@ -1,5 +1,5 @@
 #![expect(clippy::unwrap_used, reason = "behavior fixtures fail with context")]
-mod support;
+use crate::support;
 
 use enco_core::*;
 use enco_host::{

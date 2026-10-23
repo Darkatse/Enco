@@ -2,7 +2,7 @@
     clippy::unwrap_used,
     reason = "helpers outside #[test] functions fail the test by panicking"
 )]
-mod support;
+use crate::support;
 
 use enco_core::*;
 use enco_host::*;

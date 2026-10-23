@@ -2,14 +2,14 @@
     clippy::unwrap_used,
     reason = "image behavior fixtures fail with context"
 )]
-mod support;
+use crate::support;
 
 use enco_core::*;
 use enco_kernel::*;
 use serde_json::json;
 use support::*;
 
-const PNG: &[u8] = include_bytes!("../../enco-kernel/src/image/probe.png");
+const PNG: &[u8] = include_bytes!("../../../enco-kernel/src/image/probe.png");
 
 async fn send(kernel: &Kernel, images: Vec<Image>) -> (SessionId, Vec<Entry>) {
     let session = kernel.open_session("pictures").await.unwrap();
