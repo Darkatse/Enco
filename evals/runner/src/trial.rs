@@ -186,7 +186,7 @@ async fn execute(
         Ok(enco) => enco,
         Err(error) => return Ok((Execution::failed(error), Snapshot::default())),
     };
-    let driven = match enco.ready().await {
+    let driven = match enco.ready(deadline).await {
         Ok(()) => {
             for deploy in &variant.deploy {
                 enco.deploy(deploy).await?;

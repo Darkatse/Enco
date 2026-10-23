@@ -3,7 +3,7 @@ pub(crate) mod output;
 use crate::{
     config::{Deploy, Variant},
     home::Home,
-    limits::{CLI_TIMEOUT, DAEMON_READY_TIMEOUT, SHUTDOWN_GRACE, STATUS_INTERVAL},
+    limits::{CLI_TIMEOUT, SHUTDOWN_GRACE, STATUS_INTERVAL},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -90,8 +90,9 @@ impl Enco {
         })
     }
 
-    pub(crate) async fn ready(&mut self) -> Result<()> {
-        let deadline = Instant::now() + DAEMON_READY_TIMEOUT;
+    /// Startup includes the first registration, which builds plugin sources, so it shares the
+    /// trial's deadline.
+    pub(crate) async fn ready(&mut self, deadline: Instant) -> Result<()> {
         loop {
             if let Some(status) = self.child.try_wait()? {
                 bail!("enco serve exited during startup: {status}; see daemon.log");

@@ -2,7 +2,6 @@ use std::time::Duration;
 
 pub(crate) const DEFAULT_K: usize = 5;
 pub(crate) const ALPHA: f64 = 0.05;
-pub(crate) const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const CLI_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 pub(crate) const GRADER_TIMEOUT: Duration = Duration::from_secs(300);

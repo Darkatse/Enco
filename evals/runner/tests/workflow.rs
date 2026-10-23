@@ -442,6 +442,13 @@ async fn source_fixture_is_registered_offline_before_serving() {
         ),
     );
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The first start builds the fixture; a cold build under the gate's load outlasts 30 s.
+    let task = evaluation.root.join("evals/tasks/mail/task.toml");
+    let source = std::fs::read_to_string(&task).unwrap();
+    write(
+        &task,
+        &source.replace("timeout_secs = 30", "timeout_secs = 120"),
+    );
     write(
         &evaluation.root.join("variant.toml"),
         &format!("enco = {wrapper:?}\n"),
