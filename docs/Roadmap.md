@@ -25,7 +25,7 @@ P2、Session 监督树、P3、P4 四个方向互不依赖，先做哪个取决�
 | 里程碑 | 一句话 |
 |---|---|
 | [M28 手册](plan/M28.md) | Agent 只读手册就能工作 |
-| [M29 composer 插件](plan/M29.md) | Agent 以评测为目标迭代上下文策略 |
+| [M29 composer 插件](plan/M29.md) | Agent 以评测为目标迭代上下文策略；计划只存新增部分，blob 按引用回收 |
 
 评测只在会改变 Agent 行为的里程碑运行（M23、M27、M28、M29），退化的判定规则写在 [evals/README.md](../evals/README.md)；基础设施由集成测试验收。
 
@@ -34,10 +34,10 @@ P2、Session 监督树、P3、P4 四个方向互不依赖，先做哪个取决�
 - 披露策略被改坏后，安全模式仍能调用文件、Shell、`self_status`、`self_rewind` 与 `self_apply`（M29）。
 - `plugin_rename` 之后，插件的代际历史与设置不变；只移动目录时登记被拦下，并提示改名用 `plugin_rename`；删除插件就是删掉目录再登记；复制出的目录在第一次登记时得到新身份（M24）。
 - 插件导入 `completion` 在准入时被拒绝（M23）。
-- `evals/` 的六道题都能端到端运行，基线写入运行结果；`adapter-drift` 经正式路径通过，让第一条验收可以重复检验（M19、M23、M28）。M23 的 `live-lookup` 已加入：答案只在拦截读取的官网上，经 Exa 回退才读得到，只查回答；web 的插件设置是变体的属性。
+- `evals/` 的五道题都能端到端运行，基线写入运行结果（`many-tools` 随 MCP 接入）；`adapter-drift` 经正式路径通过，让第一条验收可以重复检验（M19、M23、M28）。M23 的 `live-lookup` 已加入：答案只在拦截读取的官网上，经 Exa 回退才读得到，只查回答；web 的插件设置是变体的属性。
 - 各里程碑推迟到阶段结束时一起做的手动核对：在 Telegram 中经 `self_apply` 换一次压缩模型并对话，再经 `self_rewind` 倒带撤销（M21、M24、M25）；在 Telegram 中发一张照片与 Agent 对话（M26）；在 Telegram 中让 Agent 各发一张图片、一段 MP3 和一份 PDF，再在长任务中途发一条纯文字进展（M27），真机不接受 Markdown 中的 `tg://` 上传链接时，带文件的消息改为文字与文件分段，文件按类型以 `sendPhoto`、`sendAudio`、`sendVideo` 或 `sendDocument` 上传。
 
-**脚本调用（工具多到逐个调用的代价明显时实施）**：宿主的脚本沙箱（QuickJS 编译为 Wasm）、嵌套调用的分派与记录、脚本内的 `capability_search` 与 `manual_read`，以及 composer 的披露形态选择（上下文专题）。
+**脚本调用（工具多到逐个调用的代价明显时实施）**：宿主的脚本沙箱（QuickJS 编译为 Wasm）、嵌套调用的分派与记录、脚本内的 `capability_search`，以及 composer 的披露形态选择（上下文专题）。
 验收：一段脚本并行调用多个工具，模型只看到脚本的输出；脚本内搜索返回的能力可以调用，既未披露也未被搜索返回的被拒绝；被 `tool.gate` 拦下的嵌套调用在脚本中表现为失败；脚本在一次副作用调用之后抛错或被 `kill -9`，结算内容列出该调用及其结局，脚本不重跑。
 
 **Session 监督树（需要多模型协作时实施）**：`session_delegate` / `session_send` / `session_read`、profile、Brief 作为 Attempt 用途、`ChildReturned` 回报、取消传播与限额（Session 专题）；子 Session 没有交互式输入，它的 `message_send` 转交父 Session 还是拒绝，在此时决定（M27）。
@@ -60,4 +60,4 @@ P2、Session 监督树、P3、P4 四个方向互不依赖，先做哪个取决�
 **Windows 节点（需要时实施，Unix 环境优先）**：本地端点在 Windows 上改用命名管道（tokio 不在 Windows 上提供 Unix domain socket），访问限定为当前用户；Shell 工具使用 PowerShell 7，工具描述按平台写明所用的 shell，输出按 UTF-8 解码；守护进程响应控制台关闭与系统关机；Unix 专用的测试按平台编译；CI 增加 Windows runner。参与 Space 之前补上计入休眠时间的时钟（多节点专题）。这些都是宿主的平台适配，不改变设计。
 验收：`cargo xtask check` 在 Windows 上通过；CLI 经命名管道与守护进程完成对话，其他用户无法连接；`shell_exec` 正确返回中文输出。
 
-**之后**：多模态的后续（出现使用者时实施，M26）：音频、视频与 PDF 输入（`accepts` 增加取值）、插件工具返回图片（WIT 的 `outcome` 随之升版本）、按图片检索记忆、Gemini Interactions API；blob 回收（测出需要时实施；规则由引用推出：计划沿 M29 的父链保留，最近一次登记的源码保留，否则看不了未登记的改动；其余内容缺失时，对比与倒带明确报告缺失的登记与路径）、并行修改意图（多个 Agent 同时修改插件时实施，例如 Agent 团队；各自在独立的工作副本中修改（例如 git worktree），合并回 home 之后仍由 `self_apply` 一次登记整份意图，M24）、评测作为健康信号（Skills 与 AGENTS.md 成为指令代际，像插件源码一样按内容寻址登记，评测成功率下降即为失败信号；也用于只会语义退化的代际，例如 composer；难点在评测的噪声、成本与防止背答案，评测运行器可用且 Agent 开始频繁修改指令时实施）、fs/shell 工具改为 Wasm 插件与记忆策略改为插件（按需；原生版本保留为救生集）、定时工具改为插件（工具接口能调用内核命令时；Scheduler 与定时的持久化留在内核）、修改已有的定时（目前取消后重建）、`at` 接受不带偏移的当地时间、流式补全与 Provider 的 sans-I/O（有消费者时实施，按插件专题的契约规则一次升 `completion` 与 `embedding` 的主版本：插件只导出编码、解码与分块解码的纯函数，HTTP 由宿主持有、请求只发往 endpoint，原始响应随 Attempt 记录，Provider 的新代际可以在历史流量上重放；库的版本随之升级）、健康代际的降级、决策接口的更多用途（`tool.gate`、OpenAI 的 `/v1/decisions`）、Android 本机构建（Root/Shizuku + Ubuntu 中本机编译插件）、宿主自更新（主人确认；自主权限以后显式开通）、覆盖网络路由、Edge 节点（ESP32）、系统代际的整体回滚；MCP 接入（某个需要的服务只提供 MCP 时实施，是"外部进入 ⟺ 已映射且已钉住"的第一个使用者，插件专题「外部」）：零导入的映射器 world，工具目录的定本、登记时刷新与漂移报告，工具标注到 effect 与 `outcome` 的映射，宿主持有的 stdio 传输（新增原生能力，届时与主人对齐）；采纳 MCP 服务器仍等于完全信任，服务器反向请求补全不予支持（补全只由内核导入）；已有的外部翻译收敛到映射器（Provider 随流式补全；web 插件的内容解析在第一个内容类映射器出现时决定；Telegram 在 P3 插件化时一并）。
+**之后**：多模态的后续（出现使用者时实施，M26）：音频、视频与 PDF 输入（`accepts` 增加取值）、插件工具返回图片（WIT 的 `outcome` 随之升版本）、按图片检索记忆、Gemini Interactions API；blob 与计划记录的保留策略（删除仍被引用的旧内容；无人引用的回收在 M29；规则由引用推出：计划记录沿父链保留，最近一次登记的源码保留，否则看不了未登记的改动；其余内容缺失时，对比与倒带明确报告缺失的登记与路径）、并行修改意图（多个 Agent 同时修改插件时实施，例如 Agent 团队；各自在独立的工作副本中修改（例如 git worktree），合并回 home 之后仍由 `self_apply` 一次登记整份意图，M24）、评测作为健康信号（Skills 与 AGENTS.md 成为指令代际，像插件源码一样按内容寻址登记，评测成功率下降即为失败信号；也用于只会语义退化的代际，例如 composer；难点在评测的噪声、成本与防止背答案，评测运行器可用且 Agent 开始频繁修改指令时实施）、fs/shell 工具改为 Wasm 插件与记忆策略改为插件（按需；原生版本保留为救生集）、定时工具改为插件（工具接口能调用内核命令时；Scheduler 与定时的持久化留在内核）、修改已有的定时（目前取消后重建）、`at` 接受不带偏移的当地时间、流式补全与 Provider 的 sans-I/O（有消费者时实施，按插件专题的契约规则一次升 `completion` 与 `embedding` 的主版本：插件只导出编码、解码与分块解码的纯函数，HTTP 由宿主持有、请求只发往 endpoint，原始响应随 Attempt 记录，Provider 的新代际可以在历史流量上重放；库的版本随之升级）、健康代际的降级、决策接口的更多用途（`tool.gate`、OpenAI 的 `/v1/decisions`）、Android 本机构建（Root/Shizuku + Ubuntu 中本机编译插件）、宿主自更新（主人确认；自主权限以后显式开通）、覆盖网络路由、Edge 节点（ESP32）、系统代际的整体回滚；MCP 接入（某个需要的服务只提供 MCP 时实施，是"外部进入 ⟺ 已映射且已钉住"的第一个使用者，插件专题「外部」）：零导入的映射器 world，工具目录的定本、登记时刷新与漂移报告，工具标注到 effect 与 `outcome` 的映射，宿主持有的 stdio 传输（新增原生能力，届时与主人对齐）；工具目录超出预算时的按需披露：常驻由内核（救生集）、主人（在 composer 配置中固定）与 composer（按使用记录、预算与缓存稳定性）决定，不由插件声明，`capability_search` 按多个关键词组合搜索、找到即展开，结算按类型记下展开的能力，`many-tools` 题随之实施（判断与题目草案暂存在 M28 计划的「移交 MCP 里程碑」）；采纳 MCP 服务器仍等于完全信任，服务器反向请求补全不予支持（补全只由内核导入）；已有的外部翻译收敛到映射器（Provider 随流式补全；web 插件的内容解析在第一个内容类映射器出现时决定；Telegram 在 P3 插件化时一并）。
