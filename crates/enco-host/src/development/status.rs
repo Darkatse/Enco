@@ -1,4 +1,7 @@
-//! Development facts are sampled here; attention and presentation use the complete host status.
+//! The three layers of the home, sampled once: what runs, what is registered, and what the home
+//! holds.
+//!
+//! Deciding what needs attention and presenting it use the complete host status, in `status`.
 use super::{
     Development, DevelopmentError, EntryError, Failed, HomeComparison, HomePlugin, Operation,
 };
@@ -13,24 +16,33 @@ use std::collections::BTreeMap;
 /// The three layers of every plugin and of `config.toml`, observed once.
 #[derive(Serialize)]
 pub struct DevelopmentStatus {
+    /// The latest registration, which the registered layer reflects.
     pub registration: RegistrationId,
     /// Every plugin that runs, is registered, or has a directory.
     pub plugins: BTreeMap<PluginName, PluginUnit>,
+    /// The three layers of `config.toml`.
     pub configuration: ConfigurationUnit,
+    /// The latest registrations, newest first.
     pub recent_registrations: Vec<RegistrationDetails>,
     /// Why the `plugins` directory cannot be listed; the home facts of plugins are then absent.
     pub plugins_unreadable: Option<EntryError>,
 }
 
+/// The three layers of one plugin; a layer is absent when the plugin is not in it.
 #[derive(Default, Serialize)]
 pub struct PluginUnit {
+    /// What runs under this name.
     pub running: Option<PluginStatus>,
+    /// What the latest registration holds for this name.
     pub registered: Option<RegisteredUnit>,
+    /// How the plugin's directory in the home compares with what is registered.
     pub home: Option<HomePlugin>,
 }
 
+/// What the latest registration holds for one plugin.
 #[derive(Serialize)]
 pub struct RegisteredUnit {
+    /// The registered name, identity and code choice.
     #[serde(flatten)]
     pub plugin: RegisteredPlugin,
     /// No build of this host's SDK produced the registered code; the next registration rebuilds it.
@@ -39,12 +51,18 @@ pub struct RegisteredUnit {
     pub follow_rejection: Option<Vec<Cause>>,
 }
 
+/// The three layers of `config.toml`.
 #[derive(Serialize)]
 pub struct ConfigurationUnit {
+    /// The configuration in use; it differs from the registered one after a rollback.
     pub running: ConfigurationRef,
+    /// The configuration the latest registration selected.
     pub registered: ConfigurationRef,
+    /// How `config.toml` in the home compares with the registered configuration.
     pub home: HomeComparison,
+    /// Tables in the running configuration that this host cannot interpret.
     pub invalid: Vec<SettingsError>,
+    /// Configured uses that no running plugin can serve now.
     pub unavailable_uses: Vec<UnservedUse>,
 }
 

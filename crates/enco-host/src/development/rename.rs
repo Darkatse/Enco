@@ -9,6 +9,7 @@ use enco_kernel::{Registered, Registry};
 use tokio_util::sync::CancellationToken;
 
 impl Development {
+    /// Move `plugins/<name>` to `plugins/<to>` and register the new name in one operation.
     pub async fn rename(
         &self,
         registry: &Registry,

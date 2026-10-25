@@ -1,3 +1,4 @@
+//! The images in a Telegram message: which attachments become images, and fetching their bytes.
 use super::{Body, Fault, Telegram, http_error, invalid_response, network, parse_action};
 use crate::channel::{Action, Attachment, MessageContent};
 use enco_core::{Unviewable, UnviewableReason};

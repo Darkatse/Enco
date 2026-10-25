@@ -5,31 +5,31 @@
 
 Native storage, tools and context policies.
 
-- module `channel` — A connection owns its routing state; adapters own only protocol interpretation.
+- module `channel` — Connections between a messaging protocol and Sessions.
 - module `development` — Turns the plugin sources and `config.toml` in a home into registrations, and registered versions back into files.
-- module `memory` — (no summary)
-- module `status` — (no summary)
+- module `memory` — The owner's memories: a SQLite database holds them, and a derived vector index finds them.
+- module `status` — Enco's state as `self_status` reports it, and what in it needs attention.
 - module `telegram` — Telegram-specific configuration, transport evidence and text limits.
-- struct `FactoryComposer` — Factory policy shared by ordinary operation and safe mode. No IO occurs here.
+- struct `FactoryComposer` — The composer shipped with the host, used in ordinary operation and in safe mode alike.
 - struct `InstructionsContextSource` — Supplies the owner's current standing instructions once per Round.
 - struct `Memories` — Sole entry point for memory writes and recall. The index never owns memory content.
-- struct `MemoryContextSource` — (no summary)
-- enum `MemoryError` — (no summary)
-- struct `MemoryList` — (no summary)
-- struct `MemoryPaths` — Authority and derived-index locations, both owned by Memories.
-- struct `Recall` — Current authority records nominated by the index, plus recent unindexed records.
-- struct `SqliteStore` — SQLite authority and its associated content and identity files.
+- struct `MemoryContextSource` — Offers the pinned memories, and the memories recalled for a new message, to each Round.
+- enum `MemoryError` — Why a memory operation failed.
+- struct `MemoryList` — Every memory, and which of them the index does not cover yet.
+- struct `MemoryPaths` — Where the memory database and its vector index live; `Memories` owns both.
+- struct `Recall` — The memories recalled for a query: those the index found, and recent ones it does not cover yet.
+- struct `SqliteStore` — Enco's store: the SQLite database, with the content files and node identity that go with it.
 - struct `StorePaths` — Files owned by the persistence adapter.
 - struct `SystemClock` — Host wall clock; Log order is assigned independently by the Session.
-- struct `Telegram` — (no summary)
+- struct `Telegram` — The adapter for one Telegram bot, speaking the Bot API.
 - fn `blob_path` — Address a blob without opening the store.
-- fn `development_tool_specs` — Declarations are available before the registry binds their handlers.
-- fn `development_tools` — File operations and registration follow the same path used by the CLI.
-- fn `memory_tool_specs` — Native declarations available before their stateful handlers are constructed.
-- fn `memory_tools` — (no summary)
-- fn `native_tools` — Native capabilities share the workspace path rules and ordinary Tool dispatch.
+- fn `development_tool_specs` — The development tools' declarations, available before their handlers exist.
+- fn `development_tools` — The development tools, running the same operations as the CLI.
+- fn `memory_tool_specs` — The memory tools' declarations, available before their handlers exist.
+- fn `memory_tools` — The memory tools, `memory_save`, `memory_update`, `memory_forget` and `memory_search`, acting on `memories`.
+- fn `native_tools` — The native tools: the file tools, `message_send` and `shell_exec`, with paths resolved against `workspace`.
 - fn `self_status_spec` — The declaration of `self_status`, whose handler belongs to the application.
-- const `LIFELINE` — Minimal repair tools, also required by ordinary Agent Sessions.
+- const `LIFELINE` — The repair tools that every reply must offer, unless its profile sets `requires_lifeline = false`.
 - const `TABLE_OWNERS` — Configuration ownership for the host components assembled by the application.
 
 ## struct `FactoryComposer`
@@ -42,13 +42,17 @@ pub struct FactoryComposer {
 }
 ```
 
-Factory policy shared by ordinary operation and safe mode. No IO occurs here.
+The composer shipped with the host, used in ordinary operation and in safe mode alike.
+
+No IO occurs here.
 
 ### `FactoryComposer::new`
 
 ```rust
 pub fn new(home: PathBuf, workspace: PathBuf, instructions: PathBuf) -> Self
 ```
+
+A composer whose system prompt names `home`, `workspace` and the standing instructions file.
 
 Implements:
 
@@ -74,6 +78,8 @@ Supplies the owner's current standing instructions once per Round.
 pub fn new(path: PathBuf) -> Self
 ```
 
+Read the standing instructions from the file at `path`.
+
 Implements:
 
 ```rust
@@ -98,11 +104,16 @@ Sole entry point for memory writes and recall. The index never owns memory conte
 pub async fn open(paths: MemoryPaths, registry: Arc<Registry>, clock: Arc<dyn Clock>) -> Result<Arc<Self>, MemoryError>
 ```
 
+Open the database and the index at `paths`, then index the memories the index lacks, as far
+as the embedding service allows.
+
 ### `Memories::save`
 
 ```rust
 pub async fn save(&self, text: String, pinned: bool) -> Result<Memory, MemoryError>
 ```
+
+Store a new memory and return it with its ID.
 
 ### `Memories::update`
 
@@ -110,17 +121,23 @@ pub async fn save(&self, text: String, pinned: bool) -> Result<Memory, MemoryErr
 pub async fn update(&self, id: MemoryId, text: Option<String>, pinned: Option<bool>) -> Result<Option<Memory>, MemoryError>
 ```
 
+Replace a memory's text, its pin, or both; `None` when no memory has this ID.
+
 ### `Memories::forget`
 
 ```rust
 pub async fn forget(&self, id: MemoryId) -> Result<bool, MemoryError>
 ```
 
+Delete a memory for good; `false` when no memory has this ID.
+
 ### `Memories::pinned`
 
 ```rust
 pub async fn pinned(&self) -> Result<Vec<Memory>, MemoryError>
 ```
+
+Every pinned memory, oldest first.
 
 ### `Memories::list`
 
@@ -148,11 +165,15 @@ pub struct MemoryContextSource {
 }
 ```
 
+Offers the pinned memories, and the memories recalled for a new message, to each Round.
+
 ### `MemoryContextSource::new`
 
 ```rust
 pub fn new(memories: Arc<Memories>) -> Self
 ```
+
+Offer what `memories` holds.
 
 Implements:
 
@@ -177,6 +198,16 @@ pub enum MemoryError {
 }
 ```
 
+Why a memory operation failed.
+
+- `Registry` — The registry failed while the embedding plugin's result was reported to it.
+- `Authority` — The memory database failed; the text is its message.
+- `SchemaVersion` — Another version of Enco wrote the memory database.
+  - `found` — The version the database records.
+  - `expected` — The version this Enco reads and writes.
+- `Index` — The vector index cannot be read or written; deleting it while Enco is stopped rebuilds it.
+- `Cancelled` — The caller cancelled the operation.
+
 Implements:
 
 ```rust
@@ -197,6 +228,11 @@ pub struct MemoryList {
 }
 ```
 
+Every memory, and which of them the index does not cover yet.
+
+- `memories` — Every memory, as the database holds it.
+- `unindexed` — The memories the index does not cover yet.
+
 Implements:
 
 ```rust
@@ -215,7 +251,10 @@ pub struct MemoryPaths {
 }
 ```
 
-Authority and derived-index locations, both owned by Memories.
+Where the memory database and its vector index live; `Memories` owns both.
+
+- `db` — The memory database, which holds every memory.
+- `index` — The vector index, derived from the database.
 
 ## struct `Recall`
 
@@ -229,8 +268,10 @@ pub struct Recall {
 }
 ```
 
-Current authority records nominated by the index, plus recent unindexed records.
+The memories recalled for a query: those the index found, and recent ones it does not cover yet.
 
+- `memories` — The memories the index found, as the database holds them now.
+- `unindexed` — Recent memories the index does not cover yet, offered without ranking.
 - `lexical_only` — Present when embedding failed; callers must disclose keyword-only recall.
 
 Implements:
@@ -250,7 +291,7 @@ pub struct SqliteStore {
 }
 ```
 
-SQLite authority and its associated content and identity files.
+Enco's store: the SQLite database, with the content files and node identity that go with it.
 
 ### `SqliteStore::open`
 
@@ -310,11 +351,17 @@ pub struct Telegram {
 }
 ```
 
+The adapter for one Telegram bot, speaking the Bot API.
+
 ### `Telegram::new`
 
 ```rust
 pub fn new(token: String, api_base: &str) -> Result<Self, ChannelError>
 ```
+
+An adapter for the bot whose token is `token`, sending requests to `api_base`.
+
+Fails when the token is not a bot token or the base is not a plain HTTP(S) URL.
 
 Implements:
 
@@ -340,7 +387,9 @@ Address a blob without opening the store.
 pub fn development_tool_specs() -> Result<Vec<ToolSpec>, SchemaError>
 ```
 
-Declarations are available before the registry binds their handlers.
+The development tools' declarations, available before their handlers exist.
+
+The registry needs the names before it binds the handlers.
 
 ## fn `development_tools`
 
@@ -350,7 +399,7 @@ Declarations are available before the registry binds their handlers.
 pub fn development_tools(development: std::sync::Arc<crate::development::Development>, registry: std::sync::Arc<enco_kernel::Registry>) -> Result<Vec<std::sync::Arc<dyn Tool>>, SchemaError>
 ```
 
-File operations and registration follow the same path used by the CLI.
+The development tools, running the same operations as the CLI.
 
 ## fn `memory_tool_specs`
 
@@ -360,7 +409,7 @@ File operations and registration follow the same path used by the CLI.
 pub fn memory_tool_specs() -> Result<Vec<ToolSpec>, SchemaError>
 ```
 
-Native declarations available before their stateful handlers are constructed.
+The memory tools' declarations, available before their handlers exist.
 
 ## fn `memory_tools`
 
@@ -370,6 +419,9 @@ Native declarations available before their stateful handlers are constructed.
 pub fn memory_tools(memories: std::sync::Arc<super::Memories>) -> Result<Vec<std::sync::Arc<dyn Tool>>, SchemaError>
 ```
 
+The memory tools, `memory_save`, `memory_update`, `memory_forget` and `memory_search`, acting
+on `memories`.
+
 ## fn `native_tools`
 
 `src/tools.rs`
@@ -378,7 +430,10 @@ pub fn memory_tools(memories: std::sync::Arc<super::Memories>) -> Result<Vec<std
 pub fn native_tools(workspace: std::path::PathBuf) -> Result<Vec<std::sync::Arc<dyn Tool>>, enco_core::SchemaError>
 ```
 
-Native capabilities share the workspace path rules and ordinary Tool dispatch.
+The native tools: the file tools, `message_send` and `shell_exec`, with paths resolved against
+`workspace`.
+
+They share the workspace path rules and ordinary Tool dispatch.
 
 ## fn `self_status_spec`
 
@@ -398,7 +453,10 @@ The declaration of `self_status`, whose handler belongs to the application.
 pub const LIFELINE: [&str; 8] = _;
 ```
 
-Minimal repair tools, also required by ordinary Agent Sessions.
+The repair tools that every reply must offer, unless its profile sets
+`requires_lifeline = false`.
+
+They are the minimum the Agent needs to repair Enco, in safe mode and in ordinary operation.
 
 ## const `TABLE_OWNERS`
 
@@ -414,20 +472,22 @@ Configuration ownership for the host components assembled by the application.
 
 `src/channel.rs`
 
+Connections between a messaging protocol and Sessions.
+
 A connection owns its routing state; adapters own only protocol interpretation.
 
-- enum `channel::Action` — Meaning interpreted by the host, independent of protocol command syntax.
-- struct `channel::Attachment` — (no summary)
-- enum `channel::AttachmentContent` — (no summary)
-- struct `channel::Channel` — Lifetime handle; shutdown signals and joins the connection actor and all its helpers.
-- enum `channel::ChannelError` — (no summary)
-- struct `channel::ChannelStatus` — Observable connection health and durable final delivery failures.
-- struct `channel::Fault` — Protocol evidence used by the common retry and settlement path.
+- enum `channel::Action` — What an incoming message asks for, whatever the protocol's command syntax.
+- struct `channel::Attachment` — An image attached to a message, still held by the protocol.
+- enum `channel::AttachmentContent` — What fetching an attachment produced.
+- struct `channel::Channel` — A running connection.
+- enum `channel::ChannelError` — Why a connection stopped or could not start.
+- struct `channel::ChannelStatus` — A connection's health, and the deliveries that failed for good.
+- struct `channel::Fault` — A protocol failure, with what the connection needs to decide whether to retry.
 - struct `channel::Identity` — Stable identity declared by a protocol adapter.
-- struct `channel::Input` — (no summary)
-- struct `channel::MessageContent` — (no summary)
+- struct `channel::Input` — One incoming message as the protocol reports it.
+- struct `channel::MessageContent` — A message's text and attachments; `T` is an attachment before or after fetching.
 - struct `channel::Update` — One protocol update with its resulting protocol state.
-- trait `channel::Adapter` — Native adapter boundary, replaced by the channel plugin boundary in P3. Outbound Markdown and optional files are mapped to the channel protocol here.
+- trait `channel::Adapter` — The protocol side of a channel: reading updates, fetching attachments and sending replies.
 
 ## enum `channel::Action`
 
@@ -442,7 +502,12 @@ pub enum Action<T = Attachment> {
 }
 ```
 
-Meaning interpreted by the host, independent of protocol command syntax.
+What an incoming message asks for, whatever the protocol's command syntax.
+
+- `Message` — A message for the conversation's Session.
+- `Sessions` — List the Sessions to choose from.
+- `SelectSession` — Route this conversation to the Session with this name, opening it if needed.
+- `Cancel` — Stop the work the conversation's Session is doing.
 
 ## struct `channel::Attachment`
 
@@ -455,6 +520,11 @@ pub struct Attachment {
 }
 ```
 
+An image attached to a message, still held by the protocol.
+
+- `what` — How to name it when telling the owner about it, such as `photo` or a file's name and type.
+- `locator` — The protocol's handle for fetching it.
+
 ## enum `channel::AttachmentContent`
 
 `src/channel.rs`
@@ -465,6 +535,11 @@ pub enum AttachmentContent {
     Unavailable(String),
 }
 ```
+
+What fetching an attachment produced.
+
+- `Image` — The image's bytes.
+- `Unavailable` — It cannot be used; the text says why.
 
 Implements:
 
@@ -482,7 +557,9 @@ pub struct Channel {
 }
 ```
 
-Lifetime handle; shutdown signals and joins the connection actor and all its helpers.
+A running connection.
+
+Shutdown signals the connection actor and all its helpers, then waits for them.
 
 ### `channel::Channel::start`
 
@@ -490,17 +567,24 @@ Lifetime handle; shutdown signals and joins the connection actor and all its hel
 pub fn start(kernel: Arc<Kernel>, adapter: Arc<dyn Adapter>, owner_id: String, clock: Arc<dyn Clock>) -> Self
 ```
 
+Start the connection; it carries the owner's direct messages to Sessions and their replies
+back until shutdown.
+
 ### `channel::Channel::status`
 
 ```rust
 pub async fn status(&self) -> Result<ChannelStatus, KernelError>
 ```
 
+The connection's health and its latest failed deliveries.
+
 ### `channel::Channel::shutdown`
 
 ```rust
 pub async fn shutdown(&self) -> Result<(), ChannelError>
 ```
+
+Stop the connection and wait until it and its helpers have stopped.
 
 Implements:
 
@@ -523,7 +607,14 @@ pub enum ChannelError {
 }
 ```
 
+Why a connection stopped or could not start.
+
+- `Kernel` — The kernel failed to accept input or report Session facts.
+- `State` — The stored connection state cannot be read.
+- `Protocol` — The protocol failed in a way that stops the connection.
+- `Task` — A task of the connection stopped unexpectedly.
 - `Unjoined` — The owner did not complete cleanup, so its helpers may still be running.
+- `Config` — The channel's configuration is invalid, such as a malformed bot token.
 
 Implements:
 
@@ -549,7 +640,12 @@ pub struct ChannelStatus {
 }
 ```
 
-Observable connection health and durable final delivery failures.
+A connection's health, and the deliveries that failed for good.
+
+- `key` — The connection's key, `<channel>:<account>`.
+- `running` — Whether the connection is working now.
+- `stopped` — Why it stopped, when it stopped on a failure.
+- `recent_failures` — The latest deliveries that failed for good, with the Sessions they came from.
 
 Implements:
 
@@ -570,10 +666,14 @@ pub struct Fault {
 }
 ```
 
-Protocol evidence used by the common retry and settlement path.
+A protocol failure, with what the connection needs to decide whether to retry.
 
+The common retry and settlement path reads it.
+
+- `failure` — What failed.
 - `unknown` — True when effects may have occurred; this always forbids an automatic resend.
 - `fatal` — True when the whole connection is unusable, rather than just this destination.
+- `retry_after` — How long the protocol asks to wait before trying again, when it says.
 
 Implements:
 
@@ -597,11 +697,16 @@ pub struct Identity {
 
 Stable identity declared by a protocol adapter.
 
+- `channel` — The protocol, such as `telegram`.
+- `account` — The account the adapter uses on that protocol, such as a bot's ID.
+
 ### `channel::Identity::key`
 
 ```rust
 pub fn key(&self) -> String
 ```
+
+The connection's key, `<channel>:<account>`, under which its state and deliveries are kept.
 
 Implements:
 
@@ -623,7 +728,15 @@ pub struct Input {
 }
 ```
 
+One incoming message as the protocol reports it.
+
+The connection acts only on direct messages from the owner; it ignores the rest.
+
+- `conversation` — The protocol's ID for the conversation, where replies go.
+- `sender` — The protocol's ID for the sender, when it reports one.
 - `conversation_type` — Adapter-provided label retained for diagnostics, not interpreted by the connection.
+- `direct` — Whether the conversation is one to one, rather than a group.
+- `action` — What the message asks for; absent when it holds nothing the host understands.
 
 ## struct `channel::MessageContent`
 
@@ -636,6 +749,12 @@ pub struct MessageContent<T> {
     pub unviewable: Vec<Unviewable>,
 }
 ```
+
+A message's text and attachments; `T` is an attachment before or after fetching.
+
+- `text` — The text as written.
+- `images` — Images to show the model.
+- `unviewable` — Attachments that could not be made into images, each with the reason.
 
 Implements:
 
@@ -657,6 +776,9 @@ pub struct Update {
 
 One protocol update with its resulting protocol state.
 
+- `protocol` — The protocol state after this update, such as the offset to poll from next.
+- `input` — What the update brings, if anything the connection reads.
+
 ## trait `channel::Adapter`
 
 `src/channel.rs`
@@ -665,8 +787,10 @@ One protocol update with its resulting protocol state.
 pub trait Adapter: Send + Sync
 ```
 
-Native adapter boundary, replaced by the channel plugin boundary in P3.
-Outbound Markdown and optional files are mapped to the channel protocol here.
+The protocol side of a channel: reading updates, fetching attachments and sending replies.
+
+This native boundary stands until channels become plugins. Outbound Markdown and optional files
+are mapped to the channel protocol here.
 
 ### `channel::Adapter::identity`
 
@@ -731,56 +855,56 @@ and only the registry changes them.
 - module `development::tree` — A directory as an exact value: file bytes by canonical relative path.
 - struct `development::AgentReason` — A suggested call's reason, which the Agent writes.
 - struct `development::Applied` — The result of an apply: what was registered, and what each build did.
-- struct `development::ApplyArguments` — (no summary)
-- enum `development::BuildFailure` — (no summary)
+- struct `development::ApplyArguments` — The arguments of `self_apply`.
+- enum `development::BuildFailure` — Why one plugin's source did not build.
 - struct `development::BuildResult` — What happened to one plugin source during an apply.
-- struct `development::Comparison` — (no summary)
-- enum `development::ComparisonMode` — (no summary)
-- struct `development::ConfigurationUnit` — (no summary)
+- struct `development::Comparison` — How the files of two sides differ, and what to do about it.
+- enum `development::ComparisonMode` — Which pair of sides a comparison has.
+- struct `development::ConfigurationUnit` — The three layers of `config.toml`.
 - enum `development::ContentFailure` — Why content cannot be read; other failures stop the comparison.
-- struct `development::ContentUnavailable` — (no summary)
+- struct `development::ContentUnavailable` — One side's content that cannot be read, and why.
 - struct `development::Development` — Entry point for the plugin development tools in one home.
-- enum `development::DevelopmentCall` — One parsed call of a development tool. Suggestions use `AgentReason` where the Agent writes.
-- enum `development::DevelopmentError` — (no summary)
+- enum `development::DevelopmentCall` — One parsed call of a development tool.
+- enum `development::DevelopmentError` — Why a development operation failed.
 - struct `development::DevelopmentStatus` — The three layers of every plugin and of `config.toml`, observed once.
-- enum `development::DevelopmentTool` — (no summary)
-- struct `development::EntryError` — (no summary)
-- enum `development::EntryProblem` — (no summary)
-- struct `development::Failed` — (no summary)
-- struct `development::FileDiff` — (no summary)
-- enum `development::FileDifference` — (no summary)
+- enum `development::DevelopmentTool` — A development tool that this crate implements; `self_status` belongs to the application.
+- struct `development::EntryError` — A file or directory in the home that cannot be used as it is.
+- enum `development::EntryProblem` — What is wrong with a file or directory in the home.
+- struct `development::Failed` — A failed development operation; its message says what failed, what was left behind, and what to do next.
+- struct `development::FileDiff` — One file that differs.
+- enum `development::FileDifference` — How a file differs between the two sides.
 - struct `development::Following` — Keeps a manual in step with the registry until shutdown.
-- struct `development::History` — (no summary)
-- enum `development::HistoryPoint` — (no summary)
-- enum `development::HistoryQuery` — (no summary)
-- enum `development::HomeComparison` — Byte equality and meaning are distinct facts; reading a comparison never builds source.
-- struct `development::HomePlugin` — (no summary)
+- struct `development::History` — The answer to a history request.
+- enum `development::HistoryPoint` — One side of a comparison: what a registration accepted, or what the home holds now.
+- enum `development::HistoryQuery` — What a history request asks for: a page of registrations, or a comparison of two sides.
+- enum `development::HomeComparison` — How `config.toml` or a plugin directory in the home compares with what is registered.
+- struct `development::HomePlugin` — How a plugin in the home compares with what is registered.
 - struct `development::Invocation` — A suggested call, serialized only where a document or JSON result is written.
 - struct `development::Manual` — Writes the manual of one home.
 - enum `development::Operation` — The development operation that failed; it decides what a failure left behind and how to repeat the operation.
-- struct `development::PluginUnit` — (no summary)
-- struct `development::RegisteredUnit` — (no summary)
-- struct `development::RenameArguments` — (no summary)
-- struct `development::RewindArguments` — (no summary)
-- struct `development::RewindConflict` — (no summary)
-- struct `development::Rewound` — (no summary)
-- struct `development::ScaffoldArguments` — (no summary)
+- struct `development::PluginUnit` — The three layers of one plugin; a layer is absent when the plugin is not in it.
+- struct `development::RegisteredUnit` — What the latest registration holds for one plugin.
+- struct `development::RenameArguments` — The arguments of `plugin_rename`.
+- struct `development::RewindArguments` — The arguments of `self_rewind`.
+- struct `development::RewindConflict` — What keeps a rewind from writing one path.
+- struct `development::Rewound` — What a rewind wrote back into the home.
+- struct `development::ScaffoldArguments` — The arguments of `plugin_scaffold`.
 - struct `development::Sdk` — The plugin SDK sources embedded in the host binary, written to `sdk/` in each home.
-- enum `development::SettingsComparison` — (no summary)
-- struct `development::StatusArguments` — (no summary)
-- enum `development::SuggestedArguments` — (no summary)
+- enum `development::SettingsComparison` — How a plugin's table in `config.toml` compares with the registered settings.
+- struct `development::StatusArguments` — The arguments of `self_status`, which takes none.
+- enum `development::SuggestedArguments` — The arguments of a suggested call.
 - enum `development::ToolchainProblem` — Why the SDK's toolchain cannot build plugins on this machine.
-- struct `development::UnitDiff` — (no summary)
-- fn `development::registration_document` — (no summary)
+- struct `development::UnitDiff` — How one unit differs between the two sides: `config.toml` or a plugin directory.
+- fn `development::registration_document` — A registration as the Markdown document a tool result shows.
 - fn `development::self_status_spec` — same as `self_status_spec`
-- const `development::APPLY` — (no summary)
-- const `development::HISTORY` — (no summary)
-- const `development::HISTORY_PAGE_SIZE` — (no summary)
+- const `development::APPLY` — Name of the tool that registers every change in the home.
+- const `development::HISTORY` — Name of the tool that lists registrations and compares versions of the home's files.
+- const `development::HISTORY_PAGE_SIZE` — How many registrations one page of the history lists.
 - const `development::MANUAL_DIRECTORY` — The directory under the home that holds the manual.
-- const `development::RENAME` — (no summary)
-- const `development::REWIND` — (no summary)
-- const `development::SCAFFOLD` — (no summary)
-- const `development::STATUS` — (no summary)
+- const `development::RENAME` — Name of the tool that renames a plugin together with its directory.
+- const `development::REWIND` — Name of the tool that writes an earlier registration's files back into the home.
+- const `development::SCAFFOLD` — Name of the tool that creates a tool plugin in the home.
+- const `development::STATUS` — Name of the tool that shows Enco's state and what needs attention.
 
 ## struct `development::AgentReason`
 
@@ -835,6 +959,8 @@ The result of an apply: what was registered, and what each build did.
 pub fn document(&self) -> String
 ```
 
+The apply as the Markdown document a tool result shows.
+
 Implements:
 
 ```rust
@@ -850,6 +976,8 @@ pub struct ApplyArguments<R = enco_core::Reason> {
     pub reason: R,
 }
 ```
+
+The arguments of `self_apply`.
 
 - `reason` — Why this change is registered, in one sentence; history shows it.
 
@@ -886,10 +1014,21 @@ pub enum BuildFailure {
 }
 ```
 
-- `Cargo`
+Why one plugin's source did not build.
+
+- `Cargo` — A Cargo command failed.
+  - `stage` — The command: `clippy`, `build` or `doc`.
   - `diagnostics` — Diagnostic excerpts, or the error output when Cargo reported none.
-- `Toolchain` — Checked before Cargo runs; installing a toolchain downloads it, so the owner repairs this.
+  - `log` — Where Cargo's complete output is stored.
+- `NoArtifact` — Cargo succeeded but produced no Wasm component for the plugin; the path is the stored log.
+- `EmptySettings` — The component does not load with an empty configuration, which every plugin must accept.
+- `SourceChanged` — Files in the source directory changed while the build was reading them.
+- `Toolchain` — The pinned Rust toolchain cannot build plugins on this machine.
+  
+  This is checked before Cargo runs. Installing a toolchain downloads it, so the owner repairs
+  this.
   - `channel` — The toolchain the SDK pins, as rustup names it.
+  - `problem` — What is missing or wrong.
 
 Implements:
 
@@ -944,9 +1083,16 @@ pub struct Comparison {
 }
 ```
 
-- `from` — Absent only before the first registration.
-- `conflicting_paths` — Different identities would require the same current directory.
-- `next` — Actions include only paths addressable by the rewind tool.
+How the files of two sides differ, and what to do about it.
+
+- `from` — The side the comparison starts from; absent only before the first registration.
+- `to` — The side the comparison ends at.
+- `mode` — Which pair of sides this is, which decides the suggested steps.
+- `units` — One entry for each unit that differs: `config.toml` or a plugin directory.
+- `conflicting_paths` — Directories that two plugins would both need, so no rewind can write them.
+- `next` — What to do about the differences, if anything.
+  
+  Actions include only paths addressable by the rewind tool.
 
 Implements:
 
@@ -965,6 +1111,12 @@ pub enum ComparisonMode {
     Registrations,
 }
 ```
+
+Which pair of sides a comparison has.
+
+- `HomeChanges` — The latest registration against the home: the edits not yet registered.
+- `RewindPreview` — The home against a registration: what a rewind to that registration would write.
+- `Registrations` — Any other pair, such as two registrations.
 
 Implements:
 
@@ -987,6 +1139,14 @@ pub struct ConfigurationUnit {
     pub unavailable_uses: Vec<enco_kernel::UnservedUse>,
 }
 ```
+
+The three layers of `config.toml`.
+
+- `running` — The configuration in use; it differs from the registered one after a rollback.
+- `registered` — The configuration the latest registration selected.
+- `home` — How `config.toml` in the home compares with the registered configuration.
+- `invalid` — Tables in the running configuration that this host cannot interpret.
+- `unavailable_uses` — Configured uses that no running plugin can serve now.
 
 Implements:
 
@@ -1012,6 +1172,12 @@ pub enum ContentFailure {
 
 Why content cannot be read; other failures stop the comparison.
 
+- `Missing` — Enco's store no longer has the content; stored blobs are removable history.
+  - `hash` — The address of the missing content.
+- `Corrupt` — The stored content cannot be read back.
+  - `reason` — What is malformed.
+- `Unreadable` — The files in the home cannot be read.
+
 Implements:
 
 ```rust
@@ -1029,6 +1195,11 @@ pub struct ContentUnavailable {
     pub cause: ContentFailure,
 }
 ```
+
+One side's content that cannot be read, and why.
+
+- `point` — The side whose content cannot be read.
+- `cause` — Why it cannot be read.
 
 Implements:
 
@@ -1100,6 +1271,8 @@ Direct artifacts share acceptance and history while leaving file intent unchange
 pub async fn rename(&self, registry: &Registry, name: &PluginName, to: &PluginName, initiator: Initiator, cancel: &CancellationToken) -> Result<Registered, Failed>
 ```
 
+Move `plugins/<name>` to `plugins/<to>` and register the new name in one operation.
+
 ### `development::Development::rewind`
 
 `src/development/rewind.rs`
@@ -1107,6 +1280,9 @@ pub async fn rename(&self, registry: &Registry, name: &PluginName, to: &PluginNa
 ```rust
 pub async fn rewind(&self, registry: &Registry, arguments: RewindArguments, cancel: &CancellationToken) -> Result<Rewound, Failed>
 ```
+
+Write the files of `arguments.registration` back to the selected paths; nothing is
+registered.
 
 ### `development::Development::scaffold`
 
@@ -1166,13 +1342,23 @@ pub enum DevelopmentCall<R = enco_core::Reason> {
 }
 ```
 
-One parsed call of a development tool. Suggestions use `AgentReason` where the Agent writes.
+One parsed call of a development tool.
+
+Suggestions use `AgentReason` where the Agent writes.
+
+- `Apply` — A call of `self_apply`.
+- `History` — A call of `self_history`.
+- `Rewind` — A call of `self_rewind`.
+- `Rename` — A call of `plugin_rename`.
+- `Scaffold` — A call of `plugin_scaffold`.
 
 ### `development::DevelopmentCall::tool`
 
 ```rust
 pub fn tool(&self) -> DevelopmentTool
 ```
+
+The tool this call is for.
 
 Implements:
 
@@ -1241,12 +1427,46 @@ pub enum DevelopmentError {
 }
 ```
 
+Why a development operation failed.
+
+- `Entry` — A file or directory in the home cannot be used as it is.
+- `Build` — A plugin's source did not build.
+  - `name` — The plugin whose source did not build.
+  - `failure` — How the build failed.
+- `Registry` — The registry rejected the change or could not complete it.
+- `Store` — Enco's store could not read or write.
+- `Corrupt` — Content in Enco's store cannot be read back, such as a malformed file manifest.
+- `Host` — The host's own machinery failed, such as starting a process or reading its embedded files.
+- `NameTaken` — A new plugin was asked for under a name that is already registered or reserved.
+  - `name` — The name asked for.
+- `DirectoryExists` — The directory that a new or renamed plugin would take already exists.
+  - `name` — The name whose directory exists.
+- `NoSource` — A rename was asked for a plugin with no registered source directory to move, such as one
+  that follows factory code.
+  - `name` — The plugin asked to be renamed.
 - `AmbiguousRename` — Registered sources disappeared while new directories appeared; a rename is ambiguous.
+  - `missing` — Registered plugins whose directories are gone.
+  - `added` — Directories under `plugins/` that no registration has.
+  - `latest` — The latest registration, from which the missing directories can be restored.
 - `Preparation` — Some sources or `config.toml` could not be prepared; each failure names its subject.
 - `Moved` — The rename failed after its directory moved.
 - `Partial` — The operation stopped after these file operations completed.
-- `RewindRefused`
+  - `written` — The files and directories written before it stopped.
+  - `source` — Why it stopped.
+- `RewindRefused` — A rewind would overwrite or remove something no registration holds; nothing was written.
+  - `conflicts` — What stands in the way, for each path.
   - `selected` — Every path the rewind selected.
+- `RewindPath` — A rewind named a plugin that neither the latest nor the target registration has.
+  - `path` — The path as the rewind named it.
+- `RewindCollision` — A rewind would write two plugins to the same directory.
+  - `path` — The directory both would be written to.
+- `RewindContent` — A rewind needs registered content that can no longer be read from Enco's store.
+  - `path` — The path the content was to be written to.
+  - `unavailable` — Why the content cannot be read.
+- `WriteConflicts` — Writing a directory would destroy something the write does not own, such as an ignored file.
+  - `path` — The directory being written.
+  - `conflicts` — What stands in the way.
+- `Cancelled` — The caller cancelled the operation before it finished.
 
 ### `development::DevelopmentError::code`
 
@@ -1284,7 +1504,10 @@ pub struct DevelopmentStatus {
 
 The three layers of every plugin and of `config.toml`, observed once.
 
+- `registration` — The latest registration, which the registered layer reflects.
 - `plugins` — Every plugin that runs, is registered, or has a directory.
+- `configuration` — The three layers of `config.toml`.
+- `recent_registrations` — The latest registrations, newest first.
 - `plugins_unreadable` — Why the `plugins` directory cannot be listed; the home facts of plugins are then absent.
 
 Implements:
@@ -1307,11 +1530,21 @@ pub enum DevelopmentTool {
 }
 ```
 
+A development tool that this crate implements; `self_status` belongs to the application.
+
+- `Apply` — `self_apply`.
+- `History` — `self_history`.
+- `Rewind` — `self_rewind`.
+- `Rename` — `plugin_rename`.
+- `Scaffold` — `plugin_scaffold`.
+
 ### `development::DevelopmentTool::ALL`
 
 ```rust
 const ALL: [Self; 5] = _;
 ```
+
+Every development tool.
 
 ### `development::DevelopmentTool::name`
 
@@ -1319,11 +1552,15 @@ const ALL: [Self; 5] = _;
 pub const fn name(self) -> &'static str
 ```
 
+The name the model calls the tool by.
+
 ### `development::DevelopmentTool::named`
 
 ```rust
 pub fn named(name: &str) -> Option<Self>
 ```
+
+The tool called `name`, if there is one.
 
 ### `development::DevelopmentTool::parse`
 
@@ -1331,13 +1568,17 @@ pub fn named(name: &str) -> Option<Self>
 pub fn parse(self, arguments: Map<String, Value>) -> Result<DevelopmentCall, Failure>
 ```
 
-The parser execution uses, and the only one.
+Parse the arguments of a call to this tool.
+
+Execution uses this parser and no other.
 
 ### `development::DevelopmentTool::spec`
 
 ```rust
 pub fn spec(self) -> Result<ToolSpec, SchemaError>
 ```
+
+The tool's declaration: its name, description, argument schema and effect.
 
 Implements:
 
@@ -1359,6 +1600,11 @@ pub struct EntryError {
     pub problem: EntryProblem,
 }
 ```
+
+A file or directory in the home that cannot be used as it is.
+
+- `path` — The file or directory.
+- `problem` — What is wrong with it.
 
 Implements:
 
@@ -1392,7 +1638,21 @@ pub enum EntryProblem {
 }
 ```
 
-- `UnsupportedName` — Source paths use `/` as their only separator, so names cannot contain `\\`.
+What is wrong with a file or directory in the home.
+
+- `Io` — The operating system refused to read or write it; the text is its message.
+- `NotDirectory` — A plugin's source is a file or a symbolic link where a directory must be.
+- `NotRegular` — A source directory holds something other than files and directories, such as a symbolic
+  link.
+- `NotUtf8` — Its name is not valid UTF-8.
+- `UnsupportedName` — Its name cannot be part of a source path.
+  
+  Source paths use `/` as their only separator, so names cannot contain `\\`.
+- `NotText` — Its content is not UTF-8 text.
+- `IgnoreRule` — A `.gitignore` rule cannot be parsed; the text is the parser's message.
+- `NotPluginName` — A directory under `plugins/` whose name is not a valid plugin name.
+- `Toml` — `config.toml` cannot be parsed; the text is the parser's message.
+- `ReadmeMarkers` — A plugin's README has only one marker of its generated section, or both in the wrong order.
 
 Implements:
 
@@ -1417,6 +1677,12 @@ pub struct Failed {
 }
 ```
 
+A failed development operation; its message says what failed, what was left behind, and what
+to do next.
+
+- `operation` — The operation that failed, which decides how to repeat it.
+- `error` — Why it failed.
+
 ### `development::Failed::next`
 
 `src/development/error/next.rs`
@@ -1425,11 +1691,15 @@ pub struct Failed {
 pub fn next(&self) -> Steps
 ```
 
+What to do about the failure: repair what it left behind, then repeat the operation.
+
 ### `development::Failed::code`
 
 ```rust
 pub fn code(&self) -> &'static str
 ```
+
+The stable classification of the error that failed the operation.
 
 Implements:
 
@@ -1449,6 +1719,11 @@ pub struct FileDiff {
     pub change: FileDifference,
 }
 ```
+
+One file that differs.
+
+- `path` — The file's path in the home, such as `config.toml` or `plugins/web/src/lib.rs`.
+- `change` — How it differs.
 
 Implements:
 
@@ -1470,6 +1745,14 @@ pub enum FileDifference {
     Binary,
 }
 ```
+
+How a file differs between the two sides.
+
+- `Text` — The file is text on both sides.
+  - `diff` — The change as a unified diff.
+- `AddedEmpty` — An empty file was added.
+- `RemovedEmpty` — An empty file was removed.
+- `Binary` — One side is not text, so the change is not shown line by line.
 
 Implements:
 
@@ -1516,7 +1799,12 @@ pub struct History {
 }
 ```
 
+The answer to a history request.
+
+- `registrations` — A page of registrations, newest first, or the registration compared with the one before it.
 - `before` — The cursor for older registrations, when more exist.
+- `comparison` — The comparison, when one was asked for.
+- `timezone` — The owner's time zone, in which registration times are shown.
 
 ### `development::History::document`
 
@@ -1525,6 +1813,8 @@ pub struct History {
 ```rust
 pub fn document(&self) -> String
 ```
+
+The history as the Markdown document a tool result shows.
 
 Implements:
 
@@ -1542,6 +1832,11 @@ pub enum HistoryPoint {
     Home,
 }
 ```
+
+One side of a comparison: what a registration accepted, or what the home holds now.
+
+- `Registration` — The intent a registration accepted.
+- `Home` — The files in the home now.
 
 Implements:
 
@@ -1573,8 +1868,16 @@ pub enum HistoryQuery {
 }
 ```
 
-- `Compare` — Two intent values. Without `from`, the home is compared with the latest
-  registration, and a registration with the one before it.
+What a history request asks for: a page of registrations, or a comparison of two sides.
+
+- `List` — A page of registrations, newest first.
+  - `before` — Only registrations older than this one; the newest page when absent.
+- `Compare` — The differences between the files of two sides.
+  
+  Without `from`, the home is compared with the latest registration, and a registration with
+  the one before it.
+  - `from` — The side the comparison starts from.
+  - `to` — The side the comparison ends at.
 
 ### `development::HistoryQuery::new`
 
@@ -1612,10 +1915,18 @@ pub enum HomeComparison {
 }
 ```
 
+How `config.toml` or a plugin directory in the home compares with what is registered.
+
 Byte equality and meaning are distinct facts; reading a comparison never builds source.
 
+- `Same` — The bytes are the registered ones.
+- `TextOnly` — The bytes differ but mean the same, as when only a comment changed; registering them
+  registers nothing.
+- `Changed` — The bytes differ, and so does what they mean.
 - `Unbuilt` — The bytes differ, and no build tells yet whether the code does.
+- `Removed` — The registered directory is gone from the home.
 - `Absent` — There is no directory and no registered source.
+- `Unreadable` — The directory or file cannot be read.
 
 Implements:
 
@@ -1638,6 +1949,11 @@ pub struct HomePlugin {
 }
 ```
 
+How a plugin in the home compares with what is registered.
+
+- `code` — Its source directory against the registered source.
+- `settings` — Its table in `config.toml` against the registered settings.
+
 Implements:
 
 ```rust
@@ -1658,17 +1974,25 @@ pub struct Invocation {
 
 A suggested call, serialized only where a document or JSON result is written.
 
+- `tool` — The name of the tool to call.
+- `arguments` — The arguments to call it with.
+- `agent_supplies` — Arguments the Agent writes itself, such as `reason`; the suggestion holds placeholders.
+
 ### `development::Invocation::new`
 
 ```rust
 pub fn new(call: DevelopmentCall<AgentReason>) -> Self
 ```
 
+Suggest this call, naming the arguments the Agent writes itself.
+
 ### `development::Invocation::status`
 
 ```rust
 pub fn status() -> Self
 ```
+
+Suggest reading `self_status`.
 
 Implements:
 
@@ -1738,6 +2062,17 @@ pub enum Operation {
 The development operation that failed; it decides what a failure left behind and how to
 repeat the operation.
 
+- `Apply` — Registering the home as it is now, after building the plugins whose source changed.
+- `Deploy` — Registering a component supplied directly, outside the home.
+- `Startup` — Restoring registered behavior as Enco starts, and registering a new home the first time.
+- `Rename` — Renaming a plugin together with its directory.
+  - `name` — The plugin's current name.
+  - `to` — The name it was to take.
+- `Rewind` — Writing parts of the home back to what an earlier registration registered.
+- `Scaffold` — Creating a plugin directory from the template.
+- `History` — Reading the registration history or comparing two points in it.
+- `Status` — Reading how the home, the registrations and what runs compare.
+
 Implements:
 
 ```rust
@@ -1756,6 +2091,12 @@ pub struct PluginUnit {
     pub home: Option<super::HomePlugin>,
 }
 ```
+
+The three layers of one plugin; a layer is absent when the plugin is not in it.
+
+- `running` — What runs under this name.
+- `registered` — What the latest registration holds for this name.
+- `home` — How the plugin's directory in the home compares with what is registered.
 
 Implements:
 
@@ -1776,6 +2117,9 @@ pub struct RegisteredUnit {
 }
 ```
 
+What the latest registration holds for one plugin.
+
+- `plugin` — The registered name, identity and code choice.
 - `earlier_sdk` — No build of this host's SDK produced the registered code; the next registration rebuilds it.
 - `follow_rejection` — Why registering this host's factory code was rejected; every registration retries it.
 
@@ -1797,7 +2141,10 @@ pub struct RenameArguments<R = enco_core::Reason> {
 }
 ```
 
+The arguments of `plugin_rename`.
+
 - `name` — The plugin's current name.
+- `to` — The new name.
 - `reason` — Why the plugin is renamed, in one sentence; history shows it.
 
 Implements:
@@ -1822,6 +2169,8 @@ pub struct RewindArguments {
     pub paths: Option<Vec<enco_core::IntentPath>>,
 }
 ```
+
+The arguments of `self_rewind`.
 
 - `registration` — The registration whose versions are written back.
 - `paths` — The paths to rewind, each `config.toml` or `plugins/<name>` with the plugin's current name.
@@ -1849,6 +2198,11 @@ pub struct RewindConflict {
 }
 ```
 
+What keeps a rewind from writing one path.
+
+- `path` — The path the rewind would write.
+- `conflicts` — What stands in the way there.
+
 Implements:
 
 ```rust
@@ -1869,6 +2223,13 @@ pub struct Rewound {
 }
 ```
 
+What a rewind wrote back into the home.
+
+- `registration` — The registration whose files were written back.
+- `written` — The paths whose files were written.
+- `removed` — The plugin directories removed, because the registration had no plugin there.
+- `unchanged` — The selected paths that already matched the registration.
+
 ### `development::Rewound::document`
 
 `src/development/render/actions.rs`
@@ -1876,6 +2237,8 @@ pub struct Rewound {
 ```rust
 pub fn document(&self) -> String
 ```
+
+The rewind as the Markdown document a tool result shows.
 
 Implements:
 
@@ -1892,6 +2255,10 @@ pub struct ScaffoldArguments {
     pub name: enco_core::PluginName,
 }
 ```
+
+The arguments of `plugin_scaffold`.
+
+- `name` — The new plugin's name.
 
 Implements:
 
@@ -1985,6 +2352,10 @@ pub enum SettingsComparison {
 }
 ```
 
+How a plugin's table in `config.toml` compares with the registered settings.
+
+- `Same` — The table is the registered one.
+- `Changed` — The table differs from the registered one.
 - `Unknown` — `config.toml` or its plugin tables cannot be read; the reason is reported for `config.toml`.
 
 Implements:
@@ -2007,6 +2378,8 @@ pub struct StatusArguments {
 }
 ```
 
+The arguments of `self_status`, which takes none.
+
 Implements:
 
 ```rust
@@ -2027,6 +2400,11 @@ pub enum SuggestedArguments {
     Status(StatusArguments),
 }
 ```
+
+The arguments of a suggested call.
+
+- `Development` — The arguments of a development tool, with placeholders where the Agent writes.
+- `Status` — The arguments of `self_status`.
 
 Implements:
 
@@ -2078,6 +2456,14 @@ pub struct UnitDiff {
 }
 ```
 
+How one unit differs between the two sides: `config.toml` or a plugin directory.
+
+- `path` — Where the unit is in the home.
+- `plugin` — The plugin's identity, which stays the same across renames; absent for `config.toml` and
+  for a directory no registration has.
+- `files` — The files that differ; empty when one side cannot be read.
+- `unavailable` — Why one side cannot be read, if it cannot.
+
 Implements:
 
 ```rust
@@ -2092,6 +2478,8 @@ impl Serialize for UnitDiff
 pub fn registration_document(registered: &enco_kernel::Registered) -> String
 ```
 
+A registration as the Markdown document a tool result shows.
+
 ## const `development::APPLY`
 
 `src/development/call.rs`
@@ -2099,6 +2487,8 @@ pub fn registration_document(registered: &enco_kernel::Registered) -> String
 ```rust
 pub const APPLY: &str = "self_apply";
 ```
+
+Name of the tool that registers every change in the home.
 
 ## const `development::HISTORY`
 
@@ -2108,6 +2498,8 @@ pub const APPLY: &str = "self_apply";
 pub const HISTORY: &str = "self_history";
 ```
 
+Name of the tool that lists registrations and compares versions of the home's files.
+
 ## const `development::HISTORY_PAGE_SIZE`
 
 `src/development/history.rs`
@@ -2115,6 +2507,8 @@ pub const HISTORY: &str = "self_history";
 ```rust
 pub const HISTORY_PAGE_SIZE: usize = 20;
 ```
+
+How many registrations one page of the history lists.
 
 ## const `development::MANUAL_DIRECTORY`
 
@@ -2134,6 +2528,8 @@ The directory under the home that holds the manual.
 pub const RENAME: &str = "plugin_rename";
 ```
 
+Name of the tool that renames a plugin together with its directory.
+
 ## const `development::REWIND`
 
 `src/development/call.rs`
@@ -2141,6 +2537,8 @@ pub const RENAME: &str = "plugin_rename";
 ```rust
 pub const REWIND: &str = "self_rewind";
 ```
+
+Name of the tool that writes an earlier registration's files back into the home.
 
 ## const `development::SCAFFOLD`
 
@@ -2150,6 +2548,8 @@ pub const REWIND: &str = "self_rewind";
 pub const SCAFFOLD: &str = "plugin_scaffold";
 ```
 
+Name of the tool that creates a tool plugin in the home.
+
 ## const `development::STATUS`
 
 `src/development/call.rs`
@@ -2158,9 +2558,16 @@ pub const SCAFFOLD: &str = "plugin_scaffold";
 pub const STATUS: &str = "self_status";
 ```
 
+Name of the tool that shows Enco's state and what needs attention.
+
 # module `enco_host::memory`
 
 `src/memory.rs`
+
+The owner's memories: a SQLite database holds them, and a derived vector index finds them.
+
+The index never owns memory content, so deleting it loses nothing; it is rebuilt from the
+database.
 
 - struct `memory::Memories` — same as `Memories`
 - struct `memory::MemoryContextSource` — same as `MemoryContextSource`
@@ -2170,7 +2577,7 @@ pub const STATUS: &str = "self_status";
 - struct `memory::Recall` — same as `Recall`
 - fn `memory::memory_tool_specs` — same as `memory_tool_specs`
 - fn `memory::memory_tools` — same as `memory_tools`
-- const `memory::TABLE_OWNER` — The same parser supplies admission and runtime consumers.
+- const `memory::TABLE_OWNER` — The owner of the `[memory]` table, which declares the endpoints that memory uses.
 
 ## const `memory::TABLE_OWNER`
 
@@ -2180,26 +2587,31 @@ pub const STATUS: &str = "self_status";
 pub const TABLE_OWNER: enco_kernel::TableOwner = _;
 ```
 
+The owner of the `[memory]` table, which declares the endpoints that memory uses.
+
 The same parser supplies admission and runtime consumers.
 
 # module `enco_host::status`
 
 `src/status.rs`
 
-- struct `status::Attention` — (no summary)
-- enum `status::AttentionKind` — Fact templates receive only this value, so they cannot infer prose from the steps.
-- enum `status::CallStep` — Each purpose describes exactly one effect, and carries the arguments of its call.
-- enum `status::Divergence` — (no summary)
+Enco's state as `self_status` reports it, and what in it needs attention.
+
+Situations and their next steps are typed values derived from the complete state. The
+application gathers the facts, and `Status::document` writes the text.
+
+- struct `status::Attention` — One situation that needs attention, with the steps to take next.
+- enum `status::AttentionKind` — The kind of situation, with only the facts that describe it.
+- enum `status::CallStep` — A suggested tool call, named by the purpose it serves.
+- enum `status::Divergence` — One way in which what runs for a plugin differs from what is registered.
 - enum `status::FixTarget` — What the Agent edits; each target is named by the facts that call for it.
 - enum `status::GenerationFailure` — A recorded failure of a generation, attributed by what the generation introduced.
-- struct `status::Node` — (no summary)
-- enum `status::OwnerAction` — (no summary)
-- struct `status::Repair` — Steps that repair one failure, and whether repeating the failed action is then worthwhile.
-- struct `status::Status` — The application assembles this value once for both tools and CLI clients.
-- enum `status::Step` — The purpose of each action is decided with the situation, never inferred by the renderer.
-- struct `status::Steps` — At most two alternatives; each alternative is performed in order.
-- enum `status::StopCause` — (no summary)
-- fn `status::repair` — (no summary)
+- struct `status::Node` — This host: its build, its home, and what it executes.
+- enum `status::OwnerAction` — Something only the owner can do; the Agent asks for it.
+- struct `status::Status` — Enco's state now, as `self_status` and `enco status` report it.
+- enum `status::Step` — One thing to do next: a tool call, a fix the Agent makes itself, or a request to the owner.
+- struct `status::Steps` — The next steps for one situation or failure.
+- enum `status::StopCause` — Why a plugin serves no calls.
 
 ## struct `status::Attention`
 
@@ -2211,6 +2623,11 @@ pub struct Attention<'a> {
     pub next: super::Steps,
 }
 ```
+
+One situation that needs attention, with the steps to take next.
+
+- `kind` — What the situation is, with its facts; in JSON they sit beside `next`.
+- `next` — What to do about it.
 
 Implements:
 
@@ -2288,9 +2705,62 @@ pub enum AttentionKind<'a> {
 }
 ```
 
+The kind of situation, with only the facts that describe it.
+
 Fact templates receive only this value, so they cannot infer prose from the steps.
 
+- `New` — A plugin directory in the home with no registered plugin under its name.
+  - `path` — The plugin directory.
+- `Unregistered` — The home has unregistered changes to code or configuration.
+  - `path` — `config.toml` or the plugin directory that changed.
+  - `registration` — The latest registration, which the home is compared with.
 - `Unbuilt` — Source changed, and only a build can tell whether its code did.
+  - `path` — The plugin directory whose source changed.
+  - `registration` — The latest registration, which the home is compared with.
+- `Removed` — A registered plugin's directory was deleted from the home, and the deletion is not
+  registered.
+  - `path` — The deleted plugin directory.
+  - `registration` — Registration that registered the deleted source.
+  - `running` — Whether the plugin still serves calls.
+  - `factory` — Whether the host has factory code for the plugin, which runs once the removal is
+    registered.
+- `RolledBack` — The registered generation failed, and the plugin runs an older one instead.
+  - `path` — The plugin directory.
+  - `running` — The older generation that runs.
+  - `registered` — The registered generation, which failed.
+  - `cause` — The failure, by what the failed generation introduced.
+- `Diverged` — What runs for the plugin differs from what is registered in one respect.
+  - `path` — The plugin directory.
+  - `divergence` — How what runs differs.
+- `Stopped` — The plugin serves no calls.
+  - `path` — The plugin directory.
+  - `cause` — Why it serves no calls.
+- `ConfigurationDiverged` — The running `config.toml` is not the registered one, as after a rollback.
+  - `running` — The configuration that runs.
+  - `registered` — The configuration the latest registration selected.
+- `FollowRejected` — Registering this host's factory code for the plugin was rejected; every registration
+  retries it.
+  - `path` — The plugin directory.
+  - `causes` — Why the registration was rejected.
+  - `running` — The generation the plugin keeps running; absent when it serves no calls.
+- `UnservedUse` — A configured use cannot be served, for a reason other than its plugin being unable to run.
+  - `usage` — The use, the endpoint it names, and why it cannot be served.
+- `InvalidTable` — A table of the running configuration that this host cannot interpret; what it configures
+  stays stopped.
+  - `error` — The table and what is wrong with it.
+- `Unreadable` — `config.toml` or a plugin directory cannot be read, so it cannot be compared with what is
+  registered.
+  - `path` — `config.toml` or the plugin directory.
+  - `error` — The file or directory that failed, and why.
+- `PluginsUnreadable` — The `plugins` directory cannot be listed, so no plugin's home layer is known.
+  - `error` — The file or directory that failed, and why.
+- `SafeMode` — The owner turned safe mode on: only recovery tools are offered, and plugins with factory
+  code run it.
+- `SchedulerStopped` — The Scheduler stopped after a failure, and reminders are not delivered.
+  - `reason` — The failure that stopped it.
+- `SessionStopped` — A Session stopped after a storage failure, and messages to it are rejected.
+  - `name` — The Session's name.
+  - `reason` — The storage failure that stopped it.
 
 Implements:
 
@@ -2330,17 +2800,39 @@ pub enum CallStep {
 }
 ```
 
-Each purpose describes exactly one effect, and carries the arguments of its call.
+A suggested tool call, named by the purpose it serves.
 
+Each purpose describes exactly one effect, and carries the arguments of its call. In JSON,
+`call` names the purpose, beside the `tool`, `arguments` and `agent_supplies` of `invocation`.
+
+- `Review` — Read the unregistered changes before registering them.
+- `Compare` — Compare two versions, such as the running configuration and the registered one.
+- `List` — List registrations, newest first; with a number, only those older than it.
+- `Show` — Show one registration in full, with its diff from the registration before it.
+- `Register` — Register every change in the home as one registration.
+- `RegisterRemoval` — Register the home after a plugin directory was deleted, so the deletion takes effect.
 - `Discard` — Return these paths to the latest registration, dropping unregistered changes.
+  - `latest` — The latest registration, whose versions are written back.
+  - `paths` — The paths whose unregistered changes are dropped.
 - `KeepRunning` — Return a path to the registration whose code or configuration runs.
+- `Restore` — Bring deleted plugin directories back from a registration that holds them.
+- `Rewind` — Write an earlier registration's versions back into the home.
 - `Overwrite` — Return paths to a chosen registration, overwriting their unregistered changes.
+- `RecordName` — Rename the plugin to the name it runs under, so the registered name matches it.
+  - `name` — The registered name.
+  - `to` — The name the plugin runs under.
+- `Rename` — Rename a plugin together with its directory, and register the new name.
+  - `name` — The plugin's current name.
+  - `to` — The new name.
+- `Recheck` — Read the status again, to see the state after a change.
 
 ### `status::CallStep::invocation`
 
 ```rust
 pub fn invocation(&self) -> Invocation
 ```
+
+The tool call for this step; `agent_supplies` names the arguments the Agent writes itself.
 
 Implements:
 
@@ -2378,6 +2870,23 @@ pub enum Divergence<'a> {
     },
 }
 ```
+
+One way in which what runs for a plugin differs from what is registered.
+
+- `Name` — The plugin runs under a name from an earlier registration.
+  - `running` — The name it runs under.
+  - `registered` — The registered name.
+  - `registration` — Registration that gave the registered name.
+- `Code` — The plugin runs code other than the registered code, which is not marked failed.
+  - `running` — The generation that runs.
+  - `registered` — The registered generation.
+- `Settings` — The plugin runs settings other than the registered settings, which are not marked failed.
+  - `running` — The generation that runs.
+  - `registered` — The registered generation.
+- `Unregistered` — A registration removed the plugin, but mechanical recovery, such as an owner rollback,
+  runs it again.
+  - `running` — The generation that runs.
+  - `removed_by` — Registration that removed the plugin.
 
 Implements:
 
@@ -2429,6 +2938,30 @@ pub enum FixTarget {
 
 What the Agent edits; each target is named by the facts that call for it.
 
+- `Source` — The plugin's source in `plugins/<name>`.
+  - `name` — Plugin whose source needs fixing.
+- `PluginSettings` — The plugin's `[plugin.<name>]` table in `config.toml`.
+  - `name` — Plugin whose settings need fixing.
+- `Endpoint` — The `[endpoint.<name>]` table in `config.toml`.
+  - `name` — The endpoint's name.
+- `Table` — A table of `config.toml`, such as `[memory]` or `[endpoint.chat]`.
+  - `name` — Table name without brackets, such as `memory` or `endpoint.chat`.
+- `Entry` — A file or directory in the home that cannot be used as it is.
+  - `path` — Path of the file or directory.
+- `Name` — A requested plugin name that cannot be used, to replace with another.
+  - `name` — The name that cannot be used.
+- `References` — References to a plugin name in `config.toml`, to remove.
+  - `name` — The plugin name still referenced.
+- `RecoveryTools` — A repair made with the recovery tools, the only tools offered in safe mode.
+- `IgnoredEntries` — Ignored entries, listed by the refused rewind, that must move out of the paths it writes.
+- `RemoveDirectory` — A plugin directory to delete from the home.
+  - `path` — The directory to delete.
+- `MoveDirectory` — A plugin directory to move back under its registered name.
+  - `from` — Where the directory is now.
+  - `to` — Where it belongs, under the registered name.
+- `SeparateNames` — A directory a rewind would write two plugins to; the plugin now there needs a new name.
+  - `path` — The directory both plugins would be written to.
+
 Implements:
 
 ```rust
@@ -2459,6 +2992,13 @@ pub enum GenerationFailure<'a> {
 
 A recorded failure of a generation, attributed by what the generation introduced.
 
+- `Code` — The generation introduced code from a plugin directory or a component file.
+  - `failure` — The failure recorded for the generation.
+- `Settings` — The generation introduced new settings and reuses existing code.
+  - `failure` — The failure recorded for the generation.
+- `Factory` — The generation runs the host's factory code, which only a host update changes.
+  - `failure` — The failure recorded for the generation.
+
 Implements:
 
 ```rust
@@ -2478,6 +3018,15 @@ pub struct Node {
     pub channels: Vec<crate::channel::ChannelStatus>,
 }
 ```
+
+This host: its build, its home, and what it executes.
+
+- `version` — Release version of the host, such as `0.1.0`.
+- `revision` — Git commit the host was built from; a build with uncommitted edits shows the same commit.
+- `home` — The Enco home directory this host runs from.
+- `execution` — Execution state from the kernel, such as safe mode, Sessions and the Scheduler; in JSON
+  its fields sit directly in `node`.
+- `channels` — Configured channels, such as Telegram, with their health and recent delivery failures.
 
 Implements:
 
@@ -2504,6 +3053,17 @@ pub enum OwnerAction {
 }
 ```
 
+Something only the owner can do; the Agent asks for it.
+
+- `Restart` — Restart Enco; the Agent cannot restart the process it runs in.
+- `DisableSafeMode` — Turn safe mode off with `enco safe-mode off`.
+- `RetryDeployment` — Deploy the component file again with `enco plugin deploy`.
+- `FactoryCode` — Repair the host's factory code for a plugin; only a host update changes it.
+  - `name` — Plugin whose factory code is at fault.
+- `Environment` — Provide what a plugin needs from outside the home, such as a secret value or a toolchain.
+  - `name` — Plugin that lacks the requirement.
+- `HostFault` — Look into a failure of the host itself, which the Agent cannot repair.
+
 Implements:
 
 ```rust
@@ -2512,51 +3072,6 @@ impl Debug for OwnerAction
 impl Eq for OwnerAction
 impl PartialEq for OwnerAction
 impl Serialize for OwnerAction
-```
-
-## struct `status::Repair`
-
-`src/status/next.rs`
-
-```rust
-pub struct Repair {
-    pub steps: Vec<Step>,
-    pub retry: bool,
-}
-```
-
-Steps that repair one failure, and whether repeating the failed action is then worthwhile.
-
-### `status::Repair::retry`
-
-```rust
-pub fn retry() -> Self
-```
-
-### `status::Repair::then_retry`
-
-```rust
-pub fn then_retry(steps: Vec<Step>) -> Self
-```
-
-### `status::Repair::only`
-
-```rust
-pub fn only(steps: Vec<Step>) -> Self
-```
-
-### `status::Repair::all`
-
-```rust
-pub fn all(repairs: impl IntoIterator<Item = Self>) -> Self
-```
-
-The repair of several failures, deduplicated, retried only when each allows it.
-
-### `status::Repair::followed_by`
-
-```rust
-pub fn followed_by(self, retry: Step) -> Vec<Step>
 ```
 
 ## struct `status::Status`
@@ -2570,7 +3085,13 @@ pub struct Status {
 }
 ```
 
-The application assembles this value once for both tools and CLI clients.
+Enco's state now, as `self_status` and `enco status` report it.
+
+The application assembles this value once for both tools and CLI clients. In JSON, the
+development facts sit at the top level, beside `node` and the derived `needs_attention`.
+
+- `development` — The three layers of every plugin and of `config.toml`, with recent registrations.
+- `node` — This host and what it executes.
 
 ### `status::Status::document`
 
@@ -2580,11 +3101,15 @@ The application assembles this value once for both tools and CLI clients.
 pub fn document(&self) -> String
 ```
 
+The status as the Markdown document `self_status` shows.
+
 ### `status::Status::attention`
 
 ```rust
 pub fn attention(&self) -> Vec<Attention<'_>>
 ```
+
+Every situation that needs attention now, each with its next steps.
 
 Situations are derived from the complete value, never cached or appended by callers.
 
@@ -2606,7 +3131,13 @@ pub enum Step {
 }
 ```
 
+One thing to do next: a tool call, a fix the Agent makes itself, or a request to the owner.
+
 The purpose of each action is decided with the situation, never inferred by the renderer.
+
+- `Call` — A tool call, with the arguments to pass.
+- `Fix` — Something the Agent fixes itself, such as a file in the home.
+- `AskOwner` — Something only the owner can do; the Agent asks for it.
 
 Implements:
 
@@ -2630,19 +3161,12 @@ pub struct Steps {
 }
 ```
 
+The next steps for one situation or failure.
+
 At most two alternatives; each alternative is performed in order.
 
-### `status::Steps::sequence`
-
-```rust
-pub fn sequence(first: Vec<Step>) -> Self
-```
-
-### `status::Steps::is_empty`
-
-```rust
-pub fn is_empty(&self) -> bool
-```
+- `first` — The steps to take, in order.
+- `alternative` — Steps to take instead of `first`, in order; absent when there is no other choice.
 
 Implements:
 
@@ -2670,20 +3194,19 @@ pub enum StopCause<'a> {
 }
 ```
 
+Why a plugin serves no calls.
+
+- `Failed` — The registered generation failed, and no older generation can run.
+  - `cause` — The failure, by what the failed generation introduced.
+- `Unavailable` — A generation is selected, but this host cannot serve it.
+  - `causes` — Why this host cannot serve it.
 - `NotRunning` — A generation is registered, but none is selected to run.
+  - `registered` — The registered generation.
 
 Implements:
 
 ```rust
 impl<'a> Serialize for StopCause<'a>
-```
-
-## fn `status::repair`
-
-`src/status/next.rs`
-
-```rust
-pub fn repair(part: &enco_kernel::IntentPart) -> Repair
 ```
 
 # module `enco_host::telegram`
@@ -2693,7 +3216,7 @@ pub fn repair(part: &enco_kernel::IntentPart) -> Repair
 Telegram-specific configuration, transport evidence and text limits.
 
 - struct `telegram::Telegram` — same as `Telegram`
-- struct `telegram::TelegramChannel` — Follows the Telegram table, awaiting the old connection before starting the next one.
+- struct `telegram::TelegramChannel` — The Telegram connection, restarted whenever the `[telegram]` table changes.
 - const `telegram::TABLE_OWNER` — Telegram owns its table and declares no model endpoints.
 
 ## struct `telegram::TelegramChannel`
@@ -2706,7 +3229,9 @@ pub struct TelegramChannel {
 }
 ```
 
-Follows the Telegram table, awaiting the old connection before starting the next one.
+The Telegram connection, restarted whenever the `[telegram]` table changes.
+
+It waits for the old connection to stop before starting the next one.
 
 ### `telegram::TelegramChannel::start`
 
@@ -2714,17 +3239,23 @@ Follows the Telegram table, awaiting the old connection before starting the next
 pub fn start(kernel: Arc<Kernel>, clock: Arc<dyn Clock>) -> Self
 ```
 
+Start the connection the `[telegram]` table configures, if any, and follow its changes.
+
 ### `telegram::TelegramChannel::status`
 
 ```rust
 pub async fn status(&self) -> Result<Vec<ChannelStatus>, KernelError>
 ```
 
+The connection's status; empty when no `[telegram]` table is configured.
+
 ### `telegram::TelegramChannel::shutdown`
 
 ```rust
 pub async fn shutdown(&self) -> Result<(), ChannelError>
 ```
+
+Stop following the configuration and wait until the connection has stopped.
 
 Implements:
 
@@ -2754,9 +3285,9 @@ is in the way, or when the write changes a `.gitignore` while ignored entries ex
 Enco owns entirely, such as `sdk/`, is written exactly and loses everything else.
 
 - struct `development::tree::FileTree` — Exact file bytes keyed by canonical paths relative to a directory.
-- struct `development::tree::InvalidSourcePath` — (no summary)
+- struct `development::tree::InvalidSourcePath` — Text that is not a source path: an empty, `.` or `..` part, a `\\`, or an absolute path.
 - struct `development::tree::SourcePath` — A canonical UTF-8 path relative to a file tree, with `/` as its separator.
-- enum `development::tree::WriteConflict` — A conflict is determined from the same directory observation as the planned writes.
+- enum `development::tree::WriteConflict` — What stands in the way of writing a directory.
 
 ## struct `development::tree::FileTree`
 
@@ -2803,6 +3334,8 @@ impl PartialEq for FileTree
 pub struct InvalidSourcePath(/* private field */);
 ```
 
+Text that is not a source path: an empty, `.` or `..` part, a `\\`, or an absolute path.
+
 Implements:
 
 ```rust
@@ -2827,6 +3360,8 @@ A canonical UTF-8 path relative to a file tree, with `/` as its separator.
 ```rust
 pub fn as_str(&self) -> &str
 ```
+
+The path as text, with `/` between its parts.
 
 Implements:
 
@@ -2866,11 +3401,18 @@ pub enum WriteConflict {
 }
 ```
 
+What stands in the way of writing a directory.
+
 A conflict is determined from the same directory observation as the planned writes.
 
+- `Unregistered` — The file holds an edit that is not registered, which the write would overwrite.
+  - `path` — The edited file.
 - `Occupied` — An ignored entry occupies a path the target writes.
+  - `path` — The ignored entry.
 - `Ignored` — An ignored entry keeps the directory from being removed.
+  - `path` — The ignored entry.
 - `IgnoreRulesChanged` — The target's ignore rules differ, so this ignored entry could become source.
+  - `path` — The ignored entry.
 
 Implements:
 

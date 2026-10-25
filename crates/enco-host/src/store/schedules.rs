@@ -1,3 +1,5 @@
+//! Reminder schedules: creating, cancelling and listing them, and firing one in the transaction
+//! that delivers its Reminder.
 use super::{backend, encode, rows};
 use crate::sqlite::timestamp;
 use enco_core::*;

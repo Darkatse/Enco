@@ -1,3 +1,5 @@
+//! The vector index over memory text, kept in step with the database by revision and always
+//! rebuildable from it.
 use super::{MemoryError, authority::Revision, settings::EmbeddingEndpoint};
 use enco_core::{Memory, MemoryId};
 use serde::Deserialize;

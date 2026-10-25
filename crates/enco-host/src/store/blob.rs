@@ -1,3 +1,4 @@
+//! Where a blob lives on disk, by its content address.
 use enco_core::ContentHash;
 use std::path::{Path, PathBuf};
 

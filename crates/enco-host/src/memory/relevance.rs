@@ -1,3 +1,5 @@
+//! Dropping recalled memories that do not relate to the message, by asking the configured decision
+//! endpoint about each.
 use super::{Memories, MemoryError, reported_call};
 use crate::limits::MEMORY_RELEVANCE_THRESHOLD;
 use enco_core::{Memory, Omission};

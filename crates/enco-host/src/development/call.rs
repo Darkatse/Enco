@@ -12,53 +12,80 @@ use enco_kernel::RECENT_REGISTRATIONS;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+/// Name of the tool that registers every change in the home.
 pub const APPLY: &str = "self_apply";
+/// Name of the tool that lists registrations and compares versions of the home's files.
 pub const HISTORY: &str = "self_history";
+/// Name of the tool that writes an earlier registration's files back into the home.
 pub const REWIND: &str = "self_rewind";
+/// Name of the tool that renames a plugin together with its directory.
 pub const RENAME: &str = "plugin_rename";
+/// Name of the tool that creates a tool plugin in the home.
 pub const SCAFFOLD: &str = "plugin_scaffold";
+/// Name of the tool that shows Enco's state and what needs attention.
 pub const STATUS: &str = "self_status";
 
+/// A development tool that this crate implements; `self_status` belongs to the application.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DevelopmentTool {
+    /// `self_apply`.
     Apply,
+    /// `self_history`.
     History,
+    /// `self_rewind`.
     Rewind,
+    /// `plugin_rename`.
     Rename,
+    /// `plugin_scaffold`.
     Scaffold,
 }
 
-/// One parsed call of a development tool. Suggestions use `AgentReason` where the Agent writes.
+/// One parsed call of a development tool.
+///
+/// Suggestions use `AgentReason` where the Agent writes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum DevelopmentCall<R = Reason> {
+    /// A call of `self_apply`.
     Apply(ApplyArguments<R>),
+    /// A call of `self_history`.
     History(HistoryQuery),
+    /// A call of `self_rewind`.
     Rewind(RewindArguments),
+    /// A call of `plugin_rename`.
     Rename(RenameArguments<R>),
+    /// A call of `plugin_scaffold`.
     Scaffold(ScaffoldArguments),
 }
 
+/// The arguments of `self_status`, which takes none.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct StatusArguments {}
 
 /// A suggested call, serialized only where a document or JSON result is written.
 #[derive(Clone, Debug, Serialize)]
 pub struct Invocation {
+    /// The name of the tool to call.
     pub tool: &'static str,
+    /// The arguments to call it with.
     pub arguments: SuggestedArguments,
+    /// Arguments the Agent writes itself, such as `reason`; the suggestion holds placeholders.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub agent_supplies: Vec<&'static str>,
 }
 
+/// The arguments of a suggested call.
 #[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
 pub enum SuggestedArguments {
+    /// The arguments of a development tool, with placeholders where the Agent writes.
     Development(DevelopmentCall<AgentReason>),
+    /// The arguments of `self_status`.
     Status(StatusArguments),
 }
 
 impl DevelopmentTool {
+    /// Every development tool.
     pub const ALL: [Self; 5] = [
         Self::Apply,
         Self::History,
@@ -67,6 +94,7 @@ impl DevelopmentTool {
         Self::Scaffold,
     ];
 
+    /// The name the model calls the tool by.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Apply => APPLY,
@@ -77,11 +105,14 @@ impl DevelopmentTool {
         }
     }
 
+    /// The tool called `name`, if there is one.
     pub fn named(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|tool| tool.name() == name)
     }
 
-    /// The parser execution uses, and the only one.
+    /// Parse the arguments of a call to this tool.
+    ///
+    /// Execution uses this parser and no other.
     pub fn parse(self, arguments: Map<String, Value>) -> Result<DevelopmentCall, Failure> {
         match self {
             Self::Apply => parse_arguments(arguments).map(DevelopmentCall::Apply),
@@ -92,6 +123,7 @@ impl DevelopmentTool {
         }
     }
 
+    /// The tool's declaration: its name, description, argument schema and effect.
     pub fn spec(self) -> Result<ToolSpec, SchemaError> {
         let name = self.name();
         match self {
@@ -156,6 +188,7 @@ pub fn self_status_spec() -> ToolSpec {
 }
 
 impl<R> DevelopmentCall<R> {
+    /// The tool this call is for.
     pub fn tool(&self) -> DevelopmentTool {
         match self {
             Self::Apply(_) => DevelopmentTool::Apply,
@@ -176,6 +209,7 @@ impl DevelopmentCall<AgentReason> {
 }
 
 impl Invocation {
+    /// Suggest this call, naming the arguments the Agent writes itself.
     pub fn new(call: DevelopmentCall<AgentReason>) -> Self {
         let agent_supplies = match &call {
             DevelopmentCall::Apply(_) | DevelopmentCall::Rename(_) => vec!["reason"],
@@ -190,6 +224,7 @@ impl Invocation {
         }
     }
 
+    /// Suggest reading `self_status`.
     pub fn status() -> Self {
         Self {
             tool: STATUS,

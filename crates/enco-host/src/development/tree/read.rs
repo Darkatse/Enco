@@ -1,3 +1,6 @@
+//! Reading a directory into exact file bytes, together with the entries a later write must keep.
+//!
+//! A source directory honors only the ignore rules inside it; a directory Enco owns is read whole.
 use super::{DevelopmentError, EntryError, EntryProblem, FileTree, entry};
 use crate::development::error::io;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};

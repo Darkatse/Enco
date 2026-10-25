@@ -1,4 +1,6 @@
-//! Rewind prepares every file operation before it changes any file in the home.
+//! Writing an earlier registration's files back into the home, without registering them.
+//!
+//! A rewind prepares every file operation before it changes any file in the home.
 use super::{
     ContentUnavailable, Development, DevelopmentError, Failed, HistoryPoint, Operation,
     RewindArguments, check_cancelled,
@@ -11,17 +13,25 @@ use serde::Serialize;
 use std::{collections::BTreeMap, path::PathBuf};
 use tokio_util::sync::CancellationToken;
 
+/// What a rewind wrote back into the home.
 #[derive(Serialize)]
 pub struct Rewound {
+    /// The registration whose files were written back.
     pub registration: RegistrationId,
+    /// The paths whose files were written.
     pub written: Vec<IntentPath>,
+    /// The plugin directories removed, because the registration had no plugin there.
     pub removed: Vec<IntentPath>,
+    /// The selected paths that already matched the registration.
     pub unchanged: Vec<IntentPath>,
 }
 
+/// What keeps a rewind from writing one path.
 #[derive(Debug, Serialize)]
 pub struct RewindConflict {
+    /// The path the rewind would write.
     pub path: IntentPath,
+    /// What stands in the way there.
     pub conflicts: Vec<WriteConflict>,
 }
 
@@ -39,6 +49,8 @@ struct PluginTarget {
 }
 
 impl Development {
+    /// Write the files of `arguments.registration` back to the selected paths; nothing is
+    /// registered.
     pub async fn rewind(
         &self,
         registry: &Registry,

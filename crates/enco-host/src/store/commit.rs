@@ -1,3 +1,4 @@
+//! Appending a Session's Log facts and consuming the input they answer, in one transaction.
 use super::{backend, encode, rows};
 use crate::sqlite::timestamp;
 use enco_core::*;

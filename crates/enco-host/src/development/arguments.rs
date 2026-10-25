@@ -1,3 +1,4 @@
+//! The arguments of the development tools, each one type whose field docs the model reads.
 use enco_core::{IntentPath, PluginName, Reason, RegistrationId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AgentReason;
 
+/// The arguments of `self_apply`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApplyArguments<R = Reason> {
@@ -16,17 +18,20 @@ pub struct ApplyArguments<R = Reason> {
     pub reason: R,
 }
 
+/// The arguments of `plugin_rename`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RenameArguments<R = Reason> {
     /// The plugin's current name.
     pub name: PluginName,
+    /// The new name.
     #[schemars(description = format!("The new name: {}.", PluginName::RULE))]
     pub to: PluginName,
     /// Why the plugin is renamed, in one sentence; history shows it.
     pub reason: R,
 }
 
+/// The arguments of `self_rewind`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RewindArguments {
@@ -37,9 +42,11 @@ pub struct RewindArguments {
     pub paths: Option<Vec<IntentPath>>,
 }
 
+/// The arguments of `plugin_scaffold`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScaffoldArguments {
+    /// The new plugin's name.
     #[schemars(description = format!("The new plugin's name: {}.", PluginName::RULE))]
     pub name: PluginName,
 }

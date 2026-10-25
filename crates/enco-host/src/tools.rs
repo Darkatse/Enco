@@ -1,3 +1,5 @@
+//! The host's native tools, and the lifeline: the repair tools that every reply offers unless its
+//! profile turns this off.
 pub(crate) mod development;
 pub(crate) mod failure;
 mod files;
@@ -12,7 +14,10 @@ use std::{
     sync::Arc,
 };
 
-/// Minimal repair tools, also required by ordinary Agent Sessions.
+/// The repair tools that every reply must offer, unless its profile sets
+/// `requires_lifeline = false`.
+///
+/// They are the minimum the Agent needs to repair Enco, in safe mode and in ordinary operation.
 pub const LIFELINE: [&str; 8] = [
     "fs_read",
     "fs_write",
@@ -24,7 +29,10 @@ pub const LIFELINE: [&str; 8] = [
     crate::development::REWIND,
 ];
 
-/// Native capabilities share the workspace path rules and ordinary Tool dispatch.
+/// The native tools: the file tools, `message_send` and `shell_exec`, with paths resolved against
+/// `workspace`.
+///
+/// They share the workspace path rules and ordinary Tool dispatch.
 pub fn native_tools(workspace: PathBuf) -> Result<Vec<Arc<dyn Tool>>, SchemaError> {
     let mut tools = files::kinds()
         .into_iter()

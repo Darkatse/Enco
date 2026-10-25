@@ -3,7 +3,7 @@
 //! A waiver is a problem wherever it is, private modules included. The rules about wording apply to
 //! every doc a manual prints: the navigation manual, which shows private items too, decides which.
 use crate::{navigation, render::View, text};
-use rustdoc_types::{Attribute, Crate, Item};
+use rustdoc_types::{Attribute, Crate};
 use std::{cell::RefCell, collections::BTreeSet, path::PathBuf};
 
 /// The longest first paragraph that still reads as one line of an index.
@@ -21,6 +21,9 @@ const PLACEHOLDERS: [&str; 4] = ["TODO", "FIXME", "XXX", "TBD"];
 /// Which rule an item breaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {
+    /// The crate root does not turn on `missing_docs`, so the compiler lets undocumented items
+    /// pass.
+    Unchecked,
     /// The item opts out of `missing_docs`; an item not worth documenting should not be public.
     Waiver,
     /// The first paragraph is longer than [`SUMMARY_CHARS`].
@@ -57,6 +60,19 @@ pub(crate) fn check(krate: &Crate) -> Vec<Problem> {
     });
     let printed = printed.into_inner();
     let mut problems = Vec::new();
+    if let Some(root) = krate.index.get(&krate.root)
+        && !enables(&root.attrs)
+        && let Some(span) = &root.span
+    {
+        problems.push(Problem {
+            file: span.filename.clone(),
+            line: span.begin.0,
+            item: root.name.clone().unwrap_or_default(),
+            rule: Rule::Unchecked,
+            message: "the crate root does not turn on `missing_docs`; add `#![warn(missing_docs)]`"
+                .into(),
+        });
+    }
     for item in krate.index.values().filter(|item| item.crate_id == 0) {
         let Some(span) = &item.span else {
             continue;
@@ -70,7 +86,7 @@ pub(crate) fn check(krate: &Crate) -> Vec<Problem> {
                 message,
             });
         };
-        if let Some(attribute) = waiver(item) {
+        if let Some(attribute) = waiver(&item.attrs) {
             report(
                 Rule::Waiver,
                 format!("`{attribute}` waives its docs; document the item or make it private"),
@@ -119,14 +135,24 @@ pub(crate) fn breaks(name: Option<&str>, docs: &str, summary: &str) -> Vec<(Rule
     broken
 }
 
-/// The attribute by which an item opts out of `missing_docs`, if it has one.
-fn waiver(item: &Item) -> Option<&str> {
-    item.attrs.iter().find_map(|attribute| match attribute {
-        Attribute::Other(text)
-            if matches!(level(text, "missing_docs"), Some("allow" | "expect")) =>
-        {
-            Some(text.as_str())
-        }
+/// The attribute by which an item opts out of `missing_docs`, if any of its attributes does.
+fn waiver(attrs: &[Attribute]) -> Option<&str> {
+    missing_docs(attrs)
+        .find_map(|(level, attribute)| matches!(level, "allow" | "expect").then_some(attribute))
+}
+
+/// Whether one of an item's attributes turns `missing_docs` on.
+fn enables(attrs: &[Attribute]) -> bool {
+    missing_docs(attrs).any(|(level, _)| matches!(level, "warn" | "deny" | "forbid"))
+}
+
+/// Every level an item's own attributes set for `missing_docs`, each with the attribute as rustdoc
+/// prints it.
+///
+/// Each one counts: rustc obeys the last, so a waiver after `warn` still waives.
+fn missing_docs(attrs: &[Attribute]) -> impl Iterator<Item = (&str, &str)> {
+    attrs.iter().filter_map(|attribute| match attribute {
+        Attribute::Other(text) => level(text, "missing_docs").map(|level| (level, text.as_str())),
         _ => None,
     })
 }
@@ -173,7 +199,8 @@ fn words(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{level, restates};
+    use super::{enables, level, restates, waiver};
+    use rustdoc_types::Attribute;
 
     #[test]
     fn a_summary_restates_its_name_only_when_it_adds_no_word() {
@@ -199,5 +226,13 @@ mod tests {
             level(r#"#[expect(dead_code, reason = "missing_docs")]"#, lint),
             None
         );
+    }
+
+    #[test]
+    fn a_waiver_after_the_lint_is_turned_on_still_counts() {
+        let attrs = ["#[warn(missing_docs)]", "#[allow(missing_docs)]"]
+            .map(|text| Attribute::Other(text.into()));
+        assert!(enables(&attrs));
+        assert_eq!(waiver(&attrs), Some("#[allow(missing_docs)]"));
     }
 }

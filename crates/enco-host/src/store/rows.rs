@@ -1,3 +1,4 @@
+//! Reading SQLite rows into Session records, Log entries and schedules.
 pub(super) use crate::sqlite::{document, text, unsigned};
 use enco_core::*;
 use rusqlite::Row;

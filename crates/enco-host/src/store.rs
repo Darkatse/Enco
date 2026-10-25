@@ -1,3 +1,5 @@
+//! Enco's store, the one implementation of the kernel's persistence port: a SQLite database, with
+//! content-addressed files beside it for blobs and components.
 mod accept;
 mod blob;
 mod commit;
@@ -34,7 +36,7 @@ pub struct StorePaths {
     pub artifacts: PathBuf,
 }
 
-/// SQLite authority and its associated content and identity files.
+/// Enco's store: the SQLite database, with the content files and node identity that go with it.
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
     paths: StorePaths,

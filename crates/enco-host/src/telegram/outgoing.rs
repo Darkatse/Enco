@@ -1,3 +1,4 @@
+//! Sending a reply to Telegram: splitting long text at line breaks and attaching files.
 use super::{Body, Fault, Telegram, invalid_response};
 use crate::limits::{
     TELEGRAM_MESSAGE_CHARS, TELEGRAM_PHOTO_MAX_ASPECT_RATIO, TELEGRAM_PHOTO_MAX_BYTES,

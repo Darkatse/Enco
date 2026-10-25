@@ -1,3 +1,5 @@
+//! The plugin SDK embedded in the host: its sources, the toolchain it pins, and the hash that
+//! decides when plugins are rebuilt.
 use super::{DevelopmentError, tree::FileTree};
 use enco_core::ContentHash;
 use serde::Deserialize;

@@ -1,3 +1,4 @@
+//! Paths inside a file tree, held to one canonical form so equal trees hash equally.
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Borrow,
@@ -11,6 +12,7 @@ use std::{
 #[serde(transparent)]
 pub struct SourcePath(String);
 
+/// Text that is not a source path: an empty, `.` or `..` part, a `\\`, or an absolute path.
 #[derive(Debug, thiserror::Error)]
 #[error("source path must be a normalized relative path: {0}")]
 pub struct InvalidSourcePath(String);
@@ -34,6 +36,7 @@ impl FromStr for SourcePath {
 }
 
 impl SourcePath {
+    /// The path as text, with `/` between its parts.
     pub fn as_str(&self) -> &str {
         &self.0
     }

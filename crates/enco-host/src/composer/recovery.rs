@@ -1,3 +1,4 @@
+//! The part of the system prompt that explains unavailable capabilities, safe mode and recovery.
 use enco_kernel::{ComposeInput, SafeMode};
 
 /// Explain unavailable capabilities, safe mode and recovery, and why a later reply model answers.

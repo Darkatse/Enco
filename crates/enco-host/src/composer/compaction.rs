@@ -1,3 +1,4 @@
+//! Planning a compaction: how much history to summarize, and the request that summarizes it.
 use super::estimate_tokens;
 use crate::limits::*;
 use enco_core::*;

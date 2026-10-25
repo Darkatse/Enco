@@ -1,3 +1,6 @@
+//! The store's records of earlier plugin builds and of each source's navigation manual.
+//!
+//! A record lets a build be reused; the files it points at may be gone, which the reuse checks.
 use crate::SqliteStore;
 use crate::sqlite::{text, timestamp};
 use enco_core::{ContentHash, DateTime, Utc};

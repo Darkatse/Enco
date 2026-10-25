@@ -1,3 +1,4 @@
+//! The owner's standing instructions as a context source, read again for each Round.
 use async_trait::async_trait;
 use enco_core::*;
 use enco_kernel::{ContextError, ContextQuery, ContextSource};
@@ -9,6 +10,7 @@ pub struct InstructionsContextSource {
 }
 
 impl InstructionsContextSource {
+    /// Read the standing instructions from the file at `path`.
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }

@@ -1,3 +1,4 @@
+//! The document that `self_history` returns: the registrations, then the comparison asked for.
 use super::{actions, caller, code, fence, next, path, quoted, step, time};
 use crate::{
     development::{
@@ -10,6 +11,7 @@ use enco_core::Tz;
 use enco_kernel::RegistrationDetails;
 
 impl History {
+    /// The history as the Markdown document a tool result shows.
     pub fn document(&self) -> String {
         let timezone = self.timezone;
         let Some(comparison) = &self.comparison else {

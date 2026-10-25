@@ -1,3 +1,4 @@
+//! Creating a tool plugin in the home from the template; nothing is registered.
 use super::{
     Development, DevelopmentError, Failed, Operation,
     tree::{Directory, FileTree, Ownership},

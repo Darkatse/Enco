@@ -1,3 +1,4 @@
+//! The failures that native tools return.
 use enco_core::{Failure, code};
 
 pub(crate) fn failure(code: &str, message: impl Into<String>) -> Failure {

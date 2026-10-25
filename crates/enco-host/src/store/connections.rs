@@ -1,3 +1,4 @@
+//! Channel connections' committed state, and the deliveries that failed.
 use super::{backend, rows};
 use crate::limits::RECENT_DELIVERY_FAILURES;
 use enco_core::*;

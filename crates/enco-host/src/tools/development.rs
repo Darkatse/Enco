@@ -1,3 +1,4 @@
+//! The development tools as tools the model calls, running the same operations as the CLI.
 use super::failure;
 pub use crate::development::self_status_spec;
 use crate::development::{Development, DevelopmentCall, DevelopmentTool, Failed};
@@ -7,7 +8,9 @@ use enco_kernel::{CallContext, Registry, Tool};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
-/// Declarations are available before the registry binds their handlers.
+/// The development tools' declarations, available before their handlers exist.
+///
+/// The registry needs the names before it binds the handlers.
 pub fn development_tool_specs() -> Result<Vec<ToolSpec>, SchemaError> {
     DevelopmentTool::ALL
         .into_iter()
@@ -15,7 +18,7 @@ pub fn development_tool_specs() -> Result<Vec<ToolSpec>, SchemaError> {
         .collect()
 }
 
-/// File operations and registration follow the same path used by the CLI.
+/// The development tools, running the same operations as the CLI.
 pub fn development_tools(
     development: Arc<Development>,
     registry: Arc<Registry>,

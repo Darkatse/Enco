@@ -1,3 +1,5 @@
+//! `message_send`: recording a message or a file for delivery to the owner through the
+//! channels.
 use super::{failure::*, resolve_path};
 use crate::limits::MESSAGE_FILE_MAX_BYTES;
 use async_trait::async_trait;

@@ -1,3 +1,5 @@
+//! Accepting input events, each once by its ID, together with the connection state that read
+//! them.
 use super::{backend, encode, signed};
 use enco_core::*;
 use enco_kernel::{Accepted, ConnectionWrite, StoreError};

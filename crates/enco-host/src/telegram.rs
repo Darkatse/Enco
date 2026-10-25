@@ -21,6 +21,7 @@ enum Body {
     Multipart(reqwest::multipart::Form),
 }
 
+/// The adapter for one Telegram bot, speaking the Bot API.
 pub struct Telegram {
     client: reqwest::Client,
     base: String,
@@ -29,6 +30,9 @@ pub struct Telegram {
 }
 
 impl Telegram {
+    /// An adapter for the bot whose token is `token`, sending requests to `api_base`.
+    ///
+    /// Fails when the token is not a bot token or the base is not a plain HTTP(S) URL.
     pub fn new(token: String, api_base: &str) -> Result<Self, ChannelError> {
         Self::with_base(token, &ApiBase::try_from(api_base.to_owned())?)
     }

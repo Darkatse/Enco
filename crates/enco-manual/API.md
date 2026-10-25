@@ -85,6 +85,7 @@ impl From<Error> for ReadError
 
 ```rust
 pub enum Rule {
+    Unchecked,
     Waiver,
     Long,
     Restates,
@@ -94,6 +95,8 @@ pub enum Rule {
 
 Which rule an item breaks.
 
+- `Unchecked` — The crate root does not turn on `missing_docs`, so the compiler lets undocumented items
+  pass.
 - `Waiver` — The item opts out of `missing_docs`; an item not worth documenting should not be public.
 - `Long` — The first paragraph is longer than `SUMMARY_CHARS`.
 - `Restates` — The first paragraph only repeats words of the item's name.

@@ -1,3 +1,5 @@
+//! The memory tools the model calls: `memory_save`, `memory_update`, `memory_forget` and
+//! `memory_search`.
 use super::Memories;
 use crate::{limits::*, tools::failure::*};
 use async_trait::async_trait;
@@ -94,7 +96,7 @@ impl Kind {
     }
 }
 
-/// Native declarations available before their stateful handlers are constructed.
+/// The memory tools' declarations, available before their handlers exist.
 pub fn memory_tool_specs() -> Result<Vec<ToolSpec>, SchemaError> {
     Kind::ALL.into_iter().map(Kind::spec).collect()
 }
@@ -105,6 +107,8 @@ struct MemoryTool {
     spec: ToolSpec,
 }
 
+/// The memory tools, `memory_save`, `memory_update`, `memory_forget` and `memory_search`, acting
+/// on `memories`.
 pub fn memory_tools(memories: Arc<Memories>) -> Result<Vec<Arc<dyn Tool>>, SchemaError> {
     Kind::ALL
         .into_iter()

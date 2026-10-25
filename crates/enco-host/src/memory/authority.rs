@@ -1,3 +1,4 @@
+//! The memory database, the only holder of memory content; each change bumps the memory's revision.
 use super::MemoryError;
 use crate::sqlite;
 use enco_core::*;

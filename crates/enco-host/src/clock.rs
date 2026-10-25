@@ -1,3 +1,4 @@
+//! The host's wall clock, and the format of the local times that the model and the owner read.
 use chrono::SubsecRound;
 use enco_core::{DateTime, Utc};
 use enco_kernel::Clock;

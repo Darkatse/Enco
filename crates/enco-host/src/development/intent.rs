@@ -1,3 +1,7 @@
+//! Preparing one registration from the home: reading `config.toml`, building the sources that
+//! changed, and noting the plugins whose directories are gone.
+//!
+//! Only the registry decides whether to accept what is prepared here.
 use super::{
     BuildResult, Development, DevelopmentError, EntryError, EntryProblem, HomeComparison,
     check_cancelled,

@@ -1,3 +1,7 @@
+//! The owner's memories: a SQLite database holds them, and a derived vector index finds them.
+//!
+//! The index never owns memory content, so deleting it loses nothing; it is rebuilt from the
+//! database.
 mod authority;
 mod context;
 mod index;
@@ -18,40 +22,58 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 pub use tools::{memory_tool_specs, memory_tools};
 
-/// Authority and derived-index locations, both owned by Memories.
+/// Where the memory database and its vector index live; `Memories` owns both.
 pub struct MemoryPaths {
+    /// The memory database, which holds every memory.
     pub db: PathBuf,
+    /// The vector index, derived from the database.
     pub index: PathBuf,
 }
 
-/// Current authority records nominated by the index, plus recent unindexed records.
+/// The memories recalled for a query: those the index found, and recent ones it does not cover yet.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Recall {
+    /// The memories the index found, as the database holds them now.
     pub memories: Vec<Memory>,
+    /// Recent memories the index does not cover yet, offered without ranking.
     pub unindexed: Vec<Memory>,
     /// Present when embedding failed; callers must disclose keyword-only recall.
     pub lexical_only: Option<Failure>,
 }
 
+/// Every memory, and which of them the index does not cover yet.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct MemoryList {
+    /// Every memory, as the database holds it.
     pub memories: Vec<Memory>,
+    /// The memories the index does not cover yet.
     pub unindexed: Vec<MemoryId>,
 }
 
+/// Why a memory operation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
+    /// The registry failed while the embedding plugin's result was reported to it.
     #[error(transparent)]
     Registry(#[from] RegistryError),
+    /// The memory database failed; the text is its message.
     #[error("memory database: {0}")]
     Authority(String),
+    /// Another version of Enco wrote the memory database.
     #[error(
         "memory database schema version {found} does not match this Enco ({expected}); {}",
         if .found > .expected { "upgrade Enco" } else { "migrate the database by hand or recreate it" }
     )]
-    SchemaVersion { found: u32, expected: u32 },
+    SchemaVersion {
+        /// The version the database records.
+        found: u32,
+        /// The version this Enco reads and writes.
+        expected: u32,
+    },
+    /// The vector index cannot be read or written; deleting it while Enco is stopped rebuilds it.
     #[error("memory index: {0}; stop Enco and delete memory-index to rebuild it")]
     Index(String),
+    /// The caller cancelled the operation.
     #[error("cancelled")]
     Cancelled,
 }
@@ -75,6 +97,8 @@ struct Synced {
 }
 
 impl Memories {
+    /// Open the database and the index at `paths`, then index the memories the index lacks, as far
+    /// as the embedding service allows.
     pub async fn open(
         paths: MemoryPaths,
         registry: Arc<Registry>,
@@ -108,10 +132,12 @@ impl Memories {
         Ok(memories)
     }
 
+    /// Store a new memory and return it with its ID.
     pub async fn save(&self, text: String, pinned: bool) -> Result<Memory, MemoryError> {
         self.authority.save(text, pinned, self.clock.now()).await
     }
 
+    /// Replace a memory's text, its pin, or both; `None` when no memory has this ID.
     pub async fn update(
         &self,
         id: MemoryId,
@@ -123,10 +149,12 @@ impl Memories {
             .await
     }
 
+    /// Delete a memory for good; `false` when no memory has this ID.
     pub async fn forget(&self, id: MemoryId) -> Result<bool, MemoryError> {
         self.authority.forget(id).await
     }
 
+    /// Every pinned memory, oldest first.
     pub async fn pinned(&self) -> Result<Vec<Memory>, MemoryError> {
         let mut rows = self.authority.all(true).await?;
         rows.sort_by_key(|m| m.id);

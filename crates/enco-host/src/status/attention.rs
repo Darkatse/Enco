@@ -1,3 +1,7 @@
+//! Derives the situations that need attention from one complete status, with next steps for each.
+//!
+//! Situations about what runs against what is registered come from `runtime`. Nothing here writes
+//! text; the renderer does.
 use super::{
     Attention, AttentionKind, CallStep, FixTarget, OwnerAction, Repair, Status, Step, Steps, repair,
 };

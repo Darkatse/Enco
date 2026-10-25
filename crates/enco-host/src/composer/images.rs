@@ -1,3 +1,5 @@
+//! Which images a request shows, newest first within the request's byte limit, and the line that
+//! describes each attachment.
 use super::encoded_tokens;
 use crate::limits::{IMAGE_TOKENS, REQUEST_IMAGE_MAX_BYTES};
 use enco_core::*;

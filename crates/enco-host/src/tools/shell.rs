@@ -1,3 +1,4 @@
+//! The shell tool: running a command in the workspace with a time limit and bounded output.
 use super::{failure::*, resolve_path};
 use crate::limits::*;
 use async_trait::async_trait;

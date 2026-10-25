@@ -1,3 +1,5 @@
+//! The `[memory]` table: the endpoint that embeds memories, and the one, if any, that judges
+//! relevance.
 use enco_core::GenerationId;
 use enco_kernel::{
     Endpoint, KernelSettings, Need, SettingsError, TableOwner, Use, View, parse_table,
@@ -85,6 +87,8 @@ impl MemorySettings {
     }
 }
 
+/// The owner of the `[memory]` table, which declares the endpoints that memory uses.
+///
 /// The same parser supplies admission and runtime consumers.
 pub const TABLE_OWNER: TableOwner = TableOwner {
     tables: &[enco_kernel::ConfigTable::Single("memory")],

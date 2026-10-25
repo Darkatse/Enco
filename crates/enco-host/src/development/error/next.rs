@@ -1,3 +1,5 @@
+//! What to do after a development failure: repair what it left behind, then repeat the
+//! operation.
 use super::{BuildFailure, DevelopmentError, Failed, Operation};
 use crate::development::{
     HistoryPoint, HistoryQuery, RewindArguments, RewindConflict, tree::WriteConflict,
@@ -26,6 +28,7 @@ impl Operation {
 }
 
 impl Failed {
+    /// What to do about the failure: repair what it left behind, then repeat the operation.
     pub fn next(&self) -> Steps {
         let repeat = |repair: Repair| match self.operation.retry() {
             Some(retry) => repair.followed_by(retry),

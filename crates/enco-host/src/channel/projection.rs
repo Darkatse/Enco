@@ -1,7 +1,13 @@
+//! Where a Session's replies go: to the conversation of the owner's latest input, if that input
+//! came through this connection.
+//!
+//! Each reply is sent once it is complete. Input through the CLI or another connection takes
+//! replies away from this one; reminders and registry notices do not move them.
 use super::{Cursor, Identity};
 use enco_core::*;
 
-/// Advance through settled messages and complete boundaries; leave unfinished replies for the next wake.
+/// Advance through settled messages and complete boundaries; leave unfinished replies for the next
+/// wake.
 pub(super) fn project(
     cursor: &mut Cursor,
     identity: &Identity,

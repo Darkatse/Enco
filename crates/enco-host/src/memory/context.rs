@@ -1,14 +1,17 @@
+//! Memories in each Round's context: the pinned ones, and those recalled for a new message.
 use super::Memories;
 use crate::limits::MEMORY_RECALL_DEFAULT;
 use async_trait::async_trait;
 use enco_core::*;
 use enco_kernel::{ContextError, ContextQuery, ContextSource};
 use std::{collections::HashSet, sync::Arc};
+/// Offers the pinned memories, and the memories recalled for a new message, to each Round.
 pub struct MemoryContextSource {
     memories: Arc<Memories>,
 }
 
 impl MemoryContextSource {
+    /// Offer what `memories` holds.
     pub fn new(memories: Arc<Memories>) -> Self {
         Self { memories }
     }

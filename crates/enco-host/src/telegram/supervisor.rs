@@ -1,3 +1,5 @@
+//! Keeping one Telegram connection in step with the `[telegram]` table of the running
+//! configuration.
 use super::TelegramSettings;
 use crate::channel::{Channel, ChannelError, ChannelStatus, lock};
 use enco_kernel::{Clock, Kernel, KernelError, View};
@@ -13,7 +15,9 @@ enum Current {
     Stopped(String),
 }
 
-/// Follows the Telegram table, awaiting the old connection before starting the next one.
+/// The Telegram connection, restarted whenever the `[telegram]` table changes.
+///
+/// It waits for the old connection to stop before starting the next one.
 pub struct TelegramChannel {
     current: Arc<Mutex<Current>>,
     stop: CancellationToken,
@@ -21,6 +25,7 @@ pub struct TelegramChannel {
 }
 
 impl TelegramChannel {
+    /// Start the connection the `[telegram]` table configures, if any, and follow its changes.
     pub fn start(kernel: Arc<Kernel>, clock: Arc<dyn Clock>) -> Self {
         let mut views = kernel.registry().subscribe();
         let document = views.borrow_and_update().config.document.clone();
@@ -41,6 +46,7 @@ impl TelegramChannel {
         }
     }
 
+    /// The connection's status; empty when no `[telegram]` table is configured.
     pub async fn status(&self) -> Result<Vec<ChannelStatus>, KernelError> {
         let current = lock(&self.current).clone();
         Ok(match current {
@@ -55,6 +61,7 @@ impl TelegramChannel {
         })
     }
 
+    /// Stop following the configuration and wait until the connection has stopped.
     pub async fn shutdown(&self) -> Result<(), ChannelError> {
         self.stop.cancel();
         let task = lock(&self.task).take();

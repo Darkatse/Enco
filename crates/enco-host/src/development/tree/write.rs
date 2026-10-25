@@ -1,24 +1,33 @@
+//! Planning a write of a file tree to a directory before touching it, so a conflict stops the
+//! write before any file changes.
 use super::{Directory, FileTree, Ownership, read::Excluded};
 use crate::development::{DevelopmentError, error::io};
 use std::{collections::BTreeMap, path::PathBuf};
 
+/// What stands in the way of writing a directory.
+///
 /// A conflict is determined from the same directory observation as the planned writes.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WriteConflict {
+    /// The file holds an edit that is not registered, which the write would overwrite.
     Unregistered {
+        /// The edited file.
         path: PathBuf,
     },
     /// An ignored entry occupies a path the target writes.
     Occupied {
+        /// The ignored entry.
         path: PathBuf,
     },
     /// An ignored entry keeps the directory from being removed.
     Ignored {
+        /// The ignored entry.
         path: PathBuf,
     },
     /// The target's ignore rules differ, so this ignored entry could become source.
     IgnoreRulesChanged {
+        /// The ignored entry.
         path: PathBuf,
     },
 }

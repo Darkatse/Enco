@@ -1,3 +1,4 @@
+//! Comparing two sides unit by unit and file by file, with a line diff wherever both are text.
 use super::content::{ContentUnavailable, Contents, Unit};
 use super::{FileDiff, FileDifference, UnitDiff};
 use crate::development::tree::FileTree;

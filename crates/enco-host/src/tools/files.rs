@@ -1,3 +1,5 @@
+//! The file tools: reading, writing, editing and listing files, with relative paths resolved
+//! against the workspace.
 use super::{failure::*, resolve_path};
 use crate::limits::*;
 use async_trait::async_trait;

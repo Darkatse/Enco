@@ -1,3 +1,5 @@
+//! The files of each unit at one side of a comparison: what a registration stored, or what the
+//! home holds now.
 use super::{Development, DevelopmentError, HistoryPoint};
 use crate::development::{EntryError, error::io, tree::FileTree};
 use enco_core::*;
@@ -17,9 +19,12 @@ pub(super) struct Content {
 }
 pub(super) type Contents = BTreeMap<Unit, Content>;
 
+/// One side's content that cannot be read, and why.
 #[derive(Debug, Serialize)]
 pub struct ContentUnavailable {
+    /// The side whose content cannot be read.
     pub point: HistoryPoint,
+    /// Why it cannot be read.
     pub cause: ContentFailure,
 }
 
@@ -27,8 +32,17 @@ pub struct ContentUnavailable {
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContentFailure {
-    Missing { hash: ContentHash },
-    Corrupt { reason: String },
+    /// Enco's store no longer has the content; stored blobs are removable history.
+    Missing {
+        /// The address of the missing content.
+        hash: ContentHash,
+    },
+    /// The stored content cannot be read back.
+    Corrupt {
+        /// What is malformed.
+        reason: String,
+    },
+    /// The files in the home cannot be read.
     Unreadable(EntryError),
 }
 

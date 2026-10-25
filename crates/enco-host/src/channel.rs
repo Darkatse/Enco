@@ -1,3 +1,5 @@
+//! Connections between a messaging protocol and Sessions.
+//!
 //! A connection owns its routing state; adapters own only protocol interpretation.
 mod connection;
 mod projection;
@@ -19,11 +21,14 @@ use tokio_util::sync::CancellationToken;
 /// Stable identity declared by a protocol adapter.
 #[derive(Clone)]
 pub struct Identity {
+    /// The protocol, such as `telegram`.
     pub channel: String,
+    /// The account the adapter uses on that protocol, such as a bot's ID.
     pub account: String,
 }
 
 impl Identity {
+    /// The connection's key, `<channel>:<account>`, under which its state and deliveries are kept.
     pub fn key(&self) -> String {
         format!("{}:{}", self.channel, self.account)
     }
@@ -31,41 +36,64 @@ impl Identity {
 
 /// One protocol update with its resulting protocol state.
 pub struct Update {
+    /// The protocol state after this update, such as the offset to poll from next.
     pub protocol: Value,
+    /// What the update brings, if anything the connection reads.
     pub input: Option<Input>,
 }
 
+/// One incoming message as the protocol reports it.
+///
+/// The connection acts only on direct messages from the owner; it ignores the rest.
 pub struct Input {
+    /// The protocol's ID for the conversation, where replies go.
     pub conversation: String,
+    /// The protocol's ID for the sender, when it reports one.
     pub sender: Option<String>,
     /// Adapter-provided label retained for diagnostics, not interpreted by the connection.
     pub conversation_type: String,
+    /// Whether the conversation is one to one, rather than a group.
     pub direct: bool,
+    /// What the message asks for; absent when it holds nothing the host understands.
     pub action: Option<Action<Attachment>>,
 }
 
-/// Meaning interpreted by the host, independent of protocol command syntax.
+/// What an incoming message asks for, whatever the protocol's command syntax.
 pub enum Action<T = Attachment> {
+    /// A message for the conversation's Session.
     Message(MessageContent<T>),
+    /// List the Sessions to choose from.
     Sessions,
+    /// Route this conversation to the Session with this name, opening it if needed.
     SelectSession(String),
+    /// Stop the work the conversation's Session is doing.
     Cancel,
 }
 
+/// An image attached to a message, still held by the protocol.
 pub struct Attachment {
+    /// How to name it when telling the owner about it, such as `photo` or a file's name and type.
     pub what: String,
+    /// The protocol's handle for fetching it.
     pub locator: String,
 }
 
+/// What fetching an attachment produced.
 #[derive(Debug)]
 pub enum AttachmentContent {
+    /// The image's bytes.
     Image(Vec<u8>),
+    /// It cannot be used; the text says why.
     Unavailable(String),
 }
 
+/// A message's text and attachments; `T` is an attachment before or after fetching.
 pub struct MessageContent<T> {
+    /// The text as written.
     pub text: String,
+    /// Images to show the model.
     pub images: Vec<T>,
+    /// Attachments that could not be made into images, each with the reason.
     pub unviewable: Vec<Unviewable>,
 }
 
@@ -85,20 +113,26 @@ impl<T> From<&str> for MessageContent<T> {
     }
 }
 
-/// Protocol evidence used by the common retry and settlement path.
+/// A protocol failure, with what the connection needs to decide whether to retry.
+///
+/// The common retry and settlement path reads it.
 #[derive(Debug, thiserror::Error)]
 #[error("{}: {}", .failure.code, .failure.message)]
 pub struct Fault {
+    /// What failed.
     pub failure: Failure,
     /// True when effects may have occurred; this always forbids an automatic resend.
     pub unknown: bool,
     /// True when the whole connection is unusable, rather than just this destination.
     pub fatal: bool,
+    /// How long the protocol asks to wait before trying again, when it says.
     pub retry_after: Option<Duration>,
 }
 
-/// Native adapter boundary, replaced by the channel plugin boundary in P3.
-/// Outbound Markdown and optional files are mapped to the channel protocol here.
+/// The protocol side of a channel: reading updates, fetching attachments and sending replies.
+///
+/// This native boundary stands until channels become plugins. Outbound Markdown and optional files
+/// are mapped to the channel protocol here.
 #[async_trait]
 pub trait Adapter: Send + Sync {
     /// Declare the connection identity; it must remain stable for this adapter instance.
@@ -117,19 +151,25 @@ pub trait Adapter: Send + Sync {
     async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<(), Fault>;
 }
 
+/// Why a connection stopped or could not start.
 #[derive(Debug, thiserror::Error)]
 pub enum ChannelError {
+    /// The kernel failed to accept input or report Session facts.
     #[error(transparent)]
     Kernel(#[from] KernelError),
+    /// The stored connection state cannot be read.
     #[error("invalid connection state: {0}")]
     State(#[from] serde_json::Error),
+    /// The protocol failed in a way that stops the connection.
     #[error(transparent)]
     Protocol(#[from] Fault),
+    /// A task of the connection stopped unexpectedly.
     #[error("channel task: {0}")]
     Task(String),
     /// The owner did not complete cleanup, so its helpers may still be running.
     #[error("channel owner did not finish shutdown: {0}")]
     Unjoined(tokio::task::JoinError),
+    /// The channel's configuration is invalid, such as a malformed bot token.
     #[error("channel configuration: {0}")]
     Config(String),
 }
@@ -148,12 +188,16 @@ struct Cursor {
     target: Option<String>,
 }
 
-/// Observable connection health and durable final delivery failures.
+/// A connection's health, and the deliveries that failed for good.
 #[derive(Serialize)]
 pub struct ChannelStatus {
+    /// The connection's key, `<channel>:<account>`.
     pub key: String,
+    /// Whether the connection is working now.
     pub running: bool,
+    /// Why it stopped, when it stopped on a failure.
     pub stopped: Option<String>,
+    /// The latest deliveries that failed for good, with the Sessions they came from.
     pub recent_failures: Vec<enco_kernel::DeliveryStatus>,
 }
 
@@ -164,7 +208,9 @@ enum Health {
     Failed(String),
 }
 
-/// Lifetime handle; shutdown signals and joins the connection actor and all its helpers.
+/// A running connection.
+///
+/// Shutdown signals the connection actor and all its helpers, then waits for them.
 pub struct Channel {
     key: String,
     kernel: Arc<Kernel>,
@@ -180,6 +226,8 @@ pub(crate) fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Channel {
+    /// Start the connection; it carries the owner's direct messages to Sessions and their replies
+    /// back until shutdown.
     pub fn start(
         kernel: Arc<Kernel>,
         adapter: Arc<dyn Adapter>,
@@ -220,6 +268,7 @@ impl Channel {
         }
     }
 
+    /// The connection's health and its latest failed deliveries.
     pub async fn status(&self) -> Result<ChannelStatus, KernelError> {
         let (running, stopped) = match &*lock(&self.health) {
             Health::Running => (true, None),
@@ -234,6 +283,7 @@ impl Channel {
         })
     }
 
+    /// Stop the connection and wait until it and its helpers have stopped.
     pub async fn shutdown(&self) -> Result<(), ChannelError> {
         self.stop.cancel();
         let task = lock(&self.task).take();

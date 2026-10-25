@@ -1,3 +1,4 @@
+//! Session records: their names, ownership bindings and selected profiles.
 use super::{backend, rows, signed};
 use crate::sqlite::timestamp;
 use enco_core::*;

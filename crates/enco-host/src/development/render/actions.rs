@@ -1,3 +1,4 @@
+//! The documents that registering, applying and rewinding return.
 use super::{code, generation_state, location, next, path, quoted};
 use crate::{
     development::{Applied, HistoryPoint, HistoryQuery, Rewound},
@@ -7,6 +8,7 @@ use enco_core::IntentPath;
 use enco_kernel::{PluginChangeKind, Registered, UnitChange};
 use std::collections::BTreeMap;
 
+/// A registration as the Markdown document a tool result shows.
 pub fn registration_document(registered: &Registered) -> String {
     let mut out = registration_facts(registered);
     out.push_str(&recheck());
@@ -47,6 +49,7 @@ fn registration_facts(registered: &Registered) -> String {
 }
 
 impl Applied {
+    /// The apply as the Markdown document a tool result shows.
     pub fn document(&self) -> String {
         let mut out = self.registered.as_ref().map_or_else(
             || "# Nothing registered\n\nNo registered code or configuration would change.\n".into(),
@@ -105,6 +108,7 @@ impl Applied {
 }
 
 impl Rewound {
+    /// The rewind as the Markdown document a tool result shows.
     pub fn document(&self) -> String {
         let registration = self.registration;
         if self.written.is_empty() && self.removed.is_empty() {

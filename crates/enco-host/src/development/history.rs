@@ -1,4 +1,6 @@
-//! History navigation and file comparison use the same accepted-intent query as registration.
+//! Listing registrations, and comparing the files of two registrations or of one and the home.
+//!
+//! Comparisons read registered intent with the same query registration uses.
 use super::{Development, DevelopmentError, Failed, Operation, RewindArguments};
 mod content;
 mod diff;
@@ -12,14 +14,18 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// How many registrations one page of the history lists.
 pub const HISTORY_PAGE_SIZE: usize = 20;
 
 const HOME: &str = "home";
 const SIDE: &str = "a side is a registration number or \"home\"";
 
+/// One side of a comparison: what a registration accepted, or what the home holds now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistoryPoint {
+    /// The intent a registration accepted.
     Registration(RegistrationId),
+    /// The files in the home now.
     Home,
 }
 
@@ -88,14 +94,21 @@ impl<'de> Deserialize<'de> for HistoryPoint {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "QueryFields", into = "QueryFields")]
+/// What a history request asks for: a page of registrations, or a comparison of two sides.
 pub enum HistoryQuery {
+    /// A page of registrations, newest first.
     List {
+        /// Only registrations older than this one; the newest page when absent.
         before: Option<RegistrationId>,
     },
-    /// Two intent values. Without `from`, the home is compared with the latest
-    /// registration, and a registration with the one before it.
+    /// The differences between the files of two sides.
+    ///
+    /// Without `from`, the home is compared with the latest registration, and a registration with
+    /// the one before it.
     Compare {
+        /// The side the comparison starts from.
         from: Option<HistoryPoint>,
+        /// The side the comparison ends at.
         to: HistoryPoint,
     },
 }
@@ -167,57 +180,88 @@ impl From<HistoryQuery> for QueryFields {
     }
 }
 
+/// The answer to a history request.
 #[derive(Serialize)]
 pub struct History {
+    /// A page of registrations, newest first, or the registration compared with the one before it.
     pub registrations: Vec<RegistrationDetails>,
     /// The cursor for older registrations, when more exist.
     pub before: Option<RegistrationId>,
+    /// The comparison, when one was asked for.
     pub comparison: Option<Comparison>,
+    /// The owner's time zone, in which registration times are shown.
     pub timezone: Tz,
 }
 
+/// How the files of two sides differ, and what to do about it.
 #[derive(Serialize)]
 pub struct Comparison {
-    /// Absent only before the first registration.
+    /// The side the comparison starts from; absent only before the first registration.
     pub from: Option<HistoryPoint>,
+    /// The side the comparison ends at.
     pub to: HistoryPoint,
+    /// Which pair of sides this is, which decides the suggested steps.
     pub mode: ComparisonMode,
+    /// One entry for each unit that differs: `config.toml` or a plugin directory.
     pub units: Vec<UnitDiff>,
-    /// Different identities would require the same current directory.
+    /// Directories that two plugins would both need, so no rewind can write them.
     pub conflicting_paths: Vec<IntentPath>,
+    /// What to do about the differences, if anything.
+    ///
     /// Actions include only paths addressable by the rewind tool.
     pub next: Option<Steps>,
 }
 
+/// Which pair of sides a comparison has.
 #[derive(Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ComparisonMode {
+    /// The latest registration against the home: the edits not yet registered.
     HomeChanges,
+    /// The home against a registration: what a rewind to that registration would write.
     RewindPreview,
+    /// Any other pair, such as two registrations.
     Registrations,
 }
 
+/// How one unit differs between the two sides: `config.toml` or a plugin directory.
 #[derive(Serialize)]
 pub struct UnitDiff {
+    /// Where the unit is in the home.
     pub path: IntentPath,
+    /// The plugin's identity, which stays the same across renames; absent for `config.toml` and
+    /// for a directory no registration has.
     pub plugin: Option<PluginId>,
+    /// The files that differ; empty when one side cannot be read.
     pub files: Vec<FileDiff>,
+    /// Why one side cannot be read, if it cannot.
     pub unavailable: Option<ContentUnavailable>,
 }
 
+/// One file that differs.
 #[derive(Serialize)]
 pub struct FileDiff {
+    /// The file's path in the home, such as `config.toml` or `plugins/web/src/lib.rs`.
     pub path: String,
+    /// How it differs.
     #[serde(flatten)]
     pub change: FileDifference,
 }
 
+/// How a file differs between the two sides.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FileDifference {
-    Text { diff: String },
+    /// The file is text on both sides.
+    Text {
+        /// The change as a unified diff.
+        diff: String,
+    },
+    /// An empty file was added.
     AddedEmpty,
+    /// An empty file was removed.
     RemovedEmpty,
+    /// One side is not text, so the change is not shown line by line.
     Binary,
 }
 

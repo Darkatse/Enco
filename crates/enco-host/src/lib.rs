@@ -1,4 +1,5 @@
 //! Native storage, tools and context policies.
+#![warn(missing_docs)]
 
 pub mod channel;
 mod clock;

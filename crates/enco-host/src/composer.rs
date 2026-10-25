@@ -1,3 +1,7 @@
+//! The factory composer, which plans each model request from what the Log records, within the
+//! model's window.
+//!
+//! It does no IO, and safe mode uses it too.
 mod compaction;
 mod images;
 mod recovery;
@@ -14,7 +18,9 @@ fn estimate_tokens(text: &str) -> u32 {
     u32::try_from(text.len().div_ceil(3)).unwrap_or(u32::MAX)
 }
 
-/// Factory policy shared by ordinary operation and safe mode. No IO occurs here.
+/// The composer shipped with the host, used in ordinary operation and in safe mode alike.
+///
+/// No IO occurs here.
 pub struct FactoryComposer {
     home: PathBuf,
     workspace: PathBuf,
@@ -22,6 +28,7 @@ pub struct FactoryComposer {
 }
 
 impl FactoryComposer {
+    /// A composer whose system prompt names `home`, `workspace` and the standing instructions file.
     pub fn new(home: PathBuf, workspace: PathBuf, instructions: PathBuf) -> Self {
         Self {
             home,

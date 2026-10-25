@@ -1,3 +1,4 @@
+//! How each part of the home compares with what is registered, decided without building.
 use super::{
     Development, DevelopmentError, EntryError, cache::Build, intent::ConfigurationInput,
     tree::FileTree,
@@ -7,18 +8,26 @@ use enco_kernel::{RegisteredIntent, RegisteredSource};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+/// How `config.toml` or a plugin directory in the home compares with what is registered.
+///
 /// Byte equality and meaning are distinct facts; reading a comparison never builds source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum HomeComparison {
+    /// The bytes are the registered ones.
     Same,
+    /// The bytes differ but mean the same, as when only a comment changed; registering them
+    /// registers nothing.
     TextOnly,
+    /// The bytes differ, and so does what they mean.
     Changed,
     /// The bytes differ, and no build tells yet whether the code does.
     Unbuilt,
+    /// The registered directory is gone from the home.
     Removed,
     /// There is no directory and no registered source.
     Absent,
+    /// The directory or file cannot be read.
     Unreadable(EntryError),
 }
 
@@ -42,10 +51,13 @@ impl HomeComparison {
     }
 }
 
+/// How a plugin's table in `config.toml` compares with the registered settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsComparison {
+    /// The table is the registered one.
     Same,
+    /// The table differs from the registered one.
     Changed,
     /// `config.toml` or its plugin tables cannot be read; the reason is reported for `config.toml`.
     Unknown,
@@ -61,9 +73,12 @@ impl ConfigurationInput {
     }
 }
 
+/// How a plugin in the home compares with what is registered.
 #[derive(Serialize)]
 pub struct HomePlugin {
+    /// Its source directory against the registered source.
     pub code: HomeComparison,
+    /// Its table in `config.toml` against the registered settings.
     pub settings: SettingsComparison,
 }
 

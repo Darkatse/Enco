@@ -1,3 +1,7 @@
+//! The protocol side of a connection: polling updates, fetching attachments and sending messages
+//! part by part.
+//!
+//! The connection decides what to accept and when to send.
 use super::{Action, Adapter, Attachment, AttachmentContent, ChannelError, Fault, MessageContent};
 use enco_core::*;
 use enco_kernel::{ImageError, Kernel};

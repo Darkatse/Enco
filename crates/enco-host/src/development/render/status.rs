@@ -1,3 +1,5 @@
+//! The document that `self_status` returns: what needs attention, then the three layers of every
+//! unit, then recent registrations, Sessions and channels.
 use super::{
     cell, code, comparison, generation_state, history, next, path, situations, step, time,
 };
@@ -9,6 +11,7 @@ use enco_core::{CodeRef, IntentPath, Settlement, Tz};
 use enco_kernel::{CodeSource, Running};
 
 impl Status {
+    /// The status as the Markdown document `self_status` shows.
     pub fn document(&self) -> String {
         let attention = self.attention();
         let timezone = self.node.execution.timezone;

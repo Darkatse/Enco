@@ -1,3 +1,5 @@
+//! The connection's actor, the only writer of its state: it accepts the owner's input, sends
+//! replies and settles deliveries, one at a time.
 use super::{projection, transport, *};
 use enco_kernel::{ConnectionWrite, StoreError};
 use std::collections::{BTreeSet, VecDeque};
