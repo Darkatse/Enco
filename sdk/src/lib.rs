@@ -3,6 +3,7 @@
 //!
 //! The host writes this crate to `sdk/` in every home, replacing any edits there; plugins depend on
 //! it by path.
+#![warn(missing_docs)]
 mod http;
 pub mod protocol;
 mod schema;
@@ -13,6 +14,10 @@ pub use wit_bindgen;
 ///
 /// Plugins built with [`export!`] use these same types, so a value from [`protocol`] can be
 /// returned from a plugin as it is.
+#[expect(
+    missing_docs,
+    reason = "wit-bindgen adds undocumented items such as package modules; the contract gate checks the WIT"
+)]
 pub mod bindings {
     wit_bindgen::generate!({ path: "wit", world: "completion-plugin", pub_export_macro: true });
 }

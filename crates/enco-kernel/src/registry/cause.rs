@@ -49,7 +49,7 @@ pub enum IntentPart {
     },
     /// A plugin that cannot run; its own status says why.
     Plugin {
-        /// The plugin.
+        /// The plugin that cannot run, by its current name.
         plugin: PluginName,
     },
 }

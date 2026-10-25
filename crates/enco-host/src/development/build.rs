@@ -1,15 +1,18 @@
 //! Building one plugin source into a component.
 //!
 //! For the same source and SDK, an earlier build is reused while its component is still stored, and
-//! no command runs. A fresh build runs under the SDK's toolchain and fails when that toolchain
-//! cannot build, on any clippy warning, on a component that does not load with an empty
-//! configuration, or on a change to any file other than `Cargo.lock` and the README's generated
-//! section.
+//! only rustdoc may run, when the source has no navigation manual yet. A fresh build runs under the
+//! SDK's toolchain and fails when that toolchain cannot build, on any clippy warning, or on a
+//! component that does not load with an empty configuration.
+//!
+//! Either way, the source must hold still while the build reads it: a change to any file other than
+//! `Cargo.lock` and the README's generated section fails the build, so the component and the
+//! navigation manual are recorded for the source they came from.
 use super::{
     BuildFailure, Development, DevelopmentError, EntryError, EntryProblem, ToolchainProblem,
     cache::Build,
     error::{entry, io},
-    process, readme,
+    navigation, process, readme,
     tree::FileTree,
 };
 use crate::limits::BUILD_DIAGNOSTICS;
@@ -92,6 +95,16 @@ impl Development {
                 Err(error) => return Err(error.into()),
             };
             if Some(build.artifact) == registered || retained {
+                // A build stored before manuals existed has none; rustdoc alone adds it.
+                if navigation::stored(&self.store, source.hash())
+                    .await?
+                    .is_none()
+                {
+                    self.check_toolchain(name, cancel).await?;
+                    let manual = self.navigation(name, cancel).await?;
+                    self.unchanged(name, &directory, &source).await?;
+                    self.remember_navigation(source.hash(), &manual).await?;
+                }
                 return Ok(Built {
                     artifact: ArtifactSource::Stored(build.artifact),
                     tree: source,
@@ -116,16 +129,8 @@ impl Development {
             .await
             .map_err(|error| failed(BuildFailure::EmptySettings(error)))?;
         readme::write(&directory, &loaded).await?;
-        let after = FileTree::read(&directory).await?;
-        let changed = after.changes(&source);
-        let readme = directory.join(readme::FILE);
-        if changed
-            .iter()
-            .any(|path| *path != "Cargo.lock" && *path != readme::FILE)
-            || authored_readme(&readme, &source)? != authored_readme(&readme, &after)?
-        {
-            return Err(failed(BuildFailure::SourceChanged));
-        }
+        let manual = self.navigation(name, cancel).await?;
+        let after = self.unchanged(name, &directory, &source).await?;
         self.store
             .remember_build(Build {
                 source: after.hash(),
@@ -135,6 +140,7 @@ impl Development {
                 created_at: Utc::now(),
             })
             .await?;
+        self.remember_navigation(after.hash(), &manual).await?;
         Ok(Built {
             artifact: ArtifactSource::Bytes(bytes),
             tree: after,
@@ -183,16 +189,9 @@ impl Development {
                 &mut artifact,
             );
             if !output.status.success() {
-                let log = self.store.blob_path(&self.store.put_blob(&log).await?);
-                let mut diagnostics = excerpts(messages);
-                if diagnostics.is_empty() {
-                    diagnostics.push(String::from_utf8_lossy(&output.stderr).into_owned());
-                }
-                return Err(failed(BuildFailure::Cargo {
-                    stage,
-                    diagnostics,
-                    log,
-                }));
+                return Err(self
+                    .stage_failed(name, stage, &log, messages, &output.stderr)
+                    .await);
             }
         }
         let log = self.store.blob_path(&self.store.put_blob(&log).await?);
@@ -212,9 +211,63 @@ impl Development {
         ))
     }
 
+    /// Read the plugin directory again after the build ran in it.
+    ///
+    /// Fails with `SourceChanged` when anything but `Cargo.lock` and the README's generated section
+    /// differs from `source`, the directory as the build first read it.
+    async fn unchanged(
+        &self,
+        name: &PluginName,
+        directory: &Path,
+        source: &FileTree,
+    ) -> Result<FileTree, DevelopmentError> {
+        let after = FileTree::read(directory).await?;
+        let readme = directory.join(readme::FILE);
+        if after
+            .changes(source)
+            .iter()
+            .any(|path| *path != "Cargo.lock" && *path != readme::FILE)
+            || authored_readme(&readme, source)? != authored_readme(&readme, &after)?
+        {
+            return Err(DevelopmentError::Build {
+                name: name.clone(),
+                failure: BuildFailure::SourceChanged,
+            });
+        }
+        Ok(after)
+    }
+
+    /// Store a failed Cargo stage's log and describe the failure by its diagnostics, or by Cargo's
+    /// error output when it reported none.
+    pub(super) async fn stage_failed(
+        &self,
+        name: &PluginName,
+        stage: &'static str,
+        log: &[u8],
+        messages: Vec<(bool, String)>,
+        stderr: &[u8],
+    ) -> DevelopmentError {
+        let log = match self.store.put_blob(log).await {
+            Ok(hash) => self.store.blob_path(&hash),
+            Err(error) => return error.into(),
+        };
+        let mut diagnostics = excerpts(messages);
+        if diagnostics.is_empty() {
+            diagnostics.push(String::from_utf8_lossy(stderr).into_owned());
+        }
+        DevelopmentError::Build {
+            name: name.clone(),
+            failure: BuildFailure::Cargo {
+                stage,
+                diagnostics,
+                log,
+            },
+        }
+    }
+
     /// Check that the SDK's toolchain and the plugin target are installed before Cargo runs, and
     /// return the `rustc -vV` text the build record keeps.
-    async fn check_toolchain(
+    pub(super) async fn check_toolchain(
         &self,
         name: &PluginName,
         cancel: &CancellationToken,
@@ -282,7 +335,7 @@ fn authored_readme(path: &Path, tree: &FileTree) -> Result<String, EntryError> {
     readme::authored(path, text)
 }
 
-fn parse_messages(
+pub(super) fn parse_messages(
     bytes: &[u8],
     manifest: &Path,
     diagnostics: &mut Vec<(bool, String)>,

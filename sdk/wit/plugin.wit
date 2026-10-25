@@ -6,37 +6,79 @@ interface types {
     /// A JSON document encoded as UTF-8 text.
     type json = string;
 
-    /// An operation failure. `retryable` means the same request may succeed later.
-    record failure { code: string, message: string, retryable: bool }
+    /// An operation failure.
+    record failure {
+        /// A stable classification, such as `timeout` or `provider.auth`.
+        code: string,
+        /// What went wrong, for the Agent and the owner to read.
+        message: string,
+        /// Whether the same request may succeed later.
+        retryable: bool,
+    }
 
     /// Identifies the speaker of a canonical model message.
     enum role { system, user, assistant, tool }
 
-    /// A proposed tool invocation. `id` is the original service-assigned call ID, empty when the service assigns none.
-    record tool-call { id: string, name: string, arguments: string }
+    /// A proposed tool invocation.
+    record tool-call {
+        /// The call ID the service assigned, or empty when it assigns none.
+        id: string,
+        /// The tool to call, by the name its `tool-spec` declares.
+        name: string,
+        /// The arguments as the model wrote them, as JSON text.
+        arguments: string,
+    }
 
-    /// A tool settlement. `call-id` refers to the original `tool-call.id`.
-    record tool-result { call-id: string, content: string, is-error: bool }
+    /// A tool settlement.
+    record tool-result {
+        /// The `id` of the `tool-call` this result answers.
+        call-id: string,
+        /// The result text the model reads.
+        content: string,
+        /// Whether the call failed.
+        is-error: bool,
+    }
 
     /// Opaque adapter fields. The host replays them only to their originating plugin identity.
-    record extension { data: json }
+    record extension {
+        /// The fields, as the adapter that wrote them expects them back.
+        data: json,
+    }
 
     /// Image encodings that every supported service accepts.
     enum image-format { png, jpeg, webp }
 
-    /// An image in a message: the stored bytes, not base64.
-    record image { format: image-format, data: list<u8> }
+    /// An image in a message.
+    record image {
+        /// How `data` is encoded.
+        format: image-format,
+        /// The image bytes as stored, not base64.
+        data: list<u8>,
+    }
 
     /// Ordered text, images, tool interactions and opaque extensions within a message.
-    variant part { text(string), tool-call(tool-call), tool-result(tool-result), extension(extension), image(image) }
+    variant part {
+        /// Text the speaker wrote.
+        text(string),
+        /// A tool call the assistant proposes.
+        tool-call(tool-call),
+        /// The result of a tool call.
+        tool-result(tool-result),
+        /// Adapter fields kept for the plugin that wrote them.
+        extension(extension),
+        /// An image attached to the message.
+        image(image),
+    }
 
     /// A canonical message sent to or returned by the model.
-    record message { role: role, parts: list<part> }
+    record message {
+        /// Who speaks.
+        role: role,
+        /// The content, in order.
+        parts: list<part>,
+    }
 
     /// A tool disclosed to the model.
-    ///
-    /// Names use ASCII letters, digits, underscores or hyphens; tools.list names are unique within the plugin.
-    /// Completion adapters ignore effect; the host uses it when dispatching tools.
     ///
     /// `input-schema` describes the argument object in a subset of JSON Schema:
     /// - objects with `properties` and `required`, always with `additionalProperties: false`;
@@ -51,17 +93,52 @@ interface types {
     /// checks every call against the schema before the plugin sees it: an optional property given
     /// as null counts as not given, and an integer written with a zero fraction, such as 5.0,
     /// arrives as 5.
-    record tool-spec { name: string, description: string, input-schema: json, effect: effect }
+    record tool-spec {
+        /// The name the model calls the tool by: ASCII letters, digits, underscores or hyphens,
+        /// unique among the plugin's tools.
+        name: string,
+        /// What the tool does, for the model to read.
+        description: string,
+        /// The argument object, in the subset of JSON Schema stated above.
+        input-schema: json,
+        /// What a call may change; completion adapters ignore it, and the host uses it when
+        /// dispatching.
+        effect: effect,
+    }
 
     /// Mutation semantics used to order calls and settle interrupted work.
-    enum effect { read-only, idempotent, side-effect }
+    ///
+    /// Consecutive read-only calls run together; other calls run one at a time. A call cut off by
+    /// a crash fails as retryable when it is read-only, and settles as unknown otherwise.
+    enum effect {
+        /// Changes nothing beyond its result.
+        read-only,
+        /// Making the call again has the same effect as making it once.
+        idempotent,
+        /// Changes something that must not be changed again blindly.
+        side-effect,
+    }
 
     /// A known result, a known failure, or an external effect that cannot be confirmed.
-    /// An unknown outcome must never be retried automatically.
-    variant outcome { ok(json), failed(failure), unknown(failure) }
+    variant outcome {
+        /// The call succeeded with this JSON result.
+        ok(json),
+        /// The call failed, and its effects are known.
+        failed(failure),
+        /// An external effect may have happened and cannot be confirmed; it is never retried
+        /// automatically.
+        unknown(failure),
+    }
 
     /// Endpoint, model and adapter options supplied by the caller for this call.
-    record settings { base-url: string, model: string, options: json }
+    record settings {
+        /// The service's base URL; request paths are appended to it.
+        base-url: string,
+        /// The model the service runs.
+        model: string,
+        /// Options the adapter merges into its request, as a JSON object.
+        options: json,
+    }
 }
 
 /// Host-owned logging and transport available to plugins.
@@ -76,25 +153,45 @@ interface host {
     /// Write a diagnostic to the host log.
     log: func(level: log-level, message: string);
 
-    /// An HTTP request. Omitting `timeout-ms` selects the host default timeout.
+    /// An HTTP request for the host to send.
     record http-request {
+        /// The method, such as `GET` or `POST`.
         method: string,
+        /// The absolute URL.
         url: string,
+        /// Header names and values, in order.
         headers: list<tuple<string, string>>,
+        /// The bytes to send, if any.
         body: option<list<u8>>,
+        /// The time limit in milliseconds; the host's default when absent.
         timeout-ms: option<u32>,
     }
 
     /// An HTTP status, headers and fully collected response body.
-    record http-response { status: u16, headers: list<tuple<string, string>>, body: list<u8> }
+    record http-response {
+        /// The status code, such as 200.
+        status: u16,
+        /// Header names and values, in order.
+        headers: list<tuple<string, string>>,
+        /// The whole body, already collected.
+        body: list<u8>,
+    }
 
     /// Classifies failures while constructing, sending or reading an HTTP request.
     enum http-error-kind { invalid-request, connect, timeout, body, too-large, other }
 
-    /// Transport failure. `request-sent` means the request may have reached the peer.
-    record http-failure { kind: http-error-kind, message: string, request-sent: bool }
+    /// Transport failure.
+    record http-failure {
+        /// The stage that failed.
+        kind: http-error-kind,
+        /// What went wrong.
+        message: string,
+        /// Whether the request may have reached the peer.
+        request-sent: bool,
+    }
 
-    /// Send a request and collect its response. Non-2xx statuses are returned as responses.
+    /// Send a request and collect its response; non-2xx statuses are returned as responses.
+    ///
     /// The host attaches declared credentials only to the bound origin (scheme, host and port),
     /// overriding the matching request header. Redirects are followed only within that origin.
     /// Cross-origin redirects are returned unchanged. Credential values in response headers,
@@ -110,8 +207,11 @@ interface tools {
     /// Project tool definitions from configuration already accepted by `lifecycle.describe`.
     %list: func(config: json) -> list<tool-spec>;
 
-    /// Execute one tool. `input` already fits the tool's `input-schema`; validate only what the schema cannot express.
-    /// Return an unknown outcome when an external effect may have occurred but is unconfirmed.
+    /// Execute one tool.
+    ///
+    /// `input` already fits the tool's `input-schema`; validate only what the schema cannot
+    /// express. Return an unknown outcome when an external effect may have occurred but is
+    /// unconfirmed.
     call: async func(name: string, input: json) -> outcome;
 }
 
@@ -120,18 +220,41 @@ interface completion {
     use types.{failure, message, tool-spec, settings};
 
     /// The frozen messages, disclosed tools and output budget for one completion.
+    ///
     /// User messages may include images; tool messages contain one result followed by any images.
-    record request { messages: list<message>, tools: list<tool-spec>, max-output-tokens: option<u32> }
+    record request {
+        /// The messages, in order.
+        messages: list<message>,
+        /// The tools the model may call.
+        tools: list<tool-spec>,
+        /// The most tokens the reply may use; the service's default when absent.
+        max-output-tokens: option<u32>,
+    }
 
     /// Token counts reported by the service, including cache hits when available.
-    record usage { input-tokens: u64, output-tokens: u64, cached-input-tokens: option<u64> }
+    record usage {
+        /// Tokens the request used.
+        input-tokens: u64,
+        /// Tokens the reply used.
+        output-tokens: u64,
+        /// The part of `input-tokens` served from the service's cache, when it reports one.
+        cached-input-tokens: option<u64>,
+    }
 
     /// The service-reported reason that generation stopped.
     enum stop-reason { end-turn, tool-calls, max-tokens, other }
 
-    /// A completed model attempt. `message.role` must be assistant.
+    /// A completed model attempt.
+    ///
     /// Canonical parts are text, tool calls and extensions; generated images stay in extensions.
-    record completion { message: message, usage: usage, stop-reason: stop-reason }
+    record completion {
+        /// The reply, with the `assistant` role.
+        message: message,
+        /// What the attempt cost in tokens.
+        usage: usage,
+        /// Why generation stopped.
+        stop-reason: stop-reason,
+    }
 
     /// Perform one non-streaming completion.
     ///
@@ -157,19 +280,46 @@ interface embedding {
 interface decision {
     use types.{failure, settings};
 
-    /// An option or score level. Names must be unique within a question.
-    record label { name: string, description: option<string> }
+    /// An option or score level.
+    record label {
+        /// The answer's name, unique within its question.
+        name: string,
+        /// What the option means, when the name alone is not clear.
+        description: option<string>,
+    }
 
     /// A yes/no predicate, an unordered choice, or score levels ordered from low to high.
-    variant question-kind { predicate, choice(list<label>), score(list<label>) }
+    variant question-kind {
+        /// A yes-or-no question.
+        predicate,
+        /// One option from an unordered list.
+        choice(list<label>),
+        /// A level on a scale, from low to high.
+        score(list<label>),
+    }
 
     /// Instructions and the allowed answer shape for one independent judgment.
-    record question { instructions: string, kind: question-kind }
+    record question {
+        /// What to judge, for the service to read.
+        instructions: string,
+        /// The shape the answer takes.
+        kind: question-kind,
+    }
 
-    /// Probability of yes, probabilities in label order, or a refusal for this question.
+    /// An answer to one question, as probabilities, or a refusal.
+    ///
     /// Probabilities are finite and in [0, 1]; choice and score distributions sum to one
     /// within 0.01, allowing for rounding by the service.
-    variant answer { predicate(f64), choice(list<f64>), score(list<f64>), refused }
+    variant answer {
+        /// The probability of yes.
+        predicate(f64),
+        /// One probability per option, in label order.
+        choice(list<f64>),
+        /// One probability per level, in label order.
+        score(list<f64>),
+        /// The service declined to answer this question.
+        refused,
+    }
 
     /// Evaluate each question against the same text state. Return one matching answer
     /// per question in input order; any question may instead receive `refused`.
@@ -184,17 +334,37 @@ interface lifecycle {
     use types.{json, failure};
 
     /// Named credential attached to `origin`, or to the caller-selected service when absent.
+    ///
     /// A fixed origin uses the generation's secret mapping; an absent origin uses the endpoint's.
     /// Names and origins must be unique, including at most one absent origin.
     /// The host sets `header` to `prefix` followed by the credential value; plugins never see it.
-    record credential { name: string, origin: option<string>, header: string, prefix: string, required: bool }
+    record credential {
+        /// The name the owner's configuration maps to an environment variable.
+        name: string,
+        /// The origin the credential is sent to; absent for the service the caller selects.
+        origin: option<string>,
+        /// The request header that carries the credential.
+        header: string,
+        /// Text placed before the credential value in the header, such as `Bearer `.
+        prefix: string,
+        /// Whether the plugin cannot work without it.
+        required: bool,
+    }
 
-    /// Plugin-wide facts and requirements. `config-schema` documents configuration as JSON Schema;
-    /// configuration validation belongs to `describe`, not to a second host-side schema validator.
-    record description { summary: string, config-schema: json, credentials: list<credential> }
+    /// Plugin-wide facts and requirements.
+    record description {
+        /// One line on what the plugin offers.
+        summary: string,
+        /// The configuration the plugin accepts, as JSON Schema; only `describe` validates it.
+        config-schema: json,
+        /// The credentials the plugin uses.
+        credentials: list<credential>,
+    }
 
-    /// Describe the component or reject its configuration. An empty object must be accepted
-    /// and provide the plugin's minimum capabilities. Declarations are fixed with the generation.
+    /// Describe the component or reject its configuration.
+    ///
+    /// An empty object must be accepted and provide the plugin's minimum capabilities.
+    /// Declarations are fixed with the generation.
     describe: func(config: json) -> result<description, failure>;
 
     /// Check the component without network access or owner-specific configuration.

@@ -50,7 +50,11 @@ Factory policy shared by ordinary operation and safe mode. No IO occurs here.
 pub fn new(home: PathBuf, workspace: PathBuf, instructions: PathBuf) -> Self
 ```
 
-Implements `Composer`.
+Implements:
+
+```rust
+impl Composer for FactoryComposer
+```
 
 ## struct `InstructionsContextSource`
 
@@ -70,7 +74,11 @@ Supplies the owner's current standing instructions once per Round.
 pub fn new(path: PathBuf) -> Self
 ```
 
-Implements `ContextSource`.
+Implements:
+
+```rust
+impl ContextSource for InstructionsContextSource
+```
 
 ## struct `Memories`
 
@@ -146,7 +154,11 @@ pub struct MemoryContextSource {
 pub fn new(memories: Arc<Memories>) -> Self
 ```
 
-Implements `ContextSource`.
+Implements:
+
+```rust
+impl ContextSource for MemoryContextSource
+```
 
 ## enum `MemoryError`
 
@@ -165,7 +177,14 @@ pub enum MemoryError {
 }
 ```
 
-Implements `Debug`, `Display`, `Error`, `From<RegistryError>`.
+Implements:
+
+```rust
+impl Debug for MemoryError
+impl Display for MemoryError
+impl Error for MemoryError
+impl From<RegistryError> for MemoryError
+```
 
 ## struct `MemoryList`
 
@@ -178,7 +197,12 @@ pub struct MemoryList {
 }
 ```
 
-Implements `Deserialize<'de>`, `Serialize`.
+Implements:
+
+```rust
+impl<'de> Deserialize<'de> for MemoryList
+impl Serialize for MemoryList
+```
 
 ## struct `MemoryPaths`
 
@@ -209,7 +233,12 @@ Current authority records nominated by the index, plus recent unindexed records.
 
 - `lexical_only` — Present when embedding failed; callers must disclose keyword-only recall.
 
-Implements `Deserialize<'de>`, `Serialize`.
+Implements:
+
+```rust
+impl<'de> Deserialize<'de> for Recall
+impl Serialize for Recall
+```
 
 ## struct `SqliteStore`
 
@@ -231,7 +260,11 @@ pub async fn open(paths: StorePaths) -> Result<Self, StoreError>
 
 Open the authority, initializing the schema and node identity on first use.
 
-Implements `Store`.
+Implements:
+
+```rust
+impl Store for SqliteStore
+```
 
 ## struct `StorePaths`
 
@@ -261,7 +294,11 @@ pub struct SystemClock;
 
 Host wall clock; Log order is assigned independently by the Session.
 
-Implements `Clock`.
+Implements:
+
+```rust
+impl Clock for SystemClock
+```
 
 ## struct `Telegram`
 
@@ -279,7 +316,11 @@ pub struct Telegram {
 pub fn new(token: String, api_base: &str) -> Result<Self, ChannelError>
 ```
 
-Implements `Adapter`.
+Implements:
+
+```rust
+impl Adapter for Telegram
+```
 
 ## fn `blob_path`
 
@@ -425,7 +466,11 @@ pub enum AttachmentContent {
 }
 ```
 
-Implements `Debug`.
+Implements:
+
+```rust
+impl Debug for AttachmentContent
+```
 
 ## struct `channel::Channel`
 
@@ -457,7 +502,11 @@ pub async fn status(&self) -> Result<ChannelStatus, KernelError>
 pub async fn shutdown(&self) -> Result<(), ChannelError>
 ```
 
-Implements `Drop`.
+Implements:
+
+```rust
+impl Drop for Channel
+```
 
 ## enum `channel::ChannelError`
 
@@ -476,7 +525,16 @@ pub enum ChannelError {
 
 - `Unjoined` — The owner did not complete cleanup, so its helpers may still be running.
 
-Implements `Debug`, `Display`, `Error`, `From<Error>`, `From<Fault>`, `From<KernelError>`.
+Implements:
+
+```rust
+impl Debug for ChannelError
+impl Display for ChannelError
+impl Error for ChannelError
+impl From<Error> for ChannelError
+impl From<Fault> for ChannelError
+impl From<KernelError> for ChannelError
+```
 
 ## struct `channel::ChannelStatus`
 
@@ -493,7 +551,11 @@ pub struct ChannelStatus {
 
 Observable connection health and durable final delivery failures.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for ChannelStatus
+```
 
 ## struct `channel::Fault`
 
@@ -513,7 +575,14 @@ Protocol evidence used by the common retry and settlement path.
 - `unknown` — True when effects may have occurred; this always forbids an automatic resend.
 - `fatal` — True when the whole connection is unusable, rather than just this destination.
 
-Implements `Debug`, `Display`, `Error`, `From<Fault>`.
+Implements:
+
+```rust
+impl Debug for Fault
+impl Display for Fault
+impl Error for Fault
+impl From<Fault> for ChannelError
+```
 
 ## struct `channel::Identity`
 
@@ -534,7 +603,11 @@ Stable identity declared by a protocol adapter.
 pub fn key(&self) -> String
 ```
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for Identity
+```
 
 ## struct `channel::Input`
 
@@ -564,7 +637,12 @@ pub struct MessageContent<T> {
 }
 ```
 
-Implements `From<&str>`, `From<String>`.
+Implements:
+
+```rust
+impl<T> From<&str> for MessageContent<T>
+impl<T> From<String> for MessageContent<T>
+```
 
 ## struct `channel::Update`
 
@@ -618,7 +696,7 @@ Each returned update carries the protocol state after accepting that update.
 ### `channel::Adapter::fetch`
 
 ```rust
-async fn fetch(&self, locator: &'life1 str) -> Result<AttachmentContent, Fault>
+async fn fetch(&self, locator: &str) -> Result<AttachmentContent, Fault>
 ```
 
 Fetch a protocol-owned attachment after authorization; reads have no external effect.
@@ -635,7 +713,7 @@ Each part has text or a file; a file-only message produces exactly one part.
 ### `channel::Adapter::send`
 
 ```rust
-async fn send(&self, target: &'life1 str, message: &'life2 Outgoing<FileData>) -> Result<(), Fault>
+async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<(), Fault>
 ```
 
 Perform one bounded attempt. Never retry internally or drop an in-flight side effect.
@@ -651,7 +729,7 @@ The owner and the Agent edit those files; what is registered and what runs live 
 and only the registry changes them.
 
 - module `development::tree` — A directory as an exact value: file bytes by canonical relative path.
-- struct `development::AgentReason` — A suggested call's reason, which the Agent writes. It serializes as the placeholder that reason parsing rejects, so a suggestion copied unchanged cannot register.
+- struct `development::AgentReason` — A suggested call's reason, which the Agent writes.
 - struct `development::Applied` — The result of an apply: what was registered, and what each build did.
 - struct `development::ApplyArguments` — (no summary)
 - enum `development::BuildFailure` — (no summary)
@@ -671,12 +749,14 @@ and only the registry changes them.
 - struct `development::Failed` — (no summary)
 - struct `development::FileDiff` — (no summary)
 - enum `development::FileDifference` — (no summary)
+- struct `development::Following` — Keeps a manual in step with the registry until shutdown.
 - struct `development::History` — (no summary)
 - enum `development::HistoryPoint` — (no summary)
 - enum `development::HistoryQuery` — (no summary)
 - enum `development::HomeComparison` — Byte equality and meaning are distinct facts; reading a comparison never builds source.
 - struct `development::HomePlugin` — (no summary)
 - struct `development::Invocation` — A suggested call, serialized only where a document or JSON result is written.
+- struct `development::Manual` — Writes the manual of one home.
 - enum `development::Operation` — The development operation that failed; it decides what a failure left behind and how to repeat the operation.
 - struct `development::PluginUnit` — (no summary)
 - struct `development::RegisteredUnit` — (no summary)
@@ -696,6 +776,7 @@ and only the registry changes them.
 - const `development::APPLY` — (no summary)
 - const `development::HISTORY` — (no summary)
 - const `development::HISTORY_PAGE_SIZE` — (no summary)
+- const `development::MANUAL_DIRECTORY` — The directory under the home that holds the manual.
 - const `development::RENAME` — (no summary)
 - const `development::REWIND` — (no summary)
 - const `development::SCAFFOLD` — (no summary)
@@ -709,10 +790,21 @@ and only the registry changes them.
 pub struct AgentReason;
 ```
 
-A suggested call's reason, which the Agent writes. It serializes as the placeholder that
-reason parsing rejects, so a suggestion copied unchanged cannot register.
+A suggested call's reason, which the Agent writes.
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+It serializes as the placeholder that reason parsing rejects, so a suggestion copied unchanged
+cannot register.
+
+Implements:
+
+```rust
+impl Clone for AgentReason
+impl Copy for AgentReason
+impl Debug for AgentReason
+impl Eq for AgentReason
+impl PartialEq for AgentReason
+impl Serialize for super::AgentReason
+```
 
 ## struct `development::Applied`
 
@@ -743,7 +835,11 @@ The result of an apply: what was registered, and what each build did.
 pub fn document(&self) -> String
 ```
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for Applied
+```
 
 ## struct `development::ApplyArguments`
 
@@ -757,7 +853,17 @@ pub struct ApplyArguments<R = enco_core::Reason> {
 
 - `reason` — Why this change is registered, in one sentence; history shows it.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `JsonSchema`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl<R: Clone> Clone for ApplyArguments<R>
+impl<R: Debug> Debug for ApplyArguments<R>
+impl<'de, R> Deserialize<'de> for ApplyArguments<R> where R: Deserialize<'de>
+impl<R: Eq> Eq for ApplyArguments<R>
+impl<R> JsonSchema for ApplyArguments<R> where R: schemars::JsonSchema
+impl<R: PartialEq> PartialEq for ApplyArguments<R>
+impl<R> Serialize for ApplyArguments<R> where R: Serialize
+```
 
 ## enum `development::BuildFailure`
 
@@ -785,7 +891,13 @@ pub enum BuildFailure {
 - `Toolchain` — Checked before Cargo runs; installing a toolchain downloads it, so the owner repairs this.
   - `channel` — The toolchain the SDK pins, as rustup names it.
 
-Implements `Debug`, `Display`, `Error`.
+Implements:
+
+```rust
+impl Debug for BuildFailure
+impl Display for BuildFailure
+impl Error for BuildFailure
+```
 
 ## struct `development::BuildResult`
 
@@ -811,7 +923,11 @@ What happened to one plugin source during an apply.
   was reused.
 - `log` — Path to Cargo's complete output; absent when the build was reused.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for BuildResult
+```
 
 ## struct `development::Comparison`
 
@@ -832,7 +948,11 @@ pub struct Comparison {
 - `conflicting_paths` — Different identities would require the same current directory.
 - `next` — Actions include only paths addressable by the rewind tool.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for Comparison
+```
 
 ## enum `development::ComparisonMode`
 
@@ -846,7 +966,13 @@ pub enum ComparisonMode {
 }
 ```
 
-Implements `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Eq for ComparisonMode
+impl PartialEq for ComparisonMode
+impl Serialize for ComparisonMode
+```
 
 ## struct `development::ConfigurationUnit`
 
@@ -862,7 +988,11 @@ pub struct ConfigurationUnit {
 }
 ```
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for ConfigurationUnit
+```
 
 ## enum `development::ContentFailure`
 
@@ -882,7 +1012,12 @@ pub enum ContentFailure {
 
 Why content cannot be read; other failures stop the comparison.
 
-Implements `Debug`, `Serialize`.
+Implements:
+
+```rust
+impl Debug for ContentFailure
+impl Serialize for ContentFailure
+```
 
 ## struct `development::ContentUnavailable`
 
@@ -895,7 +1030,12 @@ pub struct ContentUnavailable {
 }
 ```
 
-Implements `Debug`, `Serialize`.
+Implements:
+
+```rust
+impl Debug for ContentUnavailable
+impl Serialize for ContentUnavailable
+```
 
 ## struct `development::Development`
 
@@ -991,10 +1131,18 @@ Inspect source and registry facts without building or changing either of them.
 ### `development::Development::new`
 
 ```rust
-pub fn new(home: PathBuf, sdk: Sdk, store: Arc<SqliteStore>, runtime: Arc<dyn Runtime>) -> Arc<Self>
+pub fn new(home: PathBuf, sdk: Sdk, manual: Manual, store: Arc<SqliteStore>, runtime: Arc<dyn Runtime>) -> Arc<Self>
 ```
 
 Bind development to `home`; nothing is read or written until an operation runs.
+
+### `development::Development::manual`
+
+```rust
+pub fn manual(&self) -> &Arc<Manual>
+```
+
+The manual of this home, which every registration made here rewrites before it returns.
 
 ### `development::Development::initialize`
 
@@ -1026,7 +1174,15 @@ One parsed call of a development tool. Suggestions use `AgentReason` where the A
 pub fn tool(&self) -> DevelopmentTool
 ```
 
-Implements `Clone`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl<R: Clone> Clone for DevelopmentCall<R>
+impl<R: Debug> Debug for DevelopmentCall<R>
+impl<R: Eq> Eq for DevelopmentCall<R>
+impl<R: PartialEq> PartialEq for DevelopmentCall<R>
+impl<R> Serialize for DevelopmentCall<R> where R: Serialize
+```
 
 ## enum `development::DevelopmentError`
 
@@ -1100,7 +1256,17 @@ pub fn code(&self) -> &'static str
 
 The stable classification of the failure, decided where each variant is added.
 
-Implements `Debug`, `Display`, `Error`, `From<EntryError>`, `From<InvalidSourcePath>`, `From<RegistryError>`, `From<StoreError>`.
+Implements:
+
+```rust
+impl Debug for DevelopmentError
+impl Display for DevelopmentError
+impl Error for DevelopmentError
+impl From<EntryError> for DevelopmentError
+impl From<InvalidSourcePath> for DevelopmentError
+impl From<RegistryError> for DevelopmentError
+impl From<StoreError> for DevelopmentError
+```
 
 ## struct `development::DevelopmentStatus`
 
@@ -1121,7 +1287,11 @@ The three layers of every plugin and of `config.toml`, observed once.
 - `plugins` — Every plugin that runs, is registered, or has a directory.
 - `plugins_unreadable` — Why the `plugins` directory cannot be listed; the home facts of plugins are then absent.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for DevelopmentStatus
+```
 
 ## enum `development::DevelopmentTool`
 
@@ -1169,7 +1339,15 @@ The parser execution uses, and the only one.
 pub fn spec(self) -> Result<ToolSpec, SchemaError>
 ```
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `PartialEq`.
+Implements:
+
+```rust
+impl Clone for DevelopmentTool
+impl Copy for DevelopmentTool
+impl Debug for DevelopmentTool
+impl Eq for DevelopmentTool
+impl PartialEq for DevelopmentTool
+```
 
 ## struct `development::EntryError`
 
@@ -1182,7 +1360,18 @@ pub struct EntryError {
 }
 ```
 
-Implements `Clone`, `Debug`, `Display`, `Eq`, `Error`, `From<EntryError>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for EntryError
+impl Debug for EntryError
+impl Display for EntryError
+impl Eq for EntryError
+impl Error for EntryError
+impl From<EntryError> for DevelopmentError
+impl PartialEq for EntryError
+impl Serialize for EntryError
+```
 
 ## enum `development::EntryProblem`
 
@@ -1205,7 +1394,17 @@ pub enum EntryProblem {
 
 - `UnsupportedName` — Source paths use `/` as their only separator, so names cannot contain `\\`.
 
-Implements `Clone`, `Debug`, `Display`, `Eq`, `Error`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for EntryProblem
+impl Debug for EntryProblem
+impl Display for EntryProblem
+impl Eq for EntryProblem
+impl Error for EntryProblem
+impl PartialEq for EntryProblem
+impl Serialize for EntryProblem
+```
 
 ## struct `development::Failed`
 
@@ -1232,7 +1431,13 @@ pub fn next(&self) -> Steps
 pub fn code(&self) -> &'static str
 ```
 
-Implements `Debug`, `Display`, `Error`.
+Implements:
+
+```rust
+impl Debug for Failed
+impl Display for Failed
+impl Error for Failed
+```
 
 ## struct `development::FileDiff`
 
@@ -1245,7 +1450,11 @@ pub struct FileDiff {
 }
 ```
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for FileDiff
+```
 
 ## enum `development::FileDifference`
 
@@ -1262,7 +1471,37 @@ pub enum FileDifference {
 }
 ```
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for FileDifference
+```
+
+## struct `development::Following`
+
+`src/development/manual.rs`
+
+```rust
+pub struct Following {
+    /* private fields */
+}
+```
+
+Keeps a manual in step with the registry until shutdown.
+
+### `development::Following::shutdown`
+
+```rust
+pub async fn shutdown(&self) -> Result<(), tokio::task::JoinError>
+```
+
+Stop following, after any write in progress finishes.
+
+Implements:
+
+```rust
+impl Drop for Following
+```
 
 ## struct `development::History`
 
@@ -1287,7 +1526,11 @@ pub struct History {
 pub fn document(&self) -> String
 ```
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for History
+```
 
 ## enum `development::HistoryPoint`
 
@@ -1300,7 +1543,19 @@ pub enum HistoryPoint {
 }
 ```
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `FromStr`, `JsonSchema`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for HistoryPoint
+impl Copy for HistoryPoint
+impl Debug for HistoryPoint
+impl<'de> Deserialize<'de> for HistoryPoint
+impl Eq for HistoryPoint
+impl FromStr for HistoryPoint
+impl JsonSchema for HistoryPoint
+impl PartialEq for HistoryPoint
+impl Serialize for HistoryPoint
+```
 
 ## enum `development::HistoryQuery`
 
@@ -1329,7 +1584,17 @@ pub fn new(from: Option<HistoryPoint>, to: Option<HistoryPoint>, before: Option<
 
 The one rule for the tool's and the CLI's arguments: a cursor lists, and a side compares.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `JsonSchema`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for HistoryQuery
+impl Debug for HistoryQuery
+impl<'de> Deserialize<'de> for HistoryQuery
+impl Eq for HistoryQuery
+impl JsonSchema for HistoryQuery
+impl PartialEq for HistoryQuery
+impl Serialize for HistoryQuery
+```
 
 ## enum `development::HomeComparison`
 
@@ -1352,7 +1617,15 @@ Byte equality and meaning are distinct facts; reading a comparison never builds 
 - `Unbuilt` — The bytes differ, and no build tells yet whether the code does.
 - `Absent` — There is no directory and no registered source.
 
-Implements `Clone`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for HomeComparison
+impl Debug for HomeComparison
+impl Eq for HomeComparison
+impl PartialEq for HomeComparison
+impl Serialize for HomeComparison
+```
 
 ## struct `development::HomePlugin`
 
@@ -1365,7 +1638,11 @@ pub struct HomePlugin {
 }
 ```
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for HomePlugin
+```
 
 ## struct `development::Invocation`
 
@@ -1393,7 +1670,50 @@ pub fn new(call: DevelopmentCall<AgentReason>) -> Self
 pub fn status() -> Self
 ```
 
-Implements `Clone`, `Debug`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Invocation
+impl Debug for Invocation
+impl Serialize for Invocation
+```
+
+## struct `development::Manual`
+
+`src/development/manual.rs`
+
+```rust
+pub struct Manual {
+    /* private fields */
+}
+```
+
+Writes the manual of one home.
+
+### `development::Manual::new`
+
+```rust
+pub fn new(home: &Path, host: &[(&str, &[u8])], limits: Vec<(String, String)>, store: Arc<SqliteStore>) -> Result<Self, DevelopmentError>
+```
+
+Bind the manual of `home` to the documents the host ships, keyed by their path under
+`manual/`, and to the limits every plugin call runs within.
+
+### `development::Manual::write`
+
+```rust
+pub async fn write(&self, registry: &Registry) -> Result<(), DevelopmentError>
+```
+
+Rewrite the manual for what the registry runs now.
+
+### `development::Manual::follow`
+
+```rust
+pub fn follow(self: Arc<Self>, registry: Arc<Registry>) -> Following
+```
+
+Rewrite the manual after every view the registry publishes, until shutdown.
 
 ## enum `development::Operation`
 
@@ -1418,7 +1738,12 @@ pub enum Operation {
 The development operation that failed; it decides what a failure left behind and how to
 repeat the operation.
 
-Implements `Clone`, `Debug`.
+Implements:
+
+```rust
+impl Clone for Operation
+impl Debug for Operation
+```
 
 ## struct `development::PluginUnit`
 
@@ -1432,7 +1757,12 @@ pub struct PluginUnit {
 }
 ```
 
-Implements `Default`, `Serialize`.
+Implements:
+
+```rust
+impl Default for PluginUnit
+impl Serialize for PluginUnit
+```
 
 ## struct `development::RegisteredUnit`
 
@@ -1449,7 +1779,11 @@ pub struct RegisteredUnit {
 - `earlier_sdk` — No build of this host's SDK produced the registered code; the next registration rebuilds it.
 - `follow_rejection` — Why registering this host's factory code was rejected; every registration retries it.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for RegisteredUnit
+```
 
 ## struct `development::RenameArguments`
 
@@ -1466,7 +1800,17 @@ pub struct RenameArguments<R = enco_core::Reason> {
 - `name` — The plugin's current name.
 - `reason` — Why the plugin is renamed, in one sentence; history shows it.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `JsonSchema`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl<R: Clone> Clone for RenameArguments<R>
+impl<R: Debug> Debug for RenameArguments<R>
+impl<'de, R> Deserialize<'de> for RenameArguments<R> where R: Deserialize<'de>
+impl<R: Eq> Eq for RenameArguments<R>
+impl<R> JsonSchema for RenameArguments<R> where R: schemars::JsonSchema
+impl<R: PartialEq> PartialEq for RenameArguments<R>
+impl<R> Serialize for RenameArguments<R> where R: Serialize
+```
 
 ## struct `development::RewindArguments`
 
@@ -1482,7 +1826,17 @@ pub struct RewindArguments {
 - `registration` — The registration whose versions are written back.
 - `paths` — The paths to rewind, each `config.toml` or `plugins/<name>` with the plugin's current name.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `JsonSchema`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RewindArguments
+impl Debug for RewindArguments
+impl<'de> Deserialize<'de> for RewindArguments
+impl Eq for RewindArguments
+impl JsonSchema for RewindArguments
+impl PartialEq for RewindArguments
+impl Serialize for RewindArguments
+```
 
 ## struct `development::RewindConflict`
 
@@ -1495,7 +1849,12 @@ pub struct RewindConflict {
 }
 ```
 
-Implements `Debug`, `Serialize`.
+Implements:
+
+```rust
+impl Debug for RewindConflict
+impl Serialize for RewindConflict
+```
 
 ## struct `development::Rewound`
 
@@ -1518,7 +1877,11 @@ pub struct Rewound {
 pub fn document(&self) -> String
 ```
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for Rewound
+```
 
 ## struct `development::ScaffoldArguments`
 
@@ -1530,7 +1893,17 @@ pub struct ScaffoldArguments {
 }
 ```
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `JsonSchema`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ScaffoldArguments
+impl Debug for ScaffoldArguments
+impl<'de> Deserialize<'de> for ScaffoldArguments
+impl Eq for ScaffoldArguments
+impl JsonSchema for ScaffoldArguments
+impl PartialEq for ScaffoldArguments
+impl Serialize for ScaffoldArguments
+```
 
 ## struct `development::Sdk`
 
@@ -1594,7 +1967,11 @@ pub async fn write(&self, home: &Path) -> Result<(), DevelopmentError>
 
 Write the SDK to `sdk/` in `home`, replacing whatever is there, edits included.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for Sdk
+```
 
 ## enum `development::SettingsComparison`
 
@@ -1610,7 +1987,16 @@ pub enum SettingsComparison {
 
 - `Unknown` — `config.toml` or its plugin tables cannot be read; the reason is reported for `config.toml`.
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for SettingsComparison
+impl Copy for SettingsComparison
+impl Debug for SettingsComparison
+impl Eq for SettingsComparison
+impl PartialEq for SettingsComparison
+impl Serialize for SettingsComparison
+```
 
 ## struct `development::StatusArguments`
 
@@ -1621,7 +2007,15 @@ pub struct StatusArguments {
 }
 ```
 
-Implements `Clone`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for StatusArguments
+impl Debug for StatusArguments
+impl Eq for StatusArguments
+impl PartialEq for StatusArguments
+impl Serialize for StatusArguments
+```
 
 ## enum `development::SuggestedArguments`
 
@@ -1634,7 +2028,13 @@ pub enum SuggestedArguments {
 }
 ```
 
-Implements `Clone`, `Debug`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for SuggestedArguments
+impl Debug for SuggestedArguments
+impl Serialize for SuggestedArguments
+```
 
 ## enum `development::ToolchainProblem`
 
@@ -1657,7 +2057,13 @@ Why the SDK's toolchain cannot build plugins on this machine.
 - `Release` — The `rustc` Cargo would use does not go through rustup, so it ignores the pinned toolchain.
   - `found` — The release that `rustc -vV` reports.
 
-Implements `Debug`, `Display`, `Error`.
+Implements:
+
+```rust
+impl Debug for ToolchainProblem
+impl Display for ToolchainProblem
+impl Error for ToolchainProblem
+```
 
 ## struct `development::UnitDiff`
 
@@ -1672,7 +2078,11 @@ pub struct UnitDiff {
 }
 ```
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for UnitDiff
+```
 
 ## fn `development::registration_document`
 
@@ -1705,6 +2115,16 @@ pub const HISTORY: &str = "self_history";
 ```rust
 pub const HISTORY_PAGE_SIZE: usize = 20;
 ```
+
+## const `development::MANUAL_DIRECTORY`
+
+`src/development/manual.rs`
+
+```rust
+pub const DIRECTORY: &str = "manual";
+```
+
+The directory under the home that holds the manual.
 
 ## const `development::RENAME`
 
@@ -1792,7 +2212,11 @@ pub struct Attention<'a> {
 }
 ```
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl<'a> Serialize for Attention<'a>
+```
 
 ## enum `status::AttentionKind`
 
@@ -1868,7 +2292,11 @@ Fact templates receive only this value, so they cannot infer prose from the step
 
 - `Unbuilt` — Source changed, and only a build can tell whether its code did.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl<'a> Serialize for AttentionKind<'a>
+```
 
 ## enum `status::CallStep`
 
@@ -1914,7 +2342,16 @@ Each purpose describes exactly one effect, and carries the arguments of its call
 pub fn invocation(&self) -> Invocation
 ```
 
-Implements `Clone`, `Debug`, `Eq`, `From<CallStep>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for CallStep
+impl Debug for CallStep
+impl Eq for CallStep
+impl From<CallStep> for Step
+impl PartialEq for CallStep
+impl Serialize for CallStep
+```
 
 ## enum `status::Divergence`
 
@@ -1942,7 +2379,11 @@ pub enum Divergence<'a> {
 }
 ```
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl<'a> Serialize for Divergence<'a>
+```
 
 ## enum `status::FixTarget`
 
@@ -1988,7 +2429,15 @@ pub enum FixTarget {
 
 What the Agent edits; each target is named by the facts that call for it.
 
-Implements `Clone`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for FixTarget
+impl Debug for FixTarget
+impl Eq for FixTarget
+impl PartialEq for FixTarget
+impl Serialize for FixTarget
+```
 
 ## enum `status::GenerationFailure`
 
@@ -2010,7 +2459,11 @@ pub enum GenerationFailure<'a> {
 
 A recorded failure of a generation, attributed by what the generation introduced.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl<'a> Serialize for GenerationFailure<'a>
+```
 
 ## struct `status::Node`
 
@@ -2026,7 +2479,11 @@ pub struct Node {
 }
 ```
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for Node
+```
 
 ## enum `status::OwnerAction`
 
@@ -2047,7 +2504,15 @@ pub enum OwnerAction {
 }
 ```
 
-Implements `Clone`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for OwnerAction
+impl Debug for OwnerAction
+impl Eq for OwnerAction
+impl PartialEq for OwnerAction
+impl Serialize for OwnerAction
+```
 
 ## struct `status::Repair`
 
@@ -2123,7 +2588,11 @@ pub fn attention(&self) -> Vec<Attention<'_>>
 
 Situations are derived from the complete value, never cached or appended by callers.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for Status
+```
 
 ## enum `status::Step`
 
@@ -2139,7 +2608,16 @@ pub enum Step {
 
 The purpose of each action is decided with the situation, never inferred by the renderer.
 
-Implements `Clone`, `Debug`, `Eq`, `From<CallStep>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Step
+impl Debug for Step
+impl Eq for Step
+impl From<CallStep> for Step
+impl PartialEq for Step
+impl Serialize for Step
+```
 
 ## struct `status::Steps`
 
@@ -2166,7 +2644,13 @@ pub fn sequence(first: Vec<Step>) -> Self
 pub fn is_empty(&self) -> bool
 ```
 
-Implements `Clone`, `Debug`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Steps
+impl Debug for Steps
+impl Serialize for Steps
+```
 
 ## enum `status::StopCause`
 
@@ -2188,7 +2672,11 @@ pub enum StopCause<'a> {
 
 - `NotRunning` — A generation is registered, but none is selected to run.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl<'a> Serialize for StopCause<'a>
+```
 
 ## fn `status::repair`
 
@@ -2238,7 +2726,11 @@ pub async fn status(&self) -> Result<Vec<ChannelStatus>, KernelError>
 pub async fn shutdown(&self) -> Result<(), ChannelError>
 ```
 
-Implements `Drop`.
+Implements:
+
+```rust
+impl Drop for TelegramChannel
+```
 
 ## const `telegram::TABLE_OWNER`
 
@@ -2294,7 +2786,14 @@ pub fn hash(&self) -> ContentHash
 
 The hash of the canonical compact JSON manifest, with keys in byte order.
 
-Implements `Clone`, `Default`, `Eq`, `PartialEq`.
+Implements:
+
+```rust
+impl Clone for FileTree
+impl Default for FileTree
+impl Eq for FileTree
+impl PartialEq for FileTree
+```
 
 ## struct `development::tree::InvalidSourcePath`
 
@@ -2304,7 +2803,14 @@ Implements `Clone`, `Default`, `Eq`, `PartialEq`.
 pub struct InvalidSourcePath(/* private field */);
 ```
 
-Implements `Debug`, `Display`, `Error`, `From<InvalidSourcePath>`.
+Implements:
+
+```rust
+impl Debug for InvalidSourcePath
+impl Display for InvalidSourcePath
+impl Error for InvalidSourcePath
+impl From<InvalidSourcePath> for DevelopmentError
+```
 
 ## struct `development::tree::SourcePath`
 
@@ -2322,7 +2828,22 @@ A canonical UTF-8 path relative to a file tree, with `/` as its separator.
 pub fn as_str(&self) -> &str
 ```
 
-Implements `AsRef<Path>`, `Borrow<str>`, `Clone`, `Debug`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl AsRef<Path> for SourcePath
+impl Borrow<str> for SourcePath
+impl Clone for SourcePath
+impl Debug for SourcePath
+impl<'de> Deserialize<'de> for SourcePath
+impl Display for SourcePath
+impl Eq for SourcePath
+impl FromStr for SourcePath
+impl Ord for SourcePath
+impl PartialEq for SourcePath
+impl PartialOrd for SourcePath
+impl Serialize for SourcePath
+```
 
 ## enum `development::tree::WriteConflict`
 
@@ -2351,4 +2872,12 @@ A conflict is determined from the same directory observation as the planned writ
 - `Ignored` — An ignored entry keeps the directory from being removed.
 - `IgnoreRulesChanged` — The target's ignore rules differ, so this ignored entry could become source.
 
-Implements `Clone`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for WriteConflict
+impl Debug for WriteConflict
+impl Eq for WriteConflict
+impl PartialEq for WriteConflict
+impl Serialize for WriteConflict
+```

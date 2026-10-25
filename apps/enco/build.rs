@@ -15,6 +15,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .canonicalize()?;
     embed_factory(&root)?;
     embed_sdk(&root)?;
+    embed_manual(&root)?;
     record_revision(&root)?;
     Ok(())
 }
@@ -80,7 +81,49 @@ fn embed_sdk(root: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Only source and contract files enter the bundle; editor and system files would change its hash.
+/// The generated documents the host ships in every home's manual: the contract, the SDK's API and
+/// each library crate's API, by their path under `manual/`.
+fn embed_manual(root: &Path) -> Result<(), Box<dyn Error>> {
+    let mut files = vec![
+        ("contract.md".to_owned(), root.join("sdk/wit/CONTRACT.md")),
+        ("sdk/API.md".to_owned(), root.join("sdk/API.md")),
+    ];
+    let crates = root.join("crates");
+    for entry in fs::read_dir(&crates)? {
+        let directory = entry?.path();
+        if !directory.is_dir() {
+            continue;
+        }
+        let name = directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("crate directory name is not UTF-8")?
+            .to_owned();
+        files.push((format!("host/{name}/API.md"), directory.join("API.md")));
+    }
+    files.sort();
+    let mut source = String::from("pub(crate) const MANUAL_FILES: &[(&str, &[u8])] = &[\n");
+    for (relative, path) in &files {
+        if !path.try_exists()? {
+            return Err(format!("{}: missing; run `cargo xtask docs`", path.display()).into());
+        }
+        println!("cargo:rerun-if-changed={}", path.display());
+        source.push_str(&format!(
+            "({relative:?}, include_bytes!({:?})),\n",
+            path.to_str().ok_or("manual path is not UTF-8")?
+        ));
+    }
+    source.push_str("];\n");
+    println!("cargo:rerun-if-changed={}", crates.display());
+    fs::write(
+        PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR is missing")?).join("manual.rs"),
+        source,
+    )?;
+    Ok(())
+}
+
+/// Only Rust sources and the WIT enter the bundle: the contract's Markdown is in the manual, and
+/// editor and system files would change the bundle's hash.
 fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
     for entry in fs::read_dir(directory)? {
         let path = entry?.path();
@@ -88,7 +131,7 @@ fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), std::
             collect_files(&path, files)?;
         } else if path
             .extension()
-            .is_some_and(|extension| ["rs", "wit", "md"].iter().any(|kind| extension == *kind))
+            .is_some_and(|extension| ["rs", "wit"].iter().any(|kind| extension == *kind))
             && !path
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with('.'))

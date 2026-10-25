@@ -519,12 +519,10 @@ async fn check_running_source_and_repair(
     );
     assert_eq!(activation.code.generation, old.id);
     let supplier = running.registration.id;
-    assert!(
-        activation.code.source
-            == CodeSource::Directory {
-                registration: supplier
-            }
-    );
+    assert!(matches!(
+        activation.code.source,
+        CodeSource::Directory { registration, .. } if registration == supplier
+    ));
     development
         .rewind(
             registry,

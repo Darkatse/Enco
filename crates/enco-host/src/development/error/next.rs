@@ -145,6 +145,8 @@ fn registry_repair(error: &RegistryError) -> Repair {
     }
 }
 
+/// The next steps after a rewind is refused for conflicts in the paths it selected.
+///
 /// Unregistered changes are kept unless the Agent overwrites them; registering them first makes
 /// the same rewind succeed, because their paths then changed after the target. Overwriting writes
 /// every path the refused rewind selected, not only the blocked ones.

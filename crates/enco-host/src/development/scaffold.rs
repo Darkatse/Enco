@@ -81,9 +81,11 @@ impl Development {
         ])
     }
 
-    /// The new plugin's manifest. Its lint table and argument libraries are copied from the SDK's
-    /// manifest: argument types must derive the traits that the SDK's functions take, and the
-    /// first build resolves them from the SDK's lock.
+    /// The new plugin's `Cargo.toml`, built from a template and the SDK's manifest.
+    ///
+    /// Its lint table and argument libraries are copied from the SDK's manifest: argument types
+    /// must derive the traits that the SDK's functions take, and the first build resolves them
+    /// from the SDK's lock.
     fn manifest(&self, name: &PluginName) -> Result<String, DevelopmentError> {
         let host = |error: &dyn std::fmt::Display| {
             DevelopmentError::Host(format!("embedded SDK manifest: {error}"))

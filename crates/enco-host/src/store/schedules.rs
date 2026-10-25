@@ -63,8 +63,9 @@ pub(super) fn list(
         .map_err(backend)
 }
 
-/// The Scheduler's commit: advance the occurrence and deliver its Reminder in one transaction,
-/// so a trigger happens exactly once whichever side of the commit a crash falls on.
+/// The Scheduler's commit: advance the occurrence and deliver its Reminder in one transaction.
+///
+/// A trigger therefore happens exactly once, whichever side of the commit a crash falls on.
 pub(super) fn fire(
     connection: &mut Connection,
     expected_last: Option<DateTime<Utc>>,

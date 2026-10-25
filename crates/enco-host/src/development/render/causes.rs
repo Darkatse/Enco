@@ -5,7 +5,7 @@ use enco_kernel::{
     Cause, ENDPOINT_TABLE, LoadError, PLUGIN_SETTINGS_TABLE, PROFILE_TABLE, Referrer, ToolOwner,
 };
 
-pub(super) fn causes(causes: &[Cause]) -> String {
+pub(in crate::development) fn causes(causes: &[Cause]) -> String {
     causes.iter().map(cause).collect::<Vec<_>>().join("; ")
 }
 

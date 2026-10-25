@@ -99,8 +99,10 @@ async fn restore(kernel: &Kernel, adapter: &dyn Adapter) -> Result<State, Channe
 }
 
 impl Connection {
-    /// Settle a delivery the last process left in flight and follow the Sessions this
-    /// connection delivers for, then handle input, sends and wakes in order until stopped.
+    /// Run the connection until stopped, handling input, sends and wakes in order.
+    ///
+    /// First settle a delivery the last process left in flight and follow the Sessions this
+    /// connection delivers for.
     async fn serve(&mut self, mut wakes: mpsc::Receiver<SessionId>) -> Result<(), ChannelError> {
         if let Some(delivery) = self.state.sending.clone() {
             self.settle(

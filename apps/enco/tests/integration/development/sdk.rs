@@ -2,7 +2,7 @@ use super::*;
 use enco_core::Initiator;
 use enco_host::{
     SystemClock,
-    development::{Development, Sdk},
+    development::{Development, Manual, Sdk},
 };
 use enco_kernel::{FactoryPlugin, RegistryDeps};
 use std::collections::BTreeSet;
@@ -106,6 +106,7 @@ async fn sdk_upgrades_and_downgrades_compare_built_artifacts_and_unchanged_sdk_s
     let newer = Development::new(
         home.into(),
         with_label("two"),
+        Manual::new(home, &[], Vec::new(), store.clone()).unwrap(),
         store.clone(),
         runtime.clone(),
     );
@@ -154,7 +155,8 @@ async fn open(
     store: Arc<SqliteStore>,
     runtime: Arc<WasmRuntime>,
 ) -> (Arc<Development>, Arc<enco_kernel::Registry>) {
-    let old = Development::new(home.into(), sdk, store.clone(), runtime.clone());
+    let manual = Manual::new(home, &[], Vec::new(), store.clone()).unwrap();
+    let old = Development::new(home.into(), sdk, manual, store.clone(), runtime.clone());
     let registry = old
         .open(RegistryDeps {
             store: store.clone(),

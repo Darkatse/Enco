@@ -13,8 +13,10 @@ pub struct Sdk {
 /// The SDK's own lock pins fetching and seeds plugins; it does not control plugin resolution.
 const LOCK: &str = "Cargo.lock";
 
-/// rustup's toolchain file. rustup looks for it only in a build's directory and its parents, which
-/// `sdk/` is not for a plugin, so the host pins each build to its channel instead.
+/// Path of rustup's toolchain file in the SDK, whose channel every plugin build runs under.
+///
+/// rustup looks for it only in a build's directory and its parents, which `sdk/` is not for a
+/// plugin, so the host pins each build to its channel instead.
 const TOOLCHAIN: &str = "rust-toolchain.toml";
 
 impl Sdk {

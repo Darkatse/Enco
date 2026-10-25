@@ -9,6 +9,7 @@ Nothing here depends on which plugin or service is behind a component.
 
 - enum `WasmError` — Why the plugin runtime could not start.
 - struct `WasmRuntime` — The host's plugin runtime: one engine and one HTTP client shared by every loaded plugin.
+- fn `call_limits` — What every plugin call may use, each as a description and its limit, for the manual.
 
 ## enum `WasmError`
 
@@ -28,7 +29,14 @@ Why the plugin runtime could not start.
 - `Clock` — The engine's epoch clock thread could not start.
 - `Http` — The HTTP client could not be built.
 
-Implements `Debug`, `Display`, `Error`, `From<Error>`.
+Implements:
+
+```rust
+impl Debug for WasmError
+impl Display for WasmError
+impl Error for WasmError
+impl From<Error> for WasmError
+```
 
 ## struct `WasmRuntime`
 
@@ -52,4 +60,18 @@ pub fn new() -> Result<Self, WasmError>
 
 Start the shared engine and its epoch clock thread, and build the HTTP client.
 
-Implements `Runtime`.
+Implements:
+
+```rust
+impl Runtime for WasmRuntime
+```
+
+## fn `call_limits`
+
+`src/limits.rs`
+
+```rust
+pub fn call_limits() -> Vec<(String, String)>
+```
+
+What every plugin call may use, each as a description and its limit, for the manual.

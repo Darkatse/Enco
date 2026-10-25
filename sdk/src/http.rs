@@ -19,8 +19,10 @@ pub fn apply_options(body: &mut Value, raw: &str, reserved: &[&str]) -> Result<(
         .map_err(|path| bad_request(format!("options cannot override {path}")))
 }
 
-/// The one rule for adding JSON a plugin did not write to JSON it did: objects merge key by
-/// key and take the keys `base` lacks, equal-length arrays merge by position, and anything
+/// Add `overlay` to `base`, failing wherever both set a value.
+///
+/// This is the one rule for adding JSON a plugin did not write to JSON it did: objects merge key
+/// by key and take the keys `base` lacks, equal-length arrays merge by position, and anything
 /// else, `null` included, is a conflict reported by its dotted path.
 pub fn merge(base: &mut Value, overlay: Value) -> Result<(), String> {
     match (base, overlay) {

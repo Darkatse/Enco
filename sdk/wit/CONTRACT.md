@@ -63,13 +63,13 @@ type json = string;
 
 #### record `failure`
 
-An operation failure. `retryable` means the same request may succeed later.
+An operation failure.
 
 | Field | Type | Description |
 |---|---|---|
-| `code` | `string` |  |
-| `message` | `string` |  |
-| `retryable` | `bool` |  |
+| `code` | `string` | A stable classification, such as `timeout` or `provider.auth`. |
+| `message` | `string` | What went wrong, for the Agent and the owner to read. |
+| `retryable` | `bool` | Whether the same request may succeed later. |
 
 #### enum `role`
 
@@ -82,23 +82,23 @@ Identifies the speaker of a canonical model message.
 
 #### record `tool-call`
 
-A proposed tool invocation. `id` is the original service-assigned call ID, empty when the service assigns none.
+A proposed tool invocation.
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `string` |  |
-| `name` | `string` |  |
-| `arguments` | `string` |  |
+| `id` | `string` | The call ID the service assigned, or empty when it assigns none. |
+| `name` | `string` | The tool to call, by the name its `tool-spec` declares. |
+| `arguments` | `string` | The arguments as the model wrote them, as JSON text. |
 
 #### record `tool-result`
 
-A tool settlement. `call-id` refers to the original `tool-call.id`.
+A tool settlement.
 
 | Field | Type | Description |
 |---|---|---|
-| `call-id` | `string` |  |
-| `content` | `string` |  |
-| `is-error` | `bool` |  |
+| `call-id` | `string` | The `id` of the `tool-call` this result answers. |
+| `content` | `string` | The result text the model reads. |
+| `is-error` | `bool` | Whether the call failed. |
 
 #### record `extension`
 
@@ -106,7 +106,7 @@ Opaque adapter fields. The host replays them only to their originating plugin id
 
 | Field | Type | Description |
 |---|---|---|
-| `data` | `json` |  |
+| `data` | `json` | The fields, as the adapter that wrote them expects them back. |
 
 #### enum `image-format`
 
@@ -118,12 +118,12 @@ Image encodings that every supported service accepts.
 
 #### record `image`
 
-An image in a message: the stored bytes, not base64.
+An image in a message.
 
 | Field | Type | Description |
 |---|---|---|
-| `format` | `image-format` |  |
-| `data` | `list<u8>` |  |
+| `format` | `image-format` | How `data` is encoded. |
+| `data` | `list<u8>` | The image bytes as stored, not base64. |
 
 #### variant `part`
 
@@ -131,11 +131,11 @@ Ordered text, images, tool interactions and opaque extensions within a message.
 
 | Case | Type | Description |
 |---|---|---|
-| `text` | `string` |  |
-| `tool-call` | `tool-call` |  |
-| `tool-result` | `tool-result` |  |
-| `extension` | `extension` |  |
-| `image` | `image` |  |
+| `text` | `string` | Text the speaker wrote. |
+| `tool-call` | `tool-call` | A tool call the assistant proposes. |
+| `tool-result` | `tool-result` | The result of a tool call. |
+| `extension` | `extension` | Adapter fields kept for the plugin that wrote them. |
+| `image` | `image` | An image attached to the message. |
 
 #### record `message`
 
@@ -143,23 +143,23 @@ A canonical message sent to or returned by the model.
 
 | Field | Type | Description |
 |---|---|---|
-| `role` | `role` |  |
-| `parts` | `list<part>` |  |
+| `role` | `role` | Who speaks. |
+| `parts` | `list<part>` | The content, in order. |
 
 #### enum `effect`
 
 Mutation semantics used to order calls and settle interrupted work.
 
-- `read-only`
-- `idempotent`
-- `side-effect`
+Consecutive read-only calls run together; other calls run one at a time. A call cut off by
+a crash fails as retryable when it is read-only, and settles as unknown otherwise.
+
+- `read-only`: Changes nothing beyond its result.
+- `idempotent`: Making the call again has the same effect as making it once.
+- `side-effect`: Changes something that must not be changed again blindly.
 
 #### record `tool-spec`
 
 A tool disclosed to the model.
-
-Names use ASCII letters, digits, underscores or hyphens; tools.list names are unique within the plugin.
-Completion adapters ignore effect; the host uses it when dispatching tools.
 
 `input-schema` describes the argument object in a subset of JSON Schema:
 - objects with `properties` and `required`, always with `additionalProperties: false`;
@@ -177,21 +177,20 @@ arrives as 5.
 
 | Field | Type | Description |
 |---|---|---|
-| `name` | `string` |  |
-| `description` | `string` |  |
-| `input-schema` | `json` |  |
-| `effect` | `effect` |  |
+| `name` | `string` | The name the model calls the tool by: ASCII letters, digits, underscores or hyphens, unique among the plugin's tools. |
+| `description` | `string` | What the tool does, for the model to read. |
+| `input-schema` | `json` | The argument object, in the subset of JSON Schema stated above. |
+| `effect` | `effect` | What a call may change; completion adapters ignore it, and the host uses it when dispatching. |
 
 #### variant `outcome`
 
 A known result, a known failure, or an external effect that cannot be confirmed.
-An unknown outcome must never be retried automatically.
 
 | Case | Type | Description |
 |---|---|---|
-| `ok` | `json` |  |
-| `failed` | `failure` |  |
-| `unknown` | `failure` |  |
+| `ok` | `json` | The call succeeded with this JSON result. |
+| `failed` | `failure` | The call failed, and its effects are known. |
+| `unknown` | `failure` | An external effect may have happened and cannot be confirmed; it is never retried automatically. |
 
 #### record `settings`
 
@@ -199,9 +198,9 @@ Endpoint, model and adapter options supplied by the caller for this call.
 
 | Field | Type | Description |
 |---|---|---|
-| `base-url` | `string` |  |
-| `model` | `string` |  |
-| `options` | `json` |  |
+| `base-url` | `string` | The service's base URL; request paths are appended to it. |
+| `model` | `string` | The model the service runs. |
+| `options` | `json` | Options the adapter merges into its request, as a JSON object. |
 
 ### `host`
 
@@ -219,15 +218,15 @@ Severity attached to a plugin diagnostic.
 
 #### record `http-request`
 
-An HTTP request. Omitting `timeout-ms` selects the host default timeout.
+An HTTP request for the host to send.
 
 | Field | Type | Description |
 |---|---|---|
-| `method` | `string` |  |
-| `url` | `string` |  |
-| `headers` | `list<tuple<string, string>>` |  |
-| `body` | `option<list<u8>>` |  |
-| `timeout-ms` | `option<u32>` |  |
+| `method` | `string` | The method, such as `GET` or `POST`. |
+| `url` | `string` | The absolute URL. |
+| `headers` | `list<tuple<string, string>>` | Header names and values, in order. |
+| `body` | `option<list<u8>>` | The bytes to send, if any. |
+| `timeout-ms` | `option<u32>` | The time limit in milliseconds; the host's default when absent. |
 
 #### record `http-response`
 
@@ -235,9 +234,9 @@ An HTTP status, headers and fully collected response body.
 
 | Field | Type | Description |
 |---|---|---|
-| `status` | `u16` |  |
-| `headers` | `list<tuple<string, string>>` |  |
-| `body` | `list<u8>` |  |
+| `status` | `u16` | The status code, such as 200. |
+| `headers` | `list<tuple<string, string>>` | Header names and values, in order. |
+| `body` | `list<u8>` | The whole body, already collected. |
 
 #### enum `http-error-kind`
 
@@ -252,13 +251,13 @@ Classifies failures while constructing, sending or reading an HTTP request.
 
 #### record `http-failure`
 
-Transport failure. `request-sent` means the request may have reached the peer.
+Transport failure.
 
 | Field | Type | Description |
 |---|---|---|
-| `kind` | `http-error-kind` |  |
-| `message` | `string` |  |
-| `request-sent` | `bool` |  |
+| `kind` | `http-error-kind` | The stage that failed. |
+| `message` | `string` | What went wrong. |
+| `request-sent` | `bool` | Whether the request may have reached the peer. |
 
 #### func `config`
 
@@ -282,7 +281,8 @@ Write a diagnostic to the host log.
 http: async func(request: http-request) -> result<http-response, http-failure>;
 ```
 
-Send a request and collect its response. Non-2xx statuses are returned as responses.
+Send a request and collect its response; non-2xx statuses are returned as responses.
+
 The host attaches declared credentials only to the bound origin (scheme, host and port),
 overriding the matching request header. Redirects are followed only within that origin.
 Cross-origin redirects are returned unchanged. Credential values in response headers,
@@ -307,8 +307,11 @@ Project tool definitions from configuration already accepted by `lifecycle.descr
 call: async func(name: string, input: json) -> outcome;
 ```
 
-Execute one tool. `input` already fits the tool's `input-schema`; validate only what the schema cannot express.
-Return an unknown outcome when an external effect may have occurred but is unconfirmed.
+Execute one tool.
+
+`input` already fits the tool's `input-schema`; validate only what the schema cannot
+express. Return an unknown outcome when an external effect may have occurred but is
+unconfirmed.
 
 ### `completion`
 
@@ -317,13 +320,14 @@ Adapts canonical requests to a model service protocol.
 #### record `request`
 
 The frozen messages, disclosed tools and output budget for one completion.
+
 User messages may include images; tool messages contain one result followed by any images.
 
 | Field | Type | Description |
 |---|---|---|
-| `messages` | `list<message>` |  |
-| `tools` | `list<tool-spec>` |  |
-| `max-output-tokens` | `option<u32>` |  |
+| `messages` | `list<message>` | The messages, in order. |
+| `tools` | `list<tool-spec>` | The tools the model may call. |
+| `max-output-tokens` | `option<u32>` | The most tokens the reply may use; the service's default when absent. |
 
 #### record `usage`
 
@@ -331,9 +335,9 @@ Token counts reported by the service, including cache hits when available.
 
 | Field | Type | Description |
 |---|---|---|
-| `input-tokens` | `u64` |  |
-| `output-tokens` | `u64` |  |
-| `cached-input-tokens` | `option<u64>` |  |
+| `input-tokens` | `u64` | Tokens the request used. |
+| `output-tokens` | `u64` | Tokens the reply used. |
+| `cached-input-tokens` | `option<u64>` | The part of `input-tokens` served from the service's cache, when it reports one. |
 
 #### enum `stop-reason`
 
@@ -346,14 +350,15 @@ The service-reported reason that generation stopped.
 
 #### record `completion`
 
-A completed model attempt. `message.role` must be assistant.
+A completed model attempt.
+
 Canonical parts are text, tool calls and extensions; generated images stay in extensions.
 
 | Field | Type | Description |
 |---|---|---|
-| `message` | `message` |  |
-| `usage` | `usage` |  |
-| `stop-reason` | `stop-reason` |  |
+| `message` | `message` | The reply, with the `assistant` role. |
+| `usage` | `usage` | What the attempt cost in tokens. |
+| `stop-reason` | `stop-reason` | Why generation stopped. |
 
 #### func `complete`
 
@@ -389,12 +394,12 @@ Answers independent questions against shared evidence, without generating messag
 
 #### record `label`
 
-An option or score level. Names must be unique within a question.
+An option or score level.
 
 | Field | Type | Description |
 |---|---|---|
-| `name` | `string` |  |
-| `description` | `option<string>` |  |
+| `name` | `string` | The answer's name, unique within its question. |
+| `description` | `option<string>` | What the option means, when the name alone is not clear. |
 
 #### variant `question-kind`
 
@@ -402,9 +407,9 @@ A yes/no predicate, an unordered choice, or score levels ordered from low to hig
 
 | Case | Type | Description |
 |---|---|---|
-| `predicate` | `_` |  |
-| `choice` | `list<label>` |  |
-| `score` | `list<label>` |  |
+| `predicate` | `_` | A yes-or-no question. |
+| `choice` | `list<label>` | One option from an unordered list. |
+| `score` | `list<label>` | A level on a scale, from low to high. |
 
 #### record `question`
 
@@ -412,21 +417,22 @@ Instructions and the allowed answer shape for one independent judgment.
 
 | Field | Type | Description |
 |---|---|---|
-| `instructions` | `string` |  |
-| `kind` | `question-kind` |  |
+| `instructions` | `string` | What to judge, for the service to read. |
+| `kind` | `question-kind` | The shape the answer takes. |
 
 #### variant `answer`
 
-Probability of yes, probabilities in label order, or a refusal for this question.
+An answer to one question, as probabilities, or a refusal.
+
 Probabilities are finite and in [0, 1]; choice and score distributions sum to one
 within 0.01, allowing for rounding by the service.
 
 | Case | Type | Description |
 |---|---|---|
-| `predicate` | `f64` |  |
-| `choice` | `list<f64>` |  |
-| `score` | `list<f64>` |  |
-| `refused` | `_` |  |
+| `predicate` | `f64` | The probability of yes. |
+| `choice` | `list<f64>` | One probability per option, in label order. |
+| `score` | `list<f64>` | One probability per level, in label order. |
+| `refused` | `_` | The service declined to answer this question. |
 
 #### func `decide`
 
@@ -447,28 +453,28 @@ Describes and checks the component without assigning its registry identity.
 #### record `credential`
 
 Named credential attached to `origin`, or to the caller-selected service when absent.
+
 A fixed origin uses the generation's secret mapping; an absent origin uses the endpoint's.
 Names and origins must be unique, including at most one absent origin.
 The host sets `header` to `prefix` followed by the credential value; plugins never see it.
 
 | Field | Type | Description |
 |---|---|---|
-| `name` | `string` |  |
-| `origin` | `option<string>` |  |
-| `header` | `string` |  |
-| `prefix` | `string` |  |
-| `required` | `bool` |  |
+| `name` | `string` | The name the owner's configuration maps to an environment variable. |
+| `origin` | `option<string>` | The origin the credential is sent to; absent for the service the caller selects. |
+| `header` | `string` | The request header that carries the credential. |
+| `prefix` | `string` | Text placed before the credential value in the header, such as `Bearer `. |
+| `required` | `bool` | Whether the plugin cannot work without it. |
 
 #### record `description`
 
-Plugin-wide facts and requirements. `config-schema` documents configuration as JSON Schema;
-configuration validation belongs to `describe`, not to a second host-side schema validator.
+Plugin-wide facts and requirements.
 
 | Field | Type | Description |
 |---|---|---|
-| `summary` | `string` |  |
-| `config-schema` | `json` |  |
-| `credentials` | `list<credential>` |  |
+| `summary` | `string` | One line on what the plugin offers. |
+| `config-schema` | `json` | The configuration the plugin accepts, as JSON Schema; only `describe` validates it. |
+| `credentials` | `list<credential>` | The credentials the plugin uses. |
 
 #### func `describe`
 
@@ -476,8 +482,10 @@ configuration validation belongs to `describe`, not to a second host-side schema
 describe: func(config: json) -> result<description, failure>;
 ```
 
-Describe the component or reject its configuration. An empty object must be accepted
-and provide the plugin's minimum capabilities. Declarations are fixed with the generation.
+Describe the component or reject its configuration.
+
+An empty object must be accepted and provide the plugin's minimum capabilities.
+Declarations are fixed with the generation.
 
 #### func `probe`
 

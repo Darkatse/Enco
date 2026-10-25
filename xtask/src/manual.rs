@@ -1,13 +1,15 @@
 use anyhow::{Context, Result, bail};
 use cargo_metadata::{Metadata, Package};
+use enco_manual::Rule;
 use std::{fs, path::PathBuf};
 
 /// rustdoc JSON is unstable, so `RUSTC_BOOTSTRAP` unlocks it on the pinned toolchain. Builds with
 /// and without that variable recompile each other's dependencies, so they keep their own directory.
 const TARGET_DIR: &str = "target/rustdoc";
 
-/// Write, or with `check` compare, `API.md` beside each library crate and the SDK.
-pub fn api(metadata: &[Metadata], check: bool) -> Result<()> {
+/// Write, or with `check` compare, `API.md` beside each library crate and the SDK, and hold their
+/// docs to the rules a machine can check.
+pub fn generate(metadata: &[Metadata], check: bool) -> Result<()> {
     let host = &metadata[0];
     let libraries: Vec<&Package> = host
         .workspace_packages()
@@ -31,6 +33,7 @@ pub fn api(metadata: &[Metadata], check: bool) -> Result<()> {
         .context("SDK package in Cargo metadata")?;
     rustdoc("sdk/Cargo.toml", Some("wasm32-wasip2"), [sdk.name.as_str()])?;
     let mut stale = Vec::new();
+    let mut broken = Vec::new();
     for (package, metadata, doc) in libraries
         .iter()
         .map(|package| (*package, host, "doc"))
@@ -51,6 +54,24 @@ pub fn api(metadata: &[Metadata], check: bool) -> Result<()> {
             Ok(path) if !path.as_str().is_empty() => format!("{path}/"),
             _ => String::new(),
         };
+        let workspace = metadata
+            .workspace_root
+            .strip_prefix(&host.workspace_root)
+            .map(|path| path.join(""))
+            .unwrap_or_default();
+        for problem in enco_manual::problems(&krate) {
+            // The SDK's generated bindings take their docs from the WIT, which the contract gate checks.
+            if problem.rule == Rule::Waiver && package.id == sdk.id && problem.item == "bindings" {
+                continue;
+            }
+            broken.push(format!(
+                "{}:{}: `{}`: {}",
+                workspace.join(problem.file.to_string_lossy().as_ref()),
+                problem.line,
+                problem.item,
+                problem.message
+            ));
+        }
         let text = enco_manual::api(&krate, &sources);
         let file = directory.join("API.md");
         if check {
@@ -60,6 +81,9 @@ pub fn api(metadata: &[Metadata], check: bool) -> Result<()> {
         } else {
             fs::write(&file, text).with_context(|| file.to_string())?;
         }
+    }
+    if !broken.is_empty() {
+        bail!("documentation rules broken:\n{}", broken.join("\n"));
     }
     if !stale.is_empty() {
         bail!("{} out of date; run cargo xtask docs", stale.join(", "));
@@ -77,7 +101,7 @@ fn rustdoc<'a>(
         .args(["doc", "--no-deps", "--lib", "--manifest-path", manifest])
         .args(["--target-dir", TARGET_DIR])
         .env("RUSTC_BOOTSTRAP", "1")
-        .env("RUSTDOCFLAGS", "-Z unstable-options --output-format json");
+        .env("RUSTDOCFLAGS", enco_manual::RUSTDOCFLAGS);
     if let Some(target) = target {
         command.args(["--target", target]);
     }

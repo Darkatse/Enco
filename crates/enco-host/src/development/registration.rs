@@ -140,11 +140,17 @@ impl Development {
     ) -> Result<Registered, DevelopmentError> {
         check_cancelled(cancel)?;
         let registered = registry.register(request).await?;
-        let mut rejections = self.follow_rejections.write().await;
-        for (id, plugin) in &registered.registration.code {
-            if plugin.intent.is_some() {
-                rejections.remove(id);
+        {
+            let mut rejections = self.follow_rejections.write().await;
+            for (id, plugin) in &registered.registration.code {
+                if plugin.intent.is_some() {
+                    rejections.remove(id);
+                }
             }
+        }
+        // The registration stands either way; the manual follows the registry and retries.
+        if let Err(error) = self.manual.write(registry).await {
+            tracing::error!(%error, "manual not rewritten after a registration");
         }
         Ok(registered)
     }

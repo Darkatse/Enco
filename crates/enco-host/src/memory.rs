@@ -329,6 +329,7 @@ impl Memories {
 }
 
 /// Invoke one resolved export until cancelled and report its verdict before returning the result.
+///
 /// An export that cannot be resolved is an ordinary failure with no generation to report.
 async fn reported_call<T: ?Sized, R, F>(
     registry: &Registry,

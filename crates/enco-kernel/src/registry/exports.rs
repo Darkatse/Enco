@@ -16,7 +16,20 @@ pub struct Export<T: ?Sized> {
 struct LoadedGeneration {
     plugin: PluginId,
     generation: GenerationId,
+    code: CodeSource,
     loaded: Result<Loaded, Vec<Cause>>,
+}
+
+/// The generation that runs under one name in ordinary operation.
+pub struct Active<'a> {
+    /// Routing name.
+    pub name: &'a PluginName,
+    /// The running generation.
+    pub generation: GenerationId,
+    /// How its code entered the registry.
+    pub code: CodeSource,
+    /// What it declared when it loaded, or why this host cannot serve it.
+    pub loaded: Result<&'a Loaded, &'a [Cause]>,
 }
 
 /// Derived routing view. Holding it does not prevent the registry from publishing a new view.
@@ -174,9 +187,20 @@ impl Exports {
 
     /// The active generation behind every name, in name order.
     pub(super) fn active_generations(&self) -> impl Iterator<Item = GenerationId> + '_ {
-        self.plugins
-            .values()
-            .filter_map(|routes| routes.active.as_ref().map(|active| active.generation))
+        self.active().map(|active| active.generation)
+    }
+
+    /// The generation that runs under each name in ordinary operation, in name order.
+    pub fn active(&self) -> impl Iterator<Item = Active<'_>> {
+        self.plugins.iter().filter_map(|(name, routes)| {
+            let active = routes.active.as_ref()?;
+            Some(Active {
+                name,
+                generation: active.generation,
+                code: active.code,
+                loaded: active.loaded.as_ref().map_err(Vec::as_slice),
+            })
+        })
     }
 }
 
@@ -211,12 +235,14 @@ impl State {
                         .map(|(generation, loaded)| LoadedGeneration {
                             plugin,
                             generation: generation.generation,
+                            code: self.provenance(generation.generation).source,
                             loaded,
                         }),
                     factory: self.factory.get(&plugin).and_then(|generation| {
                         self.loaded.get(generation).map(|loaded| LoadedGeneration {
                             plugin,
                             generation: *generation,
+                            code: CodeSource::Factory,
                             loaded: Ok(loaded.clone()),
                         })
                     }),

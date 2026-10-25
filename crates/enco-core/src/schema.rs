@@ -116,8 +116,10 @@ impl InputSchema {
         Value::Object(node)
     }
 
-    /// Check a call's arguments and return them in canonical form: optional properties given as
-    /// `null` removed, since `null` there means "not given", and integers such as `5.0` as `5`.
+    /// Check a call's arguments and return them in canonical form.
+    ///
+    /// Optional properties given as `null` are removed, since `null` there means "not given", and
+    /// integers written as `5.0` become `5`.
     pub fn accept(
         &self,
         mut arguments: Map<String, Value>,

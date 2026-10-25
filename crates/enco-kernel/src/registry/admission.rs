@@ -1,7 +1,9 @@
 use super::*;
 
 /// Whether each registered name's active generation, with any candidates substituted, can run on
-/// this node, and why not. It depends only on the generations' own facts, never on their users.
+/// this node, and why not.
+///
+/// It depends only on the generations' own facts, never on their users.
 #[derive(Default)]
 pub(super) struct Admission(BTreeMap<PluginName, Result<Loaded, Vec<Cause>>>);
 
@@ -142,6 +144,8 @@ impl Admission {
             .map(|result| result.as_ref().map_err(Vec::as_slice))
     }
 
+    /// Decide whether an intentional change from `before` to this admission may be accepted.
+    ///
     /// An intentional change must leave its candidates and every new or changed use working,
     /// and must not stop anything that worked before. Failures that predate the change and that
     /// it does not touch stay reported without blocking it, so repairs can land one at a time.

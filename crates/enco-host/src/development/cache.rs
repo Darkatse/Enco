@@ -45,6 +45,42 @@ impl SqliteStore {
         .await
     }
 
+    /// The stored navigation manual of a plugin source, as the manifest of its file tree.
+    pub(super) async fn manual(
+        &self,
+        source: ContentHash,
+    ) -> Result<Option<ContentHash>, StoreError> {
+        self.run(move |connection| {
+            connection
+                .query_row(
+                    "SELECT manual FROM manuals WHERE source=?",
+                    params![source.to_string()],
+                    |row| text(row, 0),
+                )
+                .optional()
+                .map_err(error)
+        })
+        .await
+    }
+
+    pub(super) async fn remember_manual(
+        &self,
+        source: ContentHash,
+        manual: ContentHash,
+    ) -> Result<(), StoreError> {
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "INSERT INTO manuals(source,manual) VALUES (?,?)
+                     ON CONFLICT(source) DO UPDATE SET manual=excluded.manual",
+                    params![source.to_string(), manual.to_string()],
+                )
+                .map_err(error)?;
+            Ok(())
+        })
+        .await
+    }
+
     pub(super) async fn remember_build(&self, build: Build) -> Result<(), StoreError> {
         self.run(move |connection| {
             connection.execute(

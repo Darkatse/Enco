@@ -2,8 +2,8 @@
 //!
 //! An item reachable at several paths is described once, at its preferred path: the shortest, and
 //! among equally short ones a declaration before a re-export. Its other paths point there.
-use crate::render::{View, kind, rank};
-use rustdoc_types::{Id, Item, ItemEnum, Visibility};
+use crate::render::{View, hidden, kind, rank};
+use rustdoc_types::{Id, Item, ItemEnum};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// One way to reach an item: the path a caller writes, and whether it passes through a `use`.
@@ -151,8 +151,10 @@ fn collect<'a>(
 ) {
     for item in ids.iter().filter_map(|id| view.item(id)) {
         match &item.inner {
-            ItemEnum::Use(declared) if item.visibility == Visibility::Public => {
+            ItemEnum::Use(declared) if view.shows(item) => {
                 match declared.id.and_then(|id| view.item(&id)) {
+                    // Re-exporting a hidden item does not reveal it.
+                    Some(imported) if hidden(imported) => {}
                     Some(imported) if declared.is_glob => {
                         if let ItemEnum::Module(inner) = &imported.inner
                             && globbed.insert(imported.id)

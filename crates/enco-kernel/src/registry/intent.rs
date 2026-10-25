@@ -204,6 +204,8 @@ pub enum CodeSource {
     Directory {
         /// Registration that registered the directory.
         registration: RegistrationId,
+        /// The directory's content, as stored when it was registered.
+        source: ContentHash,
     },
     /// A directly supplied component.
     Artifact,

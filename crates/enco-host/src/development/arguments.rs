@@ -2,8 +2,10 @@ use enco_core::{IntentPath, PluginName, Reason, RegistrationId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// A suggested call's reason, which the Agent writes. It serializes as the placeholder that
-/// reason parsing rejects, so a suggestion copied unchanged cannot register.
+/// A suggested call's reason, which the Agent writes.
+///
+/// It serializes as the placeholder that reason parsing rejects, so a suggestion copied unchanged
+/// cannot register.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AgentReason;
 

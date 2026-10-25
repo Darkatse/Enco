@@ -21,6 +21,8 @@ pub use error::{
 mod history;
 mod home;
 mod intent;
+mod manual;
+mod navigation;
 pub mod tree;
 pub use history::{
     Comparison, ComparisonMode, ContentFailure, ContentUnavailable, FileDiff, FileDifference,
@@ -43,6 +45,7 @@ pub use build::BuildResult;
 use enco_core::{IntentPath, PLUGINS_DIRECTORY, PluginId};
 use enco_kernel::{Cause, Registered, Runtime};
 pub use home::{HomeComparison, HomePlugin, SettingsComparison};
+pub use manual::{DIRECTORY as MANUAL_DIRECTORY, Following, Manual};
 pub use sdk::Sdk;
 use serde::Serialize;
 pub use status::{ConfigurationUnit, DevelopmentStatus, PluginUnit, RegisteredUnit};
@@ -61,6 +64,7 @@ use tokio_util::sync::CancellationToken;
 pub struct Development {
     home: PathBuf,
     sdk: Sdk,
+    manual: Arc<Manual>,
     store: Arc<SqliteStore>,
     runtime: Arc<dyn Runtime>,
     operation: Mutex<()>,
@@ -86,17 +90,24 @@ impl Development {
     pub fn new(
         home: PathBuf,
         sdk: Sdk,
+        manual: Manual,
         store: Arc<SqliteStore>,
         runtime: Arc<dyn Runtime>,
     ) -> Arc<Self> {
         Arc::new(Self {
             home,
             sdk,
+            manual: Arc::new(manual),
             store,
             runtime,
             operation: Mutex::new(()),
             follow_rejections: RwLock::new(BTreeMap::new()),
         })
+    }
+
+    /// The manual of this home, which every registration made here rewrites before it returns.
+    pub fn manual(&self) -> &Arc<Manual> {
+        &self.manual
     }
 
     /// Create `plugins/` in a new home; an existing directory is left as it is.

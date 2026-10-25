@@ -1,4 +1,5 @@
 //! Rust declarations written back from rustdoc's types, as the source states them.
+use crate::types::{self, Part};
 use rustdoc_types::{
     Abi, AssocItemConstraint, AssocItemConstraintKind, Function, FunctionHeader, GenericArg,
     GenericArgs, GenericBound, GenericParamDef, GenericParamDefKind, Generics, Id, Path,
@@ -89,9 +90,16 @@ pub(crate) fn ty(ty: &Type) -> String {
 }
 
 pub(crate) fn path(path: &Path) -> String {
+    // A path a macro wrote for its own expansion, such as `$crate::clone::Clone` or
+    // `_serde::Serialize`, is not one the source wrote; the item's name stands for it.
+    let written = match path.path.split("::").next() {
+        Some(first) if first == "$crate" || first.starts_with('_') => {
+            path.path.rsplit("::").next().unwrap_or(&path.path)
+        }
+        _ => &path.path,
+    };
     format!(
-        "{}{}",
-        path.path,
+        "{written}{}",
         path.args.as_deref().map(generic_args).unwrap_or_default()
     )
 }
@@ -230,7 +238,24 @@ pub(crate) fn generics(generics: &Generics) -> (String, String) {
         })
         .map(param)
         .collect();
-    let predicates: Vec<_> = generics
+    let predicates = predicates(generics);
+    (
+        if params.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", params.join(", "))
+        },
+        if predicates.is_empty() {
+            String::new()
+        } else {
+            format!("\nwhere\n    {}", predicates.join(",\n    "))
+        },
+    )
+}
+
+/// The predicates of a `where` clause.
+pub(crate) fn predicates(generics: &Generics) -> Vec<String> {
+    generics
         .where_predicates
         .iter()
         .map(|predicate| match predicate {
@@ -249,19 +274,7 @@ pub(crate) fn generics(generics: &Generics) -> (String, String) {
             }
             WherePredicate::EqPredicate { lhs, rhs } => format!("{} == {}", ty(lhs), term(rhs)),
         })
-        .collect();
-    (
-        if params.is_empty() {
-            String::new()
-        } else {
-            format!("<{}>", params.join(", "))
-        },
-        if predicates.is_empty() {
-            String::new()
-        } else {
-            format!("\nwhere\n    {}", predicates.join(",\n    "))
-        },
-    )
+        .collect()
 }
 
 pub(crate) fn function(
@@ -272,6 +285,8 @@ pub(crate) fn function(
 ) -> String {
     let future = async_trait_output(function);
     let mut generics = function.generics.clone();
+    let mut inputs = function.sig.inputs.clone();
+    // The source declares none of the lifetimes `#[async_trait]` adds, and writes none of them.
     if future.is_some() {
         generics
             .params
@@ -286,11 +301,26 @@ pub(crate) fn function(
             }
             WherePredicate::EqPredicate { .. } => true,
         });
+        for (_, input) in &mut inputs {
+            types::walk(input, &mut |part| match part {
+                Part::Lifetime(lifetime) => {
+                    if lifetime.as_deref().is_some_and(is_async_trait_lifetime) {
+                        *lifetime = None;
+                    }
+                }
+                Part::Path(path) => {
+                    if let Some(GenericArgs::AngleBracketed { args, .. }) = path.args.as_deref_mut()
+                    {
+                        args.retain(|arg| {
+                            !matches!(arg, GenericArg::Lifetime(lifetime) if is_async_trait_lifetime(lifetime))
+                        });
+                    }
+                }
+            });
+        }
     }
     let (params, clause) = self::generics(&generics);
-    let inputs = function
-        .sig
-        .inputs
+    let inputs = inputs
         .iter()
         .map(|(name, input)| match (name.as_str(), input) {
             ("self", Type::Generic(own)) if own == "Self" => "self".into(),
@@ -302,12 +332,11 @@ pub(crate) fn function(
                     type_,
                 },
             ) if matches!(type_.as_ref(), Type::Generic(own) if own == "Self") => {
-                let lifetime = lifetime
-                    .as_deref()
-                    .filter(|lifetime| future.is_none() || !is_async_trait_lifetime(lifetime));
                 format!(
                     "&{}{}self",
-                    lifetime.map_or_else(String::new, |lifetime| format!("{lifetime} ")),
+                    lifetime
+                        .as_ref()
+                        .map_or_else(String::new, |lifetime| format!("{lifetime} ")),
                     if *is_mutable { "mut " } else { "" }
                 )
             }
@@ -324,7 +353,9 @@ pub(crate) fn function(
     )
 }
 
-/// `#[async_trait]` turns `async fn` into a method returning
+/// What an `#[async_trait]` method returns as written, or `None` for any other function.
+///
+/// The macro turns `async fn` into a method returning
 /// `Pin<Box<dyn Future<Output = T> + Send + 'async_trait>>`; this finds `T` so the manual can show
 /// the method as written.
 fn async_trait_output(function: &Function) -> Option<&Type> {
@@ -368,9 +399,15 @@ fn async_trait_output(function: &Function) -> Option<&Type> {
     })
 }
 
-/// The lifetimes `#[async_trait]` adds: `'async_trait` and one `'lifeN` per borrowed input.
+/// Whether `name` is a lifetime `#[async_trait]` adds: `'async_trait`, or one of `'life0`,
+/// `'life1` and so on, one per borrowed input.
+///
+/// A lifetime the author names, such as `'lifetime`, is not one of them.
 fn is_async_trait_lifetime(name: &str) -> bool {
-    name == "'async_trait" || name.starts_with("'life")
+    name == "'async_trait"
+        || name.strip_prefix("'life").is_some_and(|number| {
+            !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 fn header(header: &FunctionHeader) -> String {
@@ -406,4 +443,19 @@ fn output(output: Option<&Type>) -> String {
 
 fn list(parts: impl Iterator<Item = String>) -> String {
     parts.collect::<Vec<_>>().join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_async_trait_lifetime;
+
+    #[test]
+    fn only_the_lifetimes_async_trait_names_are_its_own() {
+        for generated in ["'async_trait", "'life0", "'life12"] {
+            assert!(is_async_trait_lifetime(generated), "{generated}");
+        }
+        for written in ["'lifetime", "'life", "'a"] {
+            assert!(!is_async_trait_lifetime(written), "{written}");
+        }
+    }
 }

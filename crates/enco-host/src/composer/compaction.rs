@@ -7,8 +7,10 @@ use std::collections::HashMap;
 const COMPACTION_PROMPT: &str = include_str!("../prompts/compaction.md");
 const COMPACTION_FOOTER: &str = "\nWrite the summary now.";
 
-/// The history as the summarizer reads it. Choosing the boundary and building the plan share
-/// one rendering, so the plan fits the window the boundary was chosen for.
+/// The history as the summarizer reads it.
+///
+/// Choosing the boundary and building the plan share one rendering, so the plan fits the window
+/// the boundary was chosen for.
 pub(super) struct Compaction {
     window: u32,
     header: String,
@@ -83,9 +85,11 @@ impl Compaction {
         }
     }
 
-    /// The earliest Round end that leaves at most `keep` tokens of history, or, when
-    /// summarizing that far would not fit the compaction window, the latest Round end that
-    /// does. Each summary carries the previous one forward, so a partial compaction is progress.
+    /// The Round end up to which compaction summarizes the history.
+    ///
+    /// It is the earliest Round end that leaves at most `keep` tokens of history, or, when
+    /// summarizing that far would not fit the compaction window, the latest Round end that does.
+    /// Each summary carries the previous one forward, so a partial compaction is progress.
     pub(super) fn boundary(
         &self,
         input: &ComposeInput,

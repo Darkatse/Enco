@@ -1,19 +1,31 @@
 //! One item as a manual section: heading, source, declaration, docs, then its members.
-use crate::{signature, text};
-use rustdoc_types::{Crate, Id, Impl, Item, ItemEnum, StructKind, VariantKind, Visibility};
+//!
+//! rustdoc's JSON holds every item; the view alone decides what a manual shows.
+use crate::{
+    signature, text, traits,
+    types::{self, Part},
+};
+use rustdoc_types::{
+    Attribute, Crate, Id, Impl, Item, ItemEnum, StructKind, Type, VariantKind, Visibility,
+};
+use std::{cell::RefCell, collections::BTreeSet};
 
 /// What a manual shows of the code it describes.
 #[derive(Clone, Copy)]
 pub(crate) struct View<'a> {
     pub krate: &'a Crate,
-    /// Private items too, for a navigation manual.
-    pub private: bool,
-    /// Line numbers too. A committed manual leaves them out, so moving code does not change it.
-    pub lines: bool,
+    /// Whether this is a navigation manual, which shows where code lives, or an API manual.
+    ///
+    /// A navigation manual adds private items, line numbers and the methods of trait
+    /// implementations. An API manual shows what callers can name, and leaves line numbers out, so
+    /// moving code does not change it.
+    pub navigation: bool,
     /// Removed from rustdoc's source paths, which start where rustdoc ran.
     pub prefix: &'a str,
     /// The module being described, whose private items the source declares without `pub`.
     pub here: Option<Id>,
+    /// Collects the items whose docs the manual prints, for the documentation rules.
+    pub printed: Option<&'a RefCell<BTreeSet<Id>>>,
 }
 
 /// How an item is called in headings and indexes.
@@ -51,12 +63,27 @@ impl<'a> View<'a> {
         self.krate.index.get(id)
     }
 
+    /// Whether the manual shows `item`.
+    ///
+    /// It never shows an item marked `#[doc(hidden)]`, and shows a private one only in a navigation
+    /// manual. Fields, variants and trait items, whose visibility is their parent's, go with it.
     pub(crate) fn shows(&self, item: &Item) -> bool {
-        self.private || item.visibility == Visibility::Public
+        let visible = match item.visibility {
+            Visibility::Public | Visibility::Default => true,
+            Visibility::Crate | Visibility::Restricted { .. } => self.navigation,
+        };
+        visible && !hidden(item)
+    }
+
+    fn print(&self, item: &Item) {
+        if let Some(printed) = self.printed {
+            printed.borrow_mut().insert(item.id);
+        }
     }
 
     /// One index line: the item's kind, its name and its summary.
     pub(crate) fn index_line(&self, label: &str, item: &Item) -> String {
+        self.print(item);
         let summary = text::summary(item.docs.as_deref(), &item.links);
         let summary = if summary.is_empty() {
             "(no summary)".to_owned()
@@ -70,7 +97,7 @@ impl<'a> View<'a> {
         let span = item.span.as_ref()?;
         let file = span.filename.to_string_lossy();
         let file = file.strip_prefix(self.prefix).unwrap_or(&file);
-        Some(if self.lines {
+        Some(if self.navigation {
             format!("{file}:{}", span.begin.0)
         } else {
             file.to_owned()
@@ -90,6 +117,7 @@ impl<'a> View<'a> {
 
     /// The source, unless `source` is false, then the declaration and the docs, without a heading.
     pub(crate) fn describe(&self, out: &mut String, item: &Item, level: usize, source: bool) {
+        self.print(item);
         let mut parts = Vec::new();
         if source && let Some(source) = self.source(item) {
             parts.push(format!("`{source}`"));
@@ -131,13 +159,11 @@ impl<'a> View<'a> {
             }
             ItemEnum::Enum(declared) => {
                 let (params, clause) = signature::generics(&declared.generics);
-                let mut variants: Vec<_> = declared
-                    .variants
-                    .iter()
-                    .filter_map(|id| self.item(id))
+                let mut variants: Vec<_> = self
+                    .shown(&declared.variants)
                     .map(|variant| format!("\n    {},", self.variant(variant)))
                     .collect();
-                if declared.has_stripped_variants {
+                if declared.has_stripped_variants || variants.len() < declared.variants.len() {
                     variants.push("\n    // some variants omitted".into());
                 }
                 format!(
@@ -210,16 +236,14 @@ impl<'a> View<'a> {
         fields
             .iter()
             .map(|field| match field.as_ref().and_then(|id| self.item(id)) {
-                Some(field) if self.shows(field) || field.visibility == Visibility::Default => {
-                    match &field.inner {
-                        ItemEnum::StructField(field_type) => format!(
-                            "{}{}",
-                            signature::visibility(&field.visibility, self.here),
-                            signature::ty(field_type)
-                        ),
-                        _ => "/* private field */".into(),
-                    }
-                }
+                Some(field) if self.shows(field) => match &field.inner {
+                    ItemEnum::StructField(field_type) => format!(
+                        "{}{}",
+                        signature::visibility(&field.visibility, self.here),
+                        signature::ty(field_type)
+                    ),
+                    _ => "/* private field */".into(),
+                },
                 _ => "/* private field */".into(),
             })
             .collect::<Vec<_>>()
@@ -228,10 +252,11 @@ impl<'a> View<'a> {
 
     /// Named fields as declaration lines; a variant's fields share the enum's visibility.
     fn fields(&self, fields: &[Id], stripped: bool, indent: &str) -> String {
+        let fields: Vec<_> = fields.iter().filter_map(|id| self.item(id)).collect();
+        let omitted = stripped || fields.iter().any(|field| !self.shows(field));
         let mut lines: Vec<_> = fields
-            .iter()
-            .filter_map(|id| self.item(id))
-            .filter(|field| self.shows(field) || field.visibility == Visibility::Default)
+            .into_iter()
+            .filter(|field| self.shows(field))
             .filter_map(|field| match &field.inner {
                 ItemEnum::StructField(field_type) => Some(format!(
                     "\n{indent}{}{}: {},",
@@ -242,7 +267,7 @@ impl<'a> View<'a> {
                 _ => None,
             })
             .collect();
-        if stripped && !self.private {
+        if omitted {
             lines.push(format!("\n{indent}/* private fields */"));
         }
         lines.concat()
@@ -273,8 +298,11 @@ impl<'a> View<'a> {
         format!("{name}{shape}{discriminant}")
     }
 
-    /// Documented fields and variants as a list, then methods and trait items as sections, then
-    /// the traits the type implements on one line.
+    /// A type's or trait's members, one level below its section.
+    ///
+    /// Documented fields and variants come as a list, then methods and trait items as sections,
+    /// then the traits the type implements. A navigation manual also gives the methods of each trait
+    /// implementation written in the source, since much of a type's code can live there.
     fn members(&self, out: &mut String, label: &str, item: &Item, level: usize) {
         let (parts, impls): (Vec<Id>, &[Id]) = match &item.inner {
             ItemEnum::Struct(declared) => (
@@ -288,7 +316,7 @@ impl<'a> View<'a> {
             ItemEnum::Union(declared) => (declared.fields.clone(), &declared.impls),
             ItemEnum::Enum(declared) => (declared.variants.clone(), &declared.impls),
             ItemEnum::Trait(declared) => {
-                for member in declared.items.iter().filter_map(|id| self.item(id)) {
+                for member in self.shown(&declared.items) {
                     self.member(out, label, member, item, level);
                 }
                 return;
@@ -299,36 +327,75 @@ impl<'a> View<'a> {
         if !lines.is_empty() {
             out.push_str(&format!("\n{}\n", lines.join("\n")));
         }
-        let impls: Vec<&Impl> = impls
-            .iter()
-            .filter_map(|id| self.item(id))
-            .filter_map(|item| match &item.inner {
-                ItemEnum::Impl(declared) => Some(declared),
+        let impls: Vec<(&Item, &Impl)> = self
+            .shown(impls)
+            .filter_map(|implementation| match &implementation.inner {
+                ItemEnum::Impl(declared) => Some((implementation, declared)),
                 _ => None,
             })
             .collect();
-        for declared in impls.iter().filter(|declared| declared.trait_.is_none()) {
-            for id in &declared.items {
-                if let Some(member) = self.item(id).filter(|member| self.shows(member)) {
-                    self.member(out, label, member, item, level);
+        for (_, declared) in impls
+            .iter()
+            .filter(|(_, declared)| declared.trait_.is_none())
+        {
+            for member in self.shown(&declared.items) {
+                self.member(out, label, member, item, level);
+            }
+        }
+        let traits: Vec<(&Item, &Impl)> = impls
+            .into_iter()
+            .filter(|(_, declared)| {
+                declared.trait_.is_some()
+                    && !declared.is_synthetic
+                    && declared.blanket_impl.is_none()
+                    && !declared.is_negative
+                    && self.nameable(declared)
+            })
+            .collect();
+        for (implementation, declared) in &traits {
+            let derived = implementation
+                .attrs
+                .iter()
+                .any(|attribute| matches!(attribute, Attribute::AutomaticallyDerived));
+            if !self.navigation || derived {
+                continue;
+            }
+            if let Some(trait_) = &declared.trait_ {
+                let owner = format!("<{label} as {}>", signature::path(trait_));
+                for member in self.shown(&declared.items) {
+                    self.member(out, &owner, member, item, level);
                 }
             }
         }
-        let mut traits: Vec<_> = impls
-            .iter()
-            .filter(|declared| {
-                !declared.is_synthetic && declared.blanket_impl.is_none() && !declared.is_negative
-            })
-            .filter_map(|declared| declared.trait_.as_ref())
-            // The compiler implements this marker for every derived `PartialEq`.
-            .filter(|trait_| trait_.path != "StructuralPartialEq")
-            .map(|trait_| format!("`{}`", signature::path(trait_)))
-            .collect();
-        traits.sort();
-        traits.dedup();
-        if !traits.is_empty() {
-            out.push_str(&format!("\nImplements {}.\n", traits.join(", ")));
+        traits::implements(out, traits.iter().map(|(_, declared)| *declared));
+    }
+
+    /// The items behind `ids` that the manual shows.
+    fn shown<'b>(&'b self, ids: &'b [Id]) -> impl Iterator<Item = &'a Item> + 'b {
+        ids.iter()
+            .filter_map(|id| self.item(id))
+            .filter(|item| self.shows(item))
+    }
+
+    /// Whether the manual's readers can name everything an implementation mentions.
+    ///
+    /// rustdoc leaves out an implementation that mentions an item it does not show, and so does
+    /// each manual: an API manual drops one that mentions a private item.
+    fn nameable(&self, declared: &Impl) -> bool {
+        let mut nameable = true;
+        let mut check = |part: Part<'_>| {
+            if let Part::Path(path) = part
+                && self.item(&path.id).is_some_and(|item| !self.shows(item))
+            {
+                nameable = false;
+            }
+        };
+        // The walk can edit what it visits, so it reads copies.
+        types::walk(&mut declared.for_.clone(), &mut check);
+        if let Some(trait_) = &declared.trait_ {
+            types::walk(&mut Type::ResolvedPath(trait_.clone()), &mut check);
         }
+        nameable
     }
 
     /// One list line for each documented field or variant, with a variant's documented fields
@@ -336,9 +403,10 @@ impl<'a> View<'a> {
     fn documented(&self, parts: &[Id], indent: &str) -> Vec<String> {
         let mut lines = Vec::new();
         for part in parts.iter().filter_map(|id| self.item(id)) {
-            if !self.shows(part) && part.visibility != Visibility::Default {
+            if !self.shows(part) {
                 continue;
             }
+            self.print(part);
             let docs = text::body(part.docs.as_deref(), &part.links, 0);
             let nested = match &part.inner {
                 ItemEnum::Variant(variant) => match &variant.kind {
@@ -376,7 +444,14 @@ impl<'a> View<'a> {
         let name = member.name.as_deref().unwrap_or_default();
         out.push_str(&format!("\n{} `{label}::{name}`\n\n", "#".repeat(level)));
         let file = |item: &Item| item.span.as_ref().map(|span| span.filename.clone());
-        let source = self.lines || file(member) != file(owner);
+        let source = self.navigation || file(member) != file(owner);
         self.describe(out, member, level, source);
     }
+}
+
+/// Whether the source hides `item` from documentation with `#[doc(hidden)]`.
+pub(crate) fn hidden(item: &Item) -> bool {
+    item.attrs
+        .iter()
+        .any(|attribute| matches!(attribute, Attribute::Other(text) if text == "#[doc(hidden)]"))
 }

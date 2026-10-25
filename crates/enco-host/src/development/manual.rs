@@ -1,0 +1,252 @@
+//! The manual in a home's `manual/`: the host's documentation, and a manual for each plugin that
+//! runs.
+//!
+//! It is derived state, a function of the host binary, the registry's current view and the
+//! navigation manuals that builds stored. One writer rewrites it at startup and after every view
+//! the registry publishes, removing anything else in the directory, so a deleted or edited manual
+//! comes back as it was.
+use super::{DevelopmentError, navigation, readme, render, tree::FileTree};
+use crate::SqliteStore;
+use enco_kernel::{Active, CodeSource, Registry};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use tokio::{sync::Mutex, task::JoinHandle};
+use tokio_util::sync::CancellationToken;
+
+/// The directory under the home that holds the manual.
+pub const DIRECTORY: &str = "manual";
+
+/// Writes the manual of one home.
+pub struct Manual {
+    root: PathBuf,
+    /// The generated documents the host ships, by path under `manual/`.
+    host: Vec<(String, String)>,
+    /// What every plugin call may use, each as a description and a value.
+    limits: Vec<(String, String)>,
+    store: Arc<SqliteStore>,
+    writer: Mutex<()>,
+}
+
+impl Manual {
+    /// Bind the manual of `home` to the documents the host ships, keyed by their path under
+    /// `manual/`, and to the limits every plugin call runs within.
+    pub fn new(
+        home: &Path,
+        host: &[(&str, &[u8])],
+        limits: Vec<(String, String)>,
+        store: Arc<SqliteStore>,
+    ) -> Result<Self, DevelopmentError> {
+        let host = host
+            .iter()
+            .map(|(path, bytes)| {
+                let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
+                    DevelopmentError::Host(format!("the host's manual {path} is not UTF-8"))
+                })?;
+                Ok(((*path).to_owned(), text))
+            })
+            .collect::<Result<_, DevelopmentError>>()?;
+        Ok(Self {
+            root: home.join(DIRECTORY),
+            host,
+            limits,
+            store,
+            writer: Mutex::new(()),
+        })
+    }
+
+    /// Rewrite the manual for what the registry runs now.
+    pub async fn write(&self, registry: &Registry) -> Result<(), DevelopmentError> {
+        let _writer = self.writer.lock().await;
+        // Read under the lock, so a write never replaces a newer view with an older one.
+        let view = registry.view();
+        let mut files: Vec<(String, Vec<u8>)> = self
+            .host
+            .iter()
+            .map(|(path, text)| (path.clone(), text.clone().into_bytes()))
+            .collect();
+        let mut plugins = Vec::new();
+        for active in view.exports.active() {
+            let directory = format!("plugins/{}", active.name);
+            let navigation = match active.code {
+                CodeSource::Directory { source, .. } => {
+                    navigation::stored(&self.store, source).await?
+                }
+                CodeSource::Factory | CodeSource::Artifact => None,
+            };
+            files.push((
+                format!("{directory}/README.md"),
+                plugin(&active, navigation.is_some())?.into_bytes(),
+            ));
+            if let Some(tree) = navigation {
+                files.extend(
+                    tree.files
+                        .into_iter()
+                        .map(|(path, bytes)| (format!("{directory}/code/{path}"), bytes)),
+                );
+            }
+            plugins.push(index_line(&active));
+        }
+        files.push(("README.md".into(), self.index(&plugins).into_bytes()));
+        FileTree::from_files(
+            files
+                .iter()
+                .map(|(path, bytes)| (path.as_str(), bytes.clone())),
+        )?
+        .project(&self.root)
+        .await
+    }
+
+    /// Rewrite the manual after every view the registry publishes, until shutdown.
+    pub fn follow(self: Arc<Self>, registry: Arc<Registry>) -> Following {
+        let stop = CancellationToken::new();
+        let mut views = registry.subscribe();
+        let stopped = stop.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = stopped.cancelled() => return,
+                    changed = views.changed() => if changed.is_err() { return },
+                }
+                views.borrow_and_update();
+                if let Err(error) = self.write(&registry).await {
+                    tracing::error!(%error, "manual not rewritten; the next registry change retries");
+                }
+            }
+        });
+        Following {
+            stop,
+            task: std::sync::Mutex::new(Some(task)),
+        }
+    }
+
+    /// The entry point: one line for each manual, then the limits every plugin runs within.
+    fn index(&self, plugins: &[String]) -> String {
+        let mut out = String::from(
+            "<!-- Generated by Enco from the host and the plugins that run; rewritten when they \
+             change, so edits are lost. -->\n# Enco manual\n\nEach line names a manual and says \
+             what it covers.\n\n## Plugin contract and SDK\n\n",
+        );
+        for (path, text) in &self.host {
+            if !path.starts_with("host/") {
+                out.push_str(&format!("- [{path}]({path}) — {}\n", lead(text)));
+            }
+        }
+        out.push_str("\n## Host libraries\n\n");
+        for (path, text) in &self.host {
+            if let Some(name) = path
+                .strip_prefix("host/")
+                .and_then(|rest| rest.strip_suffix("/API.md"))
+            {
+                out.push_str(&format!("- [{name}]({path}) — {}\n", lead(text)));
+            }
+        }
+        out.push_str("\n## Plugins that run\n\n");
+        if plugins.is_empty() {
+            out.push_str("None.\n");
+        }
+        for line in plugins {
+            out.push_str(line);
+        }
+        out.push_str("\n## Limits\n\nEvery plugin call runs within these limits:\n\n");
+        for (what, limit) in &self.limits {
+            out.push_str(&format!("- {what}: {limit}\n"));
+        }
+        out
+    }
+}
+
+/// Keeps a manual in step with the registry until shutdown.
+pub struct Following {
+    stop: CancellationToken,
+    task: std::sync::Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Following {
+    /// Stop following, after any write in progress finishes.
+    pub async fn shutdown(&self) -> Result<(), tokio::task::JoinError> {
+        self.stop.cancel();
+        let task = self
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        match task {
+            Some(task) => task.await,
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for Following {
+    fn drop(&mut self) {
+        self.stop.cancel();
+    }
+}
+
+/// The manual of one running plugin: where its code came from, then what it declares.
+fn plugin(active: &Active<'_>, navigation: bool) -> Result<String, DevelopmentError> {
+    let name = active.name;
+    let generation = active.generation;
+    let origin = match active.code {
+        CodeSource::Directory { registration, .. } if navigation => format!(
+            "Generation {generation}, built from the source that registration {registration} \
+             registered. [code/](code/README.md) is the navigation manual of that source; its file \
+             paths are relative to `plugins/{name}/`."
+        ),
+        CodeSource::Directory { registration, .. } => format!(
+            "Generation {generation}, built from the source that registration {registration} \
+             registered. That source has no navigation manual yet; the next build of \
+             `plugins/{name}` adds one."
+        ),
+        CodeSource::Factory => format!(
+            "Generation {generation}, shipped with the host. Its source is not in the home, so it \
+             has no navigation manual."
+        ),
+        CodeSource::Artifact => format!(
+            "Generation {generation}, a component deployed directly. It was not built from a \
+             source, so it has no navigation manual."
+        ),
+    };
+    let body = match active.loaded {
+        Ok(loaded) => readme::runtime(loaded)?,
+        Err(causes) => format!(
+            "This host cannot run it: {}. `self_status` says what to do next.\n",
+            render::causes(causes)
+        ),
+    };
+    Ok(format!(
+        "<!-- Generated by Enco from the generation that runs; rewritten when it changes, so edits \
+         are lost. -->\n# Plugin `{name}`\n\n{origin}\n\n{body}"
+    ))
+}
+
+fn index_line(active: &Active<'_>) -> String {
+    let name = active.name;
+    let summary = match active.loaded {
+        Ok(loaded) => readme::paragraph(&loaded.summary),
+        Err(_) => format!("this host cannot run generation {}.", active.generation),
+    };
+    format!("- [{name}](plugins/{name}/README.md) — {summary}\n")
+}
+
+/// The first paragraph of prose after a document's title, on one line; a generated API manual puts
+/// the source file, a lone code span, before it.
+fn lead(markdown: &str) -> String {
+    let body = markdown
+        .split_once("\n# ")
+        .and_then(|(_, rest)| rest.split_once('\n'))
+        .map_or(markdown, |(_, body)| body);
+    let source = |paragraph: &str| {
+        paragraph
+            .strip_prefix('`')
+            .and_then(|rest| rest.strip_suffix('`'))
+            .is_some_and(|path| !path.contains(['`', ' ']))
+    };
+    body.split("\n\n")
+        .map(str::trim)
+        .find(|paragraph| !paragraph.is_empty() && !source(paragraph))
+        .map(readme::paragraph)
+        .unwrap_or_default()
+}

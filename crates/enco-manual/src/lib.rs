@@ -7,13 +7,24 @@
 mod api;
 mod navigation;
 mod render;
+mod rules;
 mod signature;
 mod text;
+mod traits;
+mod types;
 
 use render::View;
+pub use rules::{Problem, Rule, SUMMARY_CHARS};
 pub use rustdoc_types::{Crate, FORMAT_VERSION};
 use serde::Deserialize;
 use std::collections::BTreeMap;
+
+/// The rustdoc flags that write the JSON the manuals read.
+///
+/// The JSON holds every item, private and hidden ones included: each manual chooses what it shows,
+/// and the documentation rules see everything, including a waiver on a private module.
+pub const RUSTDOCFLAGS: &str =
+    "-Z unstable-options --output-format json --document-private-items --document-hidden-items";
 
 /// Why rustdoc's output could not be read.
 #[derive(Debug, thiserror::Error)]
@@ -53,23 +64,40 @@ pub fn read(json: &[u8]) -> Result<Crate, ReadError> {
 pub fn api(krate: &Crate, sources: &str) -> String {
     let view = View {
         krate,
-        private: false,
-        lines: false,
+        navigation: false,
         prefix: sources,
         here: None,
+        printed: None,
     };
     api::render(&view)
 }
 
-/// The navigation manual of a crate, from rustdoc JSON that includes private items: file names
-/// mapped to Markdown, `README.md` first among them, with source lines relative to `sources`.
+/// The navigation manual of a crate, as Markdown files by name, `README.md` first.
+///
+/// It needs rustdoc JSON that includes private items. Source lines are relative to `sources`.
 pub fn navigation(krate: &Crate, sources: &str) -> BTreeMap<String, String> {
     let view = View {
         krate,
-        private: true,
-        lines: true,
+        navigation: true,
         prefix: sources,
         here: None,
+        printed: None,
     };
     navigation::render(&view)
+}
+
+/// The documentation rules a crate's items break, ordered by file and line.
+pub fn problems(krate: &Crate) -> Vec<Problem> {
+    rules::check(krate)
+}
+
+/// The rules one doc comment breaks, for docs written outside Rust such as the WIT's.
+///
+/// `name` is the documented item's name. Each broken rule comes with what to do about it.
+pub fn doc_problems(name: &str, docs: &str) -> Vec<(Rule, String)> {
+    rules::breaks(
+        Some(name),
+        docs,
+        &text::summary(Some(docs), &Default::default()),
+    )
 }

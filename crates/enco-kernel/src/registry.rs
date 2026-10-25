@@ -26,7 +26,7 @@ use crate::{
 use admission::users;
 pub use configuration::{PLUGIN_SETTINGS_TABLE, plugin_settings};
 use enco_core::*;
-pub use exports::{Export, Exports};
+pub use exports::{Active, Export, Exports};
 pub use intent::{
     Activation, CodeProvenance, CodeSource, FactoryStatus, RegisteredIntent, RegisteredPlugin,
     RegisteredSource, RegistrationBase, RewindScope, RewindSelection, ScopeError,
@@ -135,9 +135,10 @@ pub struct View {
     pub config: ActiveConfig,
 }
 
-/// The active configuration generation: registered content plus the declarations the current
-/// host derives from it. The declarations are private to the registry, so only the registry
-/// builds one, from a single evaluation, and the parts cannot drift apart.
+/// The active configuration generation: registered content plus the declarations derived from it.
+///
+/// The declarations are those the current host derives. They are private to the registry, so only
+/// the registry builds one, from a single evaluation, and the parts cannot drift apart.
 #[derive(Clone)]
 pub struct ActiveConfig {
     /// Active configuration generation.
@@ -156,7 +157,9 @@ pub struct ActiveConfig {
 
 impl View {
     /// The registered behavior a failure is recorded against: the active configuration and
-    /// plugin generations, in ascending order. Trial promotion leaves them unchanged.
+    /// plugin generations, in ascending order.
+    ///
+    /// Trial promotion leaves them unchanged.
     pub(crate) fn active_generations(&self) -> Vec<GenerationId> {
         let mut generations: Vec<_> = self
             .exports

@@ -953,6 +953,7 @@ dependencies = [
  "chrono",
  "enco-core",
  "enco-kernel",
+ "enco-manual",
  "ignore",
  "imagesize",
  "reqwest",

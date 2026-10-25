@@ -160,3 +160,9 @@ CREATE TABLE builds (
   created_at TEXT NOT NULL,
   PRIMARY KEY (source, sdk)
 ) STRICT;
+
+-- The navigation manual of a plugin source, rendered from rustdoc when the source was built.
+CREATE TABLE manuals (
+  source TEXT PRIMARY KEY,
+  manual TEXT NOT NULL
+) STRICT;

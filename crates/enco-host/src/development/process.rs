@@ -1,3 +1,5 @@
+//! Running one build command in its own process group and collecting its output.
+//!
 //! A build owns its process group and waits for it to stop before another operation may change
 //! the plugin's files. Every build process runs under the SDK's toolchain, which rustup must not
 //! install on the way: an install is a download the owner decides on.

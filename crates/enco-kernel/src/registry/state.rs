@@ -123,9 +123,10 @@ impl State {
         });
         let source = match intent {
             None | Some((_, Some(CodeIntent::Factory))) => CodeSource::Factory,
-            Some((registration, Some(CodeIntent::Directory { .. }))) => {
-                CodeSource::Directory { registration }
-            }
+            Some((registration, Some(CodeIntent::Directory { source }))) => CodeSource::Directory {
+                registration,
+                source,
+            },
             Some((_, None)) => CodeSource::Artifact,
         };
         CodeProvenance { generation, source }

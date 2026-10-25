@@ -11,6 +11,7 @@ use crate::{
     status::{CallStep, FixTarget, OwnerAction, Step, Steps},
 };
 pub use actions::registration_document;
+pub(super) use causes::causes;
 use enco_core::{
     DateTime, GenerationStatus, Initiator, IntentPath, PluginActivation, SessionRef, Tz, Utc,
 };

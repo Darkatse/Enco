@@ -22,8 +22,9 @@ pub async fn open_home(
     } else {
         development::Development::initialize(root).await.unwrap();
     }
+    let manual = development::Manual::new(root, &[], Vec::new(), store.clone()).unwrap();
     let development =
-        development::Development::new(root.into(), sdk(), store, deps.runtime.clone());
+        development::Development::new(root.into(), sdk(), manual, store, deps.runtime.clone());
     deps.host_tool_names.extend(
         development_tool_specs()
             .unwrap()
@@ -90,8 +91,16 @@ pub async fn retain_build(root: &Path, store: &SqliteStore, directory: &Path, by
         .unwrap()
         .hash();
     let artifact = store.put_artifact(bytes).await.unwrap();
-    rusqlite::Connection::open(root.join("enco.db"))
-        .unwrap()
+    // A build stores the source's navigation manual too; an empty file tree stands in for it.
+    let manual = store.put_blob(b"{}").await.unwrap();
+    let connection = rusqlite::Connection::open(root.join("enco.db")).unwrap();
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO manuals(source,manual) VALUES (?,?)",
+            rusqlite::params![source.to_string(), manual.to_string()],
+        )
+        .unwrap();
+    connection
         .execute(
             "INSERT INTO builds(source,sdk,artifact,toolchain,created_at) VALUES (?,?,?,?,?) ON CONFLICT(source,sdk) DO UPDATE SET artifact=excluded.artifact,toolchain=excluded.toolchain,created_at=excluded.created_at",
             rusqlite::params![

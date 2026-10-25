@@ -256,11 +256,15 @@ pub fn without_git(root: &Path) -> std::ffi::OsString {
 
 /// Each source scenario keeps a warm Cargo cache without locking other builds.
 pub fn build_target(root: &Path, scenario: &str) {
-    let target = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/plugin-tests")
-        .join(scenario);
-    std::fs::create_dir_all(&target).unwrap();
-    std::os::unix::fs::symlink(target.canonicalize().unwrap(), root.join(".data/target")).unwrap();
+    let targets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/plugin-tests");
+    for (shared, link) in [
+        (scenario.to_owned(), ".data/target"),
+        (format!("{scenario}-doc"), ".data/target-doc"),
+    ] {
+        let target = targets.join(shared);
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(target.canonicalize().unwrap(), root.join(link)).unwrap();
+    }
 }
 
 pub fn copy_plugin(name: &str, root: &Path) {

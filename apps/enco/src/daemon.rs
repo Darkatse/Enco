@@ -81,11 +81,13 @@ async fn run(listener: UnixListener, paths: &Paths) -> Result<()> {
     drop(listener);
     stop.cancel();
     let channel_result = application.channels.shutdown().await;
+    let manual_result = application.manual.shutdown().await;
     let (kernel_result, ()) = tokio::join!(kernel.shutdown(), async {
         while connections.join_next().await.is_some() {}
     });
     accept_result?;
     channel_result?;
+    manual_result?;
     kernel_result?;
     Ok(())
 }

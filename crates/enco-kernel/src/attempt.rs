@@ -31,6 +31,7 @@ pub(crate) struct PlannedAttempt {
 
 impl SessionActor {
     /// Retry one combination within its own allowance, backing off between retryable failures.
+    ///
     /// A failure that exhausts it, or other code taking its place, returns to the Round, which
     /// selects again from the Log; composition is pure, so the recorded plan is the same.
     pub(crate) async fn attempt(

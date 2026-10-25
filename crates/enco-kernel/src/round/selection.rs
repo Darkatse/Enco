@@ -72,7 +72,9 @@ impl SessionActor {
 }
 
 /// The first candidate in configured order whose code resolves and whose combination is not
-/// exhausted. When none is usable, the latest recorded failure explains why, or else the last
+/// exhausted.
+///
+/// When none is usable, the latest recorded failure explains why, or else the last
 /// unavailability.
 fn pick<'p>(
     endpoints: &'p Endpoints,

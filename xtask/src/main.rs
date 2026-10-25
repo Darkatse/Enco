@@ -37,7 +37,7 @@ fn main() -> Result<()> {
         Some("docs") => {
             let check = std::env::args().any(|a| a == "--check");
             docs::generate(check)?;
-            manual::api(&metadata()?, check)
+            manual::generate(&metadata()?, check)
         }
         Some("build-factory") => build_factory(),
         Some("check") => {
@@ -124,7 +124,8 @@ fn boundaries(workspace_metadata: &[Metadata]) -> Result<()> {
             "enco-core" | "enco-manual" => (&[], false),
             "xtask" => (&["enco-manual"], true),
             "enco-kernel" => (&["enco-core"], false),
-            "enco-host" | "enco-wasm" => (&["enco-core", "enco-kernel"], false),
+            "enco-host" => (&["enco-core", "enco-kernel", "enco-manual"], false),
+            "enco-wasm" => (&["enco-core", "enco-kernel"], false),
             "enco" => (
                 &["enco-core", "enco-kernel", "enco-host", "enco-wasm"],
                 true,

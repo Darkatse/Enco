@@ -194,6 +194,9 @@ fn ask_about_factory(name: &PluginName) -> Vec<Step> {
     })]
 }
 
+/// Steps that keep the running code: rewind the plugin to the registration it came from, then
+/// register.
+///
 /// Keeping what runs needs the running code to come from a registered source other than the
 /// one registered now; rewinding to the registered source would register nothing.
 fn keep_running(
@@ -201,7 +204,7 @@ fn keep_running(
     running: &Activation,
     registered: &RegisteredPlugin,
 ) -> Option<Vec<Step>> {
-    let CodeSource::Directory { registration } = running.code.source else {
+    let CodeSource::Directory { registration, .. } = running.code.source else {
         return None;
     };
     if registered

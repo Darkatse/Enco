@@ -91,8 +91,8 @@ OpenAI-compatible Chat Completions and embeddings.
 
 - module `protocol::host` — same as `host`
 - module `protocol::types` — same as `types`
-- struct `protocol::Completion` — A completed model attempt. `message.role` must be assistant. Canonical parts are text, tool calls and extensions; generated images stay in extensions.
-- struct `protocol::Request` — The frozen messages, disclosed tools and output budget for one completion. User messages may include images; tool messages contain one result followed by any images.
+- struct `protocol::Completion` — A completed model attempt.
+- struct `protocol::Request` — The frozen messages, disclosed tools and output budget for one completion.
 - struct `protocol::Settings` — same as `types::Settings`
 - enum `protocol::StopReason` — The service-reported reason that generation stopped.
 - struct `protocol::Usage` — Token counts reported by the service, including cache hits when available.
@@ -117,10 +117,20 @@ pub struct Completion {
 }
 ```
 
-A completed model attempt. `message.role` must be assistant.
+A completed model attempt.
+
 Canonical parts are text, tool calls and extensions; generated images stay in extensions.
 
-Implements `Clone`, `Debug`.
+- `message` — The reply, with the `assistant` role.
+- `usage` — What the attempt cost in tokens.
+- `stop_reason` — Why generation stopped.
+
+Implements:
+
+```rust
+impl Clone for Completion
+impl Debug for Completion
+```
 
 ## struct `protocol::Request`
 
@@ -128,16 +138,26 @@ Implements `Clone`, `Debug`.
 
 ```rust
 pub struct Request {
-    pub messages: _rt::Vec<Message>,
-    pub tools: _rt::Vec<ToolSpec>,
+    pub messages: Vec<Message>,
+    pub tools: Vec<ToolSpec>,
     pub max_output_tokens: ::core::option::Option<u32>,
 }
 ```
 
 The frozen messages, disclosed tools and output budget for one completion.
+
 User messages may include images; tool messages contain one result followed by any images.
 
-Implements `Clone`, `Debug`.
+- `messages` — The messages, in order.
+- `tools` — The tools the model may call.
+- `max_output_tokens` — The most tokens the reply may use; the service's default when absent.
+
+Implements:
+
+```rust
+impl Clone for Request
+impl Debug for Request
+```
 
 ## enum `protocol::StopReason`
 
@@ -154,7 +174,17 @@ pub enum StopReason {
 
 The service-reported reason that generation stopped.
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`.
+Implements:
+
+```rust
+impl Clone for StopReason
+impl Copy for StopReason
+impl Debug for StopReason
+impl Eq for StopReason
+impl Ord for StopReason
+impl PartialEq for StopReason
+impl PartialOrd for StopReason
+```
 
 ## struct `protocol::Usage`
 
@@ -170,7 +200,17 @@ pub struct Usage {
 
 Token counts reported by the service, including cache hits when available.
 
-Implements `Clone`, `Copy`, `Debug`.
+- `input_tokens` — Tokens the request used.
+- `output_tokens` — Tokens the reply used.
+- `cached_input_tokens` — The part of `input-tokens` served from the service's cache, when it reports one.
+
+Implements:
+
+```rust
+impl Clone for Usage
+impl Copy for Usage
+impl Debug for Usage
+```
 
 ## fn `protocol::apply_options`
 
@@ -279,12 +319,12 @@ POST `body` as JSON to `path` under `settings.base_url` and return the JSON repl
 Host-owned logging and transport available to plugins.
 
 - enum `host::HttpErrorKind` — Classifies failures while constructing, sending or reading an HTTP request.
-- struct `host::HttpFailure` — Transport failure. `request-sent` means the request may have reached the peer.
-- struct `host::HttpRequest` — An HTTP request. Omitting `timeout-ms` selects the host default timeout.
+- struct `host::HttpFailure` — Transport failure.
+- struct `host::HttpRequest` — An HTTP request for the host to send.
 - struct `host::HttpResponse` — An HTTP status, headers and fully collected response body.
 - enum `host::LogLevel` — Severity attached to a plugin diagnostic.
 - fn `host::config` — The configuration of this invocation's generation, excluding credential mappings.
-- fn `host::http` — Send a request and collect its response. Non-2xx statuses are returned as responses. The host attaches declared credentials only to the bound origin (scheme, host and port), overriding the matching request header. Redirects are followed only within that origin. Cross-origin redirects are returned unchanged. Credential values in response headers, bodies and failures are replaced with [redacted:<environment variable name>]. Encoded forms of a credential (such as base64) are not redacted.
+- fn `host::http` — Send a request and collect its response; non-2xx statuses are returned as responses.
 - fn `host::log` — Write a diagnostic to the host log.
 - type `host::Json` — (no summary)
 
@@ -305,7 +345,17 @@ pub enum HttpErrorKind {
 
 Classifies failures while constructing, sending or reading an HTTP request.
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`.
+Implements:
+
+```rust
+impl Clone for HttpErrorKind
+impl Copy for HttpErrorKind
+impl Debug for HttpErrorKind
+impl Eq for HttpErrorKind
+impl Ord for HttpErrorKind
+impl PartialEq for HttpErrorKind
+impl PartialOrd for HttpErrorKind
+```
 
 ## struct `host::HttpFailure`
 
@@ -314,14 +364,25 @@ Implements `Clone`, `Copy`, `Debug`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`.
 ```rust
 pub struct HttpFailure {
     pub kind: HttpErrorKind,
-    pub message: _rt::String,
+    pub message: String,
     pub request_sent: bool,
 }
 ```
 
-Transport failure. `request-sent` means the request may have reached the peer.
+Transport failure.
 
-Implements `Clone`, `Debug`, `Display`, `Error`.
+- `kind` — The stage that failed.
+- `message` — What went wrong.
+- `request_sent` — Whether the request may have reached the peer.
+
+Implements:
+
+```rust
+impl Clone for HttpFailure
+impl Debug for HttpFailure
+impl Display for HttpFailure
+impl Error for HttpFailure
+```
 
 ## struct `host::HttpRequest`
 
@@ -329,17 +390,28 @@ Implements `Clone`, `Debug`, `Display`, `Error`.
 
 ```rust
 pub struct HttpRequest {
-    pub method: _rt::String,
-    pub url: _rt::String,
-    pub headers: _rt::Vec<(_rt::String, _rt::String)>,
-    pub body: ::core::option::Option<_rt::Vec<u8>>,
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: ::core::option::Option<Vec<u8>>,
     pub timeout_ms: ::core::option::Option<u32>,
 }
 ```
 
-An HTTP request. Omitting `timeout-ms` selects the host default timeout.
+An HTTP request for the host to send.
 
-Implements `Clone`, `Debug`.
+- `method` — The method, such as `GET` or `POST`.
+- `url` — The absolute URL.
+- `headers` — Header names and values, in order.
+- `body` — The bytes to send, if any.
+- `timeout_ms` — The time limit in milliseconds; the host's default when absent.
+
+Implements:
+
+```rust
+impl Clone for HttpRequest
+impl Debug for HttpRequest
+```
 
 ## struct `host::HttpResponse`
 
@@ -348,14 +420,23 @@ Implements `Clone`, `Debug`.
 ```rust
 pub struct HttpResponse {
     pub status: u16,
-    pub headers: _rt::Vec<(_rt::String, _rt::String)>,
-    pub body: _rt::Vec<u8>,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
 }
 ```
 
 An HTTP status, headers and fully collected response body.
 
-Implements `Clone`, `Debug`.
+- `status` — The status code, such as 200.
+- `headers` — Header names and values, in order.
+- `body` — The whole body, already collected.
+
+Implements:
+
+```rust
+impl Clone for HttpResponse
+impl Debug for HttpResponse
+```
 
 ## enum `host::LogLevel`
 
@@ -373,7 +454,17 @@ pub enum LogLevel {
 
 Severity attached to a plugin diagnostic.
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`.
+Implements:
+
+```rust
+impl Clone for LogLevel
+impl Copy for LogLevel
+impl Debug for LogLevel
+impl Eq for LogLevel
+impl Ord for LogLevel
+impl PartialEq for LogLevel
+impl PartialOrd for LogLevel
+```
 
 ## fn `host::config`
 
@@ -393,7 +484,8 @@ The configuration of this invocation's generation, excluding credential mappings
 pub async fn http(request: HttpRequest) -> ::core::result::Result<HttpResponse, HttpFailure>
 ```
 
-Send a request and collect its response. Non-2xx statuses are returned as responses.
+Send a request and collect its response; non-2xx statuses are returned as responses.
+
 The host attaches declared credentials only to the bound origin (scheme, host and port),
 overriding the matching request header. Redirects are followed only within that origin.
 Cross-origin redirects are returned unchanged. Credential values in response headers,
@@ -426,16 +518,16 @@ Canonical data exchanged between the host and plugins.
 
 - enum `types::Effect` — Mutation semantics used to order calls and settle interrupted work.
 - struct `types::Extension` — Opaque adapter fields. The host replays them only to their originating plugin identity.
-- struct `types::Failure` — An operation failure. `retryable` means the same request may succeed later.
-- struct `types::Image` — An image in a message: the stored bytes, not base64.
+- struct `types::Failure` — An operation failure.
+- struct `types::Image` — An image in a message.
 - enum `types::ImageFormat` — Image encodings that every supported service accepts.
 - struct `types::Message` — A canonical message sent to or returned by the model.
-- enum `types::Outcome` — A known result, a known failure, or an external effect that cannot be confirmed. An unknown outcome must never be retried automatically.
+- enum `types::Outcome` — A known result, a known failure, or an external effect that cannot be confirmed.
 - enum `types::Part` — Ordered text, images, tool interactions and opaque extensions within a message.
 - enum `types::Role` — Identifies the speaker of a canonical model message.
 - struct `types::Settings` — Endpoint, model and adapter options supplied by the caller for this call.
-- struct `types::ToolCall` — A proposed tool invocation. `id` is the original service-assigned call ID, empty when the service assigns none.
-- struct `types::ToolResult` — A tool settlement. `call-id` refers to the original `tool-call.id`.
+- struct `types::ToolCall` — A proposed tool invocation.
+- struct `types::ToolResult` — A tool settlement.
 - struct `types::ToolSpec` — A tool disclosed to the model.
 - type `types::Json` — A JSON document encoded as UTF-8 text.
 
@@ -453,7 +545,24 @@ pub enum Effect {
 
 Mutation semantics used to order calls and settle interrupted work.
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`.
+Consecutive read-only calls run together; other calls run one at a time. A call cut off by
+a crash fails as retryable when it is read-only, and settles as unknown otherwise.
+
+- `ReadOnly` — Changes nothing beyond its result.
+- `Idempotent` — Making the call again has the same effect as making it once.
+- `SideEffect` — Changes something that must not be changed again blindly.
+
+Implements:
+
+```rust
+impl Clone for Effect
+impl Copy for Effect
+impl Debug for Effect
+impl Eq for Effect
+impl Ord for Effect
+impl PartialEq for Effect
+impl PartialOrd for Effect
+```
 
 ## struct `types::Extension`
 
@@ -467,7 +576,14 @@ pub struct Extension {
 
 Opaque adapter fields. The host replays them only to their originating plugin identity.
 
-Implements `Clone`, `Debug`.
+- `data` — The fields, as the adapter that wrote them expects them back.
+
+Implements:
+
+```rust
+impl Clone for Extension
+impl Debug for Extension
+```
 
 ## struct `types::Failure`
 
@@ -475,15 +591,26 @@ Implements `Clone`, `Debug`.
 
 ```rust
 pub struct Failure {
-    pub code: _rt::String,
-    pub message: _rt::String,
+    pub code: String,
+    pub message: String,
     pub retryable: bool,
 }
 ```
 
-An operation failure. `retryable` means the same request may succeed later.
+An operation failure.
 
-Implements `Clone`, `Debug`, `Display`, `Error`.
+- `code` — A stable classification, such as `timeout` or `provider.auth`.
+- `message` — What went wrong, for the Agent and the owner to read.
+- `retryable` — Whether the same request may succeed later.
+
+Implements:
+
+```rust
+impl Clone for Failure
+impl Debug for Failure
+impl Display for Failure
+impl Error for Failure
+```
 
 ## struct `types::Image`
 
@@ -492,11 +619,14 @@ Implements `Clone`, `Debug`, `Display`, `Error`.
 ```rust
 pub struct Image {
     pub format: ImageFormat,
-    pub data: _rt::Vec<u8>,
+    pub data: Vec<u8>,
 }
 ```
 
-An image in a message: the stored bytes, not base64.
+An image in a message.
+
+- `format` — How `data` is encoded.
+- `data` — The image bytes as stored, not base64.
 
 ### `types::Image::base64`
 
@@ -506,7 +636,12 @@ pub fn base64(&self) -> String
 
 The image bytes as standard Base64 with padding, as data URLs and inline JSON images expect.
 
-Implements `Clone`, `Debug`.
+Implements:
+
+```rust
+impl Clone for Image
+impl Debug for Image
+```
 
 ## enum `types::ImageFormat`
 
@@ -530,7 +665,17 @@ pub fn mime(self) -> &'static str
 
 The MIME type of this format, such as `image/png`.
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`.
+Implements:
+
+```rust
+impl Clone for ImageFormat
+impl Copy for ImageFormat
+impl Debug for ImageFormat
+impl Eq for ImageFormat
+impl Ord for ImageFormat
+impl PartialEq for ImageFormat
+impl PartialOrd for ImageFormat
+```
 
 ## struct `types::Message`
 
@@ -539,13 +684,21 @@ Implements `Clone`, `Copy`, `Debug`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`.
 ```rust
 pub struct Message {
     pub role: Role,
-    pub parts: _rt::Vec<Part>,
+    pub parts: Vec<Part>,
 }
 ```
 
 A canonical message sent to or returned by the model.
 
-Implements `Clone`, `Debug`.
+- `role` — Who speaks.
+- `parts` — The content, in order.
+
+Implements:
+
+```rust
+impl Clone for Message
+impl Debug for Message
+```
 
 ## enum `types::Outcome`
 
@@ -560,9 +713,18 @@ pub enum Outcome {
 ```
 
 A known result, a known failure, or an external effect that cannot be confirmed.
-An unknown outcome must never be retried automatically.
 
-Implements `Clone`, `Debug`.
+- `Ok` — The call succeeded with this JSON result.
+- `Failed` — The call failed, and its effects are known.
+- `Unknown` — An external effect may have happened and cannot be confirmed; it is never retried
+  automatically.
+
+Implements:
+
+```rust
+impl Clone for Outcome
+impl Debug for Outcome
+```
 
 ## enum `types::Part`
 
@@ -570,7 +732,7 @@ Implements `Clone`, `Debug`.
 
 ```rust
 pub enum Part {
-    Text(_rt::String),
+    Text(String),
     ToolCall(ToolCall),
     ToolResult(ToolResult),
     Extension(Extension),
@@ -580,7 +742,18 @@ pub enum Part {
 
 Ordered text, images, tool interactions and opaque extensions within a message.
 
-Implements `Clone`, `Debug`.
+- `Text` — Text the speaker wrote.
+- `ToolCall` — A tool call the assistant proposes.
+- `ToolResult` — The result of a tool call.
+- `Extension` — Adapter fields kept for the plugin that wrote them.
+- `Image` — An image attached to the message.
+
+Implements:
+
+```rust
+impl Clone for Part
+impl Debug for Part
+```
 
 ## enum `types::Role`
 
@@ -597,7 +770,17 @@ pub enum Role {
 
 Identifies the speaker of a canonical model message.
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`.
+Implements:
+
+```rust
+impl Clone for Role
+impl Copy for Role
+impl Debug for Role
+impl Eq for Role
+impl Ord for Role
+impl PartialEq for Role
+impl PartialOrd for Role
+```
 
 ## struct `types::Settings`
 
@@ -605,15 +788,24 @@ Implements `Clone`, `Copy`, `Debug`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`.
 
 ```rust
 pub struct Settings {
-    pub base_url: _rt::String,
-    pub model: _rt::String,
+    pub base_url: String,
+    pub model: String,
     pub options: Json,
 }
 ```
 
 Endpoint, model and adapter options supplied by the caller for this call.
 
-Implements `Clone`, `Debug`.
+- `base_url` — The service's base URL; request paths are appended to it.
+- `model` — The model the service runs.
+- `options` — Options the adapter merges into its request, as a JSON object.
+
+Implements:
+
+```rust
+impl Clone for Settings
+impl Debug for Settings
+```
 
 ## struct `types::ToolCall`
 
@@ -621,15 +813,24 @@ Implements `Clone`, `Debug`.
 
 ```rust
 pub struct ToolCall {
-    pub id: _rt::String,
-    pub name: _rt::String,
-    pub arguments: _rt::String,
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
 }
 ```
 
-A proposed tool invocation. `id` is the original service-assigned call ID, empty when the service assigns none.
+A proposed tool invocation.
 
-Implements `Clone`, `Debug`.
+- `id` — The call ID the service assigned, or empty when it assigns none.
+- `name` — The tool to call, by the name its `tool-spec` declares.
+- `arguments` — The arguments as the model wrote them, as JSON text.
+
+Implements:
+
+```rust
+impl Clone for ToolCall
+impl Debug for ToolCall
+```
 
 ## struct `types::ToolResult`
 
@@ -637,15 +838,24 @@ Implements `Clone`, `Debug`.
 
 ```rust
 pub struct ToolResult {
-    pub call_id: _rt::String,
-    pub content: _rt::String,
+    pub call_id: String,
+    pub content: String,
     pub is_error: bool,
 }
 ```
 
-A tool settlement. `call-id` refers to the original `tool-call.id`.
+A tool settlement.
 
-Implements `Clone`, `Debug`.
+- `call_id` — The `id` of the `tool-call` this result answers.
+- `content` — The result text the model reads.
+- `is_error` — Whether the call failed.
+
+Implements:
+
+```rust
+impl Clone for ToolResult
+impl Debug for ToolResult
+```
 
 ## struct `types::ToolSpec`
 
@@ -653,17 +863,14 @@ Implements `Clone`, `Debug`.
 
 ```rust
 pub struct ToolSpec {
-    pub name: _rt::String,
-    pub description: _rt::String,
+    pub name: String,
+    pub description: String,
     pub input_schema: Json,
     pub effect: Effect,
 }
 ```
 
 A tool disclosed to the model.
-
-Names use ASCII letters, digits, underscores or hyphens; tools.list names are unique within the plugin.
-Completion adapters ignore effect; the host uses it when dispatching tools.
 
 `input-schema` describes the argument object in a subset of JSON Schema:
 - objects with `properties` and `required`, always with `additionalProperties: false`;
@@ -679,14 +886,26 @@ checks every call against the schema before the plugin sees it: an optional prop
 as null counts as not given, and an integer written with a zero fraction, such as 5.0,
 arrives as 5.
 
-Implements `Clone`, `Debug`.
+- `name` — The name the model calls the tool by: ASCII letters, digits, underscores or hyphens,
+  unique among the plugin's tools.
+- `description` — What the tool does, for the model to read.
+- `input_schema` — The argument object, in the subset of JSON Schema stated above.
+- `effect` — What a call may change; completion adapters ignore it, and the host uses it when
+  dispatching.
+
+Implements:
+
+```rust
+impl Clone for ToolSpec
+impl Debug for ToolSpec
+```
 
 ## type `types::Json`
 
 `src/lib.rs`
 
 ```rust
-pub type Json = _rt::String;
+pub type Json = String;
 ```
 
 A JSON document encoded as UTF-8 text.
@@ -797,8 +1016,8 @@ pub type ToolSpec = super::super::super::super::enco::plugin::types::ToolSpec;
 
 Describes and checks the component without assigning its registry identity.
 
-- struct `bindings::exports::enco::plugin::lifecycle::Credential` — Named credential attached to `origin`, or to the caller-selected service when absent. A fixed origin uses the generation's secret mapping; an absent origin uses the endpoint's. Names and origins must be unique, including at most one absent origin. The host sets `header` to `prefix` followed by the credential value; plugins never see it.
-- struct `bindings::exports::enco::plugin::lifecycle::Description` — Plugin-wide facts and requirements. `config-schema` documents configuration as JSON Schema; configuration validation belongs to `describe`, not to a second host-side schema validator.
+- struct `bindings::exports::enco::plugin::lifecycle::Credential` — Named credential attached to `origin`, or to the caller-selected service when absent.
+- struct `bindings::exports::enco::plugin::lifecycle::Description` — Plugin-wide facts and requirements.
 - trait `bindings::exports::enco::plugin::lifecycle::Guest` — (no summary)
 - type `bindings::exports::enco::plugin::lifecycle::Failure` — (no summary)
 - type `bindings::exports::enco::plugin::lifecycle::Json` — (no summary)
@@ -809,20 +1028,32 @@ Describes and checks the component without assigning its registry identity.
 
 ```rust
 pub struct Credential {
-    pub name: _rt::String,
-    pub origin: ::core::option::Option<_rt::String>,
-    pub header: _rt::String,
-    pub prefix: _rt::String,
+    pub name: String,
+    pub origin: ::core::option::Option<String>,
+    pub header: String,
+    pub prefix: String,
     pub required: bool,
 }
 ```
 
 Named credential attached to `origin`, or to the caller-selected service when absent.
+
 A fixed origin uses the generation's secret mapping; an absent origin uses the endpoint's.
 Names and origins must be unique, including at most one absent origin.
 The host sets `header` to `prefix` followed by the credential value; plugins never see it.
 
-Implements `Clone`, `Debug`.
+- `name` — The name the owner's configuration maps to an environment variable.
+- `origin` — The origin the credential is sent to; absent for the service the caller selects.
+- `header` — The request header that carries the credential.
+- `prefix` — Text placed before the credential value in the header, such as `Bearer `.
+- `required` — Whether the plugin cannot work without it.
+
+Implements:
+
+```rust
+impl Clone for Credential
+impl Debug for Credential
+```
 
 ## struct `bindings::exports::enco::plugin::lifecycle::Description`
 
@@ -830,16 +1061,24 @@ Implements `Clone`, `Debug`.
 
 ```rust
 pub struct Description {
-    pub summary: _rt::String,
+    pub summary: String,
     pub config_schema: Json,
-    pub credentials: _rt::Vec<Credential>,
+    pub credentials: Vec<Credential>,
 }
 ```
 
-Plugin-wide facts and requirements. `config-schema` documents configuration as JSON Schema;
-configuration validation belongs to `describe`, not to a second host-side schema validator.
+Plugin-wide facts and requirements.
 
-Implements `Clone`, `Debug`.
+- `summary` — One line on what the plugin offers.
+- `config_schema` — The configuration the plugin accepts, as JSON Schema; only `describe` validates it.
+- `credentials` — The credentials the plugin uses.
+
+Implements:
+
+```rust
+impl Clone for Description
+impl Debug for Description
+```
 
 ## trait `bindings::exports::enco::plugin::lifecycle::Guest`
 
@@ -855,8 +1094,10 @@ pub trait Guest
 fn describe(config: Json) -> ::core::result::Result<Description, Failure>
 ```
 
-Describe the component or reject its configuration. An empty object must be accepted
-and provide the plugin's minimum capabilities. Declarations are fixed with the generation.
+Describe the component or reject its configuration.
+
+An empty object must be accepted and provide the plugin's minimum capabilities.
+Declarations are fixed with the generation.
 
 ### `bindings::exports::enco::plugin::lifecycle::Guest::probe`
 

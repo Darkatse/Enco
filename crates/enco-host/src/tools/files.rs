@@ -107,6 +107,8 @@ impl Kind {
     }
 }
 
+/// A host tool that reads, writes, edits or lists local files.
+///
 /// Local file IO finishes quickly, so file tools ignore cancellation and settle normally;
 /// a blocking special file such as a FIFO holds cancellation and shutdown until it returns.
 pub(super) struct FileTool {

@@ -116,7 +116,16 @@ pub struct ArgumentError(/* private field */);
 
 Why a call's arguments do not fit the tool's schema, naming the argument.
 
-Implements `Clone`, `Debug`, `Display`, `Eq`, `Error`, `PartialEq`.
+Implements:
+
+```rust
+impl Clone for ArgumentError
+impl Debug for ArgumentError
+impl Display for ArgumentError
+impl Eq for ArgumentError
+impl Error for ArgumentError
+impl PartialEq for ArgumentError
+```
 
 ## enum `Arguments`
 
@@ -145,7 +154,15 @@ pub fn parse(raw: &str) -> Self
 
 Normalize empty, null, object and once-double-encoded object arguments.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Arguments
+impl Debug for Arguments
+impl<'de> Deserialize<'de> for Arguments
+impl PartialEq for Arguments
+impl Serialize for Arguments
+```
 
 ## struct `AttemptId`
 
@@ -165,7 +182,24 @@ pub fn new() -> Self
 
 Allocate a globally unique identity, independent of ordering.
 
-Implements `Clone`, `Copy`, `Debug`, `Default`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for AttemptId
+impl Copy for AttemptId
+impl Debug for AttemptId
+impl Default for AttemptId
+impl<'de> Deserialize<'de> for AttemptId
+impl Display for AttemptId
+impl Eq for AttemptId
+impl FromStr for AttemptId
+impl Hash for AttemptId
+impl JsonSchema for AttemptId
+impl Ord for AttemptId
+impl PartialEq for AttemptId
+impl PartialOrd for AttemptId
+impl Serialize for AttemptId
+```
 
 ## enum `AttemptPurpose`
 
@@ -183,7 +217,17 @@ Whether the model is replying or summarizing prior rounds.
 - `Reply` — A reply whose tool calls may be dispatched.
 - `Compaction` — A summary request whose output replaces earlier context.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for AttemptPurpose
+impl Copy for AttemptPurpose
+impl Debug for AttemptPurpose
+impl<'de> Deserialize<'de> for AttemptPurpose
+impl Eq for AttemptPurpose
+impl PartialEq for AttemptPurpose
+impl Serialize for AttemptPurpose
+```
 
 ## enum `AttemptResult`
 
@@ -219,7 +263,15 @@ pub fn failure(&self, purpose: AttemptPurpose) -> Option<Failure>
 
 The failure of this invocation for its purpose, retaining successful wire results as facts.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for AttemptResult
+impl Debug for AttemptResult
+impl<'de> Deserialize<'de> for AttemptResult
+impl PartialEq for AttemptResult
+impl Serialize for AttemptResult
+```
 
 ## struct `Binding`
 
@@ -237,7 +289,15 @@ Execution owner and fencing generation; a single node uses itself at epoch one.
 - `node` — Node currently authorized to execute this Session.
 - `epoch` — Ownership generation.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Binding
+impl Debug for Binding
+impl<'de> Deserialize<'de> for Binding
+impl PartialEq for Binding
+impl Serialize for Binding
+```
 
 ## struct `CallId`
 
@@ -257,7 +317,24 @@ pub fn new() -> Self
 
 Allocate a globally unique identity, independent of ordering.
 
-Implements `Clone`, `Copy`, `Debug`, `Default`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for CallId
+impl Copy for CallId
+impl Debug for CallId
+impl Default for CallId
+impl<'de> Deserialize<'de> for CallId
+impl Display for CallId
+impl Eq for CallId
+impl FromStr for CallId
+impl Hash for CallId
+impl JsonSchema for CallId
+impl Ord for CallId
+impl PartialEq for CallId
+impl PartialOrd for CallId
+impl Serialize for CallId
+```
 
 ## struct `Candidate`
 
@@ -279,7 +356,15 @@ Content offered to the composer; source-prefixed IDs make omissions traceable.
 - `text` — Current source content that the composer may include within its budget.
 - `standing` — Supplied independently of the latest input, such as instructions or pinned memories.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Candidate
+impl Debug for Candidate
+impl<'de> Deserialize<'de> for Candidate
+impl PartialEq for Candidate
+impl Serialize for Candidate
+```
 
 ## enum `CandidateKind`
 
@@ -297,7 +382,17 @@ Semantic category interpreted by the composer.
 - `Instruction` — Standing instructions supplied by a context source.
 - `Memory` — A candidate durable memory.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for CandidateKind
+impl Copy for CandidateKind
+impl Debug for CandidateKind
+impl<'de> Deserialize<'de> for CandidateKind
+impl Eq for CandidateKind
+impl PartialEq for CandidateKind
+impl Serialize for CandidateKind
+```
 
 ## struct `CapabilityId`
 
@@ -315,7 +410,16 @@ A node-qualified capability, displayed as `name@node`; the model sees only `name
 - `node` — Node exporting this capability.
 - `name` — Tool name within the exporting node.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Display`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for CapabilityId
+impl Debug for CapabilityId
+impl<'de> Deserialize<'de> for CapabilityId
+impl Display for CapabilityId
+impl PartialEq for CapabilityId
+impl Serialize for CapabilityId
+```
 
 ## enum `CodeIntent`
 
@@ -336,7 +440,17 @@ The owner's choice of code source, independent of the resulting component bytes.
   - `source` — Content-addressed source tree owned by the store.
 - `Factory` — Follow the implementation supplied by the host.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for CodeIntent
+impl Copy for CodeIntent
+impl Debug for CodeIntent
+impl<'de> Deserialize<'de> for CodeIntent
+impl Eq for CodeIntent
+impl PartialEq for CodeIntent
+impl Serialize for CodeIntent
+```
 
 ## enum `CodeRef`
 
@@ -362,7 +476,15 @@ Identifies the exact code used by an invocation.
   - `name` — Identity of the linked native capability or policy.
   - `version` — Version of the linked native crate.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for CodeRef
+impl Debug for CodeRef
+impl<'de> Deserialize<'de> for CodeRef
+impl PartialEq for CodeRef
+impl Serialize for CodeRef
+```
 
 ## struct `ConfigGeneration`
 
@@ -388,7 +510,15 @@ An immutable registered configuration document.
 - `previous` — Configuration which was active immediately before this one was registered.
 - `created_at` — Observation time for display, never ordering.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ConfigGeneration
+impl Debug for ConfigGeneration
+impl<'de> Deserialize<'de> for ConfigGeneration
+impl PartialEq for ConfigGeneration
+impl Serialize for ConfigGeneration
+```
 
 ## struct `ConfigurationRef`
 
@@ -414,7 +544,16 @@ pub fn of(configuration: &ConfigGeneration) -> Self
 
 The reference to one configuration generation.
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ConfigurationRef
+impl Copy for ConfigurationRef
+impl Debug for ConfigurationRef
+impl Eq for ConfigurationRef
+impl PartialEq for ConfigurationRef
+impl Serialize for ConfigurationRef
+```
 
 ## struct `ContentHash`
 
@@ -434,7 +573,20 @@ pub fn of(bytes: &[u8]) -> Self
 
 Address these exact bytes.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Hash`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ContentHash
+impl Copy for ContentHash
+impl Debug for ContentHash
+impl<'de> Deserialize<'de> for ContentHash
+impl Display for ContentHash
+impl Eq for ContentHash
+impl FromStr for ContentHash
+impl Hash for ContentHash
+impl PartialEq for ContentHash
+impl Serialize for ContentHash
+```
 
 ## struct `ContextPlan`
 
@@ -456,7 +608,15 @@ The composer’s complete request plan, recorded as a content-addressed blob bef
 - `max_output_tokens` — Requested output budget; absent means provider default.
 - `omitted` — Reasons content was not included in this request.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ContextPlan
+impl Debug for ContextPlan
+impl<'de> Deserialize<'de> for ContextPlan
+impl PartialEq for ContextPlan
+impl Serialize for ContextPlan
+```
 
 ## struct `Contribution`
 
@@ -474,7 +634,16 @@ Candidate content and omissions supplied by one ContextSource for this Round.
 - `candidates` — Candidate content in descending priority.
 - `omitted` — Content this source could not supply, with reasons for the composer to record.
 
-Implements `Clone`, `Debug`, `Default`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Contribution
+impl Debug for Contribution
+impl Default for Contribution
+impl<'de> Deserialize<'de> for Contribution
+impl PartialEq for Contribution
+impl Serialize for Contribution
+```
 
 ## struct `Delivery`
 
@@ -494,7 +663,15 @@ A logical channel delivery referencing its original Log fact.
 - `pos` — ToolCallSettled, RoundEnded or RunEnded position which caused this delivery.
 - `target` — Protocol-local destination.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Delivery
+impl Debug for Delivery
+impl<'de> Deserialize<'de> for Delivery
+impl PartialEq for Delivery
+impl Serialize for Delivery
+```
 
 ## struct `DeliverySettlement`
 
@@ -514,7 +691,15 @@ Final outcome, committed atomically with the connection's outbound progress.
 - `outcome` — One final outcome for the entire logical delivery.
 - `at` — Observation time for display, never ordering.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for DeliverySettlement
+impl Debug for DeliverySettlement
+impl<'de> Deserialize<'de> for DeliverySettlement
+impl PartialEq for DeliverySettlement
+impl Serialize for DeliverySettlement
+```
 
 ## struct `DisclosedTool`
 
@@ -539,7 +724,16 @@ earlier rules stay readable.
 - `input_schema` — The argument schema as sent.
 - `effect` — Mutation semantics declared with the tool.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `From<&ToolSpec>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for DisclosedTool
+impl Debug for DisclosedTool
+impl<'de> Deserialize<'de> for DisclosedTool
+impl From<&ToolSpec> for DisclosedTool
+impl PartialEq for DisclosedTool
+impl Serialize for DisclosedTool
+```
 
 ## enum `Effect`
 
@@ -559,7 +753,17 @@ Describes external effects so recovery can settle an interrupted invocation hone
 - `Idempotent` — Repeating the same operation produces the same intended effect.
 - `SideEffect` — An external mutation which must not be blindly repeated.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Effect
+impl Copy for Effect
+impl Debug for Effect
+impl<'de> Deserialize<'de> for Effect
+impl Eq for Effect
+impl PartialEq for Effect
+impl Serialize for Effect
+```
 
 ## struct `Entry`
 
@@ -579,7 +783,15 @@ One immutable fact at a structurally ordered position.
 - `at` — Observation time for display, never for ordering.
 - `body` — Accepted input or execution transition at this Log position.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Entry
+impl Debug for Entry
+impl<'de> Deserialize<'de> for Entry
+impl PartialEq for Entry
+impl Serialize for Entry
+```
 
 ## enum `EntryBody`
 
@@ -696,7 +908,15 @@ pub fn canonical_message(&self, purpose: Option<AttemptPurpose>, call: Option<&T
 Resolve a durable entry's model-facing form using its recorded associations.
 This mapping is part of the persistent format, not composer policy.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for EntryBody
+impl Debug for EntryBody
+impl<'de> Deserialize<'de> for EntryBody
+impl PartialEq for EntryBody
+impl Serialize for EntryBody
+```
 
 ## struct `Epoch`
 
@@ -708,7 +928,20 @@ pub struct Epoch(pub u64);
 
 Ownership generation; single-node execution uses one.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `Hash`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Epoch
+impl Copy for Epoch
+impl Debug for Epoch
+impl<'de> Deserialize<'de> for Epoch
+impl Eq for Epoch
+impl Hash for Epoch
+impl Ord for Epoch
+impl PartialEq for Epoch
+impl PartialOrd for Epoch
+impl Serialize for Epoch
+```
 
 ## struct `Event`
 
@@ -739,10 +972,19 @@ pub fn canonical_message(&self) -> Message
 ```
 
 The sole mapping from Inbox input to a model message: the content its producer supplied.
-The composer narrates the circumstances, such as arrival and planned times.
-Input without text, such as a photo alone, has no text part.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+The composer narrates the circumstances, such as arrival and planned times. Input without
+text, such as a photo alone, has no text part.
+
+Implements:
+
+```rust
+impl Clone for Event
+impl Debug for Event
+impl<'de> Deserialize<'de> for Event
+impl PartialEq for Event
+impl Serialize for Event
+```
 
 ## enum `EventBody`
 
@@ -783,7 +1025,15 @@ Input that requires attention from the agent.
   - `skipped` — Earlier missed occurrences omitted when delivering only the latest one.
   - `text` — Reminder text copied from its Schedule.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for EventBody
+impl Debug for EventBody
+impl<'de> Deserialize<'de> for EventBody
+impl PartialEq for EventBody
+impl Serialize for EventBody
+```
 
 ## struct `EventId`
 
@@ -803,7 +1053,24 @@ pub fn new() -> Self
 
 Allocate a globally unique identity, independent of ordering.
 
-Implements `Clone`, `Copy`, `Debug`, `Default`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for EventId
+impl Copy for EventId
+impl Debug for EventId
+impl Default for EventId
+impl<'de> Deserialize<'de> for EventId
+impl Display for EventId
+impl Eq for EventId
+impl FromStr for EventId
+impl Hash for EventId
+impl JsonSchema for EventId
+impl Ord for EventId
+impl PartialEq for EventId
+impl PartialOrd for EventId
+impl Serialize for EventId
+```
 
 ## enum `EventSource`
 
@@ -834,7 +1101,15 @@ The producer of an Inbox input.
 - `Scheduler` — Input generated by a durable schedule.
 - `Registry` — Notice generated by automatic plugin recovery.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for EventSource
+impl Debug for EventSource
+impl<'de> Deserialize<'de> for EventSource
+impl PartialEq for EventSource
+impl Serialize for EventSource
+```
 
 ## struct `Extension`
 
@@ -850,7 +1125,15 @@ Opaque provider-owned message fields retained for subsequent requests.
 
 - `data` — Opaque JSON; the producing Attempt's generation identifies its owner.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Extension
+impl Debug for Extension
+impl<'de> Deserialize<'de> for Extension
+impl PartialEq for Extension
+impl Serialize for Extension
+```
 
 ## struct `Failure`
 
@@ -870,7 +1153,15 @@ Stable machine-readable classification with contextual diagnostic text.
 - `message` — Context explaining what failed and how to recover.
 - `retryable` — Whether repeating this request later may succeed.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Failure
+impl Debug for Failure
+impl<'de> Deserialize<'de> for Failure
+impl PartialEq for Failure
+impl Serialize for Failure
+```
 
 ## struct `FileData`
 
@@ -888,7 +1179,16 @@ File bytes handed to the kernel at settlement, or resolved for one delivery.
 - `name` — Filename without its original directory.
 - `data` — Original bytes, encoded only by the channel adapter.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for FileData
+impl Debug for FileData
+impl<'de> Deserialize<'de> for FileData
+impl Eq for FileData
+impl PartialEq for FileData
+impl Serialize for FileData
+```
 
 ## struct `GenerationId`
 
@@ -900,7 +1200,21 @@ pub struct GenerationId(pub u64);
 
 Registry-global generation number, ordered by commit rather than time.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Display`, `Eq`, `Hash`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for GenerationId
+impl Copy for GenerationId
+impl Debug for GenerationId
+impl<'de> Deserialize<'de> for GenerationId
+impl Display for GenerationId
+impl Eq for GenerationId
+impl Hash for GenerationId
+impl Ord for GenerationId
+impl PartialEq for GenerationId
+impl PartialOrd for GenerationId
+impl Serialize for GenerationId
+```
 
 ## struct `GenerationRecord`
 
@@ -930,7 +1244,15 @@ One immutable generation identity, with a mutable availability status.
 - `failure` — The reason this generation was marked failed; absent for trial and healthy records.
 - `created_at` — Observation time for display, never ordering.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for GenerationRecord
+impl Debug for GenerationRecord
+impl<'de> Deserialize<'de> for GenerationRecord
+impl PartialEq for GenerationRecord
+impl Serialize for GenerationRecord
+```
 
 ## enum `GenerationStatus`
 
@@ -950,7 +1272,17 @@ Eligibility for use and automatic recovery.
 - `Healthy` — Eligible to become active or serve as a rollback target.
 - `Failed` — Unavailable; redeploying its bytes creates a new identity.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for GenerationStatus
+impl Copy for GenerationStatus
+impl Debug for GenerationStatus
+impl<'de> Deserialize<'de> for GenerationStatus
+impl Eq for GenerationStatus
+impl PartialEq for GenerationStatus
+impl Serialize for GenerationStatus
+```
 
 ## struct `Image`
 
@@ -970,7 +1302,16 @@ Recorded image metadata; the kernel stores the bytes before accepting this refer
 - `size` — Original byte length, before protocol encoding.
 - `content` — Address of the original bytes in the blob store.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Image
+impl Debug for Image
+impl<'de> Deserialize<'de> for Image
+impl Eq for Image
+impl PartialEq for Image
+impl Serialize for Image
+```
 
 ## struct `ImageData`
 
@@ -988,7 +1329,16 @@ Bytes resolved from a recorded image for one frozen Provider request.
 - `format` — Recorded encoding.
 - `data` — Original bytes, encoded only by the Provider.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ImageData
+impl Debug for ImageData
+impl<'de> Deserialize<'de> for ImageData
+impl Eq for ImageData
+impl PartialEq for ImageData
+impl Serialize for ImageData
+```
 
 ## enum `ImageFormat`
 
@@ -1024,7 +1374,17 @@ pub fn mime(self) -> &'static str
 
 MIME label used at protocol boundaries.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ImageFormat
+impl Copy for ImageFormat
+impl Debug for ImageFormat
+impl<'de> Deserialize<'de> for ImageFormat
+impl Eq for ImageFormat
+impl PartialEq for ImageFormat
+impl Serialize for ImageFormat
+```
 
 ## enum `Initiator`
 
@@ -1062,7 +1422,16 @@ pub fn reason(&self) -> Option<&Reason>
 
 The caller's explanation; host changes have no caller-provided reason.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl<S: Clone> Clone for Initiator<S>
+impl<S: Debug> Debug for Initiator<S>
+impl<'de, S> Deserialize<'de> for Initiator<S> where S: Deserialize<'de>
+impl<S: Eq> Eq for Initiator<S>
+impl<S: PartialEq> PartialEq for Initiator<S>
+impl<S> Serialize for Initiator<S> where S: Serialize
+```
 
 ## struct `InputSchema`
 
@@ -1114,10 +1483,18 @@ The schema in canonical JSON form.
 pub fn accept(&self, arguments: Map<String, Value>) -> Result<Map<String, Value>, ArgumentError>
 ```
 
-Check a call's arguments and return them in canonical form: optional properties given as
-`null` removed, since `null` there means "not given", and integers such as `5.0` as `5`.
+Check a call's arguments and return them in canonical form.
 
-Implements `Clone`, `Debug`, `PartialEq`.
+Optional properties given as `null` are removed, since `null` there means "not given", and
+integers written as `5.0` become `5`.
+
+Implements:
+
+```rust
+impl Clone for InputSchema
+impl Debug for InputSchema
+impl PartialEq for InputSchema
+```
 
 ## enum `IntentPath`
 
@@ -1143,7 +1520,22 @@ pub fn locate(&self, home: &Path) -> PathBuf
 
 Where this path lives under the Enco home.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Display`, `Eq`, `From<IntentPath>`, `FromStr`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for IntentPath
+impl Debug for IntentPath
+impl<'de> Deserialize<'de> for IntentPath
+impl Display for IntentPath
+impl Eq for IntentPath
+impl From<IntentPath> for String
+impl FromStr for IntentPath
+impl JsonSchema for IntentPath
+impl Ord for IntentPath
+impl PartialEq for IntentPath
+impl PartialOrd for IntentPath
+impl Serialize for IntentPath
+```
 
 ## struct `InvalidIntentPath`
 
@@ -1155,7 +1547,13 @@ pub struct InvalidIntentPath(/* private field */);
 
 A path that cannot be addressed by the development commands.
 
-Implements `Debug`, `Display`, `Error`.
+Implements:
+
+```rust
+impl Debug for InvalidIntentPath
+impl Display for InvalidIntentPath
+impl Error for InvalidIntentPath
+```
 
 ## struct `InvalidPluginName`
 
@@ -1167,7 +1565,13 @@ pub struct InvalidPluginName(/* private field */);
 
 A plugin name outside the public naming grammar.
 
-Implements `Debug`, `Display`, `Error`.
+Implements:
+
+```rust
+impl Debug for InvalidPluginName
+impl Display for InvalidPluginName
+impl Error for InvalidPluginName
+```
 
 ## enum `InvalidReason`
 
@@ -1185,7 +1589,13 @@ A reason that cannot be stored as a single bounded line.
 - `Placeholder` — The caller has not replaced the suggested-call marker.
 - `Line` — A reason must fit on one bounded, nonempty line.
 
-Implements `Debug`, `Display`, `Error`.
+Implements:
+
+```rust
+impl Debug for InvalidReason
+impl Display for InvalidReason
+impl Error for InvalidReason
+```
 
 ## struct `LogPos`
 
@@ -1203,7 +1613,20 @@ Structural Log ordering; wall clocks never determine this order.
 - `epoch` — Ownership generation.
 - `seq` — Sequence within the generation.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `Hash`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for LogPos
+impl Copy for LogPos
+impl Debug for LogPos
+impl<'de> Deserialize<'de> for LogPos
+impl Eq for LogPos
+impl Hash for LogPos
+impl Ord for LogPos
+impl PartialEq for LogPos
+impl PartialOrd for LogPos
+impl Serialize for LogPos
+```
 
 ## struct `Memory`
 
@@ -1229,7 +1652,15 @@ A self-contained fact about the owner; its current authority is the memory datab
 - `updated_at` — Time of the latest authority update.
 - `rev` — Starts at one and increments on each correction, allowing the index to detect stale content.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Memory
+impl Debug for Memory
+impl<'de> Deserialize<'de> for Memory
+impl PartialEq for Memory
+impl Serialize for Memory
+```
 
 ## struct `MemoryId`
 
@@ -1249,7 +1680,24 @@ pub fn new() -> Self
 
 Allocate a globally unique identity, independent of ordering.
 
-Implements `Clone`, `Copy`, `Debug`, `Default`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for MemoryId
+impl Copy for MemoryId
+impl Debug for MemoryId
+impl Default for MemoryId
+impl<'de> Deserialize<'de> for MemoryId
+impl Display for MemoryId
+impl Eq for MemoryId
+impl FromStr for MemoryId
+impl Hash for MemoryId
+impl JsonSchema for MemoryId
+impl Ord for MemoryId
+impl PartialEq for MemoryId
+impl PartialOrd for MemoryId
+impl Serialize for MemoryId
+```
 
 ## struct `Message`
 
@@ -1291,7 +1739,15 @@ pub fn joined_text(&self) -> String
 
 Join visible text, excluding provider extensions and tool calls.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl<I: Clone> Clone for Message<I>
+impl<I: Debug> Debug for Message<I>
+impl<'de, I> Deserialize<'de> for Message<I> where I: Deserialize<'de>
+impl<I: PartialEq> PartialEq for Message<I>
+impl<I> Serialize for Message<I> where I: Serialize
+```
 
 ## enum `Modality`
 
@@ -1307,7 +1763,19 @@ Non-text input accepted by a completion endpoint.
 
 - `Image` — Still-image input.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Modality
+impl Copy for Modality
+impl Debug for Modality
+impl<'de> Deserialize<'de> for Modality
+impl Eq for Modality
+impl Ord for Modality
+impl PartialEq for Modality
+impl PartialOrd for Modality
+impl Serialize for Modality
+```
 
 ## struct `NodeId`
 
@@ -1327,7 +1795,24 @@ pub fn new() -> Self
 
 Allocate a globally unique identity, independent of ordering.
 
-Implements `Clone`, `Copy`, `Debug`, `Default`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for NodeId
+impl Copy for NodeId
+impl Debug for NodeId
+impl Default for NodeId
+impl<'de> Deserialize<'de> for NodeId
+impl Display for NodeId
+impl Eq for NodeId
+impl FromStr for NodeId
+impl Hash for NodeId
+impl JsonSchema for NodeId
+impl Ord for NodeId
+impl PartialEq for NodeId
+impl PartialOrd for NodeId
+impl Serialize for NodeId
+```
 
 ## struct `Occurrence`
 
@@ -1345,7 +1830,16 @@ Last delivered occurrence; the next one is derived rather than stored.
 - `due_at` — Planned time, independent of when the scheduler actually delivered it.
 - `event` — Event accepted into the destination Inbox.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Occurrence
+impl Copy for Occurrence
+impl Debug for Occurrence
+impl<'de> Deserialize<'de> for Occurrence
+impl PartialEq for Occurrence
+impl Serialize for Occurrence
+```
 
 ## struct `Omission`
 
@@ -1363,7 +1857,15 @@ A visible explanation of content excluded from this request.
 - `source` — Source or candidate identifier for the omitted content.
 - `reason` — Explanation visible during request inspection.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Omission
+impl Debug for Omission
+impl<'de> Deserialize<'de> for Omission
+impl PartialEq for Omission
+impl Serialize for Omission
+```
 
 ## enum `Origin`
 
@@ -1404,7 +1906,17 @@ pub fn registration(self) -> Option<RegistrationId>
 
 The accepted change that produced this content; factory content belongs to the host.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Origin
+impl Copy for Origin
+impl Debug for Origin
+impl<'de> Deserialize<'de> for Origin
+impl Eq for Origin
+impl PartialEq for Origin
+impl Serialize for Origin
+```
 
 ## enum `Outcome`
 
@@ -1437,7 +1949,16 @@ Known success, known failure, or an effect whose outcome is uncertain.
 - `Unknown` — Effects may already have occurred; never retry automatically.
   - `failure` — Classification and details of the failure.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `From<&Outcome>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Outcome
+impl Debug for Outcome
+impl<'de> Deserialize<'de> for Outcome
+impl From<&Outcome> for Settlement
+impl PartialEq for Outcome
+impl Serialize for Outcome
+```
 
 ## struct `Outgoing`
 
@@ -1455,7 +1976,16 @@ Content addressed to the owner: Markdown text and at most one file.
 - `text` — Markdown authored by the sender.
 - `file` — Optional attachment, recorded by reference or carried as bytes at a boundary.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl<F: Clone> Clone for Outgoing<F>
+impl<F: Debug> Debug for Outgoing<F>
+impl<'de, F> Deserialize<'de> for Outgoing<F> where F: Deserialize<'de>
+impl<F: Eq> Eq for Outgoing<F>
+impl<F: PartialEq> PartialEq for Outgoing<F>
+impl<F> Serialize for Outgoing<F> where F: Serialize
+```
 
 ## struct `OutgoingFile`
 
@@ -1475,7 +2005,16 @@ A recorded file; the kernel stores the bytes before accepting this reference.
 - `size` — Original byte length.
 - `content` — Address of the original bytes in the blob store.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for OutgoingFile
+impl Debug for OutgoingFile
+impl<'de> Deserialize<'de> for OutgoingFile
+impl Eq for OutgoingFile
+impl PartialEq for OutgoingFile
+impl Serialize for OutgoingFile
+```
 
 ## enum `Part`
 
@@ -1510,7 +2049,15 @@ pub fn retype<J>(self) -> Result<Part<J>, I>
 
 The same part under another image type; an image is handed back for the caller to convert.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl<I: Clone> Clone for Part<I>
+impl<I: Debug> Debug for Part<I>
+impl<'de, I> Deserialize<'de> for Part<I> where I: Deserialize<'de>
+impl<I: PartialEq> PartialEq for Part<I>
+impl<I> Serialize for Part<I> where I: Serialize
+```
 
 ## enum `PlanItem`
 
@@ -1538,7 +2085,15 @@ Inline content or a reference to an immutable canonical message.
   - `pos` — Entry whose canonical message is resolved from this Session’s Log.
   - `images` — Whether this whole entry's images accompany its text in the request.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for PlanItem
+impl Debug for PlanItem
+impl<'de> Deserialize<'de> for PlanItem
+impl PartialEq for PlanItem
+impl Serialize for PlanItem
+```
 
 ## struct `PluginActivation`
 
@@ -1556,7 +2111,17 @@ A current or retained code reference, distinct from the generation's creation pr
 - `generation` — Target code and settings.
 - `registration` — Registration which wrote this reference; absent only for direct factory recovery.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for PluginActivation
+impl Copy for PluginActivation
+impl Debug for PluginActivation
+impl<'de> Deserialize<'de> for PluginActivation
+impl Eq for PluginActivation
+impl PartialEq for PluginActivation
+impl Serialize for PluginActivation
+```
 
 ## struct `PluginId`
 
@@ -1576,7 +2141,24 @@ pub fn new() -> Self
 
 Allocate a globally unique identity, independent of ordering.
 
-Implements `Clone`, `Copy`, `Debug`, `Default`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for PluginId
+impl Copy for PluginId
+impl Debug for PluginId
+impl Default for PluginId
+impl<'de> Deserialize<'de> for PluginId
+impl Display for PluginId
+impl Eq for PluginId
+impl FromStr for PluginId
+impl Hash for PluginId
+impl JsonSchema for PluginId
+impl Ord for PluginId
+impl PartialEq for PluginId
+impl PartialOrd for PluginId
+impl Serialize for PluginId
+```
 
 ## struct `PluginName`
 
@@ -1604,7 +2186,26 @@ pub fn as_str(&self) -> &str
 
 The validated name.
 
-Implements `AsRef<str>`, `Borrow<str>`, `Clone`, `Debug`, `Deref`, `Deserialize<'de>`, `Display`, `Eq`, `From<PluginName>`, `FromStr`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl AsRef<str> for PluginName
+impl Borrow<str> for PluginName
+impl Clone for PluginName
+impl Debug for PluginName
+impl Deref for PluginName
+impl<'de> Deserialize<'de> for PluginName
+impl Display for PluginName
+impl Eq for PluginName
+impl From<PluginName> for String
+impl FromStr for PluginName
+impl Hash for PluginName
+impl JsonSchema for PluginName
+impl Ord for PluginName
+impl PartialEq for PluginName
+impl PartialOrd for PluginName
+impl Serialize for PluginName
+```
 
 ## struct `PluginRecord`
 
@@ -1626,7 +2227,16 @@ Mutable references owned exclusively by the registry.
 - `active` — Code used for new calls; absence means the plugin is stopped.
 - `rollback_target` — Retained healthy code available for mechanical recovery.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for PluginRecord
+impl Debug for PluginRecord
+impl<'de> Deserialize<'de> for PluginRecord
+impl Eq for PluginRecord
+impl PartialEq for PluginRecord
+impl Serialize for PluginRecord
+```
 
 ## struct `PluginSettings`
 
@@ -1644,7 +2254,16 @@ The complete `[plugin.<name>]` table. Only `config` is visible to the plugin.
 - `config` — Plugin-owned configuration, accepted by its declaration function.
 - `secrets` — Credential names mapped to environment variable names, never their values.
 
-Implements `Clone`, `Debug`, `Default`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for PluginSettings
+impl Debug for PluginSettings
+impl Default for PluginSettings
+impl<'de> Deserialize<'de> for PluginSettings where PluginSettings: Default
+impl PartialEq for PluginSettings
+impl Serialize for PluginSettings
+```
 
 ## struct `ProviderSettings`
 
@@ -1666,7 +2285,15 @@ Per-call provider settings recorded before invocation. Credential values belong 
 - `api_key_env` — Environment variable the host transport reads at invocation time.
 - `options` — Adapter options included in the recorded request parameters.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ProviderSettings
+impl Debug for ProviderSettings
+impl<'de> Deserialize<'de> for ProviderSettings
+impl PartialEq for ProviderSettings
+impl Serialize for ProviderSettings
+```
 
 ## struct `Reason`
 
@@ -1694,7 +2321,19 @@ pub fn as_str(&self) -> &str
 
 The original explanation, without normalization.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `JsonSchema`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Reason
+impl Debug for Reason
+impl<'de> Deserialize<'de> for Reason
+impl Display for Reason
+impl Eq for Reason
+impl FromStr for Reason
+impl JsonSchema for Reason
+impl PartialEq for Reason
+impl Serialize for Reason
+```
 
 ## struct `RegisteredCode`
 
@@ -1712,7 +2351,16 @@ One accepted code activation.
 - `generation` — Code activated by this change.
 - `intent` — Code intent accepted here; settings and artifacts leave it unchanged.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RegisteredCode
+impl Debug for RegisteredCode
+impl<'de> Deserialize<'de> for RegisteredCode
+impl Eq for RegisteredCode
+impl PartialEq for RegisteredCode
+impl Serialize for RegisteredCode
+```
 
 ## struct `RegisteredName`
 
@@ -1730,7 +2378,16 @@ One accepted name change.
 - `name` — Directory and routing name, or no name after removal.
 - `previous` — Name version actually in effect before this change, for the same identity.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RegisteredName
+impl Debug for RegisteredName
+impl<'de> Deserialize<'de> for RegisteredName
+impl Eq for RegisteredName
+impl PartialEq for RegisteredName
+impl Serialize for RegisteredName
+```
 
 ## struct `RegistrationId`
 
@@ -1742,7 +2399,22 @@ pub struct RegistrationId(pub u64);
 
 Registry-global registration number; one accepted change may contain several generations.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Display`, `Eq`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RegistrationId
+impl Copy for RegistrationId
+impl Debug for RegistrationId
+impl<'de> Deserialize<'de> for RegistrationId
+impl Display for RegistrationId
+impl Eq for RegistrationId
+impl Hash for RegistrationId
+impl JsonSchema for RegistrationId
+impl Ord for RegistrationId
+impl PartialEq for RegistrationId
+impl PartialOrd for RegistrationId
+impl Serialize for RegistrationId
+```
 
 ## struct `RegistrationRecord`
 
@@ -1766,7 +2438,15 @@ One accepted external change, also the unit of owner rollback.
 - `code` — Code activations written by this change, independently of name changes.
 - `created_at` — Observation time for display.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RegistrationRecord
+impl Debug for RegistrationRecord
+impl<'de> Deserialize<'de> for RegistrationRecord
+impl PartialEq for RegistrationRecord
+impl Serialize for RegistrationRecord
+```
 
 ## enum `Role`
 
@@ -1788,7 +2468,17 @@ The speaker in a canonical model message.
 - `Assistant` — Model output, including proposed calls.
 - `Tool` — Settlement of a proposed call.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Role
+impl Copy for Role
+impl Debug for Role
+impl<'de> Deserialize<'de> for Role
+impl Eq for Role
+impl PartialEq for Role
+impl Serialize for Role
+```
 
 ## struct `RolledBack`
 
@@ -1810,7 +2500,15 @@ A committed automatic rollback, also accepted as a Session input when applicable
 - `to` — Replacement, or none when no healthy generation remains.
 - `failure` — Plugin fault which triggered recovery.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RolledBack
+impl Debug for RolledBack
+impl<'de> Deserialize<'de> for RolledBack
+impl PartialEq for RolledBack
+impl Serialize for RolledBack
+```
 
 ## enum `RoundEnd`
 
@@ -1839,7 +2537,15 @@ Why this Round stopped.
   - `failure` — Classification and details of the failure.
   - `generations` — Active configuration and plugin generations when this Round failed, in ascending order.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RoundEnd
+impl Debug for RoundEnd
+impl<'de> Deserialize<'de> for RoundEnd
+impl PartialEq for RoundEnd
+impl Serialize for RoundEnd
+```
 
 ## struct `RoundId`
 
@@ -1859,7 +2565,24 @@ pub fn new() -> Self
 
 Allocate a globally unique identity, independent of ordering.
 
-Implements `Clone`, `Copy`, `Debug`, `Default`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RoundId
+impl Copy for RoundId
+impl Debug for RoundId
+impl Default for RoundId
+impl<'de> Deserialize<'de> for RoundId
+impl Display for RoundId
+impl Eq for RoundId
+impl FromStr for RoundId
+impl Hash for RoundId
+impl JsonSchema for RoundId
+impl Ord for RoundId
+impl PartialEq for RoundId
+impl PartialOrd for RoundId
+impl Serialize for RoundId
+```
 
 ## enum `RunEnd`
 
@@ -1886,7 +2609,15 @@ Why this Run stopped.
 - `Failed` — The operation stopped with a known failure.
   - `failure` — Classification and details of the failure.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RunEnd
+impl Debug for RunEnd
+impl<'de> Deserialize<'de> for RunEnd
+impl PartialEq for RunEnd
+impl Serialize for RunEnd
+```
 
 ## struct `RunId`
 
@@ -1906,7 +2637,24 @@ pub fn new() -> Self
 
 Allocate a globally unique identity, independent of ordering.
 
-Implements `Clone`, `Copy`, `Debug`, `Default`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RunId
+impl Copy for RunId
+impl Debug for RunId
+impl Default for RunId
+impl<'de> Deserialize<'de> for RunId
+impl Display for RunId
+impl Eq for RunId
+impl FromStr for RunId
+impl Hash for RunId
+impl JsonSchema for RunId
+impl Ord for RunId
+impl PartialEq for RunId
+impl PartialOrd for RunId
+impl Serialize for RunId
+```
 
 ## struct `Schedule`
 
@@ -1934,7 +2682,15 @@ A durable sequence of reminders delivered to a Session Inbox.
 - `state` — Current schedule lifetime state.
 - `last` — Most recent occurrence atomically accepted into the Inbox.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Schedule
+impl Debug for Schedule
+impl<'de> Deserialize<'de> for Schedule
+impl PartialEq for Schedule
+impl Serialize for Schedule
+```
 
 ## struct `ScheduleId`
 
@@ -1954,7 +2710,24 @@ pub fn new() -> Self
 
 Allocate a globally unique identity, independent of ordering.
 
-Implements `Clone`, `Copy`, `Debug`, `Default`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ScheduleId
+impl Copy for ScheduleId
+impl Debug for ScheduleId
+impl Default for ScheduleId
+impl<'de> Deserialize<'de> for ScheduleId
+impl Display for ScheduleId
+impl Eq for ScheduleId
+impl FromStr for ScheduleId
+impl Hash for ScheduleId
+impl JsonSchema for ScheduleId
+impl Ord for ScheduleId
+impl PartialEq for ScheduleId
+impl PartialOrd for ScheduleId
+impl Serialize for ScheduleId
+```
 
 ## enum `ScheduleRule`
 
@@ -1980,7 +2753,15 @@ One instant or a recurring pattern interpreted in local time.
   - `expr` — Pattern as provided by the caller.
   - `timezone` — IANA time zone; absent means follow the owner's configured zone.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ScheduleRule
+impl Debug for ScheduleRule
+impl<'de> Deserialize<'de> for ScheduleRule
+impl PartialEq for ScheduleRule
+impl Serialize for ScheduleRule
+```
 
 ## enum `ScheduleState`
 
@@ -2000,7 +2781,17 @@ Schedule lifetime; firing and Inbox acceptance are atomic.
 - `Done` — The last occurrence has been delivered.
 - `Cancelled` — Future occurrences have been cancelled.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ScheduleState
+impl Copy for ScheduleState
+impl Debug for ScheduleState
+impl<'de> Deserialize<'de> for ScheduleState
+impl Eq for ScheduleState
+impl PartialEq for ScheduleState
+impl Serialize for ScheduleState
+```
 
 ## struct `SchemaError`
 
@@ -2014,7 +2805,16 @@ pub struct SchemaError {
 
 Why a declared schema is outside the canonical subset, and where, as a JSON Pointer.
 
-Implements `Clone`, `Debug`, `Display`, `Eq`, `Error`, `PartialEq`.
+Implements:
+
+```rust
+impl Clone for SchemaError
+impl Debug for SchemaError
+impl Display for SchemaError
+impl Eq for SchemaError
+impl Error for SchemaError
+impl PartialEq for SchemaError
+```
 
 ## struct `Seq`
 
@@ -2026,7 +2826,20 @@ pub struct Seq(pub u64);
 
 Sequence assigned by a Session actor, starting at one.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `Hash`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Seq
+impl Copy for Seq
+impl Debug for Seq
+impl<'de> Deserialize<'de> for Seq
+impl Eq for Seq
+impl Hash for Seq
+impl Ord for Seq
+impl PartialEq for Seq
+impl PartialOrd for Seq
+impl Serialize for Seq
+```
 
 ## struct `SessionId`
 
@@ -2046,7 +2859,24 @@ pub fn new() -> Self
 
 Allocate a globally unique identity, independent of ordering.
 
-Implements `Clone`, `Copy`, `Debug`, `Default`, `Deserialize<'de>`, `Display`, `Eq`, `FromStr`, `Hash`, `JsonSchema`, `Ord`, `PartialEq`, `PartialOrd`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for SessionId
+impl Copy for SessionId
+impl Debug for SessionId
+impl Default for SessionId
+impl<'de> Deserialize<'de> for SessionId
+impl Display for SessionId
+impl Eq for SessionId
+impl FromStr for SessionId
+impl Hash for SessionId
+impl JsonSchema for SessionId
+impl Ord for SessionId
+impl PartialEq for SessionId
+impl PartialOrd for SessionId
+impl Serialize for SessionId
+```
 
 ## struct `SessionRecord`
 
@@ -2070,7 +2900,15 @@ Persistent Session identity, execution binding and selected profile.
 - `binding` — Node and generation authorized to execute this Session.
 - `profile` — Name of the configuration selected at the next Round boundary.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for SessionRecord
+impl Debug for SessionRecord
+impl<'de> Deserialize<'de> for SessionRecord
+impl PartialEq for SessionRecord
+impl Serialize for SessionRecord
+```
 
 ## struct `SessionRef`
 
@@ -2088,7 +2926,15 @@ A Session's stable identity with its resolved name for inspection.
 - `id` — Identity used by the Session's durable records.
 - `name` — Human-readable name resolved by the record owner.
 
-Implements `Clone`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for SessionRef
+impl Debug for SessionRef
+impl Eq for SessionRef
+impl PartialEq for SessionRef
+impl Serialize for SessionRef
+```
 
 ## enum `Settlement`
 
@@ -2114,7 +2960,16 @@ Durable execution outcome; result text is stored once in the Log entry's content
 - `Unknown` — Effects may already have occurred; never retry automatically.
   - `failure` — Classification and details of the failure.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `From<&Outcome>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Settlement
+impl Debug for Settlement
+impl<'de> Deserialize<'de> for Settlement
+impl From<&Outcome> for Settlement
+impl PartialEq for Settlement
+impl Serialize for Settlement
+```
 
 ## struct `Source`
 
@@ -2132,7 +2987,15 @@ The identity and exact content of a candidate used to compose an inline message.
 - `id` — Source-qualified candidate ID.
 - `hash` — Content hash of the candidate's original text, before formatting.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Source
+impl Debug for Source
+impl<'de> Deserialize<'de> for Source
+impl PartialEq for Source
+impl Serialize for Source
+```
 
 ## enum `StopReason`
 
@@ -2154,7 +3017,17 @@ Provider-reported completion boundary.
 - `MaxTokens` — The output limit was reached.
 - `Other` — A provider-specific stopping condition.
 
-Implements `Clone`, `Copy`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for StopReason
+impl Copy for StopReason
+impl Debug for StopReason
+impl<'de> Deserialize<'de> for StopReason
+impl Eq for StopReason
+impl PartialEq for StopReason
+impl Serialize for StopReason
+```
 
 ## struct `ToolCall`
 
@@ -2176,7 +3049,15 @@ A proposed invocation; arguments are normalized only when dispatched.
 - `name` — Tool name selected by the model from the disclosed definitions.
 - `arguments` — Raw provider arguments, parsed only at dispatch.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ToolCall
+impl Debug for ToolCall
+impl<'de> Deserialize<'de> for ToolCall
+impl PartialEq for ToolCall
+impl Serialize for ToolCall
+```
 
 ## struct `ToolResult`
 
@@ -2198,7 +3079,15 @@ Model-facing settlement linked to the original provider call ID.
 - `content` — Exact model-visible result text.
 - `is_error` — Whether this is a failed or unknown tool outcome.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ToolResult
+impl Debug for ToolResult
+impl<'de> Deserialize<'de> for ToolResult
+impl PartialEq for ToolResult
+impl Serialize for ToolResult
+```
 
 ## struct `ToolSpec`
 
@@ -2230,7 +3119,14 @@ pub fn of<A: JsonSchema>(name: impl Into<String>, description: impl Into<String>
 
 Declare a tool whose arguments are `A`; the schema comes from `A` and its field documentation.
 
-Implements `Clone`, `Debug`, `From<&ToolSpec>`, `PartialEq`.
+Implements:
+
+```rust
+impl Clone for ToolSpec
+impl Debug for ToolSpec
+impl From<&ToolSpec> for DisclosedTool
+impl PartialEq for ToolSpec
+```
 
 ## struct `Unviewable`
 
@@ -2248,7 +3144,16 @@ An attachment the owner sent but this host could not make visible as an image.
 - `what` — Protocol-provided description of the attachment.
 - `reason` — Recorded reason it was not accepted as an image.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Unviewable
+impl Debug for Unviewable
+impl<'de> Deserialize<'de> for Unviewable
+impl Eq for Unviewable
+impl PartialEq for Unviewable
+impl Serialize for Unviewable
+```
 
 ## enum `UnviewableReason`
 
@@ -2268,7 +3173,16 @@ Expected attachment failures remain part of their input Event.
 - `TooLarge` — Its original bytes exceed the image limit.
 - `Unavailable` — The service permanently refused retrieval, with its diagnostic context.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for UnviewableReason
+impl Debug for UnviewableReason
+impl<'de> Deserialize<'de> for UnviewableReason
+impl Eq for UnviewableReason
+impl PartialEq for UnviewableReason
+impl Serialize for UnviewableReason
+```
 
 ## struct `Usage`
 
@@ -2288,7 +3202,15 @@ Token counts reported by the provider.
 - `output_tokens` — Total output tokens reported by the provider.
 - `cached_input_tokens` — Cached input tokens, if the provider reports them.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Usage
+impl Debug for Usage
+impl<'de> Deserialize<'de> for Usage
+impl PartialEq for Usage
+impl Serialize for Usage
+```
 
 ## fn `parse_arguments`
 

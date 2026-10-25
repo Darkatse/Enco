@@ -1,4 +1,5 @@
-//! A navigation manual: every module and item, private ones included, with source lines.
+//! A navigation manual: every module and item the source does not hide, private ones included,
+//! with source lines.
 //!
 //! `README.md` lists the modules, each with its summary, so a reader can pick where to look; each
 //! module then has a file of its own.
@@ -48,7 +49,7 @@ fn walk<'a>(view: &View<'a>, item: &'a Item, path: String, modules: &mut Vec<(St
         .items
         .iter()
         .filter_map(|id| view.item(id))
-        .filter(|child| matches!(child.inner, ItemEnum::Module(_)))
+        .filter(|child| matches!(child.inner, ItemEnum::Module(_)) && view.shows(child))
         .collect();
     children.sort_by_key(|child| child.name.clone());
     for child in children {
@@ -85,6 +86,8 @@ fn module(view: &View<'_>, crate_name: &str, path: &str, item: &Item) -> String 
         .iter()
         .filter_map(|id| view.item(id))
         .filter(|item| !matches!(item.inner, ItemEnum::Module(_) | ItemEnum::Impl(_)))
+        .filter(|item| view.shows(item))
+        // A private `use` only imports; a public one re-exports.
         .filter(|item| {
             !matches!(item.inner, ItemEnum::Use(_)) || item.visibility == Visibility::Public
         })

@@ -77,8 +77,9 @@ pub enum EventBody {
 
 impl Event {
     /// The sole mapping from Inbox input to a model message: the content its producer supplied.
-    /// The composer narrates the circumstances, such as arrival and planned times.
-    /// Input without text, such as a photo alone, has no text part.
+    ///
+    /// The composer narrates the circumstances, such as arrival and planned times. Input without
+    /// text, such as a photo alone, has no text part.
     pub fn canonical_message(&self) -> Message {
         let (text, images) = match &self.body {
             EventBody::UserMessage { text, images, .. } => (text, images.as_slice()),

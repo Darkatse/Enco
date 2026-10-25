@@ -52,9 +52,11 @@ impl WasmRuntime {
     }
 }
 
+/// The HTTP client's redirect policy: follow redirects only within one origin.
+///
 /// Credentials attach by origin, while reqwest strips only a few known headers when a redirect
-/// changes host. Redirects are therefore followed only within one origin; any other redirect is
-/// returned to the plugin as the response.
+/// changes host. Any redirect that leaves the origin is therefore returned to the plugin as the
+/// response.
 fn same_origin_redirects() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
         let leaves_origin = attempt

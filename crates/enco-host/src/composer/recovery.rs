@@ -1,6 +1,7 @@
 use enco_kernel::{ComposeInput, SafeMode};
 
 /// Explain unavailable capabilities, safe mode and recovery, and why a later reply model answers.
+///
 /// Only reply requests carry this: a summary would keep it after recovery.
 pub(super) fn append(system: &mut String, input: &ComposeInput) {
     if !input.unavailable.is_empty() {

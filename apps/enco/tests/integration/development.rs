@@ -2,6 +2,7 @@
 mod acceptance;
 use crate::protocol;
 mod documents;
+mod manual;
 mod sdk;
 use crate::support;
 

@@ -8,7 +8,8 @@ Session execution through explicit ports.
 - enum `Accepted` — Whether an Event was newly accepted.
 - struct `Activation` — One selected generation and where it came from; the running and registered layers share it.
 - struct `ActivationWrite` — Mechanical recovery moves references; it never creates new intent.
-- struct `ActiveConfig` — The active configuration generation: registered content plus the declarations the current host derives from it. The declarations are private to the registry, so only the registry builds one, from a single evaluation, and the parts cannot drift apart.
+- struct `Active` — The generation that runs under one name in ordinary operation.
+- struct `ActiveConfig` — The active configuration generation: registered content plus the declarations derived from it.
 - enum `Answer` — Finite probabilities in [0, 1], or a refusal for this question. Choice and score distributions follow label order and sum to one, allowing rounding.
 - enum `ArtifactSource` — Newly built bytes or a content address already known to the store.
 - struct `Budget` — Context limits supplied by configuration.
@@ -136,7 +137,15 @@ Whether an Event was newly accepted.
 - `New` — Accepted for the first time.
 - `Duplicate` — The Event ID was already accepted.
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `PartialEq`.
+Implements:
+
+```rust
+impl Clone for Accepted
+impl Copy for Accepted
+impl Debug for Accepted
+impl Eq for Accepted
+impl PartialEq for Accepted
+```
 
 ## struct `Activation`
 
@@ -156,7 +165,12 @@ One selected generation and where it came from; the running and registered layer
 - `registration` — Registration that selected it; absent for the host's factory default.
 - `code` — Where the generation's code came from.
 
-Implements `Clone`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Activation
+impl Serialize for Activation
+```
 
 ## struct `ActivationWrite`
 
@@ -178,7 +192,32 @@ Mechanical recovery moves references; it never creates new intent.
 - `failed` — Attributable failures observed while recovering.
 - `event` — Optional Session input committed with automatic recovery.
 
-Implements `Clone`, `Default`.
+Implements:
+
+```rust
+impl Clone for ActivationWrite
+impl Default for ActivationWrite
+```
+
+## struct `Active`
+
+`src/registry/exports.rs`
+
+```rust
+pub struct Active<'a> {
+    pub name: &'a PluginName,
+    pub generation: GenerationId,
+    pub code: CodeSource,
+    pub loaded: Result<&'a crate::Loaded, &'a [Cause]>,
+}
+```
+
+The generation that runs under one name in ordinary operation.
+
+- `name` — Routing name.
+- `generation` — The running generation.
+- `code` — How its code entered the registry.
+- `loaded` — What it declared when it loaded, or why this host cannot serve it.
 
 ## struct `ActiveConfig`
 
@@ -193,15 +232,20 @@ pub struct ActiveConfig {
 }
 ```
 
-The active configuration generation: registered content plus the declarations the current
-host derives from it. The declarations are private to the registry, so only the registry
-builds one, from a single evaluation, and the parts cannot drift apart.
+The active configuration generation: registered content plus the declarations derived from it.
+
+The declarations are those the current host derives. They are private to the registry, so only
+the registry builds one, from a single evaluation, and the parts cannot drift apart.
 
 - `generation` — Active configuration generation.
 - `document` — Registered document; never read from the intent file during use.
 - `kernel` — Parsed kernel-owned tables.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for ActiveConfig
+```
 
 ## enum `Answer`
 
@@ -224,7 +268,11 @@ Choice and score distributions follow label order and sum to one, allowing round
 - `Score` — Probability of each level, in label order.
 - `Refused` — The service declined to answer this question.
 
-Implements `Debug`.
+Implements:
+
+```rust
+impl Debug for Answer
+```
 
 ## enum `ArtifactSource`
 
@@ -266,7 +314,13 @@ Context limits supplied by configuration.
 - `context_tokens` — Total model window including reserved output.
 - `max_output_tokens` — Requested maximum generated tokens.
 
-Implements `Clone`, `Copy`, `Debug`.
+Implements:
+
+```rust
+impl Clone for Budget
+impl Copy for Budget
+impl Debug for Budget
+```
 
 ## struct `CallContext`
 
@@ -410,7 +464,15 @@ pub fn part(&self) -> IntentPart
 
 The part of the intent that must change, or that the owner must provide.
 
-Implements `Clone`, `Debug`, `Display`, `Error`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Cause
+impl Debug for Cause
+impl Display for Cause
+impl Error for Cause
+impl Serialize for Cause
+```
 
 ## struct `CodeProvenance`
 
@@ -428,7 +490,15 @@ Where a generation's code came from; settings-only generations follow their code
 - `generation` — Generation that supplied the code.
 - `source` — How that code entered the registry.
 
-Implements `Clone`, `Copy`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for CodeProvenance
+impl Copy for CodeProvenance
+impl Eq for CodeProvenance
+impl PartialEq for CodeProvenance
+impl Serialize for CodeProvenance
+```
 
 ## enum `CodeSource`
 
@@ -439,6 +509,7 @@ pub enum CodeSource {
     Factory,
     Directory {
         registration: RegistrationId,
+        source: ContentHash,
     },
     Artifact,
 }
@@ -449,9 +520,18 @@ How a generation's code entered the registry.
 - `Factory` — Code shipped with this host, registered or not.
 - `Directory` — A registered source directory.
   - `registration` — Registration that registered the directory.
+  - `source` — The directory's content, as stored when it was registered.
 - `Artifact` — A directly supplied component.
 
-Implements `Clone`, `Copy`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for CodeSource
+impl Copy for CodeSource
+impl Eq for CodeSource
+impl PartialEq for CodeSource
+impl Serialize for CodeSource
+```
 
 ## struct `Commit`
 
@@ -485,7 +565,12 @@ Provider output with host-assigned call identities.
 - `usage` — Token usage reported by the provider.
 - `stop` — Stop condition reported by the provider.
 
-Implements `Clone`, `Debug`.
+Implements:
+
+```rust
+impl Clone for Completion
+impl Debug for Completion
+```
 
 ## struct `CompletionEndpoint`
 
@@ -505,7 +590,11 @@ A profile's endpoint with the context limits required by completion.
 - `budget` — Context window and reserved output of this model.
 - `accepts` — Non-text inputs accepted by this model.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for CompletionEndpoint
+```
 
 ## enum `ComposeError`
 
@@ -530,7 +619,13 @@ A policy could not produce a valid request.
   - `window` — Configured context window.
 - `Invalid` — Policy inputs could not be composed.
 
-Implements `Debug`, `Display`, `Error`.
+Implements:
+
+```rust
+impl Debug for ComposeError
+impl Display for ComposeError
+impl Error for ComposeError
+```
 
 ## struct `ComposeInput`
 
@@ -571,7 +666,11 @@ Fixed Round inputs, with the selected budgets and recorded recovery facts for th
 - `compactions_left` — Compactions this Round still allows; at zero the composer must return a plan or fail.
 - `image_paths` — Local blob addresses supplied by the store for image annotations.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for ComposeInput
+```
 
 ## enum `Composition`
 
@@ -638,7 +737,12 @@ pub fn name(self) -> &'static str
 
 Top-level key owned by the declaration.
 
-Implements `Clone`, `Copy`.
+Implements:
+
+```rust
+impl Clone for ConfigTable
+impl Copy for ConfigTable
+```
 
 ## struct `ConfigurationSource`
 
@@ -674,7 +778,11 @@ State returned to the connection owner for atomic acceptance.
 - `state` — Complete state snapshot owned by this connection.
 - `settlement` — Final settlement of a Log-derived delivery, if any.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for ConnectionWrite
+```
 
 ## struct `ContextError`
 
@@ -686,7 +794,13 @@ pub struct ContextError(pub String);
 
 A context source failed to supply its authoritative content.
 
-Implements `Debug`, `Display`, `Error`.
+Implements:
+
+```rust
+impl Debug for ContextError
+impl Display for ContextError
+impl Error for ContextError
+```
 
 ## struct `ContextQuery`
 
@@ -730,7 +844,12 @@ A declared credential; transport validates placement and alone reads its value.
 - `header` — Header populated by the transport.
 - `prefix` — Literal prefix before the secret value.
 
-Implements `Clone`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Credential
+impl Serialize for Credential
+```
 
 ## struct `DeliveryStatus`
 
@@ -748,7 +867,11 @@ A delivery failure with the Session name resolved before presentation.
 - `settlement` — Original delivery and settlement facts.
 - `session` — The Session that produced the delivery.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for DeliveryStatus
+```
 
 ## enum `Difference`
 
@@ -771,7 +894,15 @@ One layer in which a registered plugin runs otherwise than registered.
 - `Code` — The running code differs from the registered code.
 - `Settings` — The running settings differ from the registered settings.
 
-Implements `Clone`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Difference
+impl Debug for Difference
+impl Eq for Difference
+impl PartialEq for Difference
+impl Serialize for Difference
+```
 
 ## struct `Endpoint`
 
@@ -791,7 +922,11 @@ A resolved model service, independent of its caller and code generation.
 - `plugin` — Registered plugin name whose exports serve this endpoint.
 - `settings` — Durable parameters copied into AttemptStarted.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for Endpoint
+```
 
 ## struct `EndpointFailure`
 
@@ -809,7 +944,11 @@ A candidate and the reason the kernel passed it over.
 - `endpoint` — Configured name, for diagnostics rather than combination identity.
 - `failure` — Current unavailability or the last recorded failure of this combination.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for EndpointFailure
+```
 
 ## struct `EndpointSpec`
 
@@ -833,7 +972,11 @@ A named model service; each user checks the facts it needs.
 - `dimensions` — Embedding width, if applicable.
 - `accepts` — Non-text input capabilities declared by the owner.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for EndpointSpec
+```
 
 ## struct `Endpoints`
 
@@ -871,7 +1014,11 @@ pub fn iter(&self) -> impl Iterator<Item = &CompletionEndpoint>
 
 Candidates in the owner's configured order.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for Endpoints
+```
 
 ## struct `Export`
 
@@ -935,6 +1082,14 @@ pub fn decision(&self, endpoint: &Endpoint) -> Result<Export<dyn Decision>, Fail
 
 Resolve decision at the start of one policy evaluation.
 
+### `Exports::active`
+
+```rust
+pub fn active(&self) -> impl Iterator<Item = Active<'_>>
+```
+
+The generation that runs under each name in ordinary operation, in name order.
+
 ## struct `FactoryPlugin`
 
 `src/registry.rs`
@@ -953,7 +1108,11 @@ A plugin supplied with the host binary.
 - `id` — Stable host-assigned identity, independent of component self-description.
 - `artifact` — Embedded component bytes.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for FactoryPlugin
+```
 
 ## struct `FactoryStatus`
 
@@ -975,7 +1134,12 @@ Current host-owned recovery code and whether registered intent needs to follow i
 - `artifact` — Content address of the embedded code.
 - `follow` — Registered intent follows factory code and differs from this host's implementation.
 
-Implements `Clone`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for FactoryStatus
+impl Serialize for FactoryStatus
+```
 
 ## enum `ImageError`
 
@@ -998,7 +1162,14 @@ Image ingestion either rejects its input or reports a storage failure.
   - `size` — Original byte length.
 - `Store` — The content store could not accept the image.
 
-Implements `Debug`, `Display`, `Error`, `From<StoreError>`.
+Implements:
+
+```rust
+impl Debug for ImageError
+impl Display for ImageError
+impl Error for ImageError
+impl From<StoreError> for ImageError
+```
 
 ## struct `Inspection`
 
@@ -1028,7 +1199,13 @@ An Attempt reconstructed exclusively from its recorded plan and Log prefix.
 - `plan` — Frozen plan, including each inline message's sources and all recorded omissions.
 - `result` — Recorded settlement, absent while the Attempt is unsettled.
 
-Implements `Debug`, `Deserialize<'de>`, `Serialize`.
+Implements:
+
+```rust
+impl Debug for Inspection
+impl<'de> Deserialize<'de> for Inspection
+impl Serialize for Inspection
+```
 
 ## enum `IntentPart`
 
@@ -1087,9 +1264,17 @@ The part of the owner's intent that a cause points to.
 - `Environment` — A requirement the owner provides outside the intent, such as a secret value.
   - `plugin` — Plugin missing the requirement.
 - `Plugin` — A plugin that cannot run; its own status says why.
-  - `plugin` — The plugin.
+  - `plugin` — The plugin that cannot run, by its current name.
 
-Implements `Clone`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for IntentPart
+impl Debug for IntentPart
+impl Eq for IntentPart
+impl PartialEq for IntentPart
+impl Serialize for IntentPart
+```
 
 ## struct `Kernel`
 
@@ -1261,7 +1446,11 @@ pub async fn outgoing_file(&self, file: &OutgoingFile) -> Result<FileData, Kerne
 
 Resolve the recorded attachment before a channel starts its delivery.
 
-Implements `Drop`.
+Implements:
+
+```rust
+impl Drop for Kernel
+```
 
 ## struct `KernelDeps`
 
@@ -1328,7 +1517,16 @@ Public command failure; Round failures are recorded in the Log instead.
 - `UnknownSession` — No such Session is registered.
 - `UnknownProfile` — The requested profile is absent from the node configuration.
 
-Implements `Debug`, `Display`, `Error`, `From<RegistryError>`, `From<ScheduleError>`, `From<StoreError>`.
+Implements:
+
+```rust
+impl Debug for KernelError
+impl Display for KernelError
+impl Error for KernelError
+impl From<RegistryError> for KernelError
+impl From<ScheduleError> for KernelError
+impl From<StoreError> for KernelError
+```
 
 ## struct `KernelSettings`
 
@@ -1381,7 +1579,11 @@ pub fn uses(&self) -> Vec<Use>
 
 Project each profile's requirements from its parsed endpoints.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for KernelSettings
+```
 
 ## struct `Label`
 
@@ -1399,7 +1601,12 @@ An option or score level. Names are unique within a question.
 - `name` — Option name or score-level name.
 - `description` — Optional rubric explaining when the label applies.
 
-Implements `Clone`, `Debug`.
+Implements:
+
+```rust
+impl Clone for Label
+impl Debug for Label
+```
 
 ## enum `LoadError`
 
@@ -1419,7 +1626,15 @@ Why a component cannot be loaded, attributed to its code or to the settings it w
 - `Settings` — The settings cannot be used with this component.
 - `Plugin` — The component reported a failure while describing itself or its tools.
 
-Implements `Clone`, `Debug`, `Display`, `Error`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for LoadError
+impl Debug for LoadError
+impl Display for LoadError
+impl Error for LoadError
+impl Serialize for LoadError
+```
 
 ## struct `Loaded`
 
@@ -1451,7 +1666,11 @@ Exports returned by loading a component. Each invocation owns its own runtime st
 - `decision` — Decision interface when supplied by the component.
 - `tools` — Declared tool definitions and their common invocation interface.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for Loaded
+```
 
 ## struct `LoadedTools`
 
@@ -1469,7 +1688,11 @@ Tool declarations are evaluated once with the generation's accepted configuratio
 - `specs` — Model-facing definitions fixed with this generation.
 - `adapter` — Executes a tool with the definition supplied by its caller.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for LoadedTools
+```
 
 ## enum `Need`
 
@@ -1499,7 +1722,13 @@ A use's interface and behavior requirements, shared by wiring checks and real pr
   - `dimensions` — Expected vector width.
 - `Decision` — Typed judgments for host policies.
 
-Implements `Clone`, `Eq`, `PartialEq`.
+Implements:
+
+```rust
+impl Clone for Need
+impl Eq for Need
+impl PartialEq for Need
+```
 
 ## struct `NodeRecord`
 
@@ -1517,7 +1746,12 @@ Persistent node identity and recovery policy.
 - `id` — Persistent node identity.
 - `safe_mode` — Whether the next Round uses only the lifeline.
 
-Implements `Clone`, `Debug`.
+Implements:
+
+```rust
+impl Clone for NodeRecord
+impl Debug for NodeRecord
+```
 
 ## enum `PluginChange`
 
@@ -1595,7 +1829,12 @@ pub fn generation(&self) -> Option<&GenerationRecord>
 
 Generation selected by this change, including a reused factory generation.
 
-Implements `Clone`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for PluginChangeKind
+impl Serialize for PluginChangeKind
+```
 
 ## struct `PluginStatus`
 
@@ -1623,7 +1862,11 @@ What runs for one plugin, and how that differs from its registered intent.
 - `users` — Configured users of the running name.
 - `standing` — How what runs stands against the registered intent.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for PluginStatus
+```
 
 ## struct `Probe`
 
@@ -1641,7 +1884,11 @@ A successful real call made while applying configuration.
 - `user` — User whose requirement triggered this call.
 - `endpoint` — Endpoint that was checked.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for Probe
+```
 
 ## struct `Profile`
 
@@ -1661,7 +1908,11 @@ Session policy sampled once at the start of a Round.
 - `compaction` — Ordered candidates for summarizing history.
 - `requires_lifeline` — Whether every reply plan must disclose all lifeline tools.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for Profile
+```
 
 ## enum `Proposed`
 
@@ -1681,7 +1932,16 @@ What a candidate generation changes, which decides the part its failure concerns
 - `Settings` — New settings for the running code.
 - `Factory` — Code shipped with this host.
 
-Implements `Clone`, `Copy`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Proposed
+impl Copy for Proposed
+impl Debug for Proposed
+impl Eq for Proposed
+impl PartialEq for Proposed
+impl Serialize for Proposed
+```
 
 ## struct `ProviderRequest`
 
@@ -1702,7 +1962,15 @@ registry probes contain only fixed validation content.
 - `tools` — Frozen definitions disclosed to the model.
 - `max_output_tokens` — Optional output limit.
 
-Implements `Clone`, `Debug`, `Deserialize<'de>`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl<I: Clone> Clone for ProviderRequest<I>
+impl<I: Debug> Debug for ProviderRequest<I>
+impl<'de, I> Deserialize<'de> for ProviderRequest<I> where I: Deserialize<'de>
+impl<I: PartialEq> PartialEq for ProviderRequest<I>
+impl<I> Serialize for ProviderRequest<I> where I: Serialize
+```
 
 ## struct `Question`
 
@@ -1720,7 +1988,12 @@ Instructions and the allowed answer shape for one independent judgment.
 - `instructions` — The judgment to make against the shared state.
 - `kind` — Allowed outcomes and their interpretation.
 
-Implements `Clone`, `Debug`.
+Implements:
+
+```rust
+impl Clone for Question
+impl Debug for Question
+```
 
 ## enum `QuestionKind`
 
@@ -1740,7 +2013,12 @@ A predicate, unordered alternatives, or score levels ordered from low to high.
 - `Choice` — Mutually exclusive alternatives.
 - `Score` — Ordered levels, from low to high.
 
-Implements `Clone`, `Debug`.
+Implements:
+
+```rust
+impl Clone for QuestionKind
+impl Debug for QuestionKind
+```
 
 ## enum `Referrer`
 
@@ -1761,7 +2039,15 @@ What in the configuration refers to a plugin name.
   - `user` — The user, such as `profile default.reply`.
 - `Settings` — The plugin's own `[plugin.<name>]` table.
 
-Implements `Clone`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Referrer
+impl Debug for Referrer
+impl Eq for Referrer
+impl PartialEq for Referrer
+impl Serialize for Referrer
+```
 
 ## struct `Registered`
 
@@ -1789,7 +2075,11 @@ The result of one accepted registration, with the evidence gathered before accep
 - `users` — Configured users affected by this registration.
 - `warnings` — Post-commit cleanup errors; the registration has already been accepted.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for Registered
+```
 
 ## struct `RegisteredIntent`
 
@@ -1847,7 +2137,11 @@ pub fn plugin_by_id(&self, id: PluginId) -> Option<(&PluginName, &RegisteredPlug
 
 The name and intent of a plugin identity.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for RegisteredIntent
+```
 
 ## struct `RegisteredPlugin`
 
@@ -1879,7 +2173,12 @@ pub fn source(&self) -> Option<ContentHash>
 
 Address of the accepted source directory, absent when following factory code.
 
-Implements `Clone`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RegisteredPlugin
+impl Serialize for RegisteredPlugin
+```
 
 ## struct `RegisteredSource`
 
@@ -1917,7 +2216,12 @@ pub fn matches_source_artifact(&self, artifact: ContentHash) -> bool
 
 A source build matches only a registered directory choice, even when factory bytes coincide.
 
-Implements `Clone`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for RegisteredSource
+impl Serialize for RegisteredSource
+```
 
 ## struct `RegistrationBase`
 
@@ -1935,7 +2239,11 @@ An accepted history position always has a complete configuration.
 - `id` — Latest registration included in this view.
 - `configuration` — Configuration selected by the latest configuration registration in the view.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for RegistrationBase
+```
 
 ## struct `RegistrationDetails`
 
@@ -1959,7 +2267,11 @@ A bounded description of one accepted registration, without unrelated history.
 - `created_at` — Observation time, used only for presentation.
 - `changes` — Typed changes derived from the accepted rows.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl<S> Serialize for RegistrationDetails<S> where S: Serialize
+```
 
 ## struct `RegistrationRequest`
 
@@ -2001,7 +2313,11 @@ The sole committer assigns identities before handing a complete write to the sto
 - `configuration` — A configuration to create and activate, when its intent changed.
 - `plugins` — Final runtime references for each affected identity.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for RegistrationWrite
+```
 
 ## struct `Registry`
 
@@ -2206,7 +2522,15 @@ An explicit registry operation could not complete.
 - `NoRollbackTarget` — No accepted change remains to roll back.
 - `Conflict` — The active generation or target health changed while the target was prepared.
 
-Implements `Debug`, `Display`, `Error`, `From<RegistryError>`, `From<StoreError>`.
+Implements:
+
+```rust
+impl Debug for RegistryError
+impl Display for RegistryError
+impl Error for RegistryError
+impl From<RegistryError> for KernelError
+impl From<StoreError> for RegistryError
+```
 
 ## struct `RegistryState`
 
@@ -2230,7 +2554,12 @@ Durable facts; compiled code and admission are projections of this history.
 - `config_generations` — Immutable configuration content.
 - `active_config` — Current configuration, absent only before initial registration.
 
-Implements `Clone`, `Default`.
+Implements:
+
+```rust
+impl Clone for RegistryState
+impl Default for RegistryState
+```
 
 ## struct `RegistryStatus`
 
@@ -2270,7 +2599,11 @@ The reply model the kernel selected, and why earlier candidates were passed over
 - `accepts` — Non-text inputs accepted by the selected reply endpoint.
 - `skipped` — Candidates before it that are unavailable or exhausted in this Run, in configured order.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for ReplyTarget
+```
 
 ## struct `RewindScope`
 
@@ -2332,7 +2665,11 @@ The configuration file and plugin directories one rewind writes.
 - `configuration` — Whether `config.toml` is written.
 - `plugins` — Each selected identity and the directory it is written to.
 
-Implements `Default`.
+Implements:
+
+```rust
+impl Default for RewindSelection
+```
 
 ## struct `Rollback`
 
@@ -2354,7 +2691,11 @@ A completed owner rollback, which may stop plugins when no recoverable code rema
 - `configuration` — Configuration activated by the rollback, when it changed.
 - `warnings` — Post-commit cleanup errors; the recovered references are already active.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for Rollback
+```
 
 ## enum `Running`
 
@@ -2402,7 +2743,11 @@ pub fn activation(&self) -> Option<&Activation>
 
 The selected generation, whether or not this host can serve it.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for Running
+```
 
 ## enum `SafeMode`
 
@@ -2420,7 +2765,11 @@ The reason for the Round's fixed recovery mode.
 - `Owner` — The owner explicitly enabled the switch; only disabling it permits normal operation.
 - `Failed` — This Run failed against the same registered behavior.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for SafeMode
+```
 
 ## enum `ScheduleError`
 
@@ -2455,7 +2804,15 @@ Schedule validation or persistence failure.
 - `Store` — The durable authority failed.
 - `Stopped` — The owner has stopped, with its reported failure when one exists.
 
-Implements `Debug`, `Display`, `Error`, `From<ScheduleError>`, `From<StoreError>`.
+Implements:
+
+```rust
+impl Debug for ScheduleError
+impl Display for ScheduleError
+impl Error for ScheduleError
+impl From<ScheduleError> for KernelError
+impl From<StoreError> for ScheduleError
+```
 
 ## struct `Scheduled`
 
@@ -2484,7 +2841,12 @@ pub fn into_json(self) -> Value
 Shared tool and CLI view, with local offsets fixed when producing the result.
 The rule echoes the creation arguments; `timezone` is the effective zone.
 
-Implements `Clone`, `Debug`.
+Implements:
+
+```rust
+impl Clone for Scheduled
+impl Debug for Scheduled
+```
 
 ## struct `Schedules`
 
@@ -2522,7 +2884,11 @@ pub async fn cancel(&self, id: ScheduleId) -> Result<bool, ScheduleError>
 
 Stop future occurrences. Events already in the Inbox are unaffected.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for Schedules
+```
 
 ## enum `ScopeError`
 
@@ -2540,7 +2906,11 @@ A requested rewind that the scope cannot address.
 - `Unknown` — Neither state has a plugin under the name.
 - `Collision` — Two selected identities would be written to the same directory.
 
-Implements `Debug`.
+Implements:
+
+```rust
+impl Debug for ScopeError
+```
 
 ## struct `SessionStatus`
 
@@ -2560,7 +2930,11 @@ Live execution status, separate from durable Session facts.
 - `running` — Whether a Run is currently executing.
 - `stopped` — Storage failure that stopped this actor, if any.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for SessionStatus
+```
 
 ## struct `SettingsError`
 
@@ -2586,7 +2960,15 @@ pub fn new(table: impl Into<String>, message: impl ToString) -> Self
 
 Attribute a parsing or validation failure to its table.
 
-Implements `Clone`, `Debug`, `Display`, `Error`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for SettingsError
+impl Debug for SettingsError
+impl Display for SettingsError
+impl Error for SettingsError
+impl Serialize for SettingsError
+```
 
 ## enum `Standing`
 
@@ -2610,7 +2992,15 @@ How the running layer of one plugin stands against its registered layer.
 - `Removed` — A registration removed the plugin, and mechanical recovery still runs it.
   - `by` — Registration that removed it.
 
-Implements `Clone`, `Debug`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for Standing
+impl Debug for Standing
+impl Eq for Standing
+impl PartialEq for Standing
+impl Serialize for Standing
+```
 
 ## struct `Status`
 
@@ -2638,7 +3028,11 @@ Current node and Session execution state.
 - `sessions` — State of every registered Session actor.
 - `scheduler_stopped` — Failure that stopped the Scheduler, if any.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for Status
+```
 
 ## enum `StoreError`
 
@@ -2693,7 +3087,17 @@ A failed storage operation or commit precondition.
   - `expected` — Version understood by this binary.
 - `Backend` — The storage engine or filesystem operation failed.
 
-Implements `Debug`, `Display`, `Error`, `From<StoreError>`.
+Implements:
+
+```rust
+impl Debug for StoreError
+impl Display for StoreError
+impl Error for StoreError
+impl From<StoreError> for ImageError
+impl From<StoreError> for KernelError
+impl From<StoreError> for RegistryError
+impl From<StoreError> for ScheduleError
+```
 
 ## struct `TableOwner`
 
@@ -2727,7 +3131,16 @@ Who else exports a conflicting tool name.
 - `Host` — A tool provided by the host.
 - `Plugins` — Other plugins exporting the same name.
 
-Implements `Clone`, `Debug`, `Display`, `Eq`, `PartialEq`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for ToolOwner
+impl Debug for ToolOwner
+impl Display for ToolOwner
+impl Eq for ToolOwner
+impl PartialEq for ToolOwner
+impl Serialize for ToolOwner
+```
 
 ## struct `Transcript`
 
@@ -2749,7 +3162,13 @@ Model-facing projection of immutable Log facts.
 - `round_ends` — Complete Round boundaries eligible for compaction, in ascending Log position order.
 - `run_ends` — Run outcomes after the summary, in Log order; the composer decides how to describe them.
 
-Implements `Clone`, `Debug`, `Default`.
+Implements:
+
+```rust
+impl Clone for Transcript
+impl Debug for Transcript
+impl Default for Transcript
+```
 
 ## struct `TranscriptItem`
 
@@ -2771,7 +3190,12 @@ One canonical message and its immutable source.
 - `generation` — Provider generation of the producing Attempt, present only for Assistant messages.
 - `event` — Consumed Inbox Event, present only for inputs; the composer narrates its circumstances.
 
-Implements `Clone`, `Debug`.
+Implements:
+
+```rust
+impl Clone for TranscriptItem
+impl Debug for TranscriptItem
+```
 
 ## enum `UnitChange`
 
@@ -2807,7 +3231,12 @@ pub fn path(&self) -> IntentPath
 
 The public path used by history, status and rewind.
 
-Implements `Clone`, `Serialize`.
+Implements:
+
+```rust
+impl Clone for UnitChange
+impl Serialize for UnitChange
+```
 
 ## struct `UnservedUse`
 
@@ -2827,7 +3256,11 @@ One current configured use that cannot be served by the selected exports.
 - `endpoint` — Endpoint named by that consumer.
 - `causes` — Why the selected exports cannot serve it.
 
-Implements `Serialize`.
+Implements:
+
+```rust
+impl Serialize for UnservedUse
+```
 
 ## struct `Use`
 
@@ -2847,7 +3280,11 @@ One configured user's endpoint and requirements.
 - `endpoint` — Resolved service and invocation parameters.
 - `need` — Required interface and behavior.
 
-Implements `Clone`.
+Implements:
+
+```rust
+impl Clone for Use
+```
 
 ## enum `Verdict`
 
@@ -2938,7 +3375,7 @@ Supplies current candidate content; never called in safe mode.
 ### `ContextSource::contribute`
 
 ```rust
-async fn contribute(&self, query: &'life1 ContextQuery) -> Result<Contribution, ContextError>
+async fn contribute(&self, query: &ContextQuery) -> Result<Contribution, ContextError>
 ```
 
 Stop external waits on cancellation, then finish any local write before returning.
@@ -2956,7 +3393,7 @@ Typed judgments consumed by host policies, independently of Session completion.
 ### `Decision::decide`
 
 ```rust
-async fn decide(&self, settings: &'life1 ProviderSettings, state: String, questions: Vec<Question>) -> Result<Vec<Answer>, Failure>
+async fn decide(&self, settings: &ProviderSettings, state: String, questions: Vec<Question>) -> Result<Vec<Answer>, Failure>
 ```
 
 Evaluate each question against the same state; answers follow question order.
@@ -2974,7 +3411,7 @@ Embedding boundary consumed by host memory, independently of completion.
 ### `Embedding::embed`
 
 ```rust
-async fn embed(&self, settings: &'life1 ProviderSettings, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure>
+async fn embed(&self, settings: &ProviderSettings, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure>
 ```
 
 Embed texts in input order; credentials are never persisted with settings.
@@ -3011,7 +3448,7 @@ Completion boundary. Implementations own timeouts and per-invocation state.
 ### `Provider::complete`
 
 ```rust
-async fn complete(&self, settings: &'life1 ProviderSettings, request: ProviderRequest) -> Result<Completion, Failure>
+async fn complete(&self, settings: &ProviderSettings, request: ProviderRequest) -> Result<Completion, Failure>
 ```
 
 Complete a frozen request; the transport resolves credentials from the settings.
@@ -3030,7 +3467,7 @@ Compile and describe component bytes without knowing registry identities or rout
 ### `Runtime::load`
 
 ```rust
-async fn load(&self, artifact: &'life1 [u8], settings: &'life2 PluginSettings) -> Result<Loaded, LoadError>
+async fn load(&self, artifact: &[u8], settings: &PluginSettings) -> Result<Loaded, LoadError>
 ```
 
 Load the component and validate its imports and configuration.
@@ -3080,7 +3517,7 @@ Read the metadata sampled by the Session actor at each Round boundary.
 ### `Store::session_by_name`
 
 ```rust
-async fn session_by_name(&self, name: &'life1 str) -> Result<Option<SessionRecord>, StoreError>
+async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError>
 ```
 
 Look up a Session without creating it.
@@ -3088,7 +3525,7 @@ Look up a Session without creating it.
 ### `Store::ensure_session`
 
 ```rust
-async fn ensure_session(&self, name: &'life1 str, created_at: DateTime<Utc>) -> Result<SessionRecord, StoreError>
+async fn ensure_session(&self, name: &str, created_at: DateTime<Utc>) -> Result<SessionRecord, StoreError>
 ```
 
 Create if absent, with local binding at epoch one and the default profile.
@@ -3112,7 +3549,7 @@ Atomically append facts and consume their Inbox inputs after checking ownership 
 ### `Store::accept`
 
 ```rust
-async fn accept(&self, events: &'life1 [Event], connection: Option<&'life2 ConnectionWrite>) -> Result<Vec<Accepted>, StoreError>
+async fn accept(&self, events: &[Event], connection: Option<&ConnectionWrite>) -> Result<Vec<Accepted>, StoreError>
 ```
 
 Atomically accept Events, connection state and an optional final delivery outcome.
@@ -3120,7 +3557,7 @@ Atomically accept Events, connection state and an optional final delivery outcom
 ### `Store::connection`
 
 ```rust
-async fn connection(&self, key: &'life1 str) -> Result<Option<serde_json::Value>, StoreError>
+async fn connection(&self, key: &str) -> Result<Option<serde_json::Value>, StoreError>
 ```
 
 Read the state owned by one channel connection.
@@ -3128,7 +3565,7 @@ Read the state owned by one channel connection.
 ### `Store::delivery_failures`
 
 ```rust
-async fn delivery_failures(&self, key: &'life1 str) -> Result<Vec<DeliverySettlement>, StoreError>
+async fn delivery_failures(&self, key: &str) -> Result<Vec<DeliverySettlement>, StoreError>
 ```
 
 Read recent failed or uncertain deliveries in reverse commit order.
@@ -3144,7 +3581,7 @@ Read unconsumed inputs in acceptance order.
 ### `Store::insert_schedule`
 
 ```rust
-async fn insert_schedule(&self, schedule: &'life1 Schedule) -> Result<(), StoreError>
+async fn insert_schedule(&self, schedule: &Schedule) -> Result<(), StoreError>
 ```
 
 Scheduler-owned insertion of a new schedule, stored as given.
@@ -3168,7 +3605,7 @@ Read schedules, optionally filtered by state.
 ### `Store::fire_schedule`
 
 ```rust
-async fn fire_schedule(&self, expected_last: Option<DateTime<Utc>>, done: bool, event: &'life1 Event) -> Result<(), StoreError>
+async fn fire_schedule(&self, expected_last: Option<DateTime<Utc>>, done: bool, event: &Event) -> Result<(), StoreError>
 ```
 
 Advance an active Schedule from expected_last and accept its Event atomically.
@@ -3177,7 +3614,7 @@ Mark it done when no occurrence remains.
 ### `Store::set_profile`
 
 ```rust
-async fn set_profile(&self, id: SessionId, profile: &'life1 str) -> Result<(), StoreError>
+async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError>
 ```
 
 Select the profile under the registry committer, effective at the next Round.
@@ -3193,7 +3630,7 @@ Read registration history and the references restored at startup.
 ### `Store::record_factories`
 
 ```rust
-async fn record_factories(&self, generations: &'life1 [GenerationRecord]) -> Result<(), StoreError>
+async fn record_factories(&self, generations: &[GenerationRecord]) -> Result<(), StoreError>
 ```
 
 Record embedded factory content without activating it or creating a registration.
@@ -3201,7 +3638,7 @@ Record embedded factory content without activating it or creating a registration
 ### `Store::register`
 
 ```rust
-async fn register(&self, write: &'life1 RegistrationWrite) -> Result<(), StoreError>
+async fn register(&self, write: &RegistrationWrite) -> Result<(), StoreError>
 ```
 
 Atomically accept one registration, its content and its runtime references.
@@ -3217,7 +3654,7 @@ Promote an observed trial without changing its identity or rollback target.
 ### `Store::activate`
 
 ```rust
-async fn activate(&self, change: &'life1 ActivationWrite) -> Result<(), StoreError>
+async fn activate(&self, change: &ActivationWrite) -> Result<(), StoreError>
 ```
 
 Atomically move runtime references and record attributable failures and a notice.
@@ -3225,7 +3662,7 @@ Atomically move runtime references and record attributable failures and a notice
 ### `Store::retain_artifacts`
 
 ```rust
-async fn retain_artifacts(&self, hashes: &'life1 std::collections::HashSet<ContentHash>) -> Result<(), StoreError>
+async fn retain_artifacts(&self, hashes: &std::collections::HashSet<ContentHash>) -> Result<(), StoreError>
 ```
 
 Remove component files which no runtime reference retains.
@@ -3233,7 +3670,7 @@ Remove component files which no runtime reference retains.
 ### `Store::put_artifact`
 
 ```rust
-async fn put_artifact(&self, bytes: &'life1 [u8]) -> Result<ContentHash, StoreError>
+async fn put_artifact(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>
 ```
 
 Persist immutable component bytes separately from removable history blobs.
@@ -3241,7 +3678,7 @@ Persist immutable component bytes separately from removable history blobs.
 ### `Store::artifact`
 
 ```rust
-async fn artifact(&self, hash: &'life1 ContentHash) -> Result<Vec<u8>, StoreError>
+async fn artifact(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError>
 ```
 
 Read and verify component bytes by content address.
@@ -3249,7 +3686,7 @@ Read and verify component bytes by content address.
 ### `Store::put_blob`
 
 ```rust
-async fn put_blob(&self, bytes: &'life1 [u8]) -> Result<ContentHash, StoreError>
+async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>
 ```
 
 Persist immutable bytes before recording their content address.
@@ -3257,7 +3694,7 @@ Persist immutable bytes before recording their content address.
 ### `Store::get_blob`
 
 ```rust
-async fn get_blob(&self, hash: &'life1 ContentHash) -> Result<Vec<u8>, StoreError>
+async fn get_blob(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError>
 ```
 
 Read bytes and verify they match their recorded address.
@@ -3302,10 +3739,11 @@ Code implementing the invocation.
 async fn call(&self, ctx: CallContext, args: serde_json::Map<String, serde_json::Value>) -> Outcome
 ```
 
-Execute after dispatch checks disclosure, checks the arguments against the tool's schema
-(dropping optional properties given as null) and confirms the call may start.
+Execute a call whose disclosure and arguments dispatch has already checked.
+
+The arguments fit the tool's schema, with optional properties given as null removed.
 Respond to cancellation and wait until started work is quiescent before returning.
-Pageable results should fit ctx.result_budget and explain how to continue.
+Pageable results should fit `ctx.result_budget` and explain how to continue.
 
 ## trait `Tools`
 
@@ -3320,7 +3758,7 @@ A plugin's tools interface, independent of the registry-assigned code identity.
 ### `Tools::call`
 
 ```rust
-async fn call(&self, ctx: CallContext, spec: &'life1 ToolSpec, args: serde_json::Map<String, serde_json::Value>) -> Outcome
+async fn call(&self, ctx: CallContext, spec: &ToolSpec, args: serde_json::Map<String, serde_json::Value>) -> Outcome
 ```
 
 Execute a declared tool and wait for any started work to become quiescent on cancellation.

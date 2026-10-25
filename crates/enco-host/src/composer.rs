@@ -128,8 +128,8 @@ impl FactoryComposer {
         .trim()
         .to_string();
         text.push_str(&format!(
-            "\n\n## Environment\n- Home: {} (config.toml and plugins/)\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}\n- Time zone: {} (UTC{})",
-            self.home.display(), self.workspace.display(), self.instructions.display(), input.session.name,
+            "\n\n## Environment\n- Home: {} (config.toml and plugins/)\n- Manual: {} (start with README.md; generated, so edits are lost)\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}\n- Time zone: {} (UTC{})",
+            self.home.display(), self.home.join(crate::development::MANUAL_DIRECTORY).display(), self.workspace.display(), self.instructions.display(), input.session.name,
             input.timezone, input.now.with_timezone(&input.timezone).format("%:z")
         ));
         let mut sources = Vec::new();
