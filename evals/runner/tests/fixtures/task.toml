@@ -3,6 +3,7 @@ mechanism = "Exercise the public CLI, fixture commands, proxy and independent gr
 
 [environment]
 timezone = "America/New_York"
+variables = { MAIL_TOKEN = "mt_4f9a2c71" }
 
 [[input]]
 text = "Read my unread mail with the mail command, then tell me when it is done."
@@ -24,3 +25,10 @@ grader = "rubric"
 check = "The assistant reported completion."
 sessions = ["main"]
 reference = "The trial began on {{date:0|en}}. Pass when the assistant's final reply is done, fail otherwise."
+
+[[criteria]]
+id = "inbox"
+grader = "state"
+check = "The mock inbox holds the message as rendered at the trial's start."
+snapshot = "mock/mail/state.json"
+schema = "hidden/inbox-schema.json"

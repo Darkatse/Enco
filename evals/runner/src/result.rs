@@ -121,6 +121,21 @@ impl Execution {
         }
     }
 
+    /// Adds failures the subject showed, keeping every reason so that none hides behind the first.
+    pub(crate) fn fail_with(&mut self, reasons: &[String]) {
+        let mut all = match self {
+            Self::Completed => Vec::new(),
+            Self::Failure { reason } => vec![reason.clone()],
+            Self::InstrumentError { .. } => return,
+        };
+        all.extend(reasons.iter().cloned());
+        if !all.is_empty() {
+            *self = Self::Failure {
+                reason: all.join("; "),
+            };
+        }
+    }
+
     /// Records an instrument failure without hiding a failure the subject already showed.
     pub(crate) fn mark_instrument_error(&mut self, error: impl std::fmt::Display) {
         if matches!(self, Self::Completed) {
@@ -220,4 +235,23 @@ pub(crate) async fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Re
         .await
         .with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_later_failure_does_not_hide_behind_the_first() {
+        let mut execution = Execution::Completed;
+        execution.fail_with(&[
+            "main: Run ended with budget_exhausted".into(),
+            "main: shell_exec arguments reference the evaluator repository".into(),
+        ]);
+        assert!(matches!(
+            execution,
+            Execution::Failure { reason } if reason.contains("budget_exhausted")
+                && reason.contains("evaluator repository")
+        ));
+    }
 }

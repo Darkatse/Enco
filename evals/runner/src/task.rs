@@ -23,6 +23,9 @@ pub(crate) struct Definition {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Environment {
     pub(crate) timezone: chrono_tz::Tz,
+    /// Variables the owner has set, such as a service's access token; the daemon inherits them.
+    #[serde(default)]
+    pub(crate) variables: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -87,6 +90,17 @@ pub(crate) struct Mock {
     pub(crate) route: Vec<Route>,
     #[serde(default)]
     pub(crate) collection: Vec<Collection>,
+    pub(crate) auth: Option<Auth>,
+}
+
+/// A header every request must carry: `prefix` followed by the value of the task's `variable`.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Auth {
+    pub(crate) header: String,
+    #[serde(default)]
+    pub(crate) prefix: String,
+    pub(crate) variable: String,
 }
 
 #[derive(Clone, Deserialize)]
@@ -120,7 +134,23 @@ fn read_header<'de, D: serde::Deserializer<'de>>(
 #[serde(deny_unknown_fields)]
 pub(crate) struct Collection {
     pub(crate) name: String,
+    /// Where the collection is served; `/<name>` when absent.
+    path: Option<String>,
     pub(crate) data: Option<PathBuf>,
+    /// Fields the service fills in when a created item leaves them out.
+    #[serde(default)]
+    pub(crate) defaults: serde_json::Map<String, Value>,
+    /// The query parameters a listing matches items by; the service ignores any other.
+    #[serde(default)]
+    pub(crate) filters: Vec<String>,
+}
+
+impl Collection {
+    pub(crate) fn path(&self) -> String {
+        self.path
+            .clone()
+            .unwrap_or_else(|| format!("/{}", self.name))
+    }
 }
 
 #[derive(Deserialize)]
@@ -275,7 +305,8 @@ async fn validate(task: &Task) -> Result<()> {
     for criterion in &task.definition.criteria {
         match &criterion.grader {
             Grader::State { schema, .. } => {
-                let schema: Value = crate::result::read_json(&task.root.join(schema)).await?;
+                let source = tokio::fs::read_to_string(task.root.join(schema)).await?;
+                let schema: Value = serde_json::from_str(&renderer.text(&source)?)?;
                 jsonschema::options()
                     .with_draft(jsonschema::Draft::Draft202012)
                     .build(&schema)?;
@@ -299,12 +330,31 @@ async fn validate(task: &Task) -> Result<()> {
     }
     for definition in task.mocks.values() {
         let mut names = BTreeSet::new();
+        let mut paths = BTreeSet::new();
         for collection in &definition.collection {
             ensure!(
                 names.insert(&collection.name),
                 "{}: duplicate collection {}",
                 definition.host,
                 collection.name
+            );
+            let path = collection.path();
+            ensure!(
+                path.starts_with('/') && !path.ends_with('/') && paths.insert(path.clone()),
+                "{}: collection path {path} must start with / and be unique",
+                definition.host
+            );
+        }
+        if let Some(auth) = &definition.auth {
+            hyper::header::HeaderName::from_bytes(auth.header.as_bytes())?;
+            ensure!(
+                task.definition
+                    .environment
+                    .variables
+                    .contains_key(&auth.variable),
+                "{}: auth names variable {}, which [environment.variables] does not set",
+                definition.host,
+                auth.variable
             );
         }
         for route in &definition.route {

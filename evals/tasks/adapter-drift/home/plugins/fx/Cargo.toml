@@ -1,0 +1,36 @@
+[package]
+name = "plugin-fx"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+enco-sdk = { path = "../../sdk" }
+schemars = "1.2.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+
+[lints.clippy]
+allow_attributes_without_reason = "deny"
+dbg_macro = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+too_many_lines = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"
+
+[lints.rust]
+unsafe_code = "deny"

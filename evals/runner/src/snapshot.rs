@@ -2,7 +2,7 @@ use crate::{
     enco::{Enco, output::*},
     result,
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{collections::BTreeMap, path::Path};
@@ -34,6 +34,9 @@ struct Call {
     session: String,
     #[serde(flatten)]
     proposal: Proposal,
+    /// The plugin generation that executed the call; absent for native tools and calls that
+    /// never started.
+    generation: Option<u64>,
     outcome: CallOutcome,
     code: Option<String>,
     content: String,
@@ -71,6 +74,7 @@ pub(crate) async fn export(enco: &Enco, directory: &Path, forbidden: &[&Path]) -
             }
         }
     }
+    snapshot.history(enco, directory).await?;
     let mut calls = Vec::new();
     if let Some(sessions) = snapshot
         .read::<Vec<Session>>(enco, directory, "sessions", &["sessions"])
@@ -135,10 +139,45 @@ impl Snapshot {
         }
     }
 
+    /// The complete registration history, newest first, joined from the CLI's pages.
+    async fn history(&mut self, enco: &Enco, directory: &Path) -> Result<()> {
+        let read = async {
+            let mut registrations = Vec::new();
+            let mut before: Option<String> = None;
+            loop {
+                let mut args = vec!["history", "--json"];
+                if let Some(cursor) = &before {
+                    args.extend(["--before", cursor.as_str()]);
+                }
+                let mut page = enco.command(&args).await?;
+                let Value::Array(entries) = page["registrations"].take() else {
+                    bail!("history page has no registrations");
+                };
+                registrations.extend(entries);
+                before = match &page["before"] {
+                    Value::Null => return Ok(registrations),
+                    Value::Number(cursor) => Some(cursor.to_string()),
+                    other => bail!("history cursor {other} is not a number"),
+                };
+            }
+        };
+        match read.await {
+            Ok(registrations) => {
+                result::write_json(&directory.join("history.json"), &registrations).await
+            }
+            Err(error) => {
+                self.export_errors
+                    .insert("history".into(), format!("{error:#}"));
+                Ok(())
+            }
+        }
+    }
+
     fn project(&mut self, session: &str, log: Vec<Entry>, calls: &mut Vec<Call>) -> Result<String> {
         let mut transcript = String::new();
         let mut attempts = BTreeMap::new();
         let mut proposals = Vec::new();
+        let mut started = BTreeMap::new();
         let mut settlements = BTreeMap::new();
         for entry in log {
             match entry.body {
@@ -197,6 +236,9 @@ impl Snapshot {
                         transcript.push_str(&format!("## assistant\n{}\n\n", text.join("\n")));
                     }
                 }
+                EntryBody::ToolCallStarted { call, code } => {
+                    started.insert(call, code.generation());
+                }
                 EntryBody::ToolCallSettled {
                     call,
                     outcome,
@@ -227,7 +269,7 @@ impl Snapshot {
                 _ => {}
             }
         }
-        pair(session, proposals, settlements, calls)?;
+        pair(session, proposals, &started, settlements, calls)?;
         Ok(transcript)
     }
 }
@@ -236,6 +278,7 @@ impl Snapshot {
 fn pair(
     session: &str,
     proposals: Vec<Proposal>,
+    started: &BTreeMap<String, Option<u64>>,
     mut settlements: BTreeMap<String, (Settlement, String)>,
     calls: &mut Vec<Call>,
 ) -> Result<()> {
@@ -250,6 +293,7 @@ fn pair(
         };
         calls.push(Call {
             session: session.into(),
+            generation: started.get(&proposal.call).copied().flatten(),
             proposal,
             outcome,
             code,

@@ -1,0 +1,252 @@
+[
+  {
+    "at": "2026-10-25T18:29:15.796Z",
+    "body": {
+      "event": {
+        "body": {
+          "images": [],
+          "kind": "user_message",
+          "text": "汇率换算那个插件坏了，问什么都报错。你帮我看看修一下，修好了顺便算算 100 美元现在合多少人民币。",
+          "unviewable": []
+        },
+        "id": "01M5T55WWKVBXPDEPN44XXQZCM",
+        "received_at": "2026-10-25T18:29:15.795Z",
+        "session": "01M5T55WWJERHKPQS31KFQ066Z",
+        "source": {
+          "kind": "cli"
+        }
+      },
+      "kind": "event_consumed"
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 2
+    }
+  },
+  {
+    "at": "2026-10-25T18:29:15.814Z",
+    "body": {
+      "call": "01M5T55WX5WQCZQYRMP64RSGVP",
+      "capability": {
+        "name": "fx_convert",
+        "node": "01M5T55102JMV4VZ5B44T3EPY6"
+      },
+      "code": {
+        "id": 7,
+        "kind": "generation"
+      },
+      "effect": "read_only",
+      "kind": "tool_call_started",
+      "round": "01M5T55WWMBGTY7VBFB8ZXCYEG"
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 6
+    }
+  },
+  {
+    "at": "2026-10-25T18:29:15.820Z",
+    "body": {
+      "call": "01M5T55WX5WQCZQYRMP64RSGVP",
+      "content": "error [tool.failed]: Ratewell answered HTTP 410: {\n  \"error\": \"gone\",\n  \"message\": \"Ratewell API v1 was retired on October 24, 2026. Please move to v2: http://ratewell.io/docs/v2/migrating\"\n}",
+      "full": null,
+      "images": [],
+      "kind": "tool_call_settled",
+      "outcome": {
+        "failure": {
+          "code": "tool.failed",
+          "message": "Ratewell answered HTTP 410: {\n  \"error\": \"gone\",\n  \"message\": \"Ratewell API v1 was retired on October 24, 2026. Please move to v2: http://ratewell.io/docs/v2/migrating\"\n}",
+          "retryable": false
+        },
+        "kind": "failed"
+      },
+      "outgoing": null
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 7
+    }
+  },
+  {
+    "at": "2026-10-25T18:29:15.834Z",
+    "body": {
+      "call": "01M5T55WXTZKS3N262DBFKB3PH",
+      "capability": {
+        "name": "fs_write",
+        "node": "01M5T55102JMV4VZ5B44T3EPY6"
+      },
+      "code": {
+        "kind": "native",
+        "name": "host-tools",
+        "version": "0.1.0"
+      },
+      "effect": "idempotent",
+      "kind": "tool_call_started",
+      "round": "01M5T55WXDFT6TE5VTJSVVQTVA"
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 12
+    }
+  },
+  {
+    "at": "2026-10-25T18:29:15.840Z",
+    "body": {
+      "call": "01M5T55WXTZKS3N262DBFKB3PH",
+      "content": "{\n  \"bytes\": 3004,\n  \"path\": \"/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/9w5sed301b2g/lin/.enco/plugins/fx/src/ratewell.rs\"\n}",
+      "full": null,
+      "images": [],
+      "kind": "tool_call_settled",
+      "outcome": {
+        "kind": "ok"
+      },
+      "outgoing": null
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 13
+    }
+  },
+  {
+    "at": "2026-10-25T18:29:15.854Z",
+    "body": {
+      "call": "01M5T55WYDMF55MDKZH9D31GHF",
+      "capability": {
+        "name": "self_apply",
+        "node": "01M5T55102JMV4VZ5B44T3EPY6"
+      },
+      "code": {
+        "kind": "native",
+        "name": "host-tools",
+        "version": "0.1.0"
+      },
+      "effect": "side_effect",
+      "kind": "tool_call_started",
+      "round": "01M5T55WY1J1HKJEXWE8V4BSXN"
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 18
+    }
+  },
+  {
+    "at": "2026-10-25T18:29:18.571Z",
+    "body": {
+      "call": "01M5T55WYDMF55MDKZH9D31GHF",
+      "content": "# Registration 2\n\n\"Move fx to Ratewell v2, which quotes rates against the euro only\"\n\n- `plugins/fx`: new code → generation 9 · trial\n\nBuilds:\n- `plugins/fx`: built. Full log: `/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/9w5sed301b2g/lin/.enco/.data/blobs/f3/f3e667709d882fcc5ca6f853779a5bc5d122d146b13ffabd0af88816ff9e6b0a`\n\nNew code starts on trial: generation 9 becomes healthy once the required probe and first calls succeed.\n\nNext: check again with `self_status {}`.\n",
+      "full": null,
+      "images": [],
+      "kind": "tool_call_settled",
+      "outcome": {
+        "kind": "ok"
+      },
+      "outgoing": null
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 19
+    }
+  },
+  {
+    "at": "2026-10-25T18:29:18.589Z",
+    "body": {
+      "call": "01M5T55ZKWCS82JAGVNHD2M1QY",
+      "capability": {
+        "name": "fx_convert",
+        "node": "01M5T55102JMV4VZ5B44T3EPY6"
+      },
+      "code": {
+        "id": 9,
+        "kind": "generation"
+      },
+      "effect": "read_only",
+      "kind": "tool_call_started",
+      "round": "01M5T55ZKEQWD61DA1D7T4XZ5R"
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 24
+    }
+  },
+  {
+    "at": "2026-10-25T18:29:18.591Z",
+    "body": {
+      "call": "01M5T55ZKWCS82JAGVNHD2M1QY",
+      "content": "{\n  \"amount\": 100.0,\n  \"from\": \"USD\",\n  \"published\": \"2026-10-23\",\n  \"rate\": 6.9637414608512875,\n  \"result\": 696.37,\n  \"to\": \"CNY\"\n}",
+      "full": null,
+      "images": [],
+      "kind": "tool_call_settled",
+      "outcome": {
+        "kind": "ok"
+      },
+      "outgoing": null
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 25
+    }
+  },
+  {
+    "at": "2026-10-25T18:29:18.620Z",
+    "body": {
+      "event": {
+        "body": {
+          "images": [],
+          "kind": "user_message",
+          "text": "下个月去东京出差，1500 美元能换多少日元？",
+          "unviewable": []
+        },
+        "id": "01M5T55ZMV0P83GD25Z3DXD00J",
+        "received_at": "2026-10-25T18:29:18.619Z",
+        "session": "01M5T55WWJERHKPQS31KFQ066Z",
+        "source": {
+          "kind": "cli"
+        }
+      },
+      "kind": "event_consumed"
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 33
+    }
+  },
+  {
+    "at": "2026-10-25T18:29:18.636Z",
+    "body": {
+      "call": "01M5T55ZNCJPJ1VEYZ26TK94ZV",
+      "capability": {
+        "name": "fx_convert",
+        "node": "01M5T55102JMV4VZ5B44T3EPY6"
+      },
+      "code": {
+        "id": 9,
+        "kind": "generation"
+      },
+      "effect": "read_only",
+      "kind": "tool_call_started",
+      "round": "01M5T55ZMVMA8S09S04HQA5KXD"
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 37
+    }
+  },
+  {
+    "at": "2026-10-25T18:29:18.638Z",
+    "body": {
+      "call": "01M5T55ZNCJPJ1VEYZ26TK94ZV",
+      "content": "{\n  \"amount\": 1500.0,\n  \"from\": \"USD\",\n  \"published\": \"2026-10-23\",\n  \"rate\": 139.66544053249257,\n  \"result\": 209498.16,\n  \"to\": \"JPY\"\n}",
+      "full": null,
+      "images": [],
+      "kind": "tool_call_settled",
+      "outcome": {
+        "kind": "ok"
+      },
+      "outgoing": null
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 38
+    }
+  }
+]

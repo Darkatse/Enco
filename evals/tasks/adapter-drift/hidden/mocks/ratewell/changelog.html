@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Changelog · Ratewell</title>
+</head>
+<body>
+<header>
+  <a href="/">Ratewell</a>
+  <nav><a href="/docs">Docs</a> · <a href="/changelog">Changelog</a></nav>
+</header>
+<main>
+  <h1>Changelog</h1>
+
+  <h2>{{date:-1d|en}}: v1 retired</h2>
+  <p>The v1 endpoints now return <code>410 Gone</code> with a link to the <a href="/docs/v2/migrating">migration guide</a>. Thanks to everyone who moved early; about 3% of traffic was still on v1 last week, and we have emailed every contact address we have.</p>
+
+  <h2>{{date:-30d|en}}: Reminder, v1 retires in a month</h2>
+  <p>v1 stops answering on {{date:-1d|en}}. If your logs show <code>Deprecation</code> and <code>Sunset</code> headers on Ratewell responses, you are still on v1.</p>
+
+  <h2>{{date:-92d|en}}: v1 deprecated</h2>
+  <p>v1 responses now carry <code>Deprecation</code> and <code>Sunset</code> headers. v1 will be retired on {{date:-1d|en}}. See <a href="/docs/v2/migrating">Migrating from v1 to v2</a>.</p>
+
+  <h2>{{date:-120d|en}}: v2 released</h2>
+  <p>v2 returns the ECB's rates exactly as published: quoted against the euro, as decimal strings, every currency in one response. Cross rates are now computed by clients. Historical rates will follow in a later release.</p>
+
+  <h2>{{date:-205d|en}}: New servers</h2>
+  <p>We moved to a host in Frankfurt, a few kilometres from where the numbers come from. Median response time dropped from 90 ms to 25 ms.</p>
+
+  <h2>{{date:-290d|en}}: Late publications</h2>
+  <p>Fixed: when the ECB published late on a Friday, weekend requests could return Thursday's rates until Monday.</p>
+</main>
+<footer><a href="/docs">Docs</a> · <a href="/changelog">Changelog</a></footer>
+</body>
+</html>

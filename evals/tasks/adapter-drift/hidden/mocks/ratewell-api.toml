@@ -1,0 +1,33 @@
+host = "api.ratewell.io"
+
+[[route]]
+method = "GET"
+path = "/"
+content_type = "application/json; charset=utf-8"
+body = "hidden/mocks/ratewell-api/index.json"
+
+[[route]]
+method = "GET"
+path = "/v1/latest"
+status = 410
+content_type = "application/json; charset=utf-8"
+body = "hidden/mocks/ratewell-api/v1-gone.json"
+
+[[route]]
+method = "GET"
+path = "/v1/currencies"
+status = 410
+content_type = "application/json; charset=utf-8"
+body = "hidden/mocks/ratewell-api/v1-gone.json"
+
+[[route]]
+method = "GET"
+path = "/v2/latest"
+content_type = "application/json; charset=utf-8"
+body = "hidden/mocks/ratewell-api/v2-latest.json"
+
+[[route]]
+method = "GET"
+path = "/v2/currencies"
+content_type = "application/json; charset=utf-8"
+body = "hidden/mocks/ratewell-api/v2-currencies.json"

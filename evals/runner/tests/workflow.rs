@@ -35,8 +35,10 @@ impl Evaluation {
         write(
             &root.join("evals/tasks/mail/hidden/mocks/mail.toml"),
             r#"host = "mail.veloran.com"
+auth = { header = "Authorization", prefix = "Bearer ", variable = "MAIL_TOKEN" }
 [[collection]]
 name = "inbox"
+path = "/v1/inbox"
 data = "hidden/inbox.json"
 "#,
         );
@@ -51,23 +53,7 @@ data = "hidden/inbox.json"
             ResponseTemplate::new(200).set_body_json(json!({ "data": (0..count).map(|index| json!({ "index": index, "embedding": [1.0,0.0,0.0,1.0] })).collect::<Vec<_>>() }))
         }).mount(&model).await;
         Mock::given(path("/chat/completions"))
-            .respond_with(|request: &wiremock::Request| {
-                let body: Value = serde_json::from_slice(&request.body).unwrap();
-                let done = body["messages"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|message| message["role"] == "tool");
-                let message = if done {
-                    json!({ "role": "assistant", "content": "done" })
-                } else {
-                    json!({ "role": "assistant", "content": null, "tool_calls": [{
-                    "id": "read-mail", "type": "function", "function": { "name": "shell_exec",
-                    "arguments": json!({ "command": "mail" }).to_string() }
-                }] })
-                };
-                completion(message, if done { "stop" } else { "tool_calls" })
-            })
+            .respond_with(call_once("shell_exec", json!({ "command": "mail" })))
             .mount(&model)
             .await;
         let judge = MockServer::start().await;
@@ -174,6 +160,30 @@ api_key_env = "EVAL_JUDGE_KEY"
     }
 }
 
+/// A model that proposes one call of `tool`, then answers "done" once it has the result.
+fn call_once(
+    tool: &'static str,
+    arguments: Value,
+) -> impl Fn(&wiremock::Request) -> ResponseTemplate {
+    move |request| {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        let done = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["role"] == "tool");
+        let message = if done {
+            json!({ "role": "assistant", "content": "done" })
+        } else {
+            json!({ "role": "assistant", "content": null, "tool_calls": [{
+                "id": "first", "type": "function", "function": { "name": tool,
+                "arguments": arguments.to_string() }
+            }] })
+        };
+        completion(message, if done { "stop" } else { "tool_calls" })
+    }
+}
+
 fn completion(message: Value, reason: &str) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({ "choices": [{ "message": message, "finish_reason": reason }], "usage": { "prompt_tokens": 10, "completion_tokens": 2, "prompt_cache_hit_tokens": 3 } }))
 }
@@ -240,7 +250,14 @@ async fn evidence_is_isolated_and_regrading_uses_the_saved_trial() {
     assert!(!trial_dir.join("home/.enco/task.toml").exists());
     let requests =
         std::fs::read_to_string(trial_dir.join("snapshot/mock/mail/requests.jsonl")).unwrap();
-    assert!(requests.contains("/inbox"));
+    assert!(requests.contains("/v1/inbox"));
+    // The fixture reads the inbox with the owner's token, then once without it.
+    let calls = read(&trial_dir.join("snapshot/tool-calls.json"));
+    let output = calls[0]["content"].as_str().unwrap();
+    assert!(
+        output.contains("Meeting") && output.contains("unauthorized"),
+        "{output}"
+    );
     let plugins = read(&trial_dir.join("snapshot/status.json"))["plugins"].clone();
     let active = &plugins["openai-compatible"]["running"]["running"]["activation"]["generation"];
     assert_eq!(trial["generations"]["openai-compatible"], active["id"]);
@@ -426,7 +443,7 @@ async fn source_fixture_is_registered_offline_before_serving() {
     );
     write(
         &evaluation.root.join("evals/tasks/mail/home/bin/mail"),
-        "#!/bin/sh\nset -eu\ncurl -fsS '{{mock:mail}}/inbox'\n",
+        "#!/bin/sh\nset -eu\ncurl -fsS -H \"Authorization: Bearer $MAIL_TOKEN\" '{{mock:mail}}/v1/inbox'\n",
     );
     // Reuse this scenario's Cargo cache without locking other source builds.
     let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/plugin-tests/evaluation");
@@ -453,6 +470,11 @@ async fn source_fixture_is_registered_offline_before_serving() {
         &evaluation.root.join("variant.toml"),
         &format!("enco = {wrapper:?}\n"),
     );
+    Mock::given(path("/chat/completions"))
+        .respond_with(call_once("fixture_echo", json!({ "text": "ping" })))
+        .with_priority(1)
+        .mount(&evaluation.model)
+        .await;
     let (directory, report) = evaluation.run().await;
     let trial = &report["trials"][0];
     assert_eq!(trial["result"], "success", "{trial:#}");
@@ -467,5 +489,20 @@ async fn source_fixture_is_registered_offline_before_serving() {
         status["configuration"]["running"]["registration"]
     );
     assert!(trial.join("home/.enco/plugins/fixture/README.md").is_file());
+    // The snapshot attributes the call to the generation that ran it, which the complete
+    // history shows the first registration selecting.
+    let calls = read(&trial.join("snapshot/tool-calls.json"));
+    assert_eq!(calls[0]["generation"], generation["id"], "{calls:#}");
+    let history = read(&trial.join("snapshot/history.json"));
+    assert!(
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|registration| registration["changes"].as_array().unwrap())
+            .any(|change| change["name"] == "fixture"
+                && change["generation"]["id"] == generation["id"]),
+        "{history:#}"
+    );
     evaluation.finish().await;
 }

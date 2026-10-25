@@ -1,0 +1,50 @@
+[
+  {
+    "at": "2026-10-25T19:15:16.292Z",
+    "body": {
+      "event": {
+        "body": {
+          "images": [],
+          "kind": "user_message",
+          "text": "我平时用 Cairn 记待办，想让你也能直接帮我管。它的 API 文档我存在 workspace/cairn-api.md 了，token 在环境变量 CAIRN_TOKEN 里。你先把它做成工具，然后把明天要做的三件事记进去：交房租、给妈妈打电话、把周报发给老板。",
+          "unviewable": []
+        },
+        "id": "01M5T7T4P37847RP1B05ADFFEQ",
+        "received_at": "2026-10-25T19:15:16.291Z",
+        "session": "01M5T7T4P2AYMGC53H7CCDTN9M",
+        "source": {
+          "kind": "cli"
+        }
+      },
+      "kind": "event_consumed"
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 2
+    }
+  },
+  {
+    "at": "2026-10-25T19:15:42.227Z",
+    "body": {
+      "event": {
+        "body": {
+          "images": [],
+          "kind": "user_message",
+          "text": "房租刚交了，帮我勾掉。再看看 Cairn 里明天还有哪些没做的？",
+          "unviewable": []
+        },
+        "id": "01M5T7TY0J7WSJ93HQFTH6HT3R",
+        "received_at": "2026-10-25T19:15:42.226Z",
+        "session": "01M5T7T4P2AYMGC53H7CCDTN9M",
+        "source": {
+          "kind": "cli"
+        }
+      },
+      "kind": "event_consumed"
+    },
+    "pos": {
+      "epoch": 1,
+      "seq": 57
+    }
+  }
+]

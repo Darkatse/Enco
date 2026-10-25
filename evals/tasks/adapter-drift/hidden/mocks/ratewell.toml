@@ -1,0 +1,37 @@
+host = "ratewell.io"
+
+[[route]]
+method = "GET"
+path = "/"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/ratewell/index.html"
+
+[[route]]
+method = "GET"
+path = "/docs"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/ratewell/docs.html"
+
+[[route]]
+method = "GET"
+path = "/docs/v2"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/ratewell/docs-v2.html"
+
+[[route]]
+method = "GET"
+path = "/docs/v2/migrating"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/ratewell/migrating.html"
+
+[[route]]
+method = "GET"
+path = "/docs/v1"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/ratewell/docs-v1.html"
+
+[[route]]
+method = "GET"
+path = "/changelog"
+content_type = "text/html; charset=utf-8"
+body = "hidden/mocks/ratewell/changelog.html"

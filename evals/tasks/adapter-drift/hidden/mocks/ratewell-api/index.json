@@ -1,0 +1,7 @@
+{
+  "name": "Ratewell API",
+  "current": "v2",
+  "endpoints": ["/v2/latest", "/v2/currencies"],
+  "retired": { "v1": "{{date:-1d}}" },
+  "docs": "http://ratewell.io/docs"
+}

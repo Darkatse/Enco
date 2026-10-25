@@ -1,0 +1,6 @@
+{"at": "2026-10-25T19:15:42.164004Z", "body": {"due_date": "2026-10-26", "title": "Pay rent"}, "method": "POST", "path": "/v1/tasks", "query": {}}
+{"at": "2026-10-25T19:15:42.180839Z", "body": {"due_date": "2026-10-26", "title": "Call Mom"}, "method": "POST", "path": "/v1/tasks", "query": {}}
+{"at": "2026-10-25T19:15:42.198811Z", "body": {"due_date": "2026-10-26", "title": "Send the weekly report to my boss"}, "method": "POST", "path": "/v1/tasks", "query": {}}
+{"at": "2026-10-25T19:15:42.245310Z", "body": "", "method": "GET", "path": "/v1/tasks", "query": {"due_date": "2026-10-26", "status": "open"}}
+{"at": "2026-10-25T19:15:42.263243Z", "body": {"status": "completed"}, "method": "PATCH", "path": "/v1/tasks/58241", "query": {}}
+{"at": "2026-10-25T19:15:42.281041Z", "body": "", "method": "GET", "path": "/v1/tasks", "query": {"due_date": "2026-10-26", "status": "open"}}

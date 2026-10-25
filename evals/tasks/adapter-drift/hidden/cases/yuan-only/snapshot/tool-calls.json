@@ -1,0 +1,46 @@
+[
+  {
+    "session": "main",
+    "round": "01M5T55WWMBGTY7VBFB8ZXCYEG",
+    "call": "01M5T55WX5WQCZQYRMP64RSGVP",
+    "name": "fx_convert",
+    "arguments": "{\"amount\": 100, \"from\": \"USD\", \"to\": \"CNY\"}",
+    "generation": 7,
+    "outcome": "failed",
+    "code": "tool.failed",
+    "content": "error [tool.failed]: Ratewell answered HTTP 410: {\n  \"error\": \"gone\",\n  \"message\": \"Ratewell API v1 was retired on October 24, 2026. Please move to v2: http://ratewell.io/docs/v2/migrating\"\n}"
+  },
+  {
+    "session": "main",
+    "round": "01M5T55WXDFT6TE5VTJSVVQTVA",
+    "call": "01M5T55WXTZKS3N262DBFKB3PH",
+    "name": "fs_write",
+    "arguments": "{\"path\": \"../plugins/fx/src/ratewell.rs\", \"content\": \"//! Ratewell's v2 API, which publishes the ECB reference rates against the euro only.\\nuse crate::failure;\\nuse enco_sdk::{host, types::Failure};\\nuse serde::Deserialize;\\nuse std::collections::BTreeMap;\\n\\nconst API: &str = \\\"http://api.ratewell.io/v2\\\";\\n\\n#[derive(Deserialize)]\\nstruct Published {\\n    published: String,\\n    rates: Vec<Quote>,\\n}\\n\\n#[derive(Deserialize)]\\nstruct Quote {\\n    currency: String,\\n    rate: String,\\n}\\n\\n/// The latest rates against one base currency.\\npub(crate) struct Latest {\\n    pub(crate) base: String,\\n    /// The ECB publication date, `YYYY-MM-DD`.\\n    pub(crate) date: String,\\n    /// How many units of each currency one unit of `base` buys.\\n    pub(crate) rates: BTreeMap<String, f64>,\\n}\\n\\nimpl Latest {\\n    pub(crate) fn rate(&self, currency: &str) -> Result<f64, Failure> {\\n        self.rates.get(currency).copied().ok_or_else(|| {\\n            failure(\\\"tool.failed\\\", format!(\\\"Ratewell publishes no {currency} rate\\\"))\\n        })\\n    }\\n}\\n\\n/// The latest rates against `base`, as cross rates through the euro, limited to `symbols` unless\\n/// it is empty.\\npub(crate) async fn latest(base: &str, symbols: &[String]) -> Result<Latest, Failure> {\\n    let response = host::http(host::HttpRequest {\\n        method: \\\"GET\\\".into(),\\n        url: format!(\\\"{API}/latest\\\"),\\n        headers: vec![(\\\"accept\\\".into(), \\\"application/json\\\".into())],\\n        body: None,\\n        timeout_ms: None,\\n    })\\n    .await\\n    .map_err(|error| Failure {\\n        code: \\\"tool.failed\\\".into(),\\n        message: format!(\\\"Ratewell is unreachable: {}\\\", error.message),\\n        retryable: true,\\n    })?;\\n    if !(200..300).contains(&response.status) {\\n        return Err(Failure {\\n            code: \\\"tool.failed\\\".into(),\\n            message: format!(\\n                \\\"Ratewell answered HTTP {}: {}\\\",\\n                response.status,\\n                String::from_utf8_lossy(&response.body).trim()\\n            ),\\n            retryable: response.status == 429 || response.status >= 500,\\n        });\\n    }\\n    let published: Published = serde_json::from_slice(&response.body).map_err(|error| {\\n        failure(\\\"tool.failed\\\", format!(\\\"Ratewell's response did not parse: {error}\\\"))\\n    })?;\\n    let mut per_euro = BTreeMap::from([(\\\"EUR\\\".to_owned(), 1.0)]);\\n    for quote in published.rates {\\n        let rate = quote.rate.parse::<f64>().map_err(|error| {\\n            failure(\\\"tool.failed\\\", format!(\\\"Ratewell sent rate {:?}: {error}\\\", quote.rate))\\n        })?;\\n        per_euro.insert(quote.currency, rate);\\n    }\\n    let base_rate = *per_euro\\n        .get(base)\\n        .ok_or_else(|| failure(\\\"tool.failed\\\", format!(\\\"Ratewell publishes no {base} rate\\\")))?;\\n    let rates = per_euro\\n        .into_iter()\\n        .filter(|(currency, _)| currency != base)\\n        .filter(|(currency, _)| symbols.is_empty() || symbols.contains(currency))\\n        .map(|(currency, rate)| (currency, rate / base_rate))\\n        .collect();\\n    Ok(Latest {\\n        base: base.to_owned(),\\n        date: published.published,\\n        rates,\\n    })\\n}\\n\"}",
+    "generation": null,
+    "outcome": "ok",
+    "code": null,
+    "content": "{\n  \"bytes\": 3004,\n  \"path\": \"/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/9w5sed301b2g/lin/.enco/plugins/fx/src/ratewell.rs\"\n}"
+  },
+  {
+    "session": "main",
+    "round": "01M5T55WY1J1HKJEXWE8V4BSXN",
+    "call": "01M5T55WYDMF55MDKZH9D31GHF",
+    "name": "self_apply",
+    "arguments": "{\"reason\": \"Move fx to Ratewell v2, which quotes rates against the euro only\"}",
+    "generation": null,
+    "outcome": "ok",
+    "code": null,
+    "content": "# Registration 2\n\n\"Move fx to Ratewell v2, which quotes rates against the euro only\"\n\n- `plugins/fx`: new code → generation 9 · trial\n\nBuilds:\n- `plugins/fx`: built. Full log: `/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/9w5sed301b2g/lin/.enco/.data/blobs/f3/f3e667709d882fcc5ca6f853779a5bc5d122d146b13ffabd0af88816ff9e6b0a`\n\nNew code starts on trial: generation 9 becomes healthy once the required probe and first calls succeed.\n\nNext: check again with `self_status {}`.\n"
+  },
+  {
+    "session": "main",
+    "round": "01M5T55ZKEQWD61DA1D7T4XZ5R",
+    "call": "01M5T55ZKWCS82JAGVNHD2M1QY",
+    "name": "fx_convert",
+    "arguments": "{\"amount\": 100, \"from\": \"USD\", \"to\": \"CNY\"}",
+    "generation": 9,
+    "outcome": "ok",
+    "code": null,
+    "content": "{\n  \"amount\": 100.0,\n  \"from\": \"USD\",\n  \"published\": \"2026-10-23\",\n  \"rate\": 6.9637414608512875,\n  \"result\": 696.37,\n  \"to\": \"CNY\"\n}"
+  }
+]

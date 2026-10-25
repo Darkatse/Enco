@@ -1,7 +1,8 @@
 #!/bin/sh
 # Exercise fixture expansion, proxy policy and archival through a real tool call.
 set -eu
-curl -fsS '{{mock:mail}}/inbox'
+curl -fsS -H "Authorization: Bearer $MAIL_TOKEN" '{{mock:mail}}/v1/inbox'
+curl -s '{{mock:mail}}/v1/inbox'
 curl -s http://blocked.test/
 curl -s -X 'BAD METHOD' '{{mock:mail}}/inbox' || true
 ln -s .enco/workspace "$HOME/work"

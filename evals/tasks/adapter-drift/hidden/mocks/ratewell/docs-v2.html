@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API v2 reference · Ratewell</title>
+</head>
+<body>
+<header>
+  <a href="/">Ratewell</a>
+  <nav><a href="/docs">Docs</a> · <a href="/changelog">Changelog</a></nav>
+</header>
+<main>
+  <h1>API v2 reference</h1>
+  <p>Base URL: <code>http://api.ratewell.io/v2</code>. No authentication. Responses are JSON in UTF-8.</p>
+  <p>Coming from v1? Read <a href="/docs/v2/migrating">Migrating from v1 to v2</a> first.</p>
+
+  <h2 id="latest">GET /latest</h2>
+  <p>The latest reference rates the ECB has published. There are no query parameters: every currency comes back in one response.</p>
+  <pre><code>curl http://api.ratewell.io/v2/latest</code></pre>
+<pre><code>{
+  "base": "EUR",
+  "published": "{{date:-75b}}",
+  "source": "European Central Bank, euro foreign exchange reference rates",
+  "rates": [
+    { "currency": "USD", "rate": "1.0835" },
+    { "currency": "JPY", "rate": "168.92" },
+    { "currency": "CZK", "rate": "24.731" },
+    …
+  ]
+}</code></pre>
+  <table>
+    <tr><th>Field</th><th>Meaning</th></tr>
+    <tr><td><code>base</code></td><td>Always <code>"EUR"</code>. Every rate is quoted against the euro.</td></tr>
+    <tr><td><code>published</code></td><td>The ECB working day these rates belong to, <code>YYYY-MM-DD</code>. On weekends and TARGET holidays it stays on the last working day.</td></tr>
+    <tr><td><code>source</code></td><td>Where the numbers come from.</td></tr>
+    <tr><td><code>rates</code></td><td>One object per currency, in the order the ECB publishes them. The euro itself is not listed.</td></tr>
+    <tr><td><code>rates[].currency</code></td><td>ISO 4217 code.</td></tr>
+    <tr><td><code>rates[].rate</code></td><td>How many units of <code>currency</code> one euro buys, as a decimal string with the ECB's precision (two to five decimal places).</td></tr>
+  </table>
+
+  <h3>Converting between two currencies</h3>
+  <p>Rates are quoted against the euro only. To convert an amount from currency <em>A</em> to currency <em>B</em>, divide by A's rate and multiply by B's: <code>amount × rate(B) ÷ rate(A)</code>, where the euro's own rate is 1. Round only the final result.</p>
+
+  <h2 id="currencies">GET /currencies</h2>
+  <p>Every currency code v2 knows, with its English name, including <code>EUR</code>.</p>
+  <pre><code>[{ "code": "EUR", "name": "Euro" }, { "code": "USD", "name": "US dollar" }, …]</code></pre>
+
+  <h2 id="history">Historical rates</h2>
+  <p>Historical rates are not part of v2 yet. They are coming in a later release; until then, the ECB's own statistical data warehouse has the full series.</p>
+
+  <h2 id="errors">Errors</h2>
+  <p>Errors use the status code that fits. Rate limiting and retired endpoints also explain themselves in a JSON body:</p>
+  <pre><code>{ "error": "rate_limited", "message": "Slow down: 60 requests per minute per IP address." }</code></pre>
+  <table>
+    <tr><th>Status</th><th>When</th></tr>
+    <tr><td>404</td><td>Unknown path.</td></tr>
+    <tr><td>410</td><td>A retired endpoint, such as <code>/v1/latest</code>.</td></tr>
+    <tr><td>429</td><td>More than 60 requests in a minute from one IP address. Wait for the number of seconds in <code>Retry-After</code>.</td></tr>
+    <tr><td>503</td><td>Rare: the ECB feed is late and we have nothing newer to serve. Retry in a few minutes.</td></tr>
+  </table>
+
+  <h2 id="caching">Caching</h2>
+  <p>The numbers change at most once per working day. Cache <code>/latest</code> until the next publication rather than calling it for every conversion.</p>
+</main>
+<footer><a href="/docs">Docs</a> · <a href="/changelog">Changelog</a></footer>
+</body>
+</html>

@@ -1,0 +1,40 @@
+[endpoint.chat]
+base_url = "http://127.0.0.1:18471"
+max_output_tokens = 8192
+model = "agent"
+plugin = "openai-compatible"
+window_tokens = 128000
+
+[endpoint.embed]
+base_url = "http://127.0.0.1:18471"
+dimensions = 4
+model = "embedding"
+plugin = "openai-compatible"
+
+[memory]
+embedding = "embed"
+
+[owner]
+timezone = "America/New_York"
+
+[plugin.web.config]
+search = ["exa", "tinyfish"]
+
+[plugin.web.config.urls]
+exa = "http://api.exa.ai"
+jina = "http://r.jina.ai"
+tinyfish = "http://api.search.tinyfish.ai"
+
+[plugin.web.secrets]
+exa = "EXA_API_KEY"
+tinyfish = "TINYFISH_API_KEY"
+
+[profile.default]
+compaction = ["chat"]
+reply = ["chat"]
+
+[run]
+max_rounds = 40
+
+[plugin.cairn.secrets]
+token = "CAIRN_TOKEN"

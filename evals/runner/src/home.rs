@@ -15,6 +15,9 @@ use std::{
 
 pub(crate) struct Home {
     pub(crate) path: PathBuf,
+    /// The subject's executable, installed where an owner would keep it, so that neither its
+    /// path nor the process list points at the evaluator's repository.
+    pub(crate) enco: PathBuf,
     pub(crate) environment: BTreeMap<String, OsString>,
 }
 
@@ -33,7 +36,11 @@ impl Home {
                 format!("{}:{}", enco.join("bin").display(), config.path).into(),
             ),
         ]);
-        Self { path, environment }
+        Self {
+            enco: path.join(".local/bin/enco"),
+            path,
+            environment,
+        }
     }
 
     pub(crate) async fn prepare(
@@ -59,11 +66,19 @@ impl Home {
             &variant.plugin,
         )?;
         tokio::fs::write(enco.join("config.toml"), source).await?;
-        self.initialize(&variant.binary).await?;
+        self.install(&variant.binary).await?;
+        self.initialize().await?;
         let cargo = self.toolchain()?;
         self.prefetch(&cargo, &enco).await?;
         self.environment.extend(model.variables.clone());
         self.environment.extend(variant.variables.clone());
+        self.environment.extend(
+            task.definition
+                .environment
+                .variables
+                .iter()
+                .map(|(name, value)| (name.clone(), value.into())),
+        );
         for name in ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"] {
             self.environment.insert(name.into(), proxy.into());
         }
@@ -79,8 +94,22 @@ impl Home {
         Ok(())
     }
 
-    async fn initialize(&self, binary: &Binary) -> Result<()> {
-        let initialized = tokio::process::Command::new(&binary.path)
+    /// A hard link costs nothing; a copy covers a home on another file system.
+    async fn install(&self, binary: &Binary) -> Result<()> {
+        tokio::fs::create_dir_all(self.enco.parent().context("enco directory")?).await?;
+        if tokio::fs::hard_link(&binary.path, &self.enco)
+            .await
+            .is_err()
+        {
+            tokio::fs::copy(&binary.path, &self.enco)
+                .await
+                .context("install enco in the trial home")?;
+        }
+        Ok(())
+    }
+
+    async fn initialize(&self) -> Result<()> {
+        let initialized = tokio::process::Command::new(&self.enco)
             .arg("init")
             .env_clear()
             .envs(&self.environment)
@@ -154,6 +183,11 @@ impl Home {
     pub(crate) async fn archive(&self, destination: &Path) -> Result<()> {
         if !self.path.try_exists()? {
             return Ok(());
+        }
+        // The variant's hash identifies the executable; the archive need not hold a copy.
+        match tokio::fs::remove_file(&self.enco).await {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
         }
         let output = tokio::process::Command::new("mv")
             .arg(&self.path)

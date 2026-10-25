@@ -128,6 +128,7 @@ trials/<题>/<变体>/<i>/
     tool-calls.json          由 Log 配对得出：每次工具调用的名字、参数与结局
     transcript/<session>.md  对话：按顺序的消息，每条以 "## owner"、"## reminder" 或 "## assistant" 开头
     schedules.json  memory.json  status.json
+    history.json             完整的登记历史，最新的在前
     mock/<名字>/state.json   mock 的最终状态
     mock/<名字>/requests.jsonl
     network.jsonl            被代理拒绝的访问
@@ -135,7 +136,8 @@ trials/<题>/<变体>/<i>/
   grades.json
 ```
 
-- `tool-calls.json` 按 Session 分组、按 Log 顺序列出每次调用：`session`、`round`、`call`、`name`、`arguments`（原始参数字符串）、`outcome`（`ok`、`failed` 或 `unknown`）、`code`（失败码）、`content`（模型看到的文本）。
+- `tool-calls.json` 按 Session 分组、按 Log 顺序列出每次调用：`session`、`round`、`call`、`name`、`arguments`（原始参数字符串）、`generation`（执行这次调用的插件代际；原生工具与没有开始执行的调用为 `null`）、`outcome`（`ok`、`failed` 或 `unknown`）、`code`（失败码）、`content`（模型看到的文本）。
+- `history.json` 是 `enco history --json` 各页的 `registrations` 依次拼接；每次登记写明发起者（`initiator.kind` 为 `host`、`owner` 或 `agent`）与它选中的代际，评分据此区分启动时的登记与 Agent 经 `self_apply` 的登记。
 - 对话文本不含工具调用与结果，需要它们的评分项读 `tool-calls.json`。
 - `requests.jsonl` 每行是 `{ "at", "method", "path", "query", "body" }`，正文是 JSON 或表单时解析为对象；`network.jsonl` 每行是 `{ "at", "method", "target" }`。
 
@@ -206,6 +208,7 @@ mechanism = "..."               # 这道题验证的 P2 机制，一句英文
 
 [environment]
 timezone = "America/New_York"   # 必填：主人的时区
+variables = { CAIRN_TOKEN = "cairn_pat_..." }   # 可选：主人设置的环境变量，例如服务的 token；被测守护进程继承它们
 
 [[input]]                       # 按顺序送入的消息，每条等这次 Run 结束再送下一条
 session = "main"                # 可选，默认 main
@@ -239,7 +242,7 @@ run = "hidden/..."              # 参数是试验目录，以退出码给出结�
 
 - **`state`**：用 JSON Schema 校验快照中的一个文件。数量、常量、正则、包含这类结构化的事实都用它。
 - **`rubric`**：运行器直接调用评判模型，一个评分项一次调用；提示词由运行器固定，请求与回复写进试验目录。评判先写理由，最后一行给出 `PASS`、`FAIL` 或 `UNKNOWN`。`UNKNOWN` 记为失败，因为它取决于被测的输出；回复不合格式或评判不可用是测量仪器的问题，不计入分母。评判不经被测的 Enco，测量工具才不会随被测对象改变。
-- **`command`**：前两种表达不了时使用，例如编程题的契约测试。
+- **`command`**：前两种表达不了时使用，例如要把登记历史、工具调用与 mock 的请求对照起来判断。评分程序用 POSIX sh 与 jq 编写，参数是试验目录：读其中的 `snapshot/`，也可以读 `home/`，即被测 home 的最终文件。退出码 0 为通过、1 为不通过，其他为评分程序自身出错。
 
 输入消息按主人实际会说的语言写；`mechanism`、`check` 与 `reference` 是给运行器和评判模型的文字，用英文。
 
@@ -259,15 +262,24 @@ body = "hidden/mocks/techdaily/feed.atom"   # 默认状态码 200
 [[collection]]
 name = "inbox"
 data = "hidden/mocks/mail/inbox.json"  # 初始数据；省略时为空
+path = "/v1/inbox"                     # 可选：服务的路径，默认 `/<名字>`
+defaults = { unread = true }           # 可选：新建的条目没给这些字段时由服务补上
+filters = ["unread"]                   # 可选：列出时可以按哪些字段过滤，即服务对外承诺的过滤参数
+```
+
+需要认证的服务写 `auth`：每个请求都要带这个头，值是 `prefix` 加上题目 `[environment.variables]` 中这个变量的值，否则返回 `401` 与 `{"error": "unauthorized", "message": "Missing or invalid access token"}`。这与 Enco 的凭证声明同构：头、前缀与环境变量。
+
+```toml
+auth = { header = "Authorization", prefix = "Bearer ", variable = "CAIRN_TOKEN" }
 ```
 
 运行器默认在 `r.jina.ai` 提供 Jina JSON 形状的读取服务，只读取当前题目中已登记的 mock 页面，并保留页面状态；未知主机不访问外网。题目可以用同名主机的 mock 替换它，以模拟 Jina 的具体结果。默认变体的搜索与 Exa 的正文服务指向 `api.exa.ai` 与 `api.search.tinyfish.ai`，题目用这两个主机名的 mock 提供结果；没有时代理拒绝。
 
-- 集合按 REST 的习惯访问：`GET /<名字>` 列出，查询参数按字段过滤（值按字符串比较），`fields=a,b` 只返回这些字段；`GET`、`PATCH`、`DELETE /<名字>/<id>` 读取、合并、删除；`POST /<名字>` 追加，正文可以是 JSON 或表单，没有 `id` 时依次分配。
+- 集合按 REST 的习惯访问（下面的 `/<名字>` 是集合的路径）：`GET /<名字>` 列出，按 `filters` 中的字段过滤（值按字符串比较，没有这个字段的条目不匹配）；与真实的服务一样，其他参数被忽略，过滤的契约由定义固定，不随数据变化；`fields=a,b` 只返回这些字段；`GET`、`PATCH`、`DELETE /<名字>/<id>` 读取、合并、删除；`POST /<名字>` 追加，正文可以是 JSON 或表单，先补上 `defaults` 中缺少的字段，没有 `id` 时依次分配。
 - 收到的每个请求记入 `requests.jsonl`，结束时全部集合写入 `state.json`。
-- 占位符：`{{mock:<名字>}}` 是 mock 的地址，即 `http://<host>`；`{{time:<偏移>}}` 与 `{{date:<偏移>}}` 是相对于试验开始时刻（取整到分钟）的时间与日期，按题目的时区写成 RFC 3339 与 `YYYY-MM-DD`。偏移可以组合 `d`、`h`、`m`、`s`，例如 `-3h05m14s`，也可以用 `b` 数工作日（周一到周五），例如 `+2b`；`0` 是开始时刻本身。日期可以加格式：`|zh` 写成"10 月 13 日（周二）"，`|en` 写成 "October 13, 2026"。`home/` 中的文本文件、路由的 `body` 文件与集合的初始数据在试验开始时替换；`reference` 在评分时按同一个开始时刻替换，评判因此看到与 Agent 相同的日期。数据里写具体日期而不写"本周四"，题目才不随试验落在星期几而变。
-- 题目的 `home/plugins/` 可以携带完整的插件源码目录。运行器复制 home 后调用被测二进制的 `enco init`，再在试跑代理之外按 SDK 与各插件自带的锁预取依赖，新建插件的第一份锁也取自 SDK，所以版本在试跑之间不变；被测进程共用运行器的 `CARGO_HOME`，设置 `CARGO_NET_OFFLINE=true`，首次启动把插件与配置一起登记，源码与配置由 Enco 的内容库保存，不依赖 Git。每个插件的 `.gitignore` 声明不计入的构建产物。运行器环境须提供 Cargo、rustc 与 `wasm32-wasip2` 目标。源码不依赖评测仓库，只依赖 home 下宿主分发的 `../../sdk`。
-- 当前状态（含最近几次登记）导出为 `snapshot/status.json`，代际指标从其中的 `plugins` 读取；完整登记历史按需经 `enco history --json` 查询，并用返回的游标经 `enco history --json --before <registration>` 向前翻页。
+- 占位符：`{{mock:<名字>}}` 是 mock 的地址，即 `http://<host>`；`{{time:<偏移>}}` 与 `{{date:<偏移>}}` 是相对于试验开始时刻（取整到分钟）的时间与日期，按题目的时区写成 RFC 3339 与 `YYYY-MM-DD`。偏移可以组合 `d`、`h`、`m`、`s`，例如 `-3h05m14s`，也可以用 `b` 数工作日（周一到周五），例如 `+2b`；`0` 是开始时刻本身。日期可以加格式：`|zh` 写成"10 月 13 日（周二）"，`|en` 写成 "October 13, 2026"。`home/` 中的文本文件、路由的 `body` 文件与集合的初始数据在试验开始时替换，所以插件源码中不能出现 `{{`；`reference` 与 state 评分的 schema 在评分时按同一个开始时刻替换，评判与 schema 因此看到与 Agent 相同的日期。数据里写具体日期而不写"本周四"，题目才不随试验落在星期几而变。
+- 题目的 `home/plugins/` 可以携带完整的插件源码目录。运行器复制 home 后调用被测二进制的 `enco init`，再在试跑代理之外按 SDK 与各插件自带的锁预取依赖，新建插件的第一份锁也取自 SDK，所以版本在试跑之间不变；被测进程共用运行器的 `CARGO_HOME`，设置 `CARGO_NET_OFFLINE=true`，首次启动把插件与配置一起登记，源码与配置由 Enco 的内容库保存，不依赖 Git。每个插件的 `.gitignore` 声明不计入的构建产物。运行器环境须提供 Cargo、rustc、`wasm32-wasip2` 目标与 jq。源码不依赖评测仓库，只依赖 home 下宿主分发的 `../../sdk`。
+- 当前状态（含最近几次登记）导出为 `snapshot/status.json`，代际指标从其中的 `plugins` 读取；完整的登记历史经 `enco history --json` 逐页导出为 `snapshot/history.json`。
 - 夹具命令（例如 `home/bin/mail`）用 POSIX sh 与 curl 编写，不引入其他运行时。运行器保留文件的可执行位，并把被测 home 的 `bin/` 放在 PATH 最前面，所以夹具命令优先于系统里的同名命令（例如 macOS 的 `/usr/bin/mail`）。
 
 ## 题目自检
@@ -309,12 +321,14 @@ recall = "fail"        # 列出的评分项必须得到这个结局
 | [`memory-update`](tasks/memory-update/task.toml) | 助理 | 记忆：跨 Session 准确召回，更正替换旧事实，没有依据时不猜 | 无，P0 的记忆就是基线 |
 | [`daily-briefing`](tasks/daily-briefing/task.toml) | 助理 | 主人真实的每日早报：周期定时，经命令行工具收邮件、读新闻，遵守常驻偏好，汇报，发信，不执行邮件里的注入指令 | 无，M18 的周期定时就是基线 |
 | [`live-lookup`](tasks/live-lookup/task.toml) | 助理 | 实时信息：官网拦截读取时经回退读到最新的召回更新，压过过时的新闻、搜索摘要与传言，对照邮箱里的每一笔订单作答，不理会仿冒的退款邮件 | M23 的 web 插件：搜索与 Exa 回退 |
+| [`adapter-drift`](tasks/adapter-drift/task.toml) | 编程 | 上游接口换代后修好插件：只读手册、插件源码与上游文档，经 `self_apply` 登记，用修好的代际按欧元汇率换算交叉汇率作答 | M28 的手册投影 |
+| [`build-from-spec`](tasks/build-from-spec/task.toml) | 编程 | 照 API 文档新建工具插件：声明凭证并映射到环境变量，登记后在同一任务的后续 Round 与下一次 Run 中使用，列出明天还没做的事 | M28 的手册投影 |
 
-后续的 `adapter-drift` 与 `build-from-spec` 题目设计见 [M28](../docs/plan/M28.md)，夹具与评分齐备后再加入可运行题集；`many-tools` 随 MCP 接入实施，草案暂存在同一份计划中。
+`many-tools` 随 MCP 接入实施，草案在 [MCP 的计划草案](../docs/plan/MCP.md) 中。
 
 ## 隔离
 
-- 被测的 home 建在中性的位置：HOME 是一个以人名命名的目录，`ENCO_HOME` 是其下的 `.enco`，路径中不出现 evals、trial 或题目名；生成的 `config.toml` 与 `enco init` 的模板同形，不带运行器的注释。试验结束后，home 移入试验目录。Environment、`pwd` 与工具结果里出现的路径因此都像一台普通的电脑。
+- 被测的 home 建在中性的位置：HOME 是一个以人名命名的目录，`ENCO_HOME` 是其下的 `.enco`，路径中不出现 evals、trial 或题目名；生成的 `config.toml` 与 `enco init` 的模板同形，不带运行器的注释。被测的 `enco` 硬链接（跨文件系统时复制）到 HOME 下的 `.local/bin/enco` 再运行，进程列表与可执行文件的路径都不指向评测仓库；归档前删除它，变体的哈希已经标识了它。试验结束后，home 移入试验目录。Environment、`pwd` 与工具结果里出现的路径因此都像一台普通的电脑。
 - 环境变量按白名单放行，宿主机上真实的凭据（例如邮件命令行工具的配置）对被测的守护进程不可见。题目因此可以使用看起来真实的地址与名字，误发的消息也到不了真实的收件人。
 - 被测模型之外的外部服务一律经 mock：代理环境变量（大小写两种写法）指向运行器的代理，`NO_PROXY` 只列被测模型的地址。代理把发往 mock 主机名的请求交给对应的 mock，其余一律拒绝，写入 `network.jsonl`。在 Agent 看来它是一个普通的本地代理：拒绝时返回普通代理的 403 页面，不带运行器的字样。所以 mock 可以用真实形态的主机名，Agent 看到的是 `http://techdaily.io/feed/atom` 而不是本机的端口，隔离与真实感出自同一个机制。
 - 运行器检查工具调用，确认 Agent 没有读取题目与运行结果。留出集的要求见[验证的设计](../docs/design/verification.md)。

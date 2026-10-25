@@ -79,6 +79,10 @@ pub(crate) enum EntryBody {
         attempt: String,
         result: AttemptResult,
     },
+    ToolCallStarted {
+        call: String,
+        code: CodeRef,
+    },
     ToolCallSettled {
         call: String,
         outcome: Settlement,
@@ -90,6 +94,26 @@ pub(crate) enum EntryBody {
     },
     #[serde(other)]
     Other,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum CodeRef {
+    Generation {
+        id: u64,
+    },
+    #[serde(other)]
+    Other,
+}
+
+impl CodeRef {
+    /// The plugin generation, when plugin code ran the call.
+    pub(crate) fn generation(&self) -> Option<u64> {
+        match self {
+            Self::Generation { id } => Some(*id),
+            Self::Other => None,
+        }
+    }
 }
 
 #[derive(Deserialize)]

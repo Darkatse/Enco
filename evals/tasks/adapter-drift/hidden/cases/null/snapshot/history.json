@@ -1,0 +1,166 @@
+[
+  {
+    "changes": [
+      {
+        "kind": "created",
+        "name": "web"
+      },
+      {
+        "kind": "created",
+        "name": "gemini"
+      },
+      {
+        "kind": "created",
+        "name": "openai-compatible"
+      },
+      {
+        "kind": "created",
+        "name": "deepseek"
+      },
+      {
+        "kind": "created",
+        "name": "typesafe"
+      },
+      {
+        "kind": "created",
+        "name": "fx"
+      },
+      {
+        "generation": {
+          "artifact": "e9cd0deabb0d24104716ea09661fe9477f91442ab811f5ed6fec44ead580b902",
+          "created_at": "2026-10-25T18:29:15.574Z",
+          "failure": null,
+          "id": 6,
+          "origin": "code",
+          "plugin": "01K7BH08Y1C0E40KZ27QNVC89W",
+          "registration": 1,
+          "settings": {
+            "config": {
+              "search": [
+                "exa",
+                "tinyfish"
+              ],
+              "urls": {
+                "exa": "http://api.exa.ai",
+                "jina": "http://r.jina.ai",
+                "tinyfish": "http://api.search.tinyfish.ai"
+              }
+            },
+            "secrets": {
+              "exa": "EXA_API_KEY",
+              "tinyfish": "TINYFISH_API_KEY"
+            }
+          },
+          "status": "trial"
+        },
+        "kind": "factory",
+        "name": "web"
+      },
+      {
+        "generation": {
+          "artifact": "f980835649a7d0e07014cedd7bbcf71f6437e0faeea28a41ee2a957337c8cdb1",
+          "created_at": "2026-10-25T18:28:47.350Z",
+          "failure": null,
+          "id": 2,
+          "origin": "factory",
+          "plugin": "01K8JQ4M267A8Y6C9N0P3R5TVX",
+          "settings": {
+            "config": {},
+            "secrets": {}
+          },
+          "status": "healthy"
+        },
+        "kind": "factory",
+        "name": "gemini"
+      },
+      {
+        "generation": {
+          "artifact": "22306b7f44a560091a36afe0ba3d71c81c4bcb210e9a2e87d832952718e74e3f",
+          "created_at": "2026-10-25T18:28:47.252Z",
+          "failure": null,
+          "id": 1,
+          "origin": "factory",
+          "plugin": "01M3X4HYHSE2M3523YK35VX60W",
+          "settings": {
+            "config": {},
+            "secrets": {}
+          },
+          "status": "healthy"
+        },
+        "kind": "factory",
+        "name": "openai-compatible"
+      },
+      {
+        "generation": {
+          "artifact": "a62237baaa59f0176e71da8ca5430147decce296bcbebf9a74115728f730117b",
+          "created_at": "2026-10-25T18:28:47.426Z",
+          "failure": null,
+          "id": 3,
+          "origin": "factory",
+          "plugin": "01M3X4HYHSRXVVQYXVDK5WQ9D3",
+          "settings": {
+            "config": {},
+            "secrets": {}
+          },
+          "status": "healthy"
+        },
+        "kind": "factory",
+        "name": "deepseek"
+      },
+      {
+        "generation": {
+          "artifact": "263e2f0a87d25554fd0e7ee9eba301c3335e04fc26c79b3771508a8225f31216",
+          "created_at": "2026-10-25T18:28:47.508Z",
+          "failure": null,
+          "id": 4,
+          "origin": "factory",
+          "plugin": "01M4EQVYF70Z6WGYFDKD20QF8S",
+          "settings": {
+            "config": {},
+            "secrets": {}
+          },
+          "status": "healthy"
+        },
+        "kind": "factory",
+        "name": "typesafe"
+      },
+      {
+        "generation": {
+          "artifact": "2b5300118800e53e8ae711c13cf826bef7c171148f081a741b48de2e1d6c9bee",
+          "created_at": "2026-10-25T18:29:15.574Z",
+          "failure": null,
+          "id": 7,
+          "origin": "code",
+          "plugin": "01M5T55WKNBW4FE0EW7FKG5ZS9",
+          "registration": 1,
+          "settings": {
+            "config": {},
+            "secrets": {}
+          },
+          "status": "trial"
+        },
+        "kind": "code",
+        "name": "fx"
+      },
+      {
+        "generation": 8,
+        "kind": "configuration",
+        "sections": [
+          "endpoint.chat",
+          "endpoint.embed",
+          "memory",
+          "owner",
+          "plugin.web",
+          "profile.default",
+          "run"
+        ]
+      }
+    ],
+    "created_at": "2026-10-25T18:29:15.574Z",
+    "id": 1,
+    "initiator": {
+      "kind": "host"
+    },
+    "previous": null
+  }
+]

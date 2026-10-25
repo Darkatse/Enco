@@ -68,8 +68,8 @@ pub(crate) struct Enco {
 }
 
 impl Enco {
-    pub(crate) fn start(binary: &Binary, home: &Home, log: std::fs::File) -> Result<Self> {
-        let child = Command::new(&binary.path)
+    pub(crate) fn start(home: &Home, log: std::fs::File) -> Result<Self> {
+        let child = Command::new(&home.enco)
             .arg("serve")
             .current_dir(&home.path)
             .env_clear()
@@ -82,7 +82,7 @@ impl Enco {
             .context("start enco serve")?;
         let group = child.id().context("enco serve has no process ID")?;
         Ok(Self {
-            binary: binary.path.clone(),
+            binary: home.enco.clone(),
             home: home.path.clone(),
             environment: home.environment.clone(),
             child,

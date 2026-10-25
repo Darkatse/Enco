@@ -182,7 +182,7 @@ async fn execute(
     deadline: Instant,
     forbidden: &[&Path],
 ) -> Result<(Execution, Snapshot)> {
-    let mut enco = match Enco::start(&variant.binary, home, log) {
+    let mut enco = match Enco::start(home, log) {
         Ok(enco) => enco,
         Err(error) => return Ok((Execution::failed(error), Snapshot::default())),
     };
@@ -208,12 +208,11 @@ async fn execute(
             Snapshot::default()
         }
     };
-    if matches!(execution, Execution::Completed) {
-        if let Some(reason) = snapshot.failures.first() {
-            execution = Execution::failed(reason);
-        } else if let Some((name, reason)) = snapshot.export_errors.first_key_value() {
-            execution = Execution::failed(format!("export {name}: {reason}"));
-        }
+    execution.fail_with(&snapshot.failures);
+    if matches!(execution, Execution::Completed)
+        && let Some((name, reason)) = snapshot.export_errors.first_key_value()
+    {
+        execution = Execution::failed(format!("export {name}: {reason}"));
     }
     if let Err(error) = stopped {
         execution.mark_instrument_error(error);
@@ -250,7 +249,7 @@ impl Services {
     ) -> Result<(Model, std::net::SocketAddr)> {
         let mut routes = BTreeMap::new();
         for (name, definition) in &task.mocks {
-            let mock = Mock::start(&mut self.servers, &task.root, definition, renderer).await?;
+            let mock = Mock::start(&mut self.servers, task, definition, renderer).await?;
             routes.insert(definition.host.clone(), mock.address);
             self.mocks.insert(name.clone(), mock);
         }

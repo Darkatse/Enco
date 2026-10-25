@@ -5,6 +5,7 @@ host = "mail.northpost.com"
 [[collection]]
 name = "inbox"
 data = "hidden/mocks/mail/inbox.json"
+filters = ["unread"]
 
 [[collection]]
 name = "outbox"

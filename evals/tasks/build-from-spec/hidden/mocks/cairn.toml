@@ -1,0 +1,14 @@
+host = "api.cairnlist.app"
+auth = { header = "Authorization", prefix = "Bearer ", variable = "CAIRN_TOKEN" }
+
+[[collection]]
+name = "lists"
+path = "/v1/lists"
+data = "hidden/mocks/cairn/lists.json"
+
+[[collection]]
+name = "tasks"
+path = "/v1/tasks"
+data = "hidden/mocks/cairn/tasks.json"
+defaults = { notes = "", list_id = 3301, status = "open" }
+filters = ["status", "list_id", "due_date"]

@@ -1,0 +1,48 @@
+#!/bin/sh
+# Pass when the owner's to-dos went through the plugin the agent built: it created every new task
+# and, after the owner's second message, completed the rent. A request to Cairn counts as the
+# plugin's when it arrived while a call ran on a plugin generation registered with self_apply: the
+# log records when each call started and settled, the mock when each request came.
+set -eu
+snapshot="$1/snapshot"
+problems=$(jq -n -r \
+  --slurpfile history "$snapshot/history.json" \
+  --slurpfile log "$snapshot/log/main.json" \
+  --slurpfile state "$snapshot/mock/cairn/state.json" \
+  --slurpfile requests "$snapshot/mock/cairn/requests.jsonl" '
+  def epoch: capture("^(?<s>[^.Z]+)([.](?<f>[0-9]+))?Z$")
+    | (.s + "Z" | fromdateiso8601) + ("0." + (.f // "0") | tonumber);
+  # New code and new settings each select a generation; both run what the agent registered.
+  ([$history[0][] | select(.initiator.kind == "agent") | .changes[]
+    | select((.generation | type) == "object") | .generation.id]) as $built
+  | ([$log[0][] | select(.body.kind == "tool_call_settled") | {key: .body.call, value: (.at | epoch)}]
+    | from_entries) as $settled
+  # Log times are in milliseconds; the margin covers a request in the call'"'"'s last millisecond.
+  | [$log[0][] | select(.body.kind == "tool_call_started" and .body.code.kind == "generation")
+    | select(.body.code.id as $id | any($built[]; . == $id))
+    | {from: (.at | epoch), to: (($settled[.body.call] // (.at | epoch)) + 0.005)}] as $calls
+  | def by_plugin: (.at | epoch) as $at | any($calls[]; .from <= $at and $at <= .to);
+  ([$log[0][] | select(.body.kind == "event_consumed" and .body.event.body.kind == "user_message")]
+    | .[1].at // null) as $second
+  | [$state[0].tasks[] | select(.id >= 58241)] as $new
+  | [
+      if ($new | length) == 0 then "no new task exists" else empty end,
+      ($new[] | .title as $title
+        | select(any($requests[]; .method == "POST" and .path == "/v1/tasks"
+            and (.body | type) == "object" and .body.title == $title and by_plugin) | not)
+        | "the plugin did not create \"\($title)\""),
+      if $second == null then "the second message never arrived"
+      elif any($new[]; .status == "completed") | not then "no new task is completed"
+      else
+        ($new[] | select(.status == "completed") | .id as $id
+          | select(any($requests[]; .method == "PATCH" and .path == "/v1/tasks/\($id)"
+              and (.at | epoch) > ($second | epoch) and by_plugin) | not)
+          | "the plugin did not complete task \($id) after the second message")
+      end
+    ] | .[]')
+if [ -z "$problems" ]; then
+  echo "the plugin created the new tasks and, after the second message, completed the rent"
+  exit 0
+fi
+echo "$problems"
+exit 1

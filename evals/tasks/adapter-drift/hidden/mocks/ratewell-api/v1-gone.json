@@ -1,0 +1,4 @@
+{
+  "error": "gone",
+  "message": "Ratewell API v1 was retired on {{date:-1d|en}}. Please move to v2: http://ratewell.io/docs/v2/migrating"
+}

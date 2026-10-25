@@ -1,0 +1,24 @@
+[
+  {
+    "session": "main",
+    "round": "01M5T55WWMBGTY7VBFB8ZXCYEG",
+    "call": "01M5T55WX5WQCZQYRMP64RSGVP",
+    "name": "fx_convert",
+    "arguments": "{\"amount\": 100, \"from\": \"USD\", \"to\": \"CNY\"}",
+    "generation": 7,
+    "outcome": "failed",
+    "code": "tool.failed",
+    "content": "error [tool.failed]: Ratewell answered HTTP 410: {\n  \"error\": \"gone\",\n  \"message\": \"Ratewell API v1 was retired on October 24, 2026. Please move to v2: http://ratewell.io/docs/v2/migrating\"\n}"
+  },
+  {
+    "session": "main",
+    "round": "01M5T55WXDFT6TE5VTJSVVQTVA",
+    "call": "01M5T55WXTZKS3N262DBFKB3PH",
+    "name": "shell_exec",
+    "arguments": "{\"command\": \"curl -s http://api.ratewell.io/v2/latest\"}",
+    "generation": null,
+    "outcome": "ok",
+    "code": null,
+    "content": "{\"exit_code\":0,\"stdout\":\"{\\\"base\\\": \\\"EUR\\\", \\\"rates\\\": [{\\\"currency\\\": \\\"USD\\\", \\\"rate\\\": \\\"1.1418\\\"}, {\\\"currency\\\": \\\"JPY\\\", \\\"rate\\\": \\\"159.47\\\"}, {\\\"currency\\\": \\\"CNY\\\", \\\"rate\\\": \\\"7.9512\\\"}]}\"}"
+  }
+]

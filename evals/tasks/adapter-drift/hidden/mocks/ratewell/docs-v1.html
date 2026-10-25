@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API v1 reference (retired) · Ratewell</title>
+</head>
+<body>
+<header>
+  <a href="/">Ratewell</a>
+  <nav><a href="/docs">Docs</a> · <a href="/changelog">Changelog</a></nav>
+</header>
+<main>
+  <p class="notice"><strong>v1 was retired on {{date:-1d|en}}.</strong> This page is kept for reference only; its endpoints return <code>410 Gone</code>. Use <a href="/docs/v2">v2</a> and see <a href="/docs/v2/migrating">Migrating from v1 to v2</a>.</p>
+  <h1>API v1 reference</h1>
+  <p>Base URL: <code>http://api.ratewell.io/v1</code>.</p>
+
+  <h2>GET /latest</h2>
+  <table>
+    <tr><th>Parameter</th><th>Meaning</th></tr>
+    <tr><td><code>base</code></td><td>The currency to quote against. Default <code>EUR</code>.</td></tr>
+    <tr><td><code>symbols</code></td><td>Comma-separated currency codes to return. Default: all.</td></tr>
+  </table>
+<pre><code>GET /v1/latest?base=USD&amp;symbols=CNY,JPY
+
+{ "base": "USD", "date": "{{date:-75b}}", "rates": { "CNY": 7.218459, "JPY": 155.902169 } }</code></pre>
+
+  <h2>GET /{date}</h2>
+  <p>The rates published on <code>date</code> (<code>YYYY-MM-DD</code>), with the same parameters as <code>/latest</code>.</p>
+
+  <h2>GET /currencies</h2>
+  <p>An object from currency code to English name.</p>
+</main>
+<footer><a href="/docs">Docs</a> · <a href="/changelog">Changelog</a></footer>
+</body>
+</html>

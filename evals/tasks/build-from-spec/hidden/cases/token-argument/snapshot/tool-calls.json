@@ -1,0 +1,123 @@
+[
+  {
+    "session": "main",
+    "round": "01M5T7T4P43XWGEKGCXMYPASGD",
+    "call": "01M5T7T4PMD1RNDG5NMMV1EB35",
+    "name": "fs_read",
+    "arguments": "{\"path\": \"cairn-api.md\"}",
+    "generation": null,
+    "outcome": "ok",
+    "code": null,
+    "content": "[lines 1-152 of 152]\n# Cairn API\n\nVersion 1 · Last updated September 2026\n\nThe Cairn API lets you read and change your own lists and tasks from scripts, home automations and other apps. Anything you can do to a task in the Cairn apps, you can do here.\n\n- Base URL: `http://api.cairnlist.app/v1`\n- Requests and responses are JSON in UTF-8. Send `Content-Type: application/json` with every request that has a body.\n- Dates are calendar dates, `YYYY-MM-DD`, in the time zone set in your account (Settings → General). Tasks have due dates, not due times.\n\n## Authentication\n\nEvery request needs a personal access token. Create one in **Settings → Integrations → Personal access tokens**. Tokens start with `cairn_pat_` and act as you, so treat them like a password; you can revoke one at any time on the same page.\n\nSend the token in the `Authorization` header:\n\n```sh\ncurl http://api.cairnlist.app/v1/lists \\\n  -H \"Authorization: Bearer cairn_pat_...\"\n```\n\nA missing, revoked or mistyped token gets `401 Unauthorized`:\n\n```json\n{ \"error\": \"unauthorized\", \"message\": \"Missing or invalid access token\" }\n```\n\n## Rate limits\n\nEach token can make 300 requests per 15 minutes. Past that, requests get `429 Too Many Requests` with a `Retry-After` header giving the seconds to wait.\n\n## Lists\n\nEvery account has an **Inbox**, plus the lists you create in the apps. The API can read lists; creating, renaming and deleting them is only possible in the apps for now.\n\n### The list object\n\n| Field | Type | Description |\n|---|---|---|\n| `id` | integer | |\n| `name` | string | The name shown in the apps. |\n| `inbox` | boolean | `true` for the Inbox, where new tasks go unless you choose another list. |\n\n### GET /lists\n\nReturns all of your lists.\n\n```sh\ncurl http://api.cairnlist.app/v1/lists \\\n  -H \"Authorization: Bearer cairn_pat_...\"\n```\n\n```json\n[\n  { \"id\": 87, \"name\": \"Inbox\", \"inbox\": true },\n  { \"id\": 88, \"name\": \"Errands\", \"inbox\": false }\n]\n```\n\n## Tasks\n\n### The task object\n\n| Field | Type | Description |\n|---|---|---|\n| `id` | integer | Assigned by Cairn. |\n| `title` | string | |\n| `notes` | string | Free text; an empty string when there are none. |\n| `list_id` | integer | The list the task is in. |\n| `due_date` | string | `YYYY-MM-DD`; absent when the task has no due date. |\n| `status` | string | `open` or `completed`. |\n\n### GET /tasks\n\nReturns every task that matches all of the given filters, oldest first. There is no pagination.\n\n| Query parameter | Returns |\n|---|---|\n| `status` | Only tasks with this status: `open` or `completed`. |\n| `list_id` | Only tasks in this list. |\n| `due_date` | Only tasks due on this date, `YYYY-MM-DD`. |\n\nOpen tasks due on March 14, 2026:\n\n```sh\ncurl \"http://api.cairnlist.app/v1/tasks?status=open&due_date=2026-03-14\" \\\n  -H \"Authorization: Bearer cairn_pat_...\"\n```\n\n```json\n[\n  { \"id\": 1203, \"title\": \"Renew passport\", \"notes\": \"\", \"list_id\": 88, \"due_date\": \"2026-03-14\", \"status\": \"open\" }\n]\n```\n\n### POST /tasks\n\nCreates a task. Returns `201 Created` with the new task.\n\n| Field | Required | Description |\n|---|---|---|\n| `title` | yes | |\n| `notes` | no | Defaults to an empty string. |\n| `list_id` | no | Defaults to your Inbox. |\n| `due_date` | no | `YYYY-MM-DD`; leave it out for a task with no due date. |\n\nNew tasks start out `open`.\n\n```sh\ncurl -X POST http://api.cairnlist.app/v1/tasks \\\n  -H \"Authorization: Bearer cairn_pat_...\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"title\": \"Book the dentist\", \"due_date\": \"2026-03-20\"}'\n```\n\n```json\n{ \"id\": 1204, \"title\": \"Book the dentist\", \"notes\": \"\", \"list_id\": 87, \"due_date\": \"2026-03-20\", \"status\": \"open\" }\n```\n\n### GET /tasks/{id}\n\nReturns one task, or `404 Not Found` if you have no task with that id.\n\n### PATCH /tasks/{id}\n\nChanges any of `title`, `notes`, `list_id`, `due_date` and `status`; fields you leave out stay as they are. Returns the updated task.\n\nTo complete a task, set its status:\n\n```sh\ncurl -X PATCH http://api.cairnlist.app/v1/tasks/1203 \\\n  -H \"Authorization: Bearer cairn_pat_...\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"status\": \"completed\"}'\n```\n\nTo reopen it, set `status` back to `open`.\n\n### DELETE /tasks/{id}\n\nDeletes a task for good; tasks deleted through the API do not go to the trash. Returns `204 No Content`.\n\n## Errors\n\n| Status | When |\n|---|---|\n| 400 | The body is not a JSON object. |\n| 401 | The token is missing, revoked or mistyped. |\n| 404 | No task with that id, or a path the API does not have. |\n| 429 | Too many requests; wait for `Retry-After` seconds. |\n\nQuestions: developers@cairnlist.app"
+  },
+  {
+    "session": "main",
+    "round": "01M5T7T4PP1PAEF2T3BTKYDCGW",
+    "call": "01M5T7T4Q2MN0BFSPMJ3D0MYNX",
+    "name": "plugin_scaffold",
+    "arguments": "{\"name\": \"cairn\"}",
+    "generation": null,
+    "outcome": "ok",
+    "code": null,
+    "content": "{\n  \"files\": [\n    \"/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/pjx014n3ecqj/lin/.enco/plugins/cairn\",\n    \"/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/pjx014n3ecqj/lin/.enco/plugins/cairn/.cargo/config.toml\",\n    \"/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/pjx014n3ecqj/lin/.enco/plugins/cairn/.gitignore\",\n    \"/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/pjx014n3ecqj/lin/.enco/plugins/cairn/Cargo.lock\",\n    \"/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/pjx014n3ecqj/lin/.enco/plugins/cairn/Cargo.toml\",\n    \"/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/pjx014n3ecqj/lin/.enco/plugins/cairn/README.md\",\n    \"/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/pjx014n3ecqj/lin/.enco/plugins/cairn/src/lib.rs\"\n  ]\n}"
+  },
+  {
+    "session": "main",
+    "round": "01M5T7T4R007P4E07QFA5CE6HJ",
+    "call": "01M5T7T4RCXKKX6Y50MR44F5MP",
+    "name": "fs_write",
+    "arguments": "{\"path\": \"../plugins/cairn/src/lib.rs\", \"content\": \"//! Manage the owner's Cairn tasks through Cairn's REST API.\\nuse bindings::exports::enco::plugin::{lifecycle, tools};\\nuse enco_sdk::{host, types};\\nuse schemars::JsonSchema;\\nuse serde::Deserialize;\\nuse serde_json::{Value, json};\\n\\nenco_sdk::export!(tools, Plugin);\\n\\nconst API: &str = \\\"http://api.cairnlist.app/v1\\\";\\n\\nstruct Plugin;\\n\\n/// Arguments of `cairn_add_task`.\\n#[derive(Deserialize, JsonSchema)]\\n#[serde(deny_unknown_fields)]\\nstruct AddTask {\\n    /// The task's title.\\n    title: String,\\n    /// The due date, `YYYY-MM-DD`; none when absent.\\n    due_date: Option<String>,\\n}\\n\\n/// Arguments of `cairn_list_tasks`.\\n#[derive(Deserialize, JsonSchema)]\\n#[serde(deny_unknown_fields)]\\nstruct ListTasks {\\n    /// Only tasks with this status, `open` or `completed`.\\n    status: Option<String>,\\n    /// Only tasks due on this date, `YYYY-MM-DD`.\\n    due_date: Option<String>,\\n}\\n\\n/// Arguments of `cairn_complete_task`.\\n#[derive(Deserialize, JsonSchema)]\\n#[serde(deny_unknown_fields)]\\nstruct CompleteTask {\\n    /// The task's id.\\n    id: u64,\\n}\\n\\nimpl lifecycle::Guest for Plugin {\\n    fn describe(_config: String) -> Result<lifecycle::Description, types::Failure> {\\n        Ok(lifecycle::Description {\\n            summary: \\\"Manage tasks in Cairn\\\".into(),\\n            config_schema: r#\\\"{\\\"type\\\":\\\"object\\\",\\\"additionalProperties\\\":false}\\\"#.into(),\\n            credentials: vec![lifecycle::Credential {\\n                name: \\\"token\\\".into(),\\n                origin: Some(\\\"http://api.cairnlist.app\\\".into()),\\n                header: \\\"Authorization\\\".into(),\\n                prefix: \\\"Bearer \\\".into(),\\n                required: true,\\n            }],\\n        })\\n    }\\n\\n    async fn probe() -> Result<(), types::Failure> {\\n        Ok(())\\n    }\\n}\\n\\nimpl tools::Guest for Plugin {\\n    fn list(_config: String) -> Vec<types::ToolSpec> {\\n        vec![\\n            types::ToolSpec {\\n                name: \\\"cairn_add_task\\\".into(),\\n                description: \\\"Create an open task in the Cairn Inbox.\\\".into(),\\n                input_schema: enco_sdk::input_schema::<AddTask>().to_string(),\\n                effect: types::Effect::SideEffect,\\n            },\\n            types::ToolSpec {\\n                name: \\\"cairn_list_tasks\\\".into(),\\n                description: \\\"List Cairn tasks that match every given filter.\\\".into(),\\n                input_schema: enco_sdk::input_schema::<ListTasks>().to_string(),\\n                effect: types::Effect::ReadOnly,\\n            },\\n            types::ToolSpec {\\n                name: \\\"cairn_complete_task\\\".into(),\\n                description: \\\"Mark a Cairn task completed.\\\".into(),\\n                input_schema: enco_sdk::input_schema::<CompleteTask>().to_string(),\\n                effect: types::Effect::Idempotent,\\n            },\\n        ]\\n    }\\n\\n    async fn call(name: String, input: String) -> types::Outcome {\\n        let result = match name.as_str() {\\n            \\\"cairn_add_task\\\" => add(&input).await,\\n            \\\"cairn_list_tasks\\\" => list(&input).await,\\n            \\\"cairn_complete_task\\\" => complete(&input).await,\\n            _ => Err(failure(format!(\\\"Unknown tool {name}\\\"))),\\n        };\\n        match result {\\n            Ok(value) => types::Outcome::Ok(value.to_string()),\\n            Err(failure) => types::Outcome::Failed(failure),\\n        }\\n    }\\n}\\n\\nasync fn add(input: &str) -> Result<Value, types::Failure> {\\n    let task: AddTask = enco_sdk::parse_arguments(input)?;\\n    request(\\\"POST\\\", format!(\\\"{API}/tasks\\\"), Some(json!({ \\\"title\\\": task.title, \\\"due_date\\\": task.due_date }))).await\\n}\\n\\nasync fn list(input: &str) -> Result<Value, types::Failure> {\\n    let filters: ListTasks = enco_sdk::parse_arguments(input)?;\\n    let mut query = Vec::new();\\n    if let Some(status) = filters.status {\\n        query.push(format!(\\\"status={status}\\\"));\\n    }\\n    if let Some(due_date) = filters.due_date {\\n        query.push(format!(\\\"due_date={due_date}\\\"));\\n    }\\n    request(\\\"GET\\\", format!(\\\"{API}/tasks?{}\\\", query.join(\\\"&\\\")), None).await\\n}\\n\\nasync fn complete(input: &str) -> Result<Value, types::Failure> {\\n    let task: CompleteTask = enco_sdk::parse_arguments(input)?;\\n    request(\\\"PATCH\\\", format!(\\\"{API}/tasks/{}\\\", task.id), Some(json!({ \\\"status\\\": \\\"completed\\\" }))).await\\n}\\n\\nasync fn request(method: &str, url: String, body: Option<Value>) -> Result<Value, types::Failure> {\\n    let response = host::http(host::HttpRequest {\\n        method: method.into(),\\n        url,\\n        headers: vec![(\\\"content-type\\\".into(), \\\"application/json\\\".into())],\\n        body: body.map(|body| body.to_string().into_bytes()),\\n        timeout_ms: None,\\n    })\\n    .await\\n    .map_err(|error| failure(format!(\\\"Cairn is unreachable: {}\\\", error.message)))?;\\n    if !(200..300).contains(&response.status) {\\n        return Err(failure(format!(\\n            \\\"Cairn answered HTTP {}: {}\\\",\\n            response.status,\\n            String::from_utf8_lossy(&response.body)\\n        )));\\n    }\\n    serde_json::from_slice(&response.body).map_err(|error| failure(format!(\\\"Cairn's response did not parse: {error}\\\")))\\n}\\n\\nfn failure(message: String) -> types::Failure {\\n    types::Failure {\\n        code: \\\"tool.failed\\\".into(),\\n        message,\\n        retryable: false,\\n    }\\n}\\n\"}",
+    "generation": null,
+    "outcome": "ok",
+    "code": null,
+    "content": "{\n  \"bytes\": 5146,\n  \"path\": \"/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/pjx014n3ecqj/lin/.enco/plugins/cairn/src/lib.rs\"\n}"
+  },
+  {
+    "session": "main",
+    "round": "01M5T7T4RM73VFYDWY3YBMYEGG",
+    "call": "01M5T7T4S1YQSNV4BG0RAGGV9A",
+    "name": "shell_exec",
+    "arguments": "{\"command\": \"printf '\\\\n[plugin.cairn.secrets]\\\\ntoken = \\\"CAIRN_TOKEN\\\"\\\\n' >> ../config.toml\"}",
+    "generation": null,
+    "outcome": "ok",
+    "code": null,
+    "content": "{\n  \"exit_code\": 0,\n  \"stderr\": \"\",\n  \"stdout\": \"\"\n}"
+  },
+  {
+    "session": "main",
+    "round": "01M5T7T4SAXMW2ZHZT49M29VZM",
+    "call": "01M5T7T4SQP9PEVN1QY222YG97",
+    "name": "self_apply",
+    "arguments": "{\"reason\": \"Add a cairn plugin for the owner's Cairn tasks\"}",
+    "generation": null,
+    "outcome": "ok",
+    "code": null,
+    "content": "# Registration 2\n\n\"Add a cairn plugin for the owner's Cairn tasks\"\n\n- `config.toml`: changed `[plugin.cairn]` → generation 9\n- `plugins/cairn`: created with new code → generation 8 · trial\n\nBuilds:\n- `plugins/cairn`: built. Full log: `/private/var/folders/vv/50s75ykj5mz10xzj033jf3dc0000gn/T/pjx014n3ecqj/lin/.enco/.data/blobs/da/dacb44514176b7090b7cb242a70db5b7296f42f5c9109ea42580215fb807a87e`\n\nNew code starts on trial: generation 8 becomes healthy once the required probe and first calls succeed.\n\nNext: check again with `self_status {}`.\n"
+  },
+  {
+    "session": "main",
+    "round": "01M5T7TXY480XMRQCVC0RMY2V6",
+    "call": "01M5T7TXYHE2M670RSCAKTWXYA",
+    "name": "cairn_add_task",
+    "arguments": "{\"title\": \"交房租\", \"due_date\": \"2026-10-26\", \"token\": \"cairn_pat_5Wq8hT2mZr7KxN4cVb9Ld3Fs\"}",
+    "generation": 8,
+    "outcome": "ok",
+    "code": null,
+    "content": "{\n  \"due_date\": \"2026-10-26\",\n  \"id\": 58241,\n  \"list_id\": 3301,\n  \"notes\": \"\",\n  \"status\": \"open\",\n  \"title\": \"交房租\"\n}"
+  },
+  {
+    "session": "main",
+    "round": "01M5T7TXYNR33EP951C5FKE5SM",
+    "call": "01M5T7TXZ22RCPJQ3691QGY27Y",
+    "name": "cairn_add_task",
+    "arguments": "{\"title\": \"给妈妈打电话\", \"due_date\": \"2026-10-26\", \"token\": \"cairn_pat_5Wq8hT2mZr7KxN4cVb9Ld3Fs\"}",
+    "generation": 8,
+    "outcome": "ok",
+    "code": null,
+    "content": "{\n  \"due_date\": \"2026-10-26\",\n  \"id\": 58242,\n  \"list_id\": 3301,\n  \"notes\": \"\",\n  \"status\": \"open\",\n  \"title\": \"给妈妈打电话\"\n}"
+  },
+  {
+    "session": "main",
+    "round": "01M5T7TXZ6TVTRWPB0V8K1XVSN",
+    "call": "01M5T7TXZMYHSYSZAYJJFRH9PH",
+    "name": "cairn_add_task",
+    "arguments": "{\"title\": \"把周报发给老板\", \"due_date\": \"2026-10-26\", \"token\": \"cairn_pat_5Wq8hT2mZr7KxN4cVb9Ld3Fs\"}",
+    "generation": 8,
+    "outcome": "ok",
+    "code": null,
+    "content": "{\n  \"due_date\": \"2026-10-26\",\n  \"id\": 58243,\n  \"list_id\": 3301,\n  \"notes\": \"\",\n  \"status\": \"open\",\n  \"title\": \"把周报发给老板\"\n}"
+  },
+  {
+    "session": "main",
+    "round": "01M5T7TY0JH24106MG7EW5ECFR",
+    "call": "01M5T7TY130WV93547GA8MWRMD",
+    "name": "cairn_list_tasks",
+    "arguments": "{\"status\": \"open\", \"due_date\": \"2026-10-26\"}",
+    "generation": 8,
+    "outcome": "ok",
+    "code": null,
+    "content": "[\n  {\n    \"due_date\": \"2026-10-26\",\n    \"id\": 58233,\n    \"list_id\": 3302,\n    \"notes\": \"两件衬衫一条西裤，取衣单在钱包里\",\n    \"status\": \"open\",\n    \"title\": \"取干洗的衣服\"\n  },\n  {\n    \"due_date\": \"2026-10-26\",\n    \"id\": 58241,\n    \"list_id\": 3301,\n    \"notes\": \"\",\n    \"status\": \"open\",\n    \"title\": \"交房租\"\n  },\n  {\n    \"due_date\": \"2026-10-26\",\n    \"id\": 58242,\n    \"list_id\": 3301,\n    \"notes\": \"\",\n    \"status\": \"open\",\n    \"title\": \"给妈妈打电话\"\n  },\n  {\n    \"due_date\": \"2026-10-26\",\n    \"id\": 58243,\n    \"list_id\": 3301,\n    \"notes\": \"\",\n    \"status\": \"open\",\n    \"title\": \"把周报发给老板\"\n  }\n]"
+  },
+  {
+    "session": "main",
+    "round": "01M5T7TY16CD0WJ8S94AVEMY96",
+    "call": "01M5T7TY1N88K25JPAQAAYKWT7",
+    "name": "cairn_complete_task",
+    "arguments": "{\"id\": 58241}",
+    "generation": 8,
+    "outcome": "ok",
+    "code": null,
+    "content": "{\n  \"due_date\": \"2026-10-26\",\n  \"id\": 58241,\n  \"list_id\": 3301,\n  \"notes\": \"\",\n  \"status\": \"completed\",\n  \"title\": \"交房租\"\n}"
+  },
+  {
+    "session": "main",
+    "round": "01M5T7TY1SVCNRKPNKHTSZMSVA",
+    "call": "01M5T7TY27VK6X6N2QD3E3QJP7",
+    "name": "cairn_list_tasks",
+    "arguments": "{\"status\": \"open\", \"due_date\": \"2026-10-26\"}",
+    "generation": 8,
+    "outcome": "ok",
+    "code": null,
+    "content": "[\n  {\n    \"due_date\": \"2026-10-26\",\n    \"id\": 58233,\n    \"list_id\": 3302,\n    \"notes\": \"两件衬衫一条西裤，取衣单在钱包里\",\n    \"status\": \"open\",\n    \"title\": \"取干洗的衣服\"\n  },\n  {\n    \"due_date\": \"2026-10-26\",\n    \"id\": 58242,\n    \"list_id\": 3301,\n    \"notes\": \"\",\n    \"status\": \"open\",\n    \"title\": \"给妈妈打电话\"\n  },\n  {\n    \"due_date\": \"2026-10-26\",\n    \"id\": 58243,\n    \"list_id\": 3301,\n    \"notes\": \"\",\n    \"status\": \"open\",\n    \"title\": \"把周报发给老板\"\n  }\n]"
+  }
+]

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Migrating from v1 to v2 · Ratewell</title>
+</head>
+<body>
+<header>
+  <a href="/">Ratewell</a>
+  <nav><a href="/docs">Docs</a> · <a href="/changelog">Changelog</a></nav>
+</header>
+<main>
+  <h1>Migrating from v1 to v2</h1>
+  <p>v2 has been available since {{date:-120d|en}}. v1 was deprecated on {{date:-92d|en}} and retired on {{date:-1d|en}}; its endpoints now return <code>410 Gone</code>.</p>
+
+  <h2>Why v2</h2>
+  <p>v1 let you pick any base currency and computed cross rates on our servers, rounded to six decimal places and returned as JSON numbers. That looked convenient, but it meant v1 quietly published numbers the ECB never did, and some clients lost precision parsing them as floats. v2 returns exactly what the ECB publishes and leaves the arithmetic to you.</p>
+
+  <h2>What changed</h2>
+  <table>
+    <tr><th></th><th>v1</th><th>v2</th></tr>
+    <tr><td>Endpoint</td><td><code>GET /v1/latest?base=USD&amp;symbols=CNY,JPY</code></td><td><code>GET /v2/latest</code></td></tr>
+    <tr><td>Base currency</td><td>Any, chosen with <code>base</code> (default <code>EUR</code>)</td><td>Always the euro. The <code>base</code> parameter is gone.</td></tr>
+    <tr><td>Choosing currencies</td><td><code>symbols</code></td><td>Gone. Every currency comes back in one response; pick what you need.</td></tr>
+    <tr><td><code>rates</code></td><td>An object from currency code to number</td><td>An array of <code>{ "currency", "rate" }</code> objects</td></tr>
+    <tr><td>Rate values</td><td>JSON numbers, rounded to six decimal places</td><td>Decimal strings with the ECB's own precision</td></tr>
+    <tr><td>Date field</td><td><code>date</code></td><td><code>published</code></td></tr>
+    <tr><td>Historical rates</td><td><code>GET /v1/{date}</code></td><td>Not yet available</td></tr>
+  </table>
+
+  <h2>Side by side</h2>
+  <p>v1:</p>
+<pre><code>GET /v1/latest?base=USD&amp;symbols=CNY
+
+{ "base": "USD", "date": "{{date:-75b}}", "rates": { "CNY": 7.218459 } }</code></pre>
+  <p>v2:</p>
+<pre><code>GET /v2/latest
+
+{
+  "base": "EUR",
+  "published": "{{date:-75b}}",
+  "source": "European Central Bank, euro foreign exchange reference rates",
+  "rates": [
+    { "currency": "USD", "rate": "1.0835" },
+    …
+    { "currency": "CNY", "rate": "7.8212" },
+    …
+  ]
+}</code></pre>
+
+  <h2>Cross rates</h2>
+  <p>If your code asked v1 for a base other than the euro, compute the cross rate from the two euro rates. To convert an amount from currency <em>A</em> to currency <em>B</em>:</p>
+  <pre><code>amount × rate(B) ÷ rate(A)</code></pre>
+  <p>The euro is not in the <code>rates</code> array; treat its rate as 1. With the rates in the example above, 100 USD is 100 × 7.8212 ÷ 1.0835 = 721.85 CNY, the same answer v1 gave up to rounding.</p>
+  <p>The most common migration bug we have seen is reading the v2 rates as if they were quoted against your old base. A client that used <code>base=USD</code> and only renamed the fields will treat 7.8212, the yuan per <em>euro</em>, as yuan per dollar, and be off by the EUR/USD rate.</p>
+
+  <h2>Checklist</h2>
+  <ol>
+    <li>Point requests at <code>/v2/latest</code> and drop <code>base</code> and <code>symbols</code>.</li>
+    <li>Read <code>rates</code> as an array and parse each <code>rate</code> from its string.</li>
+    <li>Compute cross rates as above whenever neither side is the euro.</li>
+    <li>Rename <code>date</code> to <code>published</code> wherever you show it.</li>
+    <li>Cache the response until the next working day; one call covers every currency.</li>
+  </ol>
+  <p>Stuck? Write to <a href="mailto:hello@ratewell.io">hello@ratewell.io</a> with the request you send and the response you get.</p>
+</main>
+<footer><a href="/docs">Docs</a> · <a href="/changelog">Changelog</a></footer>
+</body>
+</html>

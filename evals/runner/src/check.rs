@@ -160,6 +160,7 @@ async fn null_run(deps: &TrialDeps, task: &Task, variant: &trial::Variant) -> Re
 async fn cases(task: &Task) -> Result<Vec<(std::path::PathBuf, Expectation, DateTime<Utc>)>> {
     let root = task.root.join("hidden/cases");
     ensure!(root.is_dir(), "{} has no grading cases", task.id);
+    let timed = timed(task).await?;
     let mut cases = Vec::new();
     for path in task::files(&root).await? {
         if path.file_name().is_none_or(|name| name != "expect.toml") {
@@ -171,7 +172,7 @@ async fn cases(task: &Task) -> Result<Vec<(std::path::PathBuf, Expectation, Date
             "{}: no expected outcome",
             path.display()
         );
-        let start = case_start(task, &expectation)?;
+        let start = case_start(task, &expectation, timed)?;
         cases.push((
             path.parent().context("case directory")?.to_owned(),
             expectation,
@@ -195,7 +196,25 @@ async fn cases(task: &Task) -> Result<Vec<(std::path::PathBuf, Expectation, Date
     Ok(cases)
 }
 
-fn case_start(task: &Task, expectation: &Expectation) -> Result<DateTime<Utc>> {
+/// Whether a reference or a schema uses time placeholders, so each case must state its start.
+async fn timed(task: &Task) -> Result<bool> {
+    let placeholder = |text: &str| text.contains("{{time:") || text.contains("{{date:");
+    for criterion in &task.definition.criteria {
+        let used = match &criterion.grader {
+            Grader::Rubric { reference, .. } => placeholder(reference),
+            Grader::State { schema, .. } => {
+                placeholder(&tokio::fs::read_to_string(task.root.join(schema)).await?)
+            }
+            Grader::Command { .. } => false,
+        };
+        if used {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn case_start(task: &Task, expectation: &Expectation, timed: bool) -> Result<DateTime<Utc>> {
     for id in expectation.criteria.keys() {
         ensure!(
             task.definition
@@ -205,19 +224,9 @@ fn case_start(task: &Task, expectation: &Expectation) -> Result<DateTime<Utc>> {
             "unknown criterion {id}"
         );
     }
-    let timed = task
-        .definition
-        .criteria
-        .iter()
-        .any(|criterion| match &criterion.grader {
-            Grader::Rubric { reference, .. } => {
-                reference.contains("{{time:") || reference.contains("{{date:")
-            }
-            _ => false,
-        });
     ensure!(
         !timed || expectation.start.is_some(),
-        "case needs start because references use time placeholders"
+        "case needs start because references or schemas use time placeholders"
     );
     match &expectation.start {
         Some(start) => Ok(start

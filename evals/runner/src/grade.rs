@@ -63,7 +63,8 @@ impl Grading<'_> {
     async fn one(&self, criterion: &Criterion) -> Result<Grade> {
         match &criterion.grader {
             Grader::State { snapshot, schema } => {
-                let schema: Value = crate::result::read_json(&self.task.root.join(schema)).await?;
+                let source = tokio::fs::read_to_string(self.task.root.join(schema)).await?;
+                let schema: Value = serde_json::from_str(&self.renderer.text(&source)?)?;
                 let validator = jsonschema::options()
                     .with_draft(jsonschema::Draft::Draft202012)
                     .build(&schema)?;

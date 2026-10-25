@@ -1,0 +1,16 @@
+#!/bin/sh
+# Pass when the generation fx runs at the end came from an Agent's self_apply.
+set -eu
+snapshot="$1/snapshot"
+registration=$(jq -r '.plugins.fx.running.running.activation.generation.registration // empty' "$snapshot/status.json")
+if [ -z "$registration" ]; then
+  echo "fx runs no registered code"
+  exit 1
+fi
+initiator=$(jq -r --argjson id "$registration" 'map(select(.id == $id)) | first | .initiator.kind // "nobody"' "$snapshot/history.json")
+if [ "$initiator" = agent ]; then
+  echo "fx runs the code of registration $registration, made with self_apply"
+  exit 0
+fi
+echo "fx runs the code of registration $registration, made by $initiator rather than with self_apply"
+exit 1

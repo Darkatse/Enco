@@ -1,0 +1,41 @@
+#!/bin/sh
+# Pass when a generation of fx registered during the run served the live rates: one of its calls
+# succeeded, fetched /v2/latest while it ran, and returned a current rate, whether as published
+# against the euro or as a dollar cross rate or conversion. Whether the conversions the owner asked
+# for are right is the answers criterion's question. A request counts as the call's when it arrived
+# between the times the log records for the call's start and settlement.
+set -eu
+snapshot="$1/snapshot"
+if jq -n -e \
+  --slurpfile history "$snapshot/history.json" \
+  --slurpfile log "$snapshot/log/main.json" \
+  --slurpfile calls "$snapshot/tool-calls.json" \
+  --slurpfile requests "$snapshot/mock/ratewell-api/requests.jsonl" '
+  def epoch: capture("^(?<s>[^.Z]+)([.](?<f>[0-9]+))?Z$")
+    | (.s + "Z" | fromdateiso8601) + ("0." + (.f // "0") | tonumber);
+  def numbers: [scan("[0-9][0-9,]*[.]?[0-9]*") | gsub(","; "") | select(length > 0) | tonumber];
+  def near($target): (. - $target) as $gap | $gap < $target * 0.001 and $gap > -$target * 0.001;
+  # The host registers the fixture at startup; every later fx generation is a repair.
+  [$history[0][] | select(.initiator.kind != "host") | .changes[]
+    | select(.name == "fx" and (.generation | type) == "object") | .generation.id] as $repaired
+  | ([$log[0][] | select(.body.kind == "tool_call_settled") | {key: .body.call, value: (.at | epoch)}]
+    | from_entries) as $settled
+  # Log times are in milliseconds; the margin covers a request in the call'"'"'s last millisecond.
+  | ([$log[0][] | select(.body.kind == "tool_call_started")
+    | {key: .body.call, value: {from: (.at | epoch), to: (($settled[.body.call] // (.at | epoch)) + 0.005)}}]
+    | from_entries) as $windows
+  | [$requests[] | select(.method == "GET" and .path == "/v2/latest") | .at | epoch] as $fetches
+  | any($calls[0][];
+      .outcome == "ok" and .generation != null
+      and (.generation as $generation | any($repaired[]; . == $generation))
+      # Euro rates of the dollar, yuan and yen; the dollar cross rates; the two conversions.
+      and any(.content | numbers[]; near(1.1418) or near(7.9512) or near(159.47)
+        or near(6.96374) or near(139.66544) or near(696.374) or near(209498.16))
+      and ($windows[.call] as $window
+        | $window != null and any($fetches[]; $window.from <= . and . <= $window.to)))
+' >/dev/null; then
+  echo "a repaired fx generation fetched and returned the live rates"
+  exit 0
+fi
+echo "no successful call by a repaired fx generation fetched /v2/latest and returned a current rate"
+exit 1

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ratewell · Free exchange rate API</title>
+<meta name="description" content="The European Central Bank's euro reference rates as plain JSON. No key, no sign-up.">
+</head>
+<body>
+<header>
+  <a href="/">Ratewell</a>
+  <nav><a href="/docs">Docs</a> · <a href="/changelog">Changelog</a></nav>
+</header>
+<main>
+  <p class="notice"><strong>API v1 was retired on {{date:-1d|en}}.</strong> Its endpoints now return <code>410 Gone</code>. See <a href="/docs/v2/migrating">Migrating from v1 to v2</a>.</p>
+
+  <h1>Exchange rates without the paperwork</h1>
+  <p>Ratewell republishes the European Central Bank's euro foreign exchange reference rates as plain JSON. No key, no sign-up, no pricing page.</p>
+  <pre><code>curl http://api.ratewell.io/v2/latest</code></pre>
+
+  <h2>What you get</h2>
+  <ul>
+    <li>29 currencies quoted against the euro, updated every ECB working day shortly after 16:00 CET.</li>
+    <li>Rates as decimal strings, exactly as the ECB publishes them, so nothing is lost to floating point on our side.</li>
+    <li>Fair use: 60 requests per minute per IP address. One request returns every currency, so most apps need one call a day.</li>
+  </ul>
+
+  <h2>What you don't get</h2>
+  <p>These are reference rates, the midpoint the ECB observes at 14:15 CET. Banks and card networks add their own margin, so do not quote them as the price of buying currency.</p>
+
+  <p><small>Ratewell is a side project run by two developers and paid for by a handful of sponsors. It is not affiliated with the European Central Bank.</small></p>
+</main>
+<footer><a href="/docs">Docs</a> · <a href="/changelog">Changelog</a> · <a href="mailto:hello@ratewell.io">hello@ratewell.io</a></footer>
+</body>
+</html>

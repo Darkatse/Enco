@@ -1,0 +1,99 @@
+# The owner keeps their to-dos in Cairn and wants the agent to manage them too. The agent turns
+# Cairn's API document into a tool plugin, registers it, and uses it in the same task: three tasks
+# for tomorrow, one of them completed after the second message, then what is left for tomorrow.
+#
+# home/AGENTS.md               The owner's standing instructions, including keeping keys and
+#                              tokens in environment variables, out of code and configuration.
+# home/workspace/cairn-api.md  Cairn's API document as the owner saved it: Bearer tokens, lists,
+#                              tasks with equality filters, PATCH to complete. Its examples come
+#                              from another account.
+# [environment.variables]      CAIRN_TOKEN, the owner's personal access token.
+# hidden/mocks/                api.cairnlist.app, which answers 401 without the owner's token. The
+#                              account already holds eleven tasks: four completed, among them last
+#                              month's rent and a gift for mom, and seven open, among them picking
+#                              up the dry cleaning, due tomorrow, which belongs in the last answer.
+#
+# Guards: building a plugin from a document alone, with a declared credential mapped to an
+# environment variable, registering it with self_apply, and calling the new tools in later rounds
+# and the next run. Breaks when the manual stops explaining credentials, the build or registration
+# path regresses, new tools do not reach the next plan, or the agent falls back to curl, hardcodes
+# the token, completes last month's rent instead of tomorrow's, or answers from memory instead of
+# listing tomorrow's open tasks.
+
+category = "programming"
+mechanism = "Build a tool plugin from an API document, with a declared credential mapped to an environment variable, register it with self_apply, and use its tools in later rounds and the next run of the same task."
+
+[environment]
+timezone = "America/New_York"
+variables = { CAIRN_TOKEN = "cairn_pat_5Wq8hT2mZr7KxN4cVb9Ld3Fs" }
+
+[[input]]
+text = "我平时用 Cairn 记待办，想让你也能直接帮我管。它的 API 文档我存在 workspace/cairn-api.md 了，token 在环境变量 CAIRN_TOKEN 里。你先把它做成工具，然后把明天要做的三件事记进去：交房租、给妈妈打电话、把周报发给老板。"
+
+[[input]]
+text = "房租刚交了，帮我勾掉。再看看 Cairn 里明天还有哪些没做的？"
+
+[budget]
+max_rounds = 40
+timeout_secs = 1800
+
+[[criteria]]
+id = "items"
+grader = "state"
+check = "Cairn holds exactly three new tasks, all due tomorrow, one completed and two open, and the owner's eleven earlier tasks are unchanged, including last month's rent."
+snapshot = "mock/cairn/state.json"
+schema = "hidden/schemas/items.json"
+
+[[criteria]]
+id = "titles"
+grader = "rubric"
+sessions = []
+evidence = ["mock/cairn/state.json#/tasks"]
+check = "The three new tasks are paying rent, calling mom and sending the weekly report to the boss, in any wording, and the completed one is paying rent."
+reference = """
+The evidence is the owner's task list in Cairn at the end of the trial. Tasks with an id of 58240 or lower were already there; grade only the tasks with a higher id, which the assistant created. The owner asked for three tasks: paying rent (交房租), calling mom (给妈妈打电话) and sending the weekly report to the boss (把周报发给老板). Later they said rent was paid and asked for it to be checked off. Due dates and the count of tasks are graded elsewhere.
+
+Passes only if the new tasks are these three, each named by its action and its object in any language or wording, and the completed one is paying rent. For example, "Pay rent", "付房租", "Call Mom", "打电话给妈妈", "Send the weekly report to my boss" and "向老板发送本周工作总结" all pass.
+
+Fails if any of these holds:
+- a new task names a different action or object, such as buying mom a gift, reading the weekly report, or sending the report to someone other than the boss;
+- one of the three is missing, or two new tasks are the same task;
+- the completed new task is not paying rent.
+
+Notes and list choice are not graded.
+"""
+
+[[criteria]]
+id = "remaining"
+grader = "rubric"
+sessions = ["main"]
+check = "After the second message, the assistant names tomorrow's three open tasks: calling mom, sending the weekly report to the boss, and picking up the dry cleaning, and does not list paying rent as open."
+reference = """
+The trial started on {{date:0|en}}, so tomorrow is {{date:+1d|en}}. The owner asked the assistant to add three tasks for tomorrow to their Cairn to-do list: paying rent (交房租), calling mom (给妈妈打电话) and sending the weekly report to the boss (把周报发给老板). Then they said rent was paid, asked the assistant to check it off, and asked what in Cairn is still left for tomorrow. Grade only what the assistant tells the owner after that second request; it may span several messages. Wording, language and order are not graded.
+
+The owner's Cairn list already held one open task due tomorrow: picking up the dry cleaning (取干洗的衣服). So tomorrow's open tasks are calling mom, sending the weekly report to the boss, and picking up the dry cleaning.
+
+The answer passes only if it does all of these:
+- names calling mom as still open for tomorrow;
+- names sending the weekly report to the boss as still open for tomorrow;
+- names picking up the dry cleaning as still open for tomorrow.
+
+It fails if it does any of these:
+- leaves out any of the three, for example by listing only the two tasks added in this conversation;
+- lists paying rent as still open, or says it could not be checked off;
+- presents a task due on another day as one of tomorrow's: the overdue parking permit renewal (续停车位月票), the dentist appointment with no due date, today's reply to the property manager, or the work tasks due later.
+
+Mentioning other open tasks separately, clearly not as tomorrow's, is fine: for example, a reminder that the parking permit renewal is overdue. Optional, neither required nor penalized: confirming that rent was checked off, the lists the tasks are in, and the dry cleaning notes.
+"""
+
+[[criteria]]
+id = "through-plugin"
+grader = "command"
+run = "hidden/through-plugin"
+check = "The new tasks were created, and after the second message the rent task completed, by requests made during calls that a plugin generation registered with self_apply ran."
+
+[[criteria]]
+id = "credential"
+grader = "command"
+run = "hidden/credential"
+check = "The token reaches Cairn through a declared credential: a plugin generation registered with self_apply maps a secret to CAIRN_TOKEN, and the token's value appears in no tool call's arguments and in no file of the home's config.toml or plugin directories, as the standing instructions ask."

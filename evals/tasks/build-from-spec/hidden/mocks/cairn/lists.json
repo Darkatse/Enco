@@ -1,0 +1,6 @@
+[
+  { "id": 3301, "name": "Inbox", "inbox": true },
+  { "id": 3302, "name": "家里", "inbox": false },
+  { "id": 3303, "name": "工作", "inbox": false },
+  { "id": 3304, "name": "采购", "inbox": false }
+]

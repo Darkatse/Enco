@@ -149,11 +149,12 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | 注册表、内核的配置表与 profile | `crates/enco-kernel/src/` 的 `registry/`、`settings`、`profile` |
 | 内核与外界的边界（端口）、上限常量 | `crates/enco-kernel/src/ports/`、各 crate 的 `limits.rs` |
 | SQLite、blob、制品库 | `crates/enco-host/src/store/`，模式在 `schema.sql` |
-| 出厂 composer、工作区上下文、原生工具 | `crates/enco-host/src/` 的 `composer`、`context`、`tools/` |
+| 出厂 composer、主人的常驻说明、原生工具 | `crates/enco-host/src/` 的 `composer`、`context`、`tools/` |
 | 记忆、渠道与 Telegram | `crates/enco-host/src/` 的 `memory/`、`channel/`、`telegram/` |
 | 插件运行时、宿主导入、凭证 | `crates/enco-wasm` |
 | 组合根、守护进程、本地协议与 CLI | `apps/enco/src` |
-| 插件源码的值、构建、登记、历史与倒带 | `crates/enco-host/src/development/`；分发的 SDK 在 `sdk/` |
+| 插件源码的值、构建、登记、历史与倒带，手册投影 | `crates/enco-host/src/development/`；分发的 SDK 在 `sdk/` |
+| 由 rustdoc JSON 渲染的手册与文档规则 | `crates/enco-manual`，仓库中经 `cargo xtask docs` 生成 |
 | 完整状态、需要关注的情况与下一步 | `crates/enco-host/src/status/`，文档渲染在 `development/render/` |
 | 插件契约 | `sdk/wit/plugin.wit`，生成的 `sdk/wit/CONTRACT.md` |
 | 出厂插件：Chat Completions、Gemini 原生协议、结构化决策与网页 | `plugins/` |
@@ -166,12 +167,12 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 |---|---|
 | [代际](generations.md) | 自我修改：登记、生效、恢复与宿主例外 |
 | [Session](session.md) | Log、Round、请求的唯一构造路径、Attempt、恢复与取消、定时 |
-| [上下文与手册](context.md) | 内核、composer 与 Provider 的分工，渐进式披露，一份文档两种读者 |
-| [插件](plugins.md) | 边界与契约、插件只响应调用、Store、命名与身份、接线与准入、外部的映射与定本、配置与密钥、原生能力 |
+| [上下文与手册](context.md) | 内核、composer 与 Provider 的分工，渐进式披露，一份文档两种读者，手册的三层与投影 |
+| [插件](plugins.md) | 边界与契约、参数 schema、插件只响应调用、Store、命名与身份、接线与准入、外部的映射与定本、配置与密钥、原生能力 |
 | [渠道](channels.md) | 连接 actor、事件的转移、投递的结算 |
 | [记忆](memory.md) | 权威与派生索引、索引提名而权威裁决、相关性过滤 |
 | [多节点](space.md) | CP、粘滞所有权与租约、invoke 与 roam、两种同步、移动端 |
-| [工程](engineering.md) | crate 边界、错误、禁止的结构、常量、构建 |
+| [工程](engineering.md) | crate 边界、错误、禁止的结构、常量、构建、固定的工具链与文档门禁 |
 | [验证](verification.md) | 测试哲学、计时器、门禁、评测 |
 
 ## 维护设计文档

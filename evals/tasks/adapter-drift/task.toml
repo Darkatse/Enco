@@ -1,0 +1,75 @@
+# The owner's currency plugin stopped working: Ratewell, the free rate service it reads, retired
+# the API version the plugin was written against. The agent repairs the plugin through the formal
+# path, then answers two conversions with it.
+#
+# home/AGENTS.md          The owner's standing instructions.
+# home/plugins/fx/        The owner's plugin, registered at startup: fx_convert and fx_rates read
+#                         Ratewell's v1, which quoted rates against any base currency and returned
+#                         them as a map of numbers. Upstream failures come back as tool failures
+#                         with the response text, so the registry never rolls the plugin back.
+# hidden/mocks/           What the agent can reach, built so that every shortcut fails:
+#                         - api.ratewell.io answers v1 with 410 Gone and a link to the migration
+#                           guide; v2 quotes all 29 ECB currencies against the euro only, as an
+#                           array of decimal strings, with `date` renamed to `published`;
+#                         - ratewell.io holds the home page, the docs index, the v2 reference, the
+#                           migration guide, the retired v1 reference and the changelog. Their
+#                           worked examples use rates from months ago, so copying an example gives
+#                           the wrong answer;
+#                         - the live rates sit away from the dollar rates a model remembers
+#                           (1 USD = 6.9637 CNY = 139.67 JPY), so neither answer can be guessed.
+#
+# Guards: repairing a plugin from its source, the manuals and the upstream's own documentation,
+# without the host's source, and registering it with self_apply. Breaks when the manual stops
+# describing the SDK or the contract well enough to change a plugin, when self_apply or the build
+# path regresses, or when the agent answers with curl instead of repairing, or renames v2's fields
+# without converting the euro rates into cross rates (100 USD then comes out as 795.12 CNY).
+
+category = "programming"
+mechanism = "Repair a tool plugin after its upstream API changed, reading only the manuals, the plugin's source and the upstream's documentation, register it with self_apply, and answer with the repaired generation."
+
+[environment]
+timezone = "America/New_York"
+
+[[input]]
+text = "汇率换算那个插件坏了，问什么都报错。你帮我看看修一下，修好了顺便算算 100 美元现在合多少人民币。"
+
+[[input]]
+text = "下个月去东京出差，1500 美元能换多少日元？"
+
+[budget]
+max_rounds = 40
+timeout_secs = 1800
+
+[[criteria]]
+id = "answers"
+grader = "rubric"
+sessions = ["main"]
+check = "The assistant tells the owner that 100 US dollars is about 696.37 yuan and that 1,500 US dollars is about 209,498 yen, both computed from Ratewell's current euro rates."
+reference = """
+The trial started on {{date:0|en}}. The owner's currency plugin had stopped working. They asked the assistant to fix it and then convert 100 US dollars to Chinese yuan; afterwards they asked how many Japanese yen 1,500 US dollars buy. Grade what the assistant tells the owner in the main session, across all of its messages. Layout, language and number format (commas, 万) are not graded.
+
+Ratewell's current rates, published for {{date:-1b|en}}, are quoted against the euro: 1 EUR = 1.1418 USD = 7.9512 CNY = 159.47 JPY. So 1 USD = 6.9637 CNY and 1 USD = 139.67 JPY.
+
+The answer passes only if it does both:
+- says 100 USD is 696.37 CNY, rounded to three or more significant figures: 696, 696.4 and 696.37 all pass;
+- says 1,500 USD is 209,498 JPY, rounded to three or more significant figures: 209,000 (20.9 万), 209,500 (20.95 万) and 209,498 all pass.
+
+It fails if it does any of these:
+- leaves either conversion out, or says it could not be computed;
+- gives any other figure, for example 795.12 CNY or 239,205 JPY, which read the euro rates as dollar rates; 721.85 CNY, the worked example in Ratewell's migration guide; or a figure rounded to two significant figures, such as 700 CNY or 21 万日元, which a remembered rate would give as well;
+- gives two different figures for the same conversion without saying which one is right.
+
+Optional, neither required nor penalized: what broke and how it was fixed, the rate itself, the publication date, and a note that banks and cards charge more than the reference rate.
+"""
+
+[[criteria]]
+id = "through-plugin"
+grader = "command"
+run = "hidden/through-plugin"
+check = "A generation of fx registered during the run ran an fx call that succeeded, fetched /v2/latest while it ran, and returned a current rate: a euro rate as published, a dollar cross rate, or one of the two conversions. Whether the conversions are right is graded by answers."
+
+[[criteria]]
+id = "formal-path"
+grader = "command"
+run = "hidden/formal-path"
+check = "At the end of the run, fx runs code that an Agent registered with self_apply, rather than the code registered at startup or a change applied from the command line."
