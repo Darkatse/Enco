@@ -447,7 +447,10 @@ async fn applying_web_source_through_the_tool_preserves_its_exact_declared_defin
         .unwrap()
         .tools
         .unwrap()
-        .specs;
+        .specs
+        .iter()
+        .map(DisclosedTool::from)
+        .collect::<Vec<_>>();
     let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
     let previous = web_status(&daemon).await;
     build_target(daemon.root.path(), "web");

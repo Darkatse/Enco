@@ -198,7 +198,7 @@ async fn restart_restores_the_active_generation_whatever_config_toml_holds() {
             })
             .await
             .unwrap();
-        let comparison = &status["configuration"]["workspace"];
+        let comparison = &status["configuration"]["home"];
         assert_eq!(
             comparison["state"],
             if unreadable { "unreadable" } else { "changed" }

@@ -43,14 +43,14 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let mut tools = native_tools(paths.workspace());
+    let mut tools = native_tools(paths.workspace())?;
     let host_tool_names = tools
         .iter()
         .map(|tool| tool.spec())
-        .chain(memory_tool_specs())
-        .chain(development_tool_specs())
+        .chain(memory_tool_specs()?)
+        .chain(development_tool_specs()?)
         .chain([self_status_spec()])
-        .chain(enco_kernel::builtin_tool_specs())
+        .chain(enco_kernel::builtin_tool_specs()?)
         .map(|spec| spec.name)
         .collect();
     let runtime = Arc::new(WasmRuntime::new()?);
@@ -76,14 +76,15 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
         clock.clone(),
     )
     .await?;
-    tools.extend(memory_tools(memories.clone()));
-    tools.extend(development_tools(development.clone(), registry.clone()));
+    tools.extend(memory_tools(memories.clone())?);
+    tools.extend(development_tools(development.clone(), registry.clone())?);
     let status = Arc::new(crate::status::StatusTool::default());
     tools.push(status.clone());
     let kernel = Kernel::start(KernelDeps {
         store,
         registry,
         composer: Arc::new(FactoryComposer::new(
+            paths.home.clone(),
             paths.workspace(),
             paths.instructions(),
         )),

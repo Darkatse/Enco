@@ -12,7 +12,7 @@ pub(super) fn facts(kind: &AttentionKind<'_>) -> String {
             path: target,
             registration,
         } => format!(
-            "**{} — unregistered changes.** The workspace differs from registration {registration}.",
+            "**{} — unregistered changes.** The files in the home differ from registration {registration}.",
             path(target)
         ),
         AttentionKind::Unbuilt {

@@ -1,4 +1,8 @@
-//! Each view requires only its own exports; shared interfaces keep one Rust type identity.
+//! Wasmtime bindings: one for the lifecycle every plugin exports, and one for each other interface
+//! a plugin can export.
+//!
+//! A plugin that exports several interfaces, such as a provider, is bound once for each; the
+//! interfaces they share map to one set of Rust types.
 mod completion {
     wasmtime::component::bindgen!({
         path: "../../sdk/wit",
@@ -56,7 +60,7 @@ mod tools {
 }
 
 /// Package version of `sdk/wit/plugin.wit`; change it together with the WIT.
-pub(crate) const CONTRACT_VERSION: &str = "0.5.0";
+pub(crate) const CONTRACT_VERSION: &str = "0.6.0";
 
 pub(crate) use base::BasePre;
 pub(crate) use base::exports::enco::plugin::lifecycle;

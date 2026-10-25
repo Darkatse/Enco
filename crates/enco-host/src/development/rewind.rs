@@ -1,4 +1,4 @@
-//! Rewind prepares every file operation before changing the workspace.
+//! Rewind prepares every file operation before it changes any file in the home.
 use super::{
     ContentUnavailable, Development, DevelopmentError, Failed, HistoryPoint, Operation,
     RewindArguments, check_cancelled,

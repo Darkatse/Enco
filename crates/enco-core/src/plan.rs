@@ -1,5 +1,6 @@
-use crate::{CapabilityId, ContentHash, LogPos, Message, ToolSpec};
+use crate::{CapabilityId, ContentHash, Effect, LogPos, Message, ToolSpec};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// The composer’s complete request plan, recorded as a content-addressed blob before sending.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -7,11 +8,38 @@ pub struct ContextPlan {
     /// Messages in request order.
     pub items: Vec<PlanItem>,
     /// Disclosed capabilities together with their frozen definitions.
-    pub tools: Vec<(CapabilityId, ToolSpec)>,
+    pub tools: Vec<(CapabilityId, DisclosedTool)>,
     /// Requested output budget; absent means provider default.
     pub max_output_tokens: Option<u32>,
     /// Reasons content was not included in this request.
     pub omitted: Vec<Omission>,
+}
+
+/// A tool as a plan disclosed it to the model, kept verbatim.
+///
+/// A recorded schema is read back as it was sent and never checked again, so plans recorded under
+/// earlier rules stay readable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisclosedTool {
+    /// Name the model proposes calls by.
+    pub name: String,
+    /// Instructions the model read.
+    pub description: String,
+    /// The argument schema as sent.
+    pub input_schema: Value,
+    /// Mutation semantics declared with the tool.
+    pub effect: Effect,
+}
+
+impl From<&ToolSpec> for DisclosedTool {
+    fn from(spec: &ToolSpec) -> Self {
+        Self {
+            name: spec.name.clone(),
+            description: spec.description.clone(),
+            input_schema: spec.input_schema.to_value(),
+            effect: spec.effect,
+        }
+    }
 }
 
 /// Inline content or a reference to an immutable canonical message.

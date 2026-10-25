@@ -1,4 +1,5 @@
-//! Chat Completions and embeddings over the SDK transport.
+//! Helpers for plugins that call model services through the host's `http` import, including
+//! OpenAI-compatible Chat Completions and embeddings.
 use crate::bindings;
 pub use crate::http::{apply_options, post};
 pub use bindings::enco::plugin::{host, types};
@@ -8,6 +9,7 @@ pub use types::Settings;
 use types::{Failure, Message, Part, Role};
 mod messages;
 
+/// A failure with the given code; `retryable` means the same request may succeed later.
 pub fn failure(code: &str, message: impl Into<String>, retryable: bool) -> Failure {
     Failure {
         code: code.into(),
@@ -16,15 +18,20 @@ pub fn failure(code: &str, message: impl Into<String>, retryable: bool) -> Failu
     }
 }
 
+/// A non-retryable `provider.bad_response` failure: the reply is malformed or not what the protocol
+/// promises.
 pub fn bad(message: impl Into<String>) -> Failure {
     failure("provider.bad_response", message, false)
 }
 
+/// A non-retryable `provider.bad_request` failure: the request cannot succeed as written.
 pub fn bad_request(message: impl Into<String>) -> Failure {
     failure("provider.bad_request", message, false)
 }
 
-/// Providers currently accept only the empty configuration; service parameters belong to callers.
+/// Accept only `{}` as the plugin's configuration; anything else fails with `config.invalid`.
+///
+/// Use it in plugins whose endpoint, model and options all arrive with each call's [`Settings`].
 pub fn empty_config(config: &str) -> Result<(), Failure> {
     let value: Value = serde_json::from_str(config)
         .map_err(|e| failure("config.invalid", e.to_string(), false))?;
@@ -39,6 +46,12 @@ pub fn empty_config(config: &str) -> Result<(), Failure> {
     }
 }
 
+/// Send `request` as one non-streaming Chat Completions call and return the reply as a
+/// [`Completion`].
+///
+/// `settings.options` may add fields to the request, but not replace one this function writes or
+/// reserves, such as `model`, `messages` or `stream`. Reply fields the contract has no place for
+/// are kept in an extension part and sent back with that message later.
 pub async fn complete(settings: Settings, request: Request) -> Result<Completion, Failure> {
     let messages = messages::encode(&request.messages)?;
     let mut body = json!({ "model": settings.model, "messages": messages });
@@ -80,6 +93,12 @@ pub async fn complete(settings: Settings, request: Request) -> Result<Completion
     parse_completion(post(&settings, "chat/completions", body, None).await?)
 }
 
+/// Embed each input through the `embeddings` endpoint, returning one vector per input, in input
+/// order.
+///
+/// The request times out after 30 seconds. The reply must hold exactly one non-empty vector of
+/// finite numbers for each input, all of the same length; otherwise the call fails as
+/// `provider.bad_response`.
 pub async fn embed(settings: Settings, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure> {
     let count = inputs.len();
     let mut body = json!({ "model": settings.model, "input": inputs });

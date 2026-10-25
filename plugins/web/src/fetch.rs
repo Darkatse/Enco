@@ -1,23 +1,26 @@
 use crate::{
     bad,
     config::{Config, Engine, Service},
-    http,
+    http, invalid,
     types::Failure,
 };
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-#[derive(Deserialize)]
-struct Input {
+/// Arguments of `web_fetch`.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Arguments {
+    /// HTTP or HTTPS URL of the page to read.
     url: String,
 }
 
 pub(crate) async fn fetch(config: &Config, input: &str) -> Result<String, Failure> {
-    let input: Input =
-        serde_json::from_str(input).map_err(|error| bad(format!("arguments: {error}")))?;
-    let url = url::Url::parse(&input.url).map_err(|error| bad(format!("url: {error}")))?;
+    let input: Arguments = enco_sdk::parse_arguments(input)?;
+    let url = url::Url::parse(&input.url).map_err(|error| invalid(format!("url: {error}")))?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return Err(bad("url must use http or https"));
+        return Err(invalid("url must use http or https"));
     }
     let response = match http::request(
         "GET",

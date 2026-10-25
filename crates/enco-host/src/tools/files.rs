@@ -1,11 +1,17 @@
-use super::{args::*, resolve_path};
+use super::{failure::*, resolve_path};
 use crate::limits::*;
 use async_trait::async_trait;
 use enco_core::*;
 use enco_kernel::{CallContext, Tool};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::path::{Path, PathBuf};
+use std::{
+    num::NonZeroU64,
+    path::{Path, PathBuf},
+};
 
+#[derive(Clone, Copy)]
 pub(super) enum Kind {
     Read,
     Write,
@@ -17,11 +23,106 @@ pub(super) fn kinds() -> [Kind; 4] {
     [Kind::Read, Kind::Write, Kind::Edit, Kind::List]
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReadArguments {
+    /// The file to read, relative to the workspace or absolute.
+    path: String,
+    /// The first line to return, counting from 1.
+    #[serde(default = "first_line")]
+    offset: NonZeroU64,
+    /// The number of lines to return.
+    #[serde(default = "default_lines")]
+    #[schemars(range(min = 1, max = FILE_READ_MAX_LINES))]
+    limit: u64,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WriteArguments {
+    /// The file to write, relative to the workspace or absolute.
+    path: String,
+    /// The complete new text of the file.
+    content: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EditArguments {
+    /// The file to edit, relative to the workspace or absolute.
+    path: String,
+    /// The exact text to replace.
+    #[schemars(length(min = 1))]
+    old_string: String,
+    /// The replacement text; it must differ from `old_string`.
+    new_string: String,
+    /// Whether to replace every occurrence instead of exactly one.
+    #[serde(default)]
+    replace_all: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ListArguments {
+    /// The directory to list, relative to the workspace or absolute.
+    path: String,
+}
+
+fn first_line() -> NonZeroU64 {
+    NonZeroU64::MIN
+}
+
+fn default_lines() -> u64 {
+    FILE_READ_DEFAULT_LINES
+}
+
+impl Kind {
+    fn spec(self) -> Result<ToolSpec, SchemaError> {
+        match self {
+            Kind::Read => ToolSpec::of::<ReadArguments>(
+                "fs_read",
+                "Read a PNG, JPEG or WebP image whole, or a UTF-8 file by line range. \
+                 Results may end before limit to fit the result budget; the header gives the \
+                 offset to continue reading. A single line longer than the budget comes back \
+                 truncated; read it by byte range in the shell, for example with tail -c and head -c.",
+                Effect::ReadOnly,
+            ),
+            Kind::Write => ToolSpec::of::<WriteArguments>(
+                "fs_write",
+                "Atomically replace a UTF-8 file with content, creating parent directories if needed.",
+                Effect::Idempotent,
+            ),
+            Kind::Edit => ToolSpec::of::<EditArguments>(
+                "fs_edit",
+                "Replace an exact, unique old_string in a UTF-8 file. Include more context if it occurs \
+                 more than once, or use replace_all. The file is written atomically.",
+                Effect::SideEffect,
+            ),
+            Kind::List => ToolSpec::of::<ListArguments>(
+                "fs_list",
+                "List one directory, sorted by name, without recursion.",
+                Effect::ReadOnly,
+            ),
+        }
+    }
+}
+
 /// Local file IO finishes quickly, so file tools ignore cancellation and settle normally;
 /// a blocking special file such as a FIFO holds cancellation and shutdown until it returns.
 pub(super) struct FileTool {
-    pub workspace: PathBuf,
-    pub kind: Kind,
+    workspace: PathBuf,
+    kind: Kind,
+    spec: ToolSpec,
+}
+
+impl FileTool {
+    pub(super) fn new(workspace: PathBuf, kind: Kind) -> Result<Self, SchemaError> {
+        Ok(Self {
+            workspace,
+            spec: kind.spec()?,
+            kind,
+        })
+    }
 }
 
 #[async_trait]
@@ -31,71 +132,11 @@ impl Tool for FileTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        let (name, description, effect, properties, required) = match self.kind {
-            Kind::Read => (
-                "fs_read",
-                format!(
-                    "Read a PNG, JPEG or WebP image, or a UTF-8 file by line range. \
-                     Relative paths use the workspace; absolute paths are allowed. For text, offset \
-                     starts at 1 and limit defaults to {FILE_READ_DEFAULT_LINES}. \
-                     Results may end before limit to fit the result budget; the header gives the \
-                     offset to continue reading. A single line longer than the budget comes back \
-                     truncated; read it by byte range in the shell, for example with tail -c and head -c."
-                ),
-                Effect::ReadOnly,
-                json!({
-                    "path": { "type": "string" },
-                    "offset": { "type": "integer", "minimum": 1 },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": FILE_READ_MAX_LINES },
-                }),
-                vec!["path"],
-            ),
-            Kind::Write => (
-                "fs_write",
-                "Atomically replace a UTF-8 file with content, creating parent directories if needed. \
-                 Relative paths use the workspace; absolute paths are allowed."
-                    .into(),
-                Effect::Idempotent,
-                json!({
-                    "path": { "type": "string" },
-                    "content": { "type": "string" },
-                }),
-                vec!["path", "content"],
-            ),
-            Kind::Edit => (
-                "fs_edit",
-                "Replace an exact, unique old_string in a UTF-8 file. Include more context if it occurs \
-                 more than once, or use replace_all. The file is written atomically."
-                    .into(),
-                Effect::SideEffect,
-                json!({
-                    "path": { "type": "string" },
-                    "old_string": { "type": "string" },
-                    "new_string": { "type": "string" },
-                    "replace_all": { "type": "boolean" },
-                }),
-                vec!["path", "old_string", "new_string"],
-            ),
-            Kind::List => (
-                "fs_list",
-                "List one directory, sorted by name, without recursion. Relative paths use the workspace; \
-                 absolute paths are allowed."
-                    .into(),
-                Effect::ReadOnly,
-                json!({ "path": { "type": "string" } }),
-                vec!["path"],
-            ),
-        };
-        ToolSpec {
-            name: name.into(),
-            description,
-            effect,
-            input_schema: closed_object_schema(properties, &required),
-        }
+        self.spec.clone()
     }
 
     async fn call(&self, ctx: CallContext, args: Map<String, Value>) -> Outcome {
-        let result = self.execute(&args, &ctx).await;
+        let result = self.execute(args, &ctx).await;
         match result {
             Ok(outcome) => outcome,
             Err(failure) => Outcome::Failed { failure },
@@ -106,21 +147,35 @@ impl Tool for FileTool {
 impl FileTool {
     async fn execute(
         &self,
-        args: &Map<String, Value>,
+        args: Map<String, Value>,
         ctx: &CallContext,
     ) -> Result<Outcome, Failure> {
-        let path = resolve_path(&self.workspace, string(args, "path")?);
         let value = match self.kind {
-            Kind::Read => return read(&path, args, ctx.result_budget).await,
+            Kind::Read => {
+                let arguments: ReadArguments = parse_arguments(args)?;
+                return read(
+                    &self.resolve(&arguments.path),
+                    &arguments,
+                    ctx.result_budget,
+                )
+                .await;
+            }
             Kind::Write => {
-                let content = string(args, "content")?;
+                let WriteArguments { path, content } = parse_arguments(args)?;
+                let path = self.resolve(&path);
                 let path = crate::file::write(&path, content.as_bytes())
                     .await
                     .map_err(|error| io(&path, error))?;
                 Ok(json!({ "path": path, "bytes": content.len() }))
             }
-            Kind::Edit => edit(&path, args).await,
-            Kind::List => list(&path).await,
+            Kind::Edit => {
+                let arguments: EditArguments = parse_arguments(args)?;
+                edit(&self.resolve(&arguments.path), &arguments).await
+            }
+            Kind::List => {
+                let ListArguments { path } = parse_arguments(args)?;
+                list(&self.resolve(&path)).await
+            }
         }?;
         Ok(Outcome::Ok {
             value,
@@ -128,21 +183,18 @@ impl FileTool {
             outgoing: None,
         })
     }
+
+    fn resolve(&self, path: &str) -> PathBuf {
+        resolve_path(&self.workspace, path)
+    }
 }
 
 fn io(path: &Path, error: std::io::Error) -> Failure {
     failure(code::TOOL_FAILED, format!("{}: {error}", path.display()))
 }
 
-async fn read(path: &Path, args: &Map<String, Value>, budget: usize) -> Result<Outcome, Failure> {
-    let offset = integer(args, "offset", 1, 1, u64::MAX)?;
-    let limit = integer(
-        args,
-        "limit",
-        FILE_READ_DEFAULT_LINES,
-        1,
-        FILE_READ_MAX_LINES,
-    )? as usize;
+async fn read(path: &Path, arguments: &ReadArguments, budget: usize) -> Result<Outcome, Failure> {
+    let (offset, limit) = (arguments.offset.get(), arguments.limit as usize);
     let bytes = tokio::fs::read(path)
         .await
         .map_err(|error| io(path, error))?;
@@ -203,14 +255,14 @@ fn line_header(first: u64, last: u64, total: u64) -> String {
     }
 }
 
-async fn edit(path: &Path, args: &Map<String, Value>) -> Result<Value, Failure> {
-    let old = string(args, "old_string")?;
-    let new = string(args, "new_string")?;
-    let all = boolean(args, "replace_all", false)?;
-    if old.is_empty() || old == new {
-        return Err(invalid(
-            "old_string must be nonempty and differ from new_string",
-        ));
+async fn edit(path: &Path, arguments: &EditArguments) -> Result<Value, Failure> {
+    let (old, new, all) = (
+        arguments.old_string.as_str(),
+        arguments.new_string.as_str(),
+        arguments.replace_all,
+    );
+    if old == new {
+        return Err(invalid("new_string must differ from old_string"));
     }
     let text = tokio::fs::read_to_string(path)
         .await

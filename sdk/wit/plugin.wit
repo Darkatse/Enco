@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.5.0;
+package enco:plugin@0.6.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -33,9 +33,24 @@ interface types {
     /// A canonical message sent to or returned by the model.
     record message { role: role, parts: list<part> }
 
-    /// A tool disclosed to the model. `input-schema` describes its arguments as JSON Schema.
+    /// A tool disclosed to the model.
+    ///
     /// Names use ASCII letters, digits, underscores or hyphens; tools.list names are unique within the plugin.
     /// Completion adapters ignore effect; the host uses it when dispatching tools.
+    ///
+    /// `input-schema` describes the argument object in a subset of JSON Schema:
+    /// - objects with `properties` and `required`, always with `additionalProperties: false`;
+    /// - strings with `enum`, `minLength` and `maxLength`;
+    /// - integers and numbers with `minimum` and `maximum`;
+    /// - booleans;
+    /// - arrays with `items`, `minItems` and `maxItems`;
+    /// - `anyOf` with two or more schemas.
+    ///
+    /// Any schema below the root may carry a `description` and a `default` that fits it; the root
+    /// is an object and carries neither. A declaration outside the subset fails to load. The host
+    /// checks every call against the schema before the plugin sees it: an optional property given
+    /// as null counts as not given, and an integer written with a zero fraction, such as 5.0,
+    /// arrives as 5.
     record tool-spec { name: string, description: string, input-schema: json, effect: effect }
 
     /// Mutation semantics used to order calls and settle interrupted work.
@@ -95,7 +110,7 @@ interface tools {
     /// Project tool definitions from configuration already accepted by `lifecycle.describe`.
     %list: func(config: json) -> list<tool-spec>;
 
-    /// Execute one tool. Validate the argument values this tool consumes.
+    /// Execute one tool. `input` already fits the tool's `input-schema`; validate only what the schema cannot express.
     /// Return an unknown outcome when an external effect may have occurred but is unconfirmed.
     call: async func(name: string, input: json) -> outcome;
 }

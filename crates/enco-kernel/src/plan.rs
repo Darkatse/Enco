@@ -47,10 +47,9 @@ pub(crate) fn validate(
     let mut names = HashSet::new();
     for (id, spec) in &plan.tools {
         if !names.insert(&spec.name)
-            || !input
-                .tools
-                .iter()
-                .any(|(available_id, available_spec)| available_id == id && available_spec == spec)
+            || !input.tools.iter().any(|(available_id, available)| {
+                available_id == id && DisclosedTool::from(available) == *spec
+            })
         {
             return Err(PlanError(format!(
                 "tool {id} is duplicated or differs from the Round snapshot"

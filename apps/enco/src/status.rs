@@ -82,10 +82,7 @@ impl Tool for StatusTool {
     fn spec(&self) -> ToolSpec {
         enco_host::self_status_spec()
     }
-    async fn call(&self, _ctx: CallContext, arguments: Map<String, Value>) -> Outcome {
-        if let Err(failure) = enco_host::development::StatusArguments::parse(arguments) {
-            return Outcome::Failed { failure };
-        }
+    async fn call(&self, _ctx: CallContext, _arguments: Map<String, Value>) -> Outcome {
         let Some(application) = self.application.get().and_then(Weak::upgrade) else {
             return Outcome::Failed {
                 failure: Failure {

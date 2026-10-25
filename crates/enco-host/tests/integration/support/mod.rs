@@ -175,10 +175,11 @@ pub fn registry_deps(
 ) -> RegistryDeps {
     RegistryDeps {
         host_tool_names: native_tools(Default::default())
+            .unwrap()
             .iter()
             .map(|tool| tool.spec())
             .chain([self_status_spec()])
-            .chain(builtin_tool_specs())
+            .chain(builtin_tool_specs().unwrap())
             .map(|spec| spec.name)
             .collect(),
         store,
@@ -242,19 +243,23 @@ pub fn kernel_deps(
     let mut context: Vec<Arc<dyn ContextSource>> = vec![Arc::new(InstructionsContextSource::new(
         instructions.clone(),
     ))];
-    let mut tools = native_tools(workspace.clone());
+    let mut tools = native_tools(workspace.clone()).unwrap();
     if let Some(memories) = memories {
         context.push(Arc::new(MemoryContextSource::new(memories.clone())));
-        tools.extend(memory_tools(memories));
+        tools.extend(memory_tools(memories).unwrap());
     }
     if let Some(development) = development {
-        tools.extend(development_tools(development, registry.clone()));
+        tools.extend(development_tools(development, registry.clone()).unwrap());
     }
     tools.push(Arc::new(TestStatus(registry.clone())));
     KernelDeps {
         store,
         registry,
-        composer: Arc::new(FactoryComposer::new(workspace, instructions)),
+        composer: Arc::new(FactoryComposer::new(
+            root.to_owned(),
+            workspace,
+            instructions,
+        )),
         context,
         tools,
         lifeline: LIFELINE.map(String::from).into(),
@@ -339,7 +344,7 @@ pub async fn kernel_with_memory(
 ) -> (Kernel, Arc<Memories>) {
     let runtime = factory_runtime(fixture(provider.clone(), provider));
     let (development, registry, store) =
-        scripted_home(root, runtime, document, memory_tool_specs()).await;
+        scripted_home(root, runtime, document, memory_tool_specs().unwrap()).await;
     let memories = open_memories(root, registry.clone()).await;
     let mut deps = kernel_deps(
         root,

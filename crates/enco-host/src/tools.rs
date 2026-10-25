@@ -1,11 +1,11 @@
-pub(crate) mod args;
 pub(crate) mod development;
+pub(crate) mod failure;
 mod files;
 mod message;
 pub use development::{development_tool_specs, development_tools, self_status_spec};
 mod shell;
 
-use enco_core::CodeRef;
+use enco_core::{CodeRef, SchemaError};
 use enco_kernel::Tool;
 use std::{
     path::{Path, PathBuf},
@@ -25,21 +25,14 @@ pub const LIFELINE: [&str; 8] = [
 ];
 
 /// Native capabilities share the workspace path rules and ordinary Tool dispatch.
-pub fn native_tools(workspace: PathBuf) -> Vec<Arc<dyn Tool>> {
-    let mut tools: Vec<Arc<dyn Tool>> = files::kinds()
+pub fn native_tools(workspace: PathBuf) -> Result<Vec<Arc<dyn Tool>>, SchemaError> {
+    let mut tools = files::kinds()
         .into_iter()
-        .map(|kind| {
-            Arc::new(files::FileTool {
-                workspace: workspace.clone(),
-                kind,
-            }) as Arc<dyn Tool>
-        })
-        .collect();
-    tools.push(Arc::new(message::MessageSend {
-        workspace: workspace.clone(),
-    }));
-    tools.push(Arc::new(shell::Shell { workspace }));
-    tools
+        .map(|kind| Ok(Arc::new(files::FileTool::new(workspace.clone(), kind)?) as Arc<dyn Tool>))
+        .collect::<Result<Vec<_>, SchemaError>>()?;
+    tools.push(Arc::new(message::MessageSend::new(workspace.clone())?));
+    tools.push(Arc::new(shell::Shell::new(workspace)?));
+    Ok(tools)
 }
 
 pub(crate) fn resolve_path(workspace: &Path, path: &str) -> PathBuf {

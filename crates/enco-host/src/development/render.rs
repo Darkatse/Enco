@@ -5,7 +5,7 @@ mod errors;
 mod history;
 mod situations;
 mod status;
-use super::{Invocation, SettingsComparison, WorkspaceComparison};
+use super::{HomeComparison, Invocation, SettingsComparison};
 use crate::{
     clock::LOCAL_TIME,
     status::{CallStep, FixTarget, OwnerAction, Step, Steps},
@@ -77,15 +77,15 @@ fn generation(reference: PluginActivation) -> String {
         None => format!("generation {} with factory code", reference.generation),
     }
 }
-fn comparison(comparison: &WorkspaceComparison) -> &'static str {
+fn comparison(comparison: &HomeComparison) -> &'static str {
     match comparison {
-        WorkspaceComparison::Same => "matches",
-        WorkspaceComparison::TextOnly => "text-only changes",
-        WorkspaceComparison::Changed => "changed",
-        WorkspaceComparison::Unbuilt => "changed · not built",
-        WorkspaceComparison::Removed => "removed",
-        WorkspaceComparison::Absent => "no directory",
-        WorkspaceComparison::Unreadable(_) => "cannot read",
+        HomeComparison::Same => "matches",
+        HomeComparison::TextOnly => "text-only changes",
+        HomeComparison::Changed => "changed",
+        HomeComparison::Unbuilt => "changed · not built",
+        HomeComparison::Removed => "removed",
+        HomeComparison::Absent => "no directory",
+        HomeComparison::Unreadable(_) => "cannot read",
     }
 }
 fn settings(comparison: SettingsComparison) -> Option<&'static str> {

@@ -1,5 +1,5 @@
 use super::{
-    BuildResult, Development, DevelopmentError, EntryError, EntryProblem, WorkspaceComparison,
+    BuildResult, Development, DevelopmentError, EntryError, EntryProblem, HomeComparison,
     check_cancelled,
     error::{entry, io},
     tree::FileTree,
@@ -44,12 +44,12 @@ impl Prepared {
         code: Option<&RegisteredSource>,
     ) {
         let changed = code.is_none_or(|code| !code.matches_source_artifact(built.artifact.hash()));
-        let comparison = WorkspaceComparison::between(
+        let comparison = HomeComparison::between(
             Some(built.tree.hash()),
             code.and_then(RegisteredSource::source),
             Some(!changed),
         );
-        if comparison == WorkspaceComparison::TextOnly {
+        if comparison == HomeComparison::TextOnly {
             self.text_only.push(IntentPath::Plugin(name.clone()));
         }
         let (artifact, tree, result) = built.result(name.clone(), changed);
@@ -96,13 +96,13 @@ impl Development {
         let mut errors = Vec::new();
         match self.configuration().await {
             Ok(configuration) => match configuration.comparison(baseline.configuration()) {
-                WorkspaceComparison::Changed => prepared.configuration = Some(configuration),
-                WorkspaceComparison::TextOnly => prepared.text_only.push(IntentPath::Configuration),
-                WorkspaceComparison::Same
-                | WorkspaceComparison::Unbuilt
-                | WorkspaceComparison::Removed
-                | WorkspaceComparison::Absent
-                | WorkspaceComparison::Unreadable(_) => {}
+                HomeComparison::Changed => prepared.configuration = Some(configuration),
+                HomeComparison::TextOnly => prepared.text_only.push(IntentPath::Configuration),
+                HomeComparison::Same
+                | HomeComparison::Unbuilt
+                | HomeComparison::Removed
+                | HomeComparison::Absent
+                | HomeComparison::Unreadable(_) => {}
             },
             Err(error) => errors.push(error.into()),
         }
@@ -161,7 +161,7 @@ impl Development {
         let artifact = code
             .filter(|code| matches!(code.intent, CodeIntent::Directory { .. }))
             .map(|code| code.artifact);
-        if matches!(source.comparison, WorkspaceComparison::Same) && !source.earlier_sdk {
+        if matches!(source.comparison, HomeComparison::Same) && !source.earlier_sdk {
             return Ok(None);
         }
         self.build(name, source.tree, source.cached, artifact, cancel)

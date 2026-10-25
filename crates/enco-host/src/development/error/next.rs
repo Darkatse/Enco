@@ -53,7 +53,7 @@ impl Failed {
             (Operation::Rewind(arguments), DevelopmentError::RewindCollision { path }) => {
                 Steps::sequence(vec![
                     CallStep::Compare(HistoryQuery::Compare {
-                        from: Some(HistoryPoint::Workspace),
+                        from: Some(HistoryPoint::Home),
                         to: HistoryPoint::Registration(arguments.registration),
                     })
                     .into(),

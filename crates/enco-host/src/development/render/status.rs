@@ -29,7 +29,7 @@ impl Status {
                 ));
             }
         }
-        out.push_str("\n## Plugins and configuration\n\n| Path | Running | Registered | Workspace |\n|---|---|---|---|\n");
+        out.push_str("\n## Plugins and configuration\n\n| Path | Running | Registered | Home |\n|---|---|---|---|\n");
         let config = &self.development.configuration;
         out.push_str(&format!(
             "| {} | generation {} | generation {} · registration {} | {} |\n",
@@ -37,7 +37,7 @@ impl Status {
             config.running.generation,
             config.registered.generation,
             config.registered.registration,
-            comparison(&config.workspace)
+            comparison(&config.home)
         ));
         for (name, plugin) in &self.development.plugins {
             out.push_str(&format!(
@@ -45,10 +45,7 @@ impl Status {
                 path(&IntentPath::Plugin(name.clone())),
                 cell(&running(plugin)),
                 cell(&registered(plugin)),
-                cell(&workspace(
-                    plugin,
-                    self.development.plugins_unreadable.is_some()
-                ))
+                cell(&home(plugin, self.development.plugins_unreadable.is_some()))
             ));
         }
         out.push_str(&format!(
@@ -109,16 +106,16 @@ fn registered(plugin: &PluginUnit) -> String {
     text
 }
 
-fn workspace(plugin: &PluginUnit, unreadable: bool) -> String {
-    let Some(workspace) = &plugin.workspace else {
+fn home(plugin: &PluginUnit, unreadable: bool) -> String {
+    let Some(home) = &plugin.home else {
         return if unreadable {
             format!("cannot read {}", code(enco_core::PLUGINS_DIRECTORY))
         } else {
             "no directory".into()
         };
     };
-    let mut text = comparison(&workspace.code).to_owned();
-    if let Some(settings) = super::settings(workspace.settings) {
+    let mut text = comparison(&home.code).to_owned();
+    if let Some(settings) = super::settings(home.settings) {
         text.push_str(&format!("; {settings}"));
     }
     text

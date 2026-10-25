@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 enco-core = { workspace = true }
 enco-kernel = { workspace = true }
+schemars = { workspace = true }
 rusqlite = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart"] }
 triviumdb = { workspace = true }

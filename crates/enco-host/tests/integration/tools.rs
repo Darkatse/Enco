@@ -35,7 +35,7 @@ fn find(tools: &[Arc<dyn Tool>], name: &str) -> Arc<dyn Tool> {
 #[tokio::test]
 async fn edits_require_unique_matches_and_reads_observe_line_ranges() {
     let dir = tempfile::tempdir().unwrap();
-    let tools = native_tools(dir.path().to_owned());
+    let tools = native_tools(dir.path().to_owned()).unwrap();
     let edit = find(&tools, "fs_edit");
     let read = find(&tools, "fs_read");
     let path = dir.path().join("note");
@@ -78,7 +78,7 @@ async fn edits_require_unique_matches_and_reads_observe_line_ranges() {
 #[tokio::test]
 async fn shell_drains_both_pipes_preserves_exit_status_and_reports_timeout() {
     let dir = tempfile::tempdir().unwrap();
-    let shell = find(&native_tools(dir.path().to_owned()), "shell_exec");
+    let shell = find(&native_tools(dir.path().to_owned()).unwrap(), "shell_exec");
     let Outcome::Ok { value, .. } = call(
         &*shell,
         serde_json::json!({ "command": "printf out; printf err >&2; exit 7" }),
@@ -106,7 +106,7 @@ async fn shell_drains_both_pipes_preserves_exit_status_and_reports_timeout() {
 #[tokio::test]
 async fn background_command_returns_collected_output_after_shell_exit() {
     let dir = tempfile::tempdir().unwrap();
-    let shell = find(&native_tools(dir.path().to_owned()), "shell_exec");
+    let shell = find(&native_tools(dir.path().to_owned()).unwrap(), "shell_exec");
     let result = tokio::time::timeout(
         Duration::from_secs(2),
         call(
@@ -137,7 +137,7 @@ async fn background_command_returns_collected_output_after_shell_exit() {
 async fn replacing_an_existing_file_preserves_executable_permissions() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    let tools = native_tools(dir.path().to_owned());
+    let tools = native_tools(dir.path().to_owned()).unwrap();
     let path = dir.path().join("script.sh");
     std::fs::write(&path, "echo old\n").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -166,7 +166,7 @@ async fn replacing_an_existing_file_preserves_executable_permissions() {
 #[tokio::test]
 async fn writes_through_symlinks_preserve_the_link_and_update_its_target() {
     let dir = tempfile::tempdir().unwrap();
-    let tools = native_tools(dir.path().to_owned());
+    let tools = native_tools(dir.path().to_owned()).unwrap();
     let target = dir.path().join("target.txt");
     let link = dir.path().join("link.txt");
     std::fs::write(&target, "old").unwrap();
@@ -201,7 +201,7 @@ async fn writes_through_symlinks_preserve_the_link_and_update_its_target() {
 #[tokio::test]
 async fn file_reads_return_images_and_reject_other_binary_content() {
     let dir = tempfile::tempdir().unwrap();
-    let read = find(&native_tools(dir.path().to_owned()), "fs_read");
+    let read = find(&native_tools(dir.path().to_owned()).unwrap(), "fs_read");
     let image = b"\x89PNG\r\n\x1a\nimage bytes";
     std::fs::write(dir.path().join("image"), image).unwrap();
     let Outcome::Ok { value, images, .. } =
@@ -226,13 +226,11 @@ async fn file_reads_return_images_and_reject_other_binary_content() {
 #[tokio::test]
 async fn message_send_requires_content_and_reads_one_bounded_file() {
     let dir = tempfile::tempdir().unwrap();
-    let send = find(&native_tools(dir.path().to_owned()), "message_send");
-    for args in [
-        serde_json::json!({}),
-        serde_json::json!({"text": " \n"}),
-        serde_json::json!({"text": 1}),
-        serde_json::json!({"file": null}),
-    ] {
+    let send = find(
+        &native_tools(dir.path().to_owned()).unwrap(),
+        "message_send",
+    );
+    for args in [serde_json::json!({}), serde_json::json!({"text": " \n"})] {
         assert!(
             matches!(call(&*send, args).await, Outcome::Failed { failure }
             if failure.code == code::TOOL_INVALID_ARGUMENTS)

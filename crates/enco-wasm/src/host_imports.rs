@@ -1,3 +1,8 @@
+//! The host functions a plugin can call: its configuration, logging and HTTP.
+//!
+//! A request to a credential's origin carries that credential. Before a response or failure
+//! returns to the guest, each credential value in it is replaced with a placeholder; encoded forms,
+//! such as Base64, are not.
 use crate::{bindings::enco::plugin::host, credentials::CallCredential, limits};
 use std::{sync::Arc, time::Duration};
 use wasmtime::component::{Accessor, HasSelf, ResourceTable};

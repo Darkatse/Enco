@@ -57,7 +57,7 @@ impl Tool for GatedTool {
         ToolSpec {
             name: "gated".into(),
             description: "Test operation which finishes a local write after cancellation.".into(),
-            input_schema: serde_json::json!({ "type": "object" }),
+            input_schema: InputSchema::empty(),
             effect: self.effect,
         }
     }

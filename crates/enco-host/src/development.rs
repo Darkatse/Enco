@@ -1,4 +1,8 @@
-//! The home holds editable intent; accepted bytes and running behavior belong to Enco.
+//! Turns the plugin sources and `config.toml` in a home into registrations, and registered versions
+//! back into files.
+//!
+//! The owner and the Agent edit those files; what is registered and what runs live in Enco's store,
+//! and only the registry changes them.
 mod arguments;
 mod build;
 pub use arguments::{
@@ -13,6 +17,7 @@ mod cache;
 mod error;
 pub use error::{BuildFailure, DevelopmentError, EntryError, EntryProblem, Failed, Operation};
 mod history;
+mod home;
 mod intent;
 pub mod tree;
 pub use history::{
@@ -30,12 +35,12 @@ pub use rewind::{RewindConflict, Rewound};
 mod scaffold;
 mod sdk;
 mod status;
-mod workspace;
 
 use crate::SqliteStore;
 pub use build::BuildResult;
 use enco_core::{IntentPath, PLUGINS_DIRECTORY, PluginId};
 use enco_kernel::{Cause, Registered, Runtime};
+pub use home::{HomeComparison, HomePlugin, SettingsComparison};
 pub use sdk::Sdk;
 use serde::Serialize;
 pub use status::{ConfigurationUnit, DevelopmentStatus, PluginUnit, RegisteredUnit};
@@ -46,9 +51,11 @@ use std::{
 };
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
-pub use workspace::{PluginWorkspace, SettingsComparison, WorkspaceComparison};
 
-/// Serializes builds and intent operations over one owner's intent directory.
+/// Entry point for the plugin development tools in one home.
+///
+/// Operations that write files or register run one at a time; status and history do not wait for
+/// them.
 pub struct Development {
     home: PathBuf,
     sdk: Sdk,
@@ -58,19 +65,22 @@ pub struct Development {
     follow_rejections: RwLock<BTreeMap<PluginId, Vec<Cause>>>,
 }
 
-/// Build evidence and the accepted change returned by both management entry points.
+/// The result of an apply: what was registered, and what each build did.
 #[derive(Serialize)]
 pub struct Applied {
-    /// Accepted change, absent when the workspace intent is unchanged.
+    /// The registration; absent when nothing differs from what is registered and no factory plugin
+    /// has newer host code to follow.
     pub registered: Option<Registered>,
-    /// Build and reuse evidence for each source directory considered.
+    /// One result for each plugin source that differs from what is registered or was built with an
+    /// earlier SDK; unchanged sources are skipped.
     pub builds: Vec<BuildResult>,
-    /// Byte changes that remain in the workspace because registered meaning is unchanged.
+    /// Plugin directories or `config.toml` whose bytes changed but whose meaning did not, as when
+    /// only a comment was edited; they stay unregistered.
     pub text_only: Vec<IntentPath>,
 }
 
 impl Development {
-    /// Assemble the owner of local source operations; startup writes the SDK through its bundle.
+    /// Bind development to `home`; nothing is read or written until an operation runs.
     pub fn new(
         home: PathBuf,
         sdk: Sdk,
@@ -87,6 +97,7 @@ impl Development {
         })
     }
 
+    /// Create `plugins/` in a new home; an existing directory is left as it is.
     pub async fn initialize(home: &Path) -> Result<(), EntryError> {
         let plugins = home.join(PLUGINS_DIRECTORY);
         tokio::fs::create_dir_all(&plugins)

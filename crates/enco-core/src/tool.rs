@@ -1,17 +1,49 @@
-use serde::{Deserialize, Serialize};
+use crate::{InputSchema, SchemaError};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 
 /// A model-facing tool contract; its name is unique within a Round snapshot.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// It is recorded only as a [`DisclosedTool`](crate::DisclosedTool).
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolSpec {
     /// Name accepted in model tool proposals and matched by dispatch.
     pub name: String,
     /// Instructions explaining the capability to the model.
     pub description: String,
-    /// JSON Schema for the tool argument object.
-    pub input_schema: Value,
+    /// The argument object; dispatch checks every call against it before the tool runs.
+    pub input_schema: InputSchema,
     /// Mutation semantics used when recovering an unsettled call.
     pub effect: Effect,
+}
+
+impl ToolSpec {
+    /// Declare a tool whose arguments are `A`; the schema comes from `A` and its field documentation.
+    pub fn of<A: JsonSchema>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        effect: Effect,
+    ) -> Result<Self, SchemaError> {
+        Ok(Self {
+            name: name.into(),
+            description: description.into(),
+            input_schema: InputSchema::of::<A>()?,
+            effect,
+        })
+    }
+}
+
+/// Parse a call's arguments into the tool's argument type.
+///
+/// Dispatch has already checked them against the declared schema, so this fails only on rules the
+/// type enforces itself, such as the characters allowed in a plugin name.
+pub fn parse_arguments<A: DeserializeOwned>(arguments: Map<String, Value>) -> Result<A, Failure> {
+    serde_json::from_value(Value::Object(arguments)).map_err(|error| Failure {
+        code: code::TOOL_INVALID_ARGUMENTS.into(),
+        message: error.to_string(),
+        retryable: false,
+    })
 }
 
 /// Describes external effects so recovery can settle an interrupted invocation honestly.
@@ -97,7 +129,7 @@ pub struct Failure {
 /// The single normalization step for raw tool arguments, used by dispatch.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Arguments {
-    /// Normalized object arguments ready for tool validation.
+    /// Normalized object arguments, not yet checked against the tool's schema.
     Object(Map<String, Value>),
     /// Input that cannot be interpreted as an argument object.
     Invalid {
@@ -183,43 +215,4 @@ pub mod code {
     pub const PROVIDER_BAD_RESPONSE: &str = "provider.bad_response";
     /// The endpoint's credential variable is unset or empty, so the plugin was not called.
     pub const CREDENTIAL_UNAVAILABLE: &str = "credential.unavailable";
-}
-
-impl ToolSpec {
-    /// Reject undeclared names in closed argument objects before dispatch records a start.
-    /// This is name validation, not a general JSON Schema validator; tools still validate values.
-    pub fn check_argument_names(&self, args: &Map<String, Value>) -> Result<(), Failure> {
-        if self.input_schema.get("additionalProperties") != Some(&Value::Bool(false)) {
-            return Ok(());
-        }
-        for name in args.keys() {
-            if self
-                .input_schema
-                .get("properties")
-                .and_then(|v| v.get(name))
-                .is_none()
-            {
-                return Err(Failure {
-                    code: code::TOOL_INVALID_ARGUMENTS.into(),
-                    message: format!(
-                        "unexpected argument `{name}` for `{}`; use the declared tool schema",
-                        self.name
-                    ),
-                    retryable: false,
-                });
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Build a closed argument object from property schemas and required property names.
-/// Dispatch checks names against this shape; tools validate the values they consume.
-pub fn closed_object_schema(properties: Value, required: &[&str]) -> Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": properties,
-        "required": required,
-        "additionalProperties": false,
-    })
 }

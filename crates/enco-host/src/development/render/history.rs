@@ -63,7 +63,7 @@ impl History {
 }
 
 fn comparison_intro(comparison: &Comparison) -> String {
-    let unregistered = comparison.mode == ComparisonMode::WorkspaceChanges;
+    let unregistered = comparison.mode == ComparisonMode::HomeChanges;
     let title = if unregistered {
         "Unregistered changes".into()
     } else {
@@ -147,7 +147,7 @@ fn provenance(entry: &RegistrationDetails, timezone: Tz) -> String {
 fn point(point: Option<HistoryPoint>) -> String {
     match point {
         None => "before the first registration".into(),
-        Some(HistoryPoint::Workspace) => "workspace".into(),
+        Some(HistoryPoint::Home) => "home".into(),
         Some(HistoryPoint::Registration(id)) => format!("registration {id}"),
     }
 }

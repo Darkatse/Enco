@@ -2,7 +2,7 @@ use super::{DevelopmentError, tree::FileTree};
 use enco_core::ContentHash;
 use std::path::Path;
 
-/// Validated plugin-side sources embedded by the composition root.
+/// The plugin SDK sources embedded in the host binary, written to `sdk/` in each home.
 #[derive(Clone)]
 pub struct Sdk {
     tree: FileTree,
@@ -12,14 +12,15 @@ pub struct Sdk {
 const LOCK: &str = "Cargo.lock";
 
 impl Sdk {
-    /// Validate the embedded paths once, at the host's assembly boundary.
+    /// Wrap the embedded files, rejecting any path that is not a canonical relative path.
     pub fn new(files: &[(&str, &[u8])]) -> Result<Self, DevelopmentError> {
         Ok(Self {
             tree: FileTree::from_files(files.iter().map(|(path, bytes)| (*path, bytes.to_vec())))?,
         })
     }
 
-    /// Address the inputs that can change a plugin build, excluding the SDK's own lock.
+    /// Content hash of the sources that can change a plugin build; the SDK's own `Cargo.lock` is
+    /// left out.
     pub fn hash(&self) -> ContentHash {
         let mut tree = self.tree.clone();
         tree.files.remove(LOCK);
@@ -36,7 +37,7 @@ impl Sdk {
         self.file(LOCK)
     }
 
-    /// Restore host-owned sources; the SDK directory is a disposable projection.
+    /// Write the SDK to `sdk/` in `home`, replacing whatever is there, edits included.
     pub async fn write(&self, home: &Path) -> Result<(), DevelopmentError> {
         self.tree.project(&home.join("sdk")).await
     }

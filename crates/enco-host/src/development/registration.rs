@@ -80,12 +80,12 @@ impl Development {
         cancel: &CancellationToken,
     ) -> Result<Applied, Failed> {
         let _operation = self.operation.lock().await;
-        self.register_workspace(registry, initiator, cancel)
+        self.register_home(registry, initiator, cancel)
             .await
             .map_err(|error| Operation::Apply.failed(error))
     }
 
-    async fn register_workspace(
+    async fn register_home(
         &self,
         registry: &Registry,
         initiator: Initiator,

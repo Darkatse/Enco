@@ -109,6 +109,16 @@ impl std::fmt::Display for Reason {
     }
 }
 
+impl schemars::JsonSchema for Reason {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Reason".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "minLength": 1, "maxLength": Self::MAX_CHARS })
+    }
+}
+
 impl<'de> Deserialize<'de> for Reason {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         String::deserialize(deserializer)?

@@ -1,4 +1,5 @@
-//! A build owns its process group and waits for it to stop before releasing the workspace.
+//! A build owns its process group and waits for it to stop before another operation may change
+//! the plugin's files.
 use super::DevelopmentError;
 use std::{
     os::unix::process::CommandExt,

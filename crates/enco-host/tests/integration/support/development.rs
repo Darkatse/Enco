@@ -19,8 +19,12 @@ pub async fn open_home(
         store,
         deps.runtime.clone(),
     );
-    deps.host_tool_names
-        .extend(development_tool_specs().into_iter().map(|spec| spec.name));
+    deps.host_tool_names.extend(
+        development_tool_specs()
+            .unwrap()
+            .into_iter()
+            .map(|spec| spec.name),
+    );
     let registry = development.open(deps).await.unwrap();
     (development, registry)
 }

@@ -1,8 +1,10 @@
-use super::{args::*, resolve_path};
+use super::{failure::*, resolve_path};
 use crate::limits::*;
 use async_trait::async_trait;
 use enco_core::*;
 use enco_kernel::{CallContext, Tool};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::{path::PathBuf, process::Stdio, time::Duration};
 use tokio::{
@@ -11,8 +13,45 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ShellArguments {
+    /// The command line to run.
+    command: String,
+    /// The directory to run in, relative to the workspace or absolute; the workspace by default.
+    cwd: Option<String>,
+    /// How long the command may run, in milliseconds.
+    #[serde(default = "default_timeout")]
+    #[schemars(range(min = 1, max = SHELL_MAX_TIMEOUT_MS))]
+    timeout_ms: u64,
+}
+
+fn default_timeout() -> u64 {
+    SHELL_DEFAULT_TIMEOUT_MS
+}
+
 pub(super) struct Shell {
-    pub workspace: PathBuf,
+    workspace: PathBuf,
+    spec: ToolSpec,
+}
+
+impl Shell {
+    pub(super) fn new(workspace: PathBuf) -> Result<Self, SchemaError> {
+        Ok(Self {
+            workspace,
+            spec: ToolSpec::of::<ShellArguments>(
+                "shell_exec",
+                format!(
+                    "Execute a command with sh -c. Nonzero exit codes are returned as results. \
+                     Cancellation stops the shell; detached descendants are not managed. After shell \
+                     exit, output is collected for up to {} ms. Redirect background output to a file: \
+                     cmd > out.log 2>&1 &.",
+                    SHELL_EXIT_GRACE.as_millis()
+                ),
+                Effect::SideEffect,
+            )?,
+        })
+    }
 }
 
 #[async_trait]
@@ -22,30 +61,11 @@ impl Tool for Shell {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "shell_exec".into(),
-            description: format!(
-                "Execute command with sh -c. cwd defaults to the workspace. \
-                 timeout_ms defaults to {SHELL_DEFAULT_TIMEOUT_MS} and is at most {SHELL_MAX_TIMEOUT_MS}. \
-                 Nonzero exit codes are returned as results. Cancellation stops the shell; \
-                 detached descendants are not managed. After shell exit, output is collected \
-                 for up to {} ms. Redirect background output to a file: cmd > out.log 2>&1 &.",
-                SHELL_EXIT_GRACE.as_millis()
-            ),
-            effect: Effect::SideEffect,
-            input_schema: closed_object_schema(
-                json!({
-                    "command": { "type": "string" },
-                    "cwd": { "type": "string" },
-                    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": SHELL_MAX_TIMEOUT_MS },
-                }),
-                &["command"],
-            ),
-        }
+        self.spec.clone()
     }
 
     async fn call(&self, ctx: CallContext, args: Map<String, Value>) -> Outcome {
-        match self.execute(ctx, &args).await {
+        match self.execute(ctx, args).await {
             Ok(outcome) => outcome,
             Err(failure) => Outcome::Failed { failure },
         }
@@ -56,22 +76,15 @@ impl Shell {
     async fn execute(
         &self,
         ctx: CallContext,
-        args: &Map<String, Value>,
+        args: Map<String, Value>,
     ) -> Result<Outcome, Failure> {
-        let command = string(args, "command")?;
-        let timeout_ms = integer(
-            args,
-            "timeout_ms",
-            SHELL_DEFAULT_TIMEOUT_MS,
-            1,
-            SHELL_MAX_TIMEOUT_MS,
-        )?;
-        let cwd = match optional_string(args, "cwd")? {
+        let arguments: ShellArguments = parse_arguments(args)?;
+        let cwd = match &arguments.cwd {
             None => self.workspace.clone(),
             Some(cwd) => resolve_path(&self.workspace, cwd),
         };
         let child = Command::new("sh")
-            .args(["-c", command])
+            .args(["-c", &arguments.command])
             .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -79,7 +92,7 @@ impl Shell {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| failure(code::TOOL_FAILED, format!("{}: {e}", cwd.display())))?;
-        collect_output(child, timeout_ms, &ctx.cancel).await
+        collect_output(child, arguments.timeout_ms, &ctx.cancel).await
     }
 }
 

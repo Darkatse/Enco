@@ -18,7 +18,12 @@ fn spec(name: &str, label: &str, effect: Effect) -> ToolSpec {
     ToolSpec {
         name: name.into(),
         description: format!("Fixture {label}"),
-        input_schema: closed_object_schema(json!({"label": {"type":"string"}}), &[]),
+        input_schema: InputSchema::parse(&json!({
+            "type": "object",
+            "properties": {"label": {"type": "string"}},
+            "additionalProperties": false,
+        }))
+        .unwrap(),
         effect,
     }
 }

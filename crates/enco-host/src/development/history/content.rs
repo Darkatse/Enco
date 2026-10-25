@@ -107,7 +107,7 @@ impl Development {
                     }
                 }
             }
-            HistoryPoint::Workspace => {
+            HistoryPoint::Home => {
                 let location = IntentPath::Configuration.locate(&self.home);
                 let value = tokio::fs::read(&location)
                     .await

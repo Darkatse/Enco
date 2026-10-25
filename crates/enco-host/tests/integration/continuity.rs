@@ -282,7 +282,7 @@ async fn small_windows(root: &Path, provider: Arc<ScriptedProvider>) -> (Kernel,
     )));
     let mut document = configuration();
     document["owner"]["timezone"] = serde_json::json!(Tz::America__New_York);
-    document["endpoint"]["reply"]["window_tokens"] = 6000.into();
+    document["endpoint"]["reply"]["window_tokens"] = 6500.into();
     document["endpoint"]["reply"]["max_output_tokens"] = 256.into();
     document["endpoint"]["compaction"]["window_tokens"] = 2500.into();
     document["endpoint"]["compaction"]["max_output_tokens"] = 512.into();
@@ -728,7 +728,7 @@ fn a_compaction_only_round_after_a_summary_cannot_produce_an_empty_summary_reque
         }),
         compactions_left: 2,
     };
-    let composer = FactoryComposer::new("workspace".into(), "AGENTS.md".into());
+    let composer = FactoryComposer::new(".".into(), "workspace".into(), "AGENTS.md".into());
     assert!(matches!(
         composer.compose(&input),
         Err(ComposeError::ContextOverflow { .. })

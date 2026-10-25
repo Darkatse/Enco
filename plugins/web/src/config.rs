@@ -1,8 +1,9 @@
 use crate::{bad, bindings::exports::enco::plugin::lifecycle::Credential, types::Failure};
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, PartialEq, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Engine {
     Exa,

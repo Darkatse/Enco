@@ -308,6 +308,7 @@ async fn a_plan_cannot_send_images_to_a_text_endpoint() {
     let provider = ScriptedProvider::new(vec![]);
     let (kernel, _) = kernel_with(root.path(), provider.clone(), Tz::UTC, |deps| {
         deps.composer = std::sync::Arc::new(ForceImages(enco_host::FactoryComposer::new(
+            root.path().to_owned(),
             root.path().join("workspace"),
             root.path().join("AGENTS.md"),
         )));

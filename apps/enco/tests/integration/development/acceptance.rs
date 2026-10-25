@@ -136,7 +136,7 @@ async fn restoring_older_source_rebuilds_pruned_bytes_and_deletion_survives_rest
     let template = std::fs::read_to_string(&source).unwrap();
     let mut versions = Vec::new();
     for label in ["one", "two", "three"] {
-        std::fs::write(&source, template.replace("Echo an input object", label)).unwrap();
+        std::fs::write(&source, template.replace("Echo the given text", label)).unwrap();
         let applied = apply(&daemon).await;
         use_source(&daemon).await;
         versions.push((
@@ -238,6 +238,42 @@ async fn delete_and_recreate(
         added["registered"]["generations"][0]["plugin"],
         original["plugin"]
     );
+}
+
+#[tokio::test]
+async fn a_tool_schema_outside_the_subset_is_rejected_with_its_location() {
+    let server = MockServer::start().await;
+    let mut daemon = Daemon::start(&server, "openai-compatible").await;
+    let home = daemon.root.path().to_path_buf();
+    support::build_target(&home, "schema-rejection");
+    support::copy_directory(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/test-fixture"),
+        &home.join("plugins/fixture"),
+    );
+    let source = home.join("plugins/fixture/src/lib.rs");
+    // Forgetting `deny_unknown_fields` leaves the object open, which the subset rejects.
+    let text = std::fs::read_to_string(&source).unwrap().replace(
+        "#[serde(deny_unknown_fields)]\nstruct Spin {}",
+        "struct Spin {}",
+    );
+    std::fs::write(source, text).unwrap();
+    let rejected = daemon
+        .connect()
+        .await
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        rejected.contains(
+            "tool fixture_spin schema: schema root: an object must set `additionalProperties` to false"
+        ),
+        "{rejected}"
+    );
+    daemon.stop().await;
 }
 
 const PROBE_ACCEPTED: &str = "        Ok(())";

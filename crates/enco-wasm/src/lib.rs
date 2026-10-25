@@ -1,4 +1,6 @@
-//! WIT adapters for the Runtime, Provider, Embedding, Decision and Tools ports. No provider-specific business logic lives here.
+//! Runs plugin components with Wasmtime and adapts their WIT exports to the kernel's ports.
+//!
+//! Nothing here depends on which plugin or service is behind a component.
 mod bindings;
 
 mod convert;

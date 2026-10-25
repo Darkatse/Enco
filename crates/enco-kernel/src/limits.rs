@@ -22,10 +22,13 @@ pub(crate) const CONFIG_PROBE_IMAGE: &[u8] = include_bytes!("image/probe.png");
 pub(crate) const CONFIG_PROBE_PROMPT: &str = "Reply with the single word OK.";
 
 pub(crate) const CONFIG_PROBE_QUESTION: &str = "Does the state ask for the word OK?";
-pub(crate) static CONFIG_PROBE_TOOL: std::sync::LazyLock<enco_core::ToolSpec> =
-    std::sync::LazyLock::new(|| enco_core::ToolSpec {
-        name: "probe".into(),
-        description: "Configuration probe; you do not need to call this tool.".into(),
-        input_schema: enco_core::closed_object_schema(serde_json::json!({}), &[]),
-        effect: enco_core::Effect::ReadOnly,
+pub(crate) static CONFIG_PROBE_TOOL: std::sync::LazyLock<enco_core::DisclosedTool> =
+    std::sync::LazyLock::new(|| {
+        (&enco_core::ToolSpec {
+            name: "probe".into(),
+            description: "Configuration probe; you do not need to call this tool.".into(),
+            input_schema: enco_core::InputSchema::empty(),
+            effect: enco_core::Effect::ReadOnly,
+        })
+            .into()
     });

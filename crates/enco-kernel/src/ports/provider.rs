@@ -20,7 +20,7 @@ pub struct ProviderRequest<I = ImageData> {
     /// Canonical messages in request order.
     pub messages: Vec<Message<I>>,
     /// Frozen definitions disclosed to the model.
-    pub tools: Vec<ToolSpec>,
+    pub tools: Vec<DisclosedTool>,
     /// Optional output limit.
     pub max_output_tokens: Option<u32>,
 }

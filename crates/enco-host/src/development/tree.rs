@@ -1,3 +1,9 @@
+//! A directory as an exact value: file bytes by canonical relative path.
+//!
+//! A source directory honors only the `.gitignore` files inside it, so its value is the same on
+//! every machine. A write to it keeps ignored entries and `.git`, and is refused when one of them
+//! is in the way, or when the write changes a `.gitignore` while ignored entries exist. A directory
+//! Enco owns entirely, such as `sdk/`, is written exactly and loses everything else.
 mod path;
 mod read;
 mod write;

@@ -8,25 +8,26 @@ pub use content::{ContentFailure, ContentUnavailable};
 use diff::compare_contents;
 use enco_core::*;
 use enco_kernel::{RegisteredIntent, RegistrationDetails, Registry};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const HISTORY_PAGE_SIZE: usize = 20;
 
-const WORKSPACE: &str = "workspace";
-const SIDE: &str = "a side is a registration number or \"workspace\"";
+const HOME: &str = "home";
+const SIDE: &str = "a side is a registration number or \"home\"";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistoryPoint {
     Registration(RegistrationId),
-    Workspace,
+    Home,
 }
 
 impl std::str::FromStr for HistoryPoint {
     type Err = &'static str;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value == WORKSPACE {
-            Ok(Self::Workspace)
+        if value == HOME {
+            Ok(Self::Home)
         } else {
             value
                 .parse()
@@ -36,11 +37,28 @@ impl std::str::FromStr for HistoryPoint {
     }
 }
 
+impl JsonSchema for HistoryPoint {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "HistoryPoint".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut registration = generator.subschema_for::<RegistrationId>();
+        registration.insert("description".into(), "A registration number.".into());
+        schemars::json_schema!({
+            "anyOf": [
+                registration,
+                { "type": "string", "enum": [HOME], "description": "The files in the home." }
+            ]
+        })
+    }
+}
+
 impl Serialize for HistoryPoint {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::Registration(id) => serializer.serialize_u64(id.0),
-            Self::Workspace => serializer.serialize_str(WORKSPACE),
+            Self::Home => serializer.serialize_str(HOME),
         }
     }
 }
@@ -57,8 +75,8 @@ impl<'de> Deserialize<'de> for HistoryPoint {
                 Ok(HistoryPoint::Registration(RegistrationId(id)))
             }
             fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<HistoryPoint, E> {
-                if value == WORKSPACE {
-                    Ok(HistoryPoint::Workspace)
+                if value == HOME {
+                    Ok(HistoryPoint::Home)
                 } else {
                     Err(E::custom(SIDE))
                 }
@@ -74,7 +92,7 @@ pub enum HistoryQuery {
     List {
         before: Option<RegistrationId>,
     },
-    /// Two intent values. Without `from`, the workspace is compared with the latest
+    /// Two intent values. Without `from`, the home is compared with the latest
     /// registration, and a registration with the one before it.
     Compare {
         from: Option<HistoryPoint>,
@@ -83,15 +101,28 @@ pub enum HistoryQuery {
 }
 
 /// The tool's argument object; a cursor and a comparison cannot be combined.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct QueryFields {
+    /// The side the diff starts from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     from: Option<HistoryPoint>,
+    /// The side the diff ends at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     to: Option<HistoryPoint>,
+    /// List only the registrations older than this number; not used with `from` or `to`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     before: Option<RegistrationId>,
+}
+
+impl JsonSchema for HistoryQuery {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "HistoryQuery".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        QueryFields::json_schema(generator)
+    }
 }
 
 impl HistoryQuery {
@@ -105,7 +136,7 @@ impl HistoryQuery {
             (None, None, before) => Ok(Self::List { before }),
             (from, to, None) => Ok(Self::Compare {
                 from,
-                to: to.unwrap_or(HistoryPoint::Workspace),
+                to: to.unwrap_or(HistoryPoint::Home),
             }),
             (_, _, Some(_)) => Err("before pages the registration list; omit it when comparing"),
         }
@@ -161,7 +192,7 @@ pub struct Comparison {
 #[derive(Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ComparisonMode {
-    WorkspaceChanges,
+    HomeChanges,
     RewindPreview,
     Registrations,
 }
@@ -229,7 +260,7 @@ impl Development {
         let mut registrations = Vec::new();
         let from = match (from, to) {
             (Some(from), _) => Some(from),
-            (None, HistoryPoint::Workspace) => Some(HistoryPoint::Registration(latest_id)),
+            (None, HistoryPoint::Home) => Some(HistoryPoint::Registration(latest_id)),
             (None, HistoryPoint::Registration(id)) => {
                 let detail = registry.registration(id).await?;
                 let from = detail.previous.map(HistoryPoint::Registration);
@@ -238,7 +269,7 @@ impl Development {
             }
         };
         let names = match (from, to) {
-            (Some(HistoryPoint::Workspace), _) | (_, HistoryPoint::Workspace) => latest.clone(),
+            (Some(HistoryPoint::Home), _) | (_, HistoryPoint::Home) => latest.clone(),
             (_, HistoryPoint::Registration(id)) => registry.registered_intent(Some(id)).await?,
         };
         let comparison = self
@@ -268,8 +299,8 @@ impl Development {
         let after = self.contents(registry, to, names).await?;
         let compared = compare_contents(before, after);
         let target = match (from, to) {
-            (Some(HistoryPoint::Workspace), HistoryPoint::Registration(id))
-            | (Some(HistoryPoint::Registration(id)), HistoryPoint::Workspace) => Some(id),
+            (Some(HistoryPoint::Home), HistoryPoint::Registration(id))
+            | (Some(HistoryPoint::Registration(id)), HistoryPoint::Home) => Some(id),
             _ => None,
         };
         let (rewind, conflicting_paths) = match target {
@@ -280,17 +311,16 @@ impl Development {
             }
             None => (None, Vec::new()),
         };
-        let mode = if to == HistoryPoint::Workspace
-            && from == Some(HistoryPoint::Registration(latest_id))
-        {
-            ComparisonMode::WorkspaceChanges
-        } else if from == Some(HistoryPoint::Workspace) {
-            ComparisonMode::RewindPreview
-        } else {
-            ComparisonMode::Registrations
-        };
+        let mode =
+            if to == HistoryPoint::Home && from == Some(HistoryPoint::Registration(latest_id)) {
+                ComparisonMode::HomeChanges
+            } else if from == Some(HistoryPoint::Home) {
+                ComparisonMode::RewindPreview
+            } else {
+                ComparisonMode::Registrations
+            };
         let next = match (&mode, rewind) {
-            (ComparisonMode::WorkspaceChanges, rewind)
+            (ComparisonMode::HomeChanges, rewind)
                 if compared.values().any(|diff| diff.unavailable.is_none()) =>
             {
                 Some(Steps {

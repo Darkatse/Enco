@@ -56,7 +56,7 @@ pub enum EntryProblem {
     NotText,
     #[error("has an invalid ignore rule: {0}")]
     IgnoreRule(String),
-    #[error("is not a plugin name; use lowercase letters, digits and single hyphens")]
+    #[error("is not a plugin name; use {rule}", rule = PluginName::RULE)]
     NotPluginName,
     #[error("is not valid TOML: {0}")]
     Toml(String),

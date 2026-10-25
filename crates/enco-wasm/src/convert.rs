@@ -1,3 +1,7 @@
+//! Translates between the kernel's types and the WIT types.
+//!
+//! Values from a guest are checked on the way in; one that breaks the contract, such as an
+//! embedding batch that does not match its inputs, fails as `plugin.contract`.
 use crate::{
     bindings::{decisions, enco::plugin::types as wit, exports::enco::plugin::completion as wire},
     limits::DECISION_SUM_TOLERANCE,

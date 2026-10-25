@@ -1,10 +1,25 @@
 //! Shared tool fixture for source registration, evaluation and cancellation.
 use bindings::exports::enco::plugin::{lifecycle, tools};
 use enco_sdk::types;
+use schemars::JsonSchema;
+use serde::Deserialize;
 
 enco_sdk::export!(tools, Plugin);
 
 struct Plugin;
+
+/// Arguments of `fixture_echo`.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Echo {
+    /// Text to return unchanged.
+    text: String,
+}
+
+/// `fixture_spin` takes no arguments.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Spin {}
 
 impl lifecycle::Guest for Plugin {
     fn describe(config: String) -> Result<lifecycle::Description, types::Failure> {
@@ -32,34 +47,36 @@ impl tools::Guest for Plugin {
         vec![
             types::ToolSpec {
                 name: "fixture_echo".into(),
-                description: "Return the supplied object unchanged.".into(),
-                input_schema: r#"{"type":"object"}"#.into(),
+                description: "Return the given text unchanged.".into(),
+                input_schema: enco_sdk::input_schema::<Echo>().to_string(),
                 effect: types::Effect::ReadOnly,
             },
             types::ToolSpec {
                 name: "fixture_spin".into(),
                 description: "Keep computing until the invocation is cancelled.".into(),
-                input_schema: r#"{"type":"object"}"#.into(),
+                input_schema: enco_sdk::input_schema::<Spin>().to_string(),
                 effect: types::Effect::SideEffect,
             },
         ]
     }
 
     async fn call(name: String, input: String) -> types::Outcome {
-        if name == "fixture_spin" {
-            enco_sdk::host::log(enco_sdk::host::LogLevel::Info, "spin entered");
-            loop {
-                std::hint::spin_loop();
+        match name.as_str() {
+            "fixture_echo" => match enco_sdk::parse_arguments::<Echo>(&input) {
+                Ok(echo) => types::Outcome::Ok(serde_json::Value::String(echo.text).to_string()),
+                Err(failure) => types::Outcome::Failed(failure),
+            },
+            "fixture_spin" => {
+                enco_sdk::host::log(enco_sdk::host::LogLevel::Info, "spin entered");
+                loop {
+                    std::hint::spin_loop();
+                }
             }
-        }
-        if name == "fixture_echo" {
-            types::Outcome::Ok(input)
-        } else {
-            types::Outcome::Failed(types::Failure {
+            _ => types::Outcome::Failed(types::Failure {
                 code: "tool.invalid_arguments".into(),
                 message: format!("Unknown tool {name}"),
                 retryable: false,
-            })
+            }),
         }
     }
 }

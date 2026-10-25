@@ -243,6 +243,11 @@ fn prepare<'a>(
             ));
         }
     };
-    tool.spec.check_argument_names(&args)?;
+    let args = tool.spec.input_schema.accept(args).map_err(|error| {
+        failure(
+            code::TOOL_INVALID_ARGUMENTS,
+            format!("invalid arguments for `{}`: {error}", call.name),
+        )
+    })?;
     Ok((tool, args))
 }

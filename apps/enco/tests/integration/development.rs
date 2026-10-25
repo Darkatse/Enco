@@ -168,7 +168,7 @@ fn echo_reply(request: &wiremock::Request) -> ResponseTemplate {
             "plugin_rename",
             json!({"name":"alpha", "to":"beta", "reason":"Give the plugin its new name"}),
         ),
-        (HISTORY, "self_history", json!({"to":"workspace"})),
+        (HISTORY, "self_history", json!({"to":"home"})),
     ] {
         if messages.iter().any(|message| message["content"] == prompt) {
             return response(tool_message(tool, tool, arguments), "tool_calls");
@@ -346,11 +346,8 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
         json!({"label":"value"})
     );
     let status = use_source(&daemon).await;
-    assert_eq!(status["configuration"]["workspace"]["state"], "same");
-    assert_eq!(
-        status["plugins"]["alpha"]["workspace"]["code"]["state"],
-        "same"
-    );
+    assert_eq!(status["configuration"]["home"]["state"], "same");
+    assert_eq!(status["plugins"]["alpha"]["home"]["code"]["state"], "same");
     assert_eq!(
         status["plugins"]["alpha"]["running"]["standing"],
         json!({"standing": "registered", "differences": []})
@@ -366,8 +363,7 @@ fn check_readme(readme: &Path) {
         generated.starts_with("Owner introduction\n") && generated.ends_with("\nOwner examples\n")
     );
     assert!(
-        generated.contains("alpha_echo")
-            && generated.contains("Return the supplied object unchanged.")
+        generated.contains("alpha_echo") && generated.contains("Return the given text unchanged.")
     );
 }
 
@@ -460,7 +456,7 @@ async fn check_rename(daemon: &mut Daemon, document: &mut Value, identity: &Valu
         settings["registered"]["generations"][0]["id"]
     );
     assert_eq!(
-        status["plugins"]["beta"]["workspace"]["code"]["state"],
+        status["plugins"]["beta"]["home"]["code"]["state"],
         "unbuilt"
     );
     assert!(
@@ -468,10 +464,10 @@ async fn check_rename(daemon: &mut Daemon, document: &mut Value, identity: &Valu
             .unwrap()
             .contains("Unregistered owner notes")
     );
-    check_workspace_moves_do_not_rename_registered_plugin(daemon).await;
+    check_home_moves_do_not_rename_registered_plugin(daemon).await;
 }
 
-async fn check_workspace_moves_do_not_rename_registered_plugin(daemon: &mut Daemon) {
+async fn check_home_moves_do_not_rename_registered_plugin(daemon: &mut Daemon) {
     std::fs::rename(
         daemon.root.path().join("plugins/beta"),
         daemon.root.path().join("plugins/alpha"),

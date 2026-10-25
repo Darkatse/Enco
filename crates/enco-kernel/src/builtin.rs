@@ -1,6 +1,8 @@
 use crate::{CallContext, ScheduleError, Scheduled, Schedules, Tool, limits};
 use async_trait::async_trait;
 use enco_core::*;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 enum Kind {
@@ -9,69 +11,77 @@ enum Kind {
     Cancel,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CreateArguments {
+    /// A future time for one reminder, in RFC 3339 with a UTC offset, such as
+    /// `2026-10-24T09:00:00+08:00`.
+    at: Option<String>,
+    /// A rule for repeating reminders: minute hour day month weekday.
+    cron: Option<String>,
+    /// The IANA time zone a cron rule follows, such as `Asia/Shanghai`; the owner's by default.
+    timezone: Option<String>,
+    /// The text delivered to this Session when the reminder is due.
+    message: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CancelArguments {
+    /// The schedule to stop, as `schedule_list` shows it.
+    id: ScheduleId,
+}
+
 impl Kind {
     const ALL: [Self; 3] = [Self::Create, Self::List, Self::Cancel];
-    fn spec(&self) -> ToolSpec {
-        let (name, description, effect, properties, required) = match self {
-            Kind::Create => (
+    fn spec(&self) -> Result<ToolSpec, SchemaError> {
+        match self {
+            Kind::Create => ToolSpec::of::<CreateArguments>(
                 "schedule_create",
-                format!("Create a reminder delivered to this Session, even if Enco restarts. Give either \
-                    at (a future RFC 3339 timestamp with a UTC offset) or cron (minute hour day month weekday). \
-                    A cron rule follows the owner's time zone unless timezone names another IANA zone; \
-                    occurrences must be at least {} minutes apart. If Enco was not running, only the latest \
-                    missed occurrence is delivered.", limits::MIN_RECURRENCE_INTERVAL.as_secs() / 60),
+                format!(
+                    "Create a reminder delivered to this Session, even if Enco restarts. Give exactly \
+                     one of at and cron; cron occurrences must be at least {} minutes apart. If Enco \
+                     was not running, only the latest missed occurrence is delivered.",
+                    limits::MIN_RECURRENCE_INTERVAL.as_secs() / 60
+                ),
                 Effect::SideEffect,
-                json!({
-                    "at": { "type": "string" },
-                    "cron": { "type": "string" },
-                    "timezone": { "type": "string" },
-                    "message": { "type": "string" },
-                }),
-                vec!["message"],
             ),
-            Kind::List => (
-                "schedule_list",
-                "List active schedules addressed to this Session, including their rules and next occurrences.".into(),
-                Effect::ReadOnly,
-                json!({}),
-                vec![],
-            ),
-            Kind::Cancel => (
+            Kind::List => Ok(ToolSpec {
+                name: "schedule_list".into(),
+                description: "List active schedules addressed to this Session, including their rules and next occurrences.".into(),
+                input_schema: InputSchema::empty(),
+                effect: Effect::ReadOnly,
+            }),
+            Kind::Cancel => ToolSpec::of::<CancelArguments>(
                 "schedule_cancel",
-                "Stop future occurrences of a schedule by id. Already delivered reminders are unaffected. \
-                 Returns false when it is done, cancelled, or absent.".into(),
+                "Stop future occurrences of a schedule. Already delivered reminders are unaffected. \
+                 Returns false when it is done, cancelled, or absent.",
                 Effect::SideEffect,
-                json!({ "id": { "type": "string" } }),
-                vec!["id"],
             ),
-        };
-        ToolSpec {
-            name: name.into(),
-            description,
-            effect,
-            input_schema: closed_object_schema(properties, &required),
         }
     }
 }
 
 /// Native declarations available before their stateful handlers are constructed.
-pub fn builtin_tool_specs() -> Vec<ToolSpec> {
+pub fn builtin_tool_specs() -> Result<Vec<ToolSpec>, SchemaError> {
     Kind::ALL.iter().map(Kind::spec).collect()
 }
 
 struct ScheduleTool {
     schedules: Schedules,
     kind: Kind,
+    spec: ToolSpec,
 }
 
-pub(crate) fn tools(schedules: Schedules) -> Vec<Arc<dyn Tool>> {
+pub(crate) fn tools(schedules: Schedules) -> Result<Vec<Arc<dyn Tool>>, SchemaError> {
     Kind::ALL
         .into_iter()
         .map(|kind| {
-            Arc::new(ScheduleTool {
+            Ok(Arc::new(ScheduleTool {
                 schedules: schedules.clone(),
+                spec: kind.spec()?,
                 kind,
-            }) as Arc<dyn Tool>
+            }) as Arc<dyn Tool>)
         })
         .collect()
 }
@@ -86,7 +96,7 @@ impl Tool for ScheduleTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        self.kind.spec()
+        self.spec.clone()
     }
 
     async fn call(&self, ctx: CallContext, args: Map<String, Value>) -> Outcome {
@@ -109,35 +119,10 @@ impl ScheduleTool {
     ) -> Result<Value, Failure> {
         match self.kind {
             Kind::Create => {
-                let rule = match (args.contains_key("at"), args.contains_key("cron")) {
-                    (true, false) => {
-                        if args.contains_key("timezone") {
-                            return Err(invalid("timezone only applies to cron"));
-                        }
-                        let at = DateTime::parse_from_rfc3339(text(&args, "at")?)
-                            .map_err(|e| invalid(format!("at must include a UTC offset: {e}")))?
-                            .to_utc();
-                        ScheduleRule::Once { at }
-                    }
-                    (false, true) => {
-                        let timezone = args
-                            .get("timezone")
-                            .map(|_| {
-                                text(&args, "timezone")?.parse::<Tz>().map_err(|e| {
-                                    invalid(format!("timezone must be an IANA name: {e}"))
-                                })
-                            })
-                            .transpose()?;
-                        ScheduleRule::Cron {
-                            expr: text(&args, "cron")?.into(),
-                            timezone,
-                        }
-                    }
-                    _ => return Err(invalid("give exactly one of at or cron")),
-                };
+                let arguments: CreateArguments = parse_arguments(args)?;
                 let scheduled = self
                     .schedules
-                    .create(session, rule, text(&args, "message")?.into())
+                    .create(session, arguments.rule()?, arguments.message)
                     .await
                     .map_err(error)?;
                 Ok(scheduled.into_json())
@@ -152,9 +137,7 @@ impl ScheduleTool {
                 ))
             }
             Kind::Cancel => {
-                let id = text(&args, "id")?
-                    .parse()
-                    .map_err(|e| invalid(format!("id: {e}")))?;
+                let CancelArguments { id } = parse_arguments(args)?;
                 let cancelled = self.schedules.cancel(id).await.map_err(error)?;
                 Ok(json!({ "cancelled": cancelled }))
             }
@@ -162,10 +145,32 @@ impl ScheduleTool {
     }
 }
 
-fn text<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a str, Failure> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid(format!("{key} must be a string")))
+impl CreateArguments {
+    fn rule(&self) -> Result<ScheduleRule, Failure> {
+        match (&self.at, &self.cron) {
+            (Some(at), None) => {
+                if self.timezone.is_some() {
+                    return Err(invalid("timezone only applies to cron"));
+                }
+                let at = DateTime::parse_from_rfc3339(at)
+                    .map_err(|e| invalid(format!("at must include a UTC offset: {e}")))?
+                    .to_utc();
+                Ok(ScheduleRule::Once { at })
+            }
+            (None, Some(cron)) => Ok(ScheduleRule::Cron {
+                expr: cron.clone(),
+                timezone: self
+                    .timezone
+                    .as_deref()
+                    .map(|zone| {
+                        zone.parse::<Tz>()
+                            .map_err(|e| invalid(format!("timezone must be an IANA name: {e}")))
+                    })
+                    .transpose()?,
+            }),
+            _ => Err(invalid("give exactly one of at or cron")),
+        }
+    }
 }
 
 fn invalid(message: impl Into<String>) -> Failure {

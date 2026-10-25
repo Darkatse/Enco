@@ -1,4 +1,4 @@
-use super::args;
+use super::failure;
 pub use crate::development::self_status_spec;
 use crate::development::{Development, DevelopmentCall, DevelopmentTool, Failed};
 use async_trait::async_trait;
@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
 /// Declarations are available before the registry binds their handlers.
-pub fn development_tool_specs() -> Vec<ToolSpec> {
+pub fn development_tool_specs() -> Result<Vec<ToolSpec>, SchemaError> {
     DevelopmentTool::ALL
         .into_iter()
         .map(DevelopmentTool::spec)
@@ -19,15 +19,16 @@ pub fn development_tool_specs() -> Vec<ToolSpec> {
 pub fn development_tools(
     development: Arc<Development>,
     registry: Arc<Registry>,
-) -> Vec<Arc<dyn Tool>> {
+) -> Result<Vec<Arc<dyn Tool>>, SchemaError> {
     DevelopmentTool::ALL
         .into_iter()
         .map(|tool| {
-            Arc::new(DevelopmentHandler {
+            Ok(Arc::new(DevelopmentHandler {
                 development: development.clone(),
                 registry: registry.clone(),
+                spec: tool.spec()?,
                 tool,
-            }) as Arc<dyn Tool>
+            }) as Arc<dyn Tool>)
         })
         .collect()
 }
@@ -36,6 +37,7 @@ struct DevelopmentHandler {
     development: Arc<Development>,
     registry: Arc<Registry>,
     tool: DevelopmentTool,
+    spec: ToolSpec,
 }
 
 #[async_trait]
@@ -44,7 +46,7 @@ impl Tool for DevelopmentHandler {
         super::code()
     }
     fn spec(&self) -> ToolSpec {
-        self.tool.spec()
+        self.spec.clone()
     }
     async fn call(&self, ctx: CallContext, arguments: Map<String, Value>) -> Outcome {
         let result = match self.tool.parse(arguments) {
@@ -107,5 +109,5 @@ impl DevelopmentHandler {
 }
 
 fn failure(failed: Failed) -> Failure {
-    args::failure(failed.code(), failed.to_string())
+    failure::failure(failed.code(), failed.to_string())
 }

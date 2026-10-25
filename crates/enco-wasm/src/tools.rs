@@ -1,3 +1,9 @@
+//! Adapts a tool plugin to the kernel's `Tools` port.
+//!
+//! Tool declarations are checked once, at load: names are unique and use only ASCII letters,
+//! digits, `_` and `-`, and every input schema is in the canonical subset. If a call to a tool
+//! that is not read-only ends without a valid outcome from the plugin, for example on a timeout or
+//! a trap, the outcome is `unknown`: the effect may have happened.
 use crate::{
     bindings::ToolPluginPre, convert, credentials, host_imports::HostState, plugin::WasmPlugin,
 };
@@ -44,14 +50,10 @@ pub(super) async fn load(
             if !names.insert(spec.name.clone()) {
                 return Err(convert::bad(format!("duplicate tool name {:?}", spec.name)));
             }
-            let input_schema: serde_json::Value = serde_json::from_str(&spec.input_schema)
+            let input_schema = serde_json::from_str(&spec.input_schema)
+                .map_err(|error| error.to_string())
+                .and_then(|schema| InputSchema::parse(&schema).map_err(|error| error.to_string()))
                 .map_err(|error| convert::bad(format!("tool {} schema: {error}", spec.name)))?;
-            if input_schema["type"] != "object" {
-                return Err(convert::bad(format!(
-                    "tool {} schema must describe an object",
-                    spec.name
-                )));
-            }
             Ok(ToolSpec {
                 name: spec.name,
                 description: spec.description,

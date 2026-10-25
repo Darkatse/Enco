@@ -1,6 +1,7 @@
 //! Development facts are sampled here; attention and presentation use the complete host status.
-use super::workspace::PluginWorkspace;
-use super::{Development, DevelopmentError, EntryError, Failed, Operation, WorkspaceComparison};
+use super::{
+    Development, DevelopmentError, EntryError, Failed, HomeComparison, HomePlugin, Operation,
+};
 use enco_core::{ConfigurationRef, PluginName, RegistrationId};
 use enco_kernel::{
     Cause, PluginStatus, RegisteredPlugin, RegistrationDetails, Registry, SettingsError,
@@ -17,7 +18,7 @@ pub struct DevelopmentStatus {
     pub plugins: BTreeMap<PluginName, PluginUnit>,
     pub configuration: ConfigurationUnit,
     pub recent_registrations: Vec<RegistrationDetails>,
-    /// Why the `plugins` directory cannot be listed; plugin workspace facts are then absent.
+    /// Why the `plugins` directory cannot be listed; the home facts of plugins are then absent.
     pub plugins_unreadable: Option<EntryError>,
 }
 
@@ -25,7 +26,7 @@ pub struct DevelopmentStatus {
 pub struct PluginUnit {
     pub running: Option<PluginStatus>,
     pub registered: Option<RegisteredUnit>,
-    pub workspace: Option<PluginWorkspace>,
+    pub home: Option<HomePlugin>,
 }
 
 #[derive(Serialize)]
@@ -42,7 +43,7 @@ pub struct RegisteredUnit {
 pub struct ConfigurationUnit {
     pub running: ConfigurationRef,
     pub registered: ConfigurationRef,
-    pub workspace: WorkspaceComparison,
+    pub home: HomeComparison,
     pub invalid: Vec<SettingsError>,
     pub unavailable_uses: Vec<UnservedUse>,
 }
@@ -58,7 +59,7 @@ impl Development {
     async fn observe(&self, registry: &Registry) -> Result<DevelopmentStatus, DevelopmentError> {
         let baseline = registry.status().await?;
         let registration = baseline.registered.accepted()?.id;
-        let workspace = self.compare(&baseline.registered).await?;
+        let home = self.compare(&baseline.registered).await?;
         let follow = self.follow_rejections.read().await;
         let mut plugins: BTreeMap<PluginName, PluginUnit> = BTreeMap::new();
         for running in baseline.plugins {
@@ -76,10 +77,10 @@ impl Development {
                 plugin,
             });
         }
-        let plugins_unreadable = match workspace.plugins {
+        let plugins_unreadable = match home.plugins {
             Ok(directories) => {
                 for (name, directory) in directories {
-                    plugins.entry(name).or_default().workspace = Some(directory);
+                    plugins.entry(name).or_default().home = Some(directory);
                 }
                 None
             }
@@ -91,7 +92,7 @@ impl Development {
             configuration: ConfigurationUnit {
                 running: baseline.config.running,
                 registered: baseline.config.registered,
-                workspace: workspace.configuration,
+                home: home.configuration,
                 invalid: baseline.config.invalid,
                 unavailable_uses: baseline.config.unavailable_uses,
             },

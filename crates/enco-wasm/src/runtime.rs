@@ -1,3 +1,7 @@
+//! Turns component bytes into a loaded plugin.
+//!
+//! A component may import only WASI and the `enco:plugin` `host` and `types` interfaces of a
+//! compatible version; any other import, `completion` included, is rejected at load.
 use crate::{
     bindings::{
         BasePre, CONTRACT_VERSION, CompletionPluginPre, DecisionPluginPre, EmbeddingPluginPre,
@@ -14,23 +18,30 @@ use enco_kernel::{Credential, Decision, Embedding, LoadError, Loaded, Provider, 
 use std::sync::Arc;
 use wasmtime::component::{Component, HasSelf, Linker};
 
-/// Shared engine and transport; invocation parameters belong to callers, not compiled code.
+/// The host's plugin runtime: one engine and one HTTP client shared by every loaded plugin.
+///
+/// A loaded plugin keeps no endpoint or credential value; both come with each call.
 pub struct WasmRuntime {
     engine: Arc<WasmEngine>,
     http: reqwest::Client,
 }
 
+/// Why the plugin runtime could not start.
 #[derive(Debug, thiserror::Error)]
 pub enum WasmError {
+    /// Wasmtime could not create the engine or its compiled-code cache.
     #[error("Wasm engine: {0}")]
     Engine(wasmtime::Error),
+    /// The engine's epoch clock thread could not start.
     #[error("Wasm epoch clock: {0}")]
     Clock(std::io::Error),
+    /// The HTTP client could not be built.
     #[error("HTTP client: {0}")]
     Http(#[from] reqwest::Error),
 }
 
 impl WasmRuntime {
+    /// Start the shared engine and its epoch clock thread, and build the HTTP client.
     pub fn new() -> Result<Self, WasmError> {
         Ok(Self {
             engine: Arc::new(WasmEngine::new()?),

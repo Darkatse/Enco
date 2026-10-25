@@ -1,3 +1,8 @@
+//! The generated section of a plugin's README.
+//!
+//! A build rewrites only the text between the `enco:generated` begin and end markers, adding the
+//! section at the top when both are missing; a lone or misordered marker fails the build. The rest
+//! of the file belongs to its author.
 use super::{
     DevelopmentError, EntryError, EntryProblem,
     error::{entry, io},
@@ -42,7 +47,7 @@ pub(super) async fn write(directory: &Path, loaded: &Loaded) -> Result<(), Devel
                 "\n## `{}`\n\n{}\n\n```json\n{}\n```\n",
                 tool.name,
                 tool.description,
-                schema(&tool.input_schema)?
+                schema(&tool.input_schema.to_value())?
             ));
         }
     }

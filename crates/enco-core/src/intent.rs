@@ -12,9 +12,14 @@ use std::{
 #[serde(transparent)]
 pub struct PluginName(String);
 
+impl PluginName {
+    /// The naming rule, as messages and argument descriptions state it.
+    pub const RULE: &str = "lowercase letters, digits and single hyphens";
+}
+
 /// A plugin name outside the public naming grammar.
 #[derive(Debug, thiserror::Error)]
-#[error("plugin name must use lowercase letters, digits and single hyphens: {0}")]
+#[error("plugin name must use {rule}: {0}", rule = PluginName::RULE)]
 pub struct InvalidPluginName(String);
 
 impl FromStr for PluginName {
@@ -68,6 +73,16 @@ impl From<PluginName> for String {
 impl fmt::Display for PluginName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+impl schemars::JsonSchema for PluginName {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "PluginName".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "minLength": 1 })
     }
 }
 
@@ -135,6 +150,16 @@ impl fmt::Display for IntentPath {
 impl From<IntentPath> for String {
     fn from(path: IntentPath) -> Self {
         path.to_string()
+    }
+}
+
+impl schemars::JsonSchema for IntentPath {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "IntentPath".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string" })
     }
 }
 

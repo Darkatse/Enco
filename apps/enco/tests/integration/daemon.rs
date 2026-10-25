@@ -755,7 +755,7 @@ async fn completion_imports_are_rejected_before_linking_a_plugin() {
     let runtime = WasmRuntime::new().unwrap();
     let error = runtime
         .load(
-            br#"(component (import "enco:plugin/completion@0.5.0" (instance)))"#,
+            br#"(component (import "enco:plugin/completion@0.6.0" (instance)))"#,
             &PluginSettings::default(),
         )
         .await

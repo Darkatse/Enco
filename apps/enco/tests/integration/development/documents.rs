@@ -34,7 +34,7 @@ async fn cli_requests_documents_and_json_from_the_daemon_without_git() {
     .unwrap();
     for arguments in [
         vec!["status"],
-        vec!["history", "--to", "workspace"],
+        vec!["history", "--to", "home"],
         vec!["apply", "--reason", "Allow a longer run"],
         vec!["history"],
         vec!["rewind", &registration],

@@ -54,11 +54,7 @@ impl Development {
     }
 
     fn template(&self, name: &PluginName) -> Result<FileTree, DevelopmentError> {
-        let manifest = format!(
-            "{}\n{}",
-            MANIFEST.replace("__NAME__", name),
-            self.plugin_lints()?
-        );
+        let manifest = self.manifest(name)?;
         // Even the first build uses the SDK's tested versions.
         let lock = self
             .sdk
@@ -85,7 +81,10 @@ impl Development {
         ])
     }
 
-    fn plugin_lints(&self) -> Result<String, DevelopmentError> {
+    /// The new plugin's manifest. Its lint table and argument libraries are copied from the SDK's
+    /// manifest: argument types must derive the traits that the SDK's functions take, and the
+    /// first build resolves them from the SDK's lock.
+    fn manifest(&self, name: &PluginName) -> Result<String, DevelopmentError> {
         let host = |error: &dyn std::fmt::Display| {
             DevelopmentError::Host(format!("embedded SDK manifest: {error}"))
         };
@@ -94,14 +93,29 @@ impl Development {
             .file("Cargo.toml")
             .ok_or_else(|| host(&"missing"))?;
         let text = std::str::from_utf8(bytes).map_err(|error| host(&error))?;
-        let manifest: toml::Value = toml::from_str(text).map_err(|error| host(&error))?;
-        let lints = manifest
-            .get("lints")
-            .ok_or_else(|| host(&"no lint table"))?;
-        toml::to_string(&std::collections::BTreeMap::from([("lints", lints)]))
-            .map_err(|error| host(&error))
+        let sdk: toml::Value = toml::from_str(text).map_err(|error| host(&error))?;
+        let mut dependencies = String::new();
+        for library in ARGUMENT_LIBRARIES {
+            let requirement = sdk
+                .get("dependencies")
+                .and_then(|table| table.get(library))
+                .ok_or_else(|| host(&format!("no `{library}` dependency")))?;
+            dependencies.push_str(&format!("{library} = {requirement}\n"));
+        }
+        let lints = sdk.get("lints").ok_or_else(|| host(&"no lint table"))?;
+        let lints = toml::to_string(&std::collections::BTreeMap::from([("lints", lints)]))
+            .map_err(|error| host(&error))?;
+        Ok(format!(
+            "{}\n{lints}",
+            MANIFEST
+                .replace("__DEPENDENCIES__", &dependencies)
+                .replace("__NAME__", name)
+        ))
     }
 }
+
+/// Libraries a plugin uses to declare and parse typed tool arguments and to return JSON.
+const ARGUMENT_LIBRARIES: [&str; 3] = ["schemars", "serde", "serde_json"];
 
 const CARGO_CONFIG: &str = "[build]\ntarget = \"wasm32-wasip2\"\n";
 
@@ -119,7 +133,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 enco-sdk = { path = "../../sdk" }
-
+__DEPENDENCIES__
 [profile.release]
 opt-level = "s"
 lto = true

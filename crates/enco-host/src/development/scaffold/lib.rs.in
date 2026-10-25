@@ -1,10 +1,21 @@
 //! A minimal tool plugin; replace the echo behavior with the intended capability.
 use bindings::exports::enco::plugin::{lifecycle, tools};
 use enco_sdk::types;
+use schemars::JsonSchema;
+use serde::Deserialize;
 
 enco_sdk::export!(tools, Plugin);
 
 struct Plugin;
+
+/// Arguments of `__NAME___echo`; each field's doc is the parameter description the model reads.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Echo {
+    /// Text to return unchanged.
+    #[serde(default)]
+    text: String,
+}
 
 impl lifecycle::Guest for Plugin {
     fn describe(config: String) -> Result<lifecycle::Description, types::Failure> {
@@ -16,7 +27,7 @@ impl lifecycle::Guest for Plugin {
             });
         }
         Ok(lifecycle::Description {
-            summary: "Echo an input object".into(),
+            summary: "Echo the given text".into(),
             config_schema: r#"{"type":"object","additionalProperties":false}"#.into(),
             credentials: Vec::new(),
         })
@@ -31,21 +42,23 @@ impl tools::Guest for Plugin {
     fn list(_config: String) -> Vec<types::ToolSpec> {
         vec![types::ToolSpec {
             name: "__NAME___echo".into(),
-            description: "Return the supplied object unchanged.".into(),
-            input_schema: r#"{"type":"object"}"#.into(),
+            description: "Return the given text unchanged.".into(),
+            input_schema: enco_sdk::input_schema::<Echo>().to_string(),
             effect: types::Effect::ReadOnly,
         }]
     }
 
     async fn call(name: String, input: String) -> types::Outcome {
-        if name == "__NAME___echo" {
-            types::Outcome::Ok(input)
-        } else {
-            types::Outcome::Failed(types::Failure {
+        if name != "__NAME___echo" {
+            return types::Outcome::Failed(types::Failure {
                 code: "tool.invalid_arguments".into(),
                 message: format!("Unknown tool {name}"),
                 retryable: false,
-            })
+            });
+        }
+        match enco_sdk::parse_arguments::<Echo>(&input) {
+            Ok(echo) => types::Outcome::Ok(serde_json::Value::String(echo.text).to_string()),
+            Err(failure) => types::Outcome::Failed(failure),
         }
     }
 }

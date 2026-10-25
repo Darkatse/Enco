@@ -1,3 +1,9 @@
+//! Building one plugin source into a component.
+//!
+//! For the same source and SDK, an earlier build is reused while its component is still stored. A
+//! fresh build fails on any clippy warning, on a component that does not load with an empty
+//! configuration, or on a change to any file other than `Cargo.lock` and the README's generated
+//! section.
 use super::{
     BuildFailure, Development, DevelopmentError, EntryError, EntryProblem,
     cache::Build,
@@ -14,16 +20,20 @@ use std::path::PathBuf;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
+/// What happened to one plugin source during an apply.
 #[derive(Serialize)]
 pub struct BuildResult {
-    /// Plugin source directory.
+    /// Plugin whose source was built or reused.
     pub name: PluginName,
-    /// Whether retained bytes were reused without invoking Cargo.
+    /// Whether a stored build of the same source and SDK was used, so Cargo did not run.
     pub reused: bool,
+    /// Whether the component differs from the registered one, or none is registered; only then is
+    /// the new code registered.
     pub code_changed: bool,
-    /// Diagnostic excerpts, with errors before warnings.
+    /// At most `BUILD_DIAGNOSTICS` distinct compiler messages, errors first; empty when the build
+    /// was reused.
     pub diagnostics: Vec<String>,
-    /// Complete build output, when Cargo was invoked.
+    /// Path to Cargo's complete output; absent when the build was reused.
     pub log: Option<PathBuf>,
 }
 

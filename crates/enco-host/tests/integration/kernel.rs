@@ -317,6 +317,7 @@ async fn changed_tool_definitions_are_rejected_before_any_provider_request() {
     let provider = ScriptedProvider::new(vec![]);
     let (kernel, _) = kernel_with(dir.path(), provider.clone(), Tz::UTC, |deps| {
         deps.composer = std::sync::Arc::new(AlteredDefinition(enco_host::FactoryComposer::new(
+            dir.path().to_owned(),
             dir.path().join("workspace"),
             dir.path().join("AGENTS.md"),
         )))

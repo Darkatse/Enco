@@ -13,11 +13,9 @@ include!(concat!(env!("OUT_DIR"), "/embedded_factory.rs"));
 /// Each test host's SDK builds observably different plugins.
 const LABEL_FUNCTION: &str =
     "/// Label returned by the test host's SDK.\npub fn test_revision() -> &'static str";
-const ECHO: &str = "types::Outcome::Ok(input)";
-const LABELLED_ECHO: &str = concat!(
-    r##"types::Outcome::Ok(format!(r#"{{"label":"{}","input":{input}}}"#, "##,
-    "enco_sdk::test_revision()))"
-);
+const ECHO: &str = "serde_json::Value::String(echo.text)";
+const LABELLED_ECHO: &str =
+    r#"serde_json::Value::String(format!("{}{}", enco_sdk::test_revision(), echo.text))"#;
 const DIRECT_ARTIFACT: &str = "plugins/sdk-test/target/wasm32-wasip2/release/plugin_sdk_test.wasm";
 
 fn with_label(label: &str) -> Sdk {

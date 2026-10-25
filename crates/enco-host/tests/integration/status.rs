@@ -94,7 +94,7 @@ fn steps(status: &Status, kind: impl Fn(&AttentionKind) -> bool) -> Steps {
 }
 
 #[tokio::test]
-async fn workspace_attention_distinguishes_meaning_build_evidence_and_read_failures() {
+async fn home_attention_distinguishes_meaning_build_evidence_and_read_failures() {
     let root = tempfile::tempdir().unwrap();
     let node = Node::start(root.path()).await;
     node.source(root.path(), "alpha", b"one").await;
@@ -115,16 +115,16 @@ async fn workspace_attention_distinguishes_meaning_build_evidence_and_read_failu
     let status = node.status(root.path()).await;
     assert!(status.attention().is_empty());
     assert_eq!(
-        status.development.configuration.workspace,
-        WorkspaceComparison::TextOnly
+        status.development.configuration.home,
+        HomeComparison::TextOnly
     );
     assert_eq!(
         status.development.plugins["alpha"]
-            .workspace
+            .home
             .as_ref()
             .unwrap()
             .code,
-        WorkspaceComparison::TextOnly
+        HomeComparison::TextOnly
     );
     text.push_str("\n[plugin.alpha.config]\nlabel = 'edited'\n");
     std::fs::write(&config, &text).unwrap();
@@ -289,7 +289,7 @@ fn successor(step: &CallStep) -> Option<CallStep> {
     let (name, to): (PluginName, PluginName) = ("old".parse().unwrap(), "new".parse().unwrap());
     Some(match step {
         CallStep::Review(_) => CallStep::Compare(HistoryQuery::Compare {
-            from: Some(HistoryPoint::Workspace),
+            from: Some(HistoryPoint::Home),
             to: HistoryPoint::Registration(registration),
         }),
         CallStep::Compare(_) => CallStep::List(Some(registration)),
@@ -317,21 +317,35 @@ fn successor(step: &CallStep) -> Option<CallStep> {
 fn every_call_step() -> Vec<CallStep> {
     let first = CallStep::Review(HistoryQuery::Compare {
         from: None,
-        to: HistoryPoint::Workspace,
+        to: HistoryPoint::Home,
     });
     std::iter::successors(Some(first), successor).collect()
 }
 
-/// Parse as execution does: the tool's name selects the one parser of that tool.
+/// Check and parse as execution does: dispatch checks the declared schema, then the tool's name
+/// selects the one parser of that tool.
 fn parse_as_executed(tool: &str, arguments: Map<String, Value>) -> Result<Value, Failure> {
-    match DevelopmentTool::named(tool) {
+    let developed = DevelopmentTool::named(tool);
+    let spec = match developed {
+        Some(tool) => tool.spec().unwrap(),
+        None => {
+            assert_eq!(tool, STATUS);
+            self_status_spec()
+        }
+    };
+    let arguments = spec
+        .input_schema
+        .accept(arguments)
+        .map_err(|error| Failure {
+            code: code::TOOL_INVALID_ARGUMENTS.into(),
+            message: error.to_string(),
+            retryable: false,
+        })?;
+    match developed {
         Some(tool) => tool
             .parse(arguments)
             .map(|call| serde_json::to_value(call).unwrap()),
-        None => {
-            assert_eq!(tool, STATUS);
-            StatusArguments::parse(arguments).map(|parsed| serde_json::to_value(parsed).unwrap())
-        }
+        None => Ok(Value::Object(arguments)),
     }
 }
 
@@ -692,6 +706,7 @@ async fn rename_precheck_rejection_keeps_its_plugin_error_code() {
     let root = tempfile::tempdir().unwrap();
     let node = Node::start(root.path()).await;
     let tool = enco_host::development_tools(node.development.clone(), node.registry.clone())
+        .unwrap()
         .into_iter()
         .find(|tool| tool.spec().name == RENAME)
         .unwrap();

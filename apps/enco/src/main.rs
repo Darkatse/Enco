@@ -35,7 +35,7 @@ enum Action {
         #[arg(long)]
         reason: Option<Reason>,
     },
-    /// Read registration history or compare a registration number with workspace intent.
+    /// Read registration history or compare a registration number with the files in the home.
     History {
         #[arg(long)]
         json: bool,
@@ -46,7 +46,7 @@ enum Action {
         #[arg(long)]
         before: Option<u64>,
     },
-    /// Restore workspace intent; review it, then apply to register the change.
+    /// Restore the files in the home; review them, then apply to register the change.
     Rewind {
         #[arg(long)]
         json: bool,

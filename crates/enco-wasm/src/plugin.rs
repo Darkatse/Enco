@@ -1,3 +1,7 @@
+//! One loaded plugin and the calls into it.
+//!
+//! Each call instantiates the component in a fresh store, under the same memory limit and timeout,
+//! so nothing a guest keeps in memory survives to the next call.
 use crate::{
     bindings::{
         BasePre, CompletionPluginPre, DecisionPluginPre, EmbeddingPluginPre, enco::plugin::types,

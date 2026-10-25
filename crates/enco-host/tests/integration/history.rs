@@ -217,7 +217,7 @@ async fn rewind_follows_identity_through_rename() {
         .history(
             &registry,
             HistoryQuery::Compare {
-                from: Some(HistoryPoint::Workspace),
+                from: Some(HistoryPoint::Home),
                 to: HistoryPoint::Registration(first.registration.id),
             },
         )
@@ -322,7 +322,7 @@ async fn history_reports_missing_content_locally_and_rewind_preflights_before_wr
             &registry,
             HistoryQuery::Compare {
                 from: Some(HistoryPoint::Registration(first.registration.id)),
-                to: HistoryPoint::Workspace,
+                to: HistoryPoint::Home,
             },
         )
         .await
@@ -440,10 +440,7 @@ async fn history_pages_provenance_and_status_bounds_are_independent_of_history_l
     );
     let status = development.status(&registry).await.unwrap();
     assert_eq!(status.recent_registrations.len(), RECENT_REGISTRATIONS);
-    assert!(matches!(
-        status.configuration.workspace,
-        WorkspaceComparison::Same
-    ));
+    assert!(matches!(status.configuration.home, HomeComparison::Same));
     assert_eq!(
         status.configuration.running.registration,
         applied.registration.id
@@ -454,7 +451,7 @@ async fn history_pages_provenance_and_status_bounds_are_independent_of_history_l
 async fn large_history_results_keep_a_unit_summary_and_save_the_full_diff() {
     let root = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![
-        calls(vec![call("self_history", r#"{"to":"workspace"}"#)]),
+        calls(vec![call("self_history", r#"{"to":"home"}"#)]),
         reply("reviewed"),
     ]);
     let runtime = factory_runtime(fixture(provider.clone(), provider));

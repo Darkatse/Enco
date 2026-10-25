@@ -13,6 +13,7 @@
 | `test-fixture/` | 应用与评测共用的源码夹具，参与门禁，不内嵌到宿主 |
 | `../sdk/src/lib.rs`、`../sdk/src/protocol.rs` | 共用的类型绑定与 Chat Completions / Embeddings 转换 |
 | `../sdk/src/http.rs` | 共用的 JSON 传输、options 合并与 HTTP 错误分类 |
+| `../sdk/src/schema.rs` | 由参数类型生成工具的规范 schema；宿主经 `#[path]` 编译同一个文件 |
 
 首次依赖预取见根目录的[构建说明](../README.zh-CN.md#从源码构建)；`xtask` 命令离线运行。
 

@@ -1,14 +1,46 @@
-use super::{args::*, resolve_path};
+use super::{failure::*, resolve_path};
 use crate::limits::MESSAGE_FILE_MAX_BYTES;
 use async_trait::async_trait;
 use enco_core::*;
 use enco_kernel::{CallContext, Tool};
-use serde_json::{Map, Value, json};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncReadExt;
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MessageArguments {
+    /// The message in Markdown.
+    text: Option<String>,
+    #[schemars(description = format!(
+        "A file to send, relative to the workspace or absolute; at most {} MB.",
+        MESSAGE_FILE_MAX_BYTES / 1_000_000
+    ))]
+    file: Option<String>,
+}
+
 pub(super) struct MessageSend {
-    pub workspace: PathBuf,
+    workspace: PathBuf,
+    spec: ToolSpec,
+}
+
+impl MessageSend {
+    pub(super) fn new(workspace: PathBuf) -> Result<Self, SchemaError> {
+        Ok(Self {
+            workspace,
+            spec: ToolSpec::of::<MessageArguments>(
+                "message_send",
+                "Send the owner a message now, with Markdown text, one file, or both. \
+                 Your final reply is delivered normally; do not repeat it here. \
+                 Text accompanying tool calls may not reach the owner. \
+                 Success confirms the message was recorded for delivery; delivery failures \
+                 appear in the channels section of self_status.",
+                Effect::ReadOnly,
+            )?,
+        })
+    }
 }
 
 #[async_trait]
@@ -18,28 +50,11 @@ impl Tool for MessageSend {
     }
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "message_send".into(),
-            description: format!(
-                "Send the owner a message now, with Markdown text, one file, or both. \
-                 Relative file paths use the workspace; absolute paths are allowed. \
-                 A file may be at most {} MB. \
-                 Your final reply is delivered normally; do not repeat it here. \
-                 Text accompanying tool calls may not reach the owner. \
-                 Success confirms the message was recorded for delivery; delivery failures \
-                 appear in the channels section of self_status.",
-                MESSAGE_FILE_MAX_BYTES / 1_000_000
-            ),
-            input_schema: closed_object_schema(
-                json!({"text": {"type": "string"}, "file": {"type": "string"}}),
-                &[],
-            ),
-            effect: Effect::ReadOnly,
-        }
+        self.spec.clone()
     }
 
     async fn call(&self, _ctx: CallContext, args: Map<String, Value>) -> Outcome {
-        match self.prepare(&args).await {
+        match self.prepare(args).await {
             Ok(outgoing) => Outcome::Ok {
                 value: "Message recorded for delivery to the owner.".into(),
                 images: Vec::new(),
@@ -51,20 +66,17 @@ impl Tool for MessageSend {
 }
 
 impl MessageSend {
-    async fn prepare(&self, args: &Map<String, Value>) -> Result<Outgoing<FileData>, Failure> {
-        let text = optional_string(args, "text")?.unwrap_or_default();
-        let file = optional_string(args, "file")?;
+    async fn prepare(&self, args: Map<String, Value>) -> Result<Outgoing<FileData>, Failure> {
+        let MessageArguments { text, file } = parse_arguments(args)?;
+        let text = text.unwrap_or_default();
         if text.trim().is_empty() && file.is_none() {
             return Err(invalid("provide nonempty text or a file"));
         }
         let file = match file {
-            Some(file) => Some(read(&resolve_path(&self.workspace, file)).await?),
+            Some(file) => Some(read(&resolve_path(&self.workspace, &file)).await?),
             None => None,
         };
-        Ok(Outgoing {
-            text: text.to_owned(),
-            file,
-        })
+        Ok(Outgoing { text, file })
     }
 }
 

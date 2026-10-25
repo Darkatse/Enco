@@ -28,6 +28,16 @@ macro_rules! id {
             }
         }
 
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                schemars::json_schema!({ "type": "string" })
+            }
+        }
+
         impl FromStr for $name {
             type Err = ulid::DecodeError;
             fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -74,6 +84,16 @@ impl fmt::Display for GenerationId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RegistrationId(pub u64);
+
+impl schemars::JsonSchema for RegistrationId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "RegistrationId".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "integer", "minimum": 1 })
+    }
+}
 
 impl fmt::Display for RegistrationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -1,9 +1,7 @@
 use super::{
     Attention, AttentionKind, CallStep, FixTarget, OwnerAction, Repair, Status, Step, Steps, repair,
 };
-use crate::development::{
-    HistoryPoint, HistoryQuery, PluginUnit, RewindArguments, WorkspaceComparison,
-};
+use crate::development::{HistoryPoint, HistoryQuery, HomeComparison, PluginUnit, RewindArguments};
 use enco_core::{IntentPath, PluginActivation, PluginName, RegistrationId};
 use enco_kernel::{Activation, Cause, Running};
 
@@ -13,9 +11,9 @@ use runtime::runtime;
 pub(super) fn attention(status: &Status) -> Vec<Attention<'_>> {
     let facts = &status.development;
     let mut out = Vec::new();
-    workspace(
+    home(
         IntentPath::Configuration,
-        &facts.configuration.workspace,
+        &facts.configuration.home,
         facts.registration,
         &mut out,
     );
@@ -26,7 +24,7 @@ pub(super) fn attention(status: &Status) -> Vec<Attention<'_>> {
         });
     }
     for (name, plugin) in &facts.plugins {
-        plugin_workspace(name, plugin, facts.registration, &mut out);
+        plugin_home(name, plugin, facts.registration, &mut out);
         runtime(name, plugin, &mut out);
         follow(name, plugin, &mut out);
     }
@@ -35,18 +33,18 @@ pub(super) fn attention(status: &Status) -> Vec<Attention<'_>> {
     out
 }
 
-fn plugin_workspace<'a>(
+fn plugin_home<'a>(
     name: &PluginName,
     plugin: &'a PluginUnit,
     latest: RegistrationId,
     out: &mut Vec<Attention<'a>>,
 ) {
-    let Some(directory) = &plugin.workspace else {
+    let Some(directory) = &plugin.home else {
         return;
     };
     let path = IntentPath::Plugin(name.clone());
     match (&directory.code, &plugin.registered) {
-        (WorkspaceComparison::Removed, Some(registered)) => {
+        (HomeComparison::Removed, Some(registered)) => {
             if let Some(code) = &registered.plugin.code {
                 out.push(Attention {
                     kind: AttentionKind::Removed {
@@ -67,31 +65,29 @@ fn plugin_workspace<'a>(
                 });
             }
         }
-        (WorkspaceComparison::Changed | WorkspaceComparison::Unbuilt, None) => {
-            out.push(Attention {
-                kind: AttentionKind::New { path },
-                next: Steps::sequence(vec![CallStep::Register.into()]),
-            })
-        }
-        (comparison, _) => workspace(path, comparison, latest, out),
+        (HomeComparison::Changed | HomeComparison::Unbuilt, None) => out.push(Attention {
+            kind: AttentionKind::New { path },
+            next: Steps::sequence(vec![CallStep::Register.into()]),
+        }),
+        (comparison, _) => home(path, comparison, latest, out),
     }
 }
 
-fn workspace<'a>(
+fn home<'a>(
     path: IntentPath,
-    comparison: &'a WorkspaceComparison,
+    comparison: &'a HomeComparison,
     latest: RegistrationId,
     out: &mut Vec<Attention<'a>>,
 ) {
     let review = || -> Step {
         CallStep::Review(HistoryQuery::Compare {
             from: None,
-            to: HistoryPoint::Workspace,
+            to: HistoryPoint::Home,
         })
         .into()
     };
     let (kind, next) = match comparison {
-        WorkspaceComparison::Changed => (
+        HomeComparison::Changed => (
             AttentionKind::Unregistered {
                 path: path.clone(),
                 registration: latest,
@@ -107,21 +103,21 @@ fn workspace<'a>(
                 ]),
             },
         ),
-        WorkspaceComparison::Unbuilt => (
+        HomeComparison::Unbuilt => (
             AttentionKind::Unbuilt {
                 path,
                 registration: latest,
             },
             Steps::sequence(vec![review(), CallStep::Register.into()]),
         ),
-        WorkspaceComparison::Unreadable(error) => (
+        HomeComparison::Unreadable(error) => (
             AttentionKind::Unreadable { path, error },
             fix_then_recheck(&error.path),
         ),
-        WorkspaceComparison::Same
-        | WorkspaceComparison::TextOnly
-        | WorkspaceComparison::Removed
-        | WorkspaceComparison::Absent => return,
+        HomeComparison::Same
+        | HomeComparison::TextOnly
+        | HomeComparison::Removed
+        | HomeComparison::Absent => return,
     };
     out.push(Attention { kind, next });
 }

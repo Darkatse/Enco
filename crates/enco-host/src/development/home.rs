@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 /// Byte equality and meaning are distinct facts; reading a comparison never builds source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-pub enum WorkspaceComparison {
+pub enum HomeComparison {
     Same,
     TextOnly,
     Changed,
@@ -22,7 +22,7 @@ pub enum WorkspaceComparison {
     Unreadable(EntryError),
 }
 
-impl WorkspaceComparison {
+impl HomeComparison {
     /// Known meaning is supplied by parsing configuration or by an existing build record.
     pub(super) fn between(
         current: Option<ContentHash>,
@@ -52,8 +52,8 @@ pub enum SettingsComparison {
 }
 
 impl ConfigurationInput {
-    pub(super) fn comparison(&self, registered: Option<&ConfigGeneration>) -> WorkspaceComparison {
-        WorkspaceComparison::between(
+    pub(super) fn comparison(&self, registered: Option<&ConfigGeneration>) -> HomeComparison {
+        HomeComparison::between(
             Some(ContentHash::of(&self.bytes)),
             registered.map(|config| config.source),
             Some(registered.is_some_and(|config| config.document == self.document)),
@@ -62,34 +62,34 @@ impl ConfigurationInput {
 }
 
 #[derive(Serialize)]
-pub struct PluginWorkspace {
-    pub code: WorkspaceComparison,
+pub struct HomePlugin {
+    pub code: HomeComparison,
     pub settings: SettingsComparison,
 }
 
-pub(super) struct WorkspaceStatus {
-    pub configuration: WorkspaceComparison,
-    pub plugins: Result<BTreeMap<PluginName, PluginWorkspace>, EntryError>,
+pub(super) struct HomeStatus {
+    pub configuration: HomeComparison,
+    pub plugins: Result<BTreeMap<PluginName, HomePlugin>, EntryError>,
 }
 
 pub(super) struct SourceInput {
     pub tree: FileTree,
-    pub comparison: WorkspaceComparison,
+    pub comparison: HomeComparison,
     pub cached: Option<Build>,
     pub earlier_sdk: bool,
 }
 
 impl Development {
-    /// Compare the workspace with registered intent. Unreadable entries are facts of the
+    /// Compare the home with registered intent. Unreadable entries are facts of the
     /// comparison; any other failure stops it.
     pub(super) async fn compare(
         &self,
         baseline: &RegisteredIntent,
-    ) -> Result<WorkspaceStatus, DevelopmentError> {
+    ) -> Result<HomeStatus, DevelopmentError> {
         let config = self.configuration().await;
         let configuration = match &config {
             Ok(config) => config.comparison(baseline.configuration()),
-            Err(error) => WorkspaceComparison::Unreadable(error.clone()),
+            Err(error) => HomeComparison::Unreadable(error.clone()),
         };
         // A plugin table this host cannot read is reported as an invalid table of `config.toml`,
         // so here it only makes the settings comparison unknown.
@@ -105,7 +105,7 @@ impl Development {
         let directories = match self.directories().await {
             Ok(directories) => directories,
             Err(error) => {
-                return Ok(WorkspaceStatus {
+                return Ok(HomeStatus {
                     configuration,
                     plugins: Err(error),
                 });
@@ -123,15 +123,11 @@ impl Development {
             let code = if directories.contains(name) {
                 match self.source_input(name, registered).await {
                     Ok(source) => source.comparison,
-                    Err(DevelopmentError::Entry(error)) => WorkspaceComparison::Unreadable(error),
+                    Err(DevelopmentError::Entry(error)) => HomeComparison::Unreadable(error),
                     Err(error) => return Err(error),
                 }
             } else {
-                WorkspaceComparison::between(
-                    None,
-                    registered.and_then(RegisteredSource::source),
-                    None,
-                )
+                HomeComparison::between(None, registered.and_then(RegisteredSource::source), None)
             };
             let settings = match (&current_settings, &registered_settings) {
                 (Some(current), Some(registered)) if current.get(name) == registered.get(name) => {
@@ -140,9 +136,9 @@ impl Development {
                 (Some(_), Some(_)) => SettingsComparison::Changed,
                 _ => SettingsComparison::Unknown,
             };
-            plugins.insert(name.clone(), PluginWorkspace { code, settings });
+            plugins.insert(name.clone(), HomePlugin { code, settings });
         }
-        Ok(WorkspaceStatus {
+        Ok(HomeStatus {
             configuration,
             plugins: Ok(plugins),
         })
@@ -163,7 +159,7 @@ impl Development {
         let same_meaning = cached.as_ref().map(|build| {
             registered.is_some_and(|code| code.matches_source_artifact(build.artifact))
         });
-        let comparison = WorkspaceComparison::between(
+        let comparison = HomeComparison::between(
             Some(source),
             registered.and_then(RegisteredSource::source),
             same_meaning,

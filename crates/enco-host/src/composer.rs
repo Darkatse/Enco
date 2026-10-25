@@ -16,13 +16,15 @@ fn estimate_tokens(text: &str) -> u32 {
 
 /// Factory policy shared by ordinary operation and safe mode. No IO occurs here.
 pub struct FactoryComposer {
+    home: PathBuf,
     workspace: PathBuf,
     instructions: PathBuf,
 }
 
 impl FactoryComposer {
-    pub fn new(workspace: PathBuf, instructions: PathBuf) -> Self {
+    pub fn new(home: PathBuf, workspace: PathBuf, instructions: PathBuf) -> Self {
         Self {
+            home,
             workspace,
             instructions,
         }
@@ -66,7 +68,12 @@ impl Composer for FactoryComposer {
             &mut omitted,
         );
         let sizes = history_sizes(&items[1..], &input.transcript)?;
-        let definitions: Vec<_> = input.tools.iter().map(|(_, spec)| spec).collect();
+        let tools: Vec<_> = input
+            .tools
+            .iter()
+            .map(|(id, spec)| (id.clone(), DisclosedTool::from(spec)))
+            .collect();
+        let definitions: Vec<_> = tools.iter().map(|(_, tool)| tool).collect();
         let history_tokens: u32 = sizes.iter().map(|(_, size)| size).sum();
         let total = system_tokens
             .saturating_add(history_tokens)
@@ -98,7 +105,7 @@ impl Composer for FactoryComposer {
         }
         Ok(Composition::Plan(ContextPlan {
             items,
-            tools: input.tools.clone(),
+            tools,
             max_output_tokens: Some(budget.max_output_tokens.get()),
             omitted,
         }))
@@ -121,8 +128,8 @@ impl FactoryComposer {
         .trim()
         .to_string();
         text.push_str(&format!(
-            "\n\n## Environment\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}\n- Time zone: {} (UTC{})",
-            self.workspace.display(), self.instructions.display(), input.session.name,
+            "\n\n## Environment\n- Home: {} (config.toml and plugins/)\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}\n- Time zone: {} (UTC{})",
+            self.home.display(), self.workspace.display(), self.instructions.display(), input.session.name,
             input.timezone, input.now.with_timezone(&input.timezone).format("%:z")
         ));
         let mut sources = Vec::new();

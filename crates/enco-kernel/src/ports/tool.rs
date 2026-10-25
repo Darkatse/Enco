@@ -9,7 +9,8 @@ pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
     /// Code implementing the invocation.
     fn code(&self) -> CodeRef;
-    /// Execute after dispatch checks disclosure, argument names and whether the call may start.
+    /// Execute after dispatch checks disclosure, checks the arguments against the tool's schema
+    /// (dropping optional properties given as null) and confirms the call may start.
     /// Respond to cancellation and wait until started work is quiescent before returning.
     /// Pageable results should fit ctx.result_budget and explain how to continue.
     async fn call(

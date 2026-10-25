@@ -2,8 +2,10 @@
 use crate::protocol::{Settings, bad, bad_request, failure, host, types::Failure};
 use serde_json::{Map, Value};
 
-/// Merge service options into a request body; `reserved` names fields the plugin owns
-/// wholesale, including ones it may leave out.
+/// Merge `raw`, a JSON object of caller options, into `body`; options may only add fields, and
+/// never one named in `reserved`.
+///
+/// A conflict or invalid JSON fails as `provider.bad_request`.
 pub fn apply_options(body: &mut Value, raw: &str, reserved: &[&str]) -> Result<(), Failure> {
     let options: Map<String, Value> =
         serde_json::from_str(raw).map_err(|e| bad_request(format!("invalid options: {e}")))?;
@@ -51,7 +53,11 @@ fn join_path(segment: &str, below: String) -> String {
     }
 }
 
-/// Send one JSON request through the host and classify transport or service failures.
+/// POST `body` as JSON to `path` under `settings.base_url` and return the JSON reply.
+///
+/// `None` for `timeout_ms` means the host's default. Retryable: a failed `http` call, 408, 429 and
+/// 5xx. Not retryable: 401 and 403 (`provider.auth`), any other status outside 2xx
+/// (`provider.bad_request`), and a reply that is not JSON (`provider.bad_response`).
 pub async fn post(
     settings: &Settings,
     path: &str,

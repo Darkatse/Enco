@@ -53,7 +53,7 @@ impl Applied {
             registration_facts,
         );
         if !self.text_only.is_empty() {
-            out.push_str(&format!("\nText-only changes in {} stay in the workspace until those paths next change code or configuration.\n", self.text_only.iter().map(path).collect::<Vec<_>>().join(", ")));
+            out.push_str(&format!("\nText-only changes in {} stay in the home until those paths next change code or configuration.\n", self.text_only.iter().map(path).collect::<Vec<_>>().join(", ")));
         }
         if !self.builds.is_empty() {
             out.push_str("\nBuilds:\n");
@@ -139,7 +139,7 @@ impl Rewound {
         let steps = Steps::sequence(vec![
             CallStep::Review(HistoryQuery::Compare {
                 from: None,
-                to: HistoryPoint::Workspace,
+                to: HistoryPoint::Home,
             })
             .into(),
             CallStep::Register.into(),

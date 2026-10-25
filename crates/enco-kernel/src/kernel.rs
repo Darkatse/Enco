@@ -124,7 +124,10 @@ impl Kernel {
     /// Bind capabilities and start one actor for each existing Session.
     pub async fn start(mut deps: KernelDeps) -> Result<Self, KernelError> {
         let (schedules, scheduler) = crate::scheduler::Scheduler::channel();
-        deps.tools.extend(crate::builtin::tools(schedules.clone()));
+        deps.tools.extend(
+            crate::builtin::tools(schedules.clone())
+                .map_err(|error| KernelError::Config(format!("tool declaration: {error}")))?,
+        );
         let declared: std::collections::BTreeSet<_> =
             deps.registry.host_tool_names().iter().cloned().collect();
         let actual: std::collections::BTreeSet<_> =

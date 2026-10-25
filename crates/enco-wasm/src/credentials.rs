@@ -1,4 +1,7 @@
-//! A generation declares credential placement; only its invocation transport reads secret values.
+//! Credentials for plugin HTTP requests.
+//!
+//! A plugin declares the origin and header for each credential; the value is read from the
+//! environment for each call and never handed to the guest or the kernel.
 use crate::bindings::{enco::plugin::host, lifecycle};
 use enco_core::{Failure, PluginSettings, ProviderSettings, code};
 use enco_kernel::LoadError;

@@ -1,3 +1,7 @@
+//! One Wasmtime engine for all plugins.
+//!
+//! A dedicated thread, the epoch clock, ticks at a short fixed interval. Guest code yields at every
+//! tick, so a timeout or cancellation can stop even a guest stuck in a loop.
 use crate::{WasmError, limits};
 use std::{
     sync::mpsc::{self, RecvTimeoutError, Sender},
