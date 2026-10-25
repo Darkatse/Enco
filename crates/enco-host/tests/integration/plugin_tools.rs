@@ -40,6 +40,11 @@ impl Runtime for ConfiguredRuntime {
             .unwrap_or("factory")
             .to_owned();
         let mut loaded = fixture(self.provider.clone(), self.provider.clone());
+        // Settings may map `service`, so the component declares it at a fixed origin.
+        loaded.credentials = vec![Credential {
+            origin: Some("https://service.test".into()),
+            ..credential(false)
+        }];
         loaded.tools = Some(LoadedTools {
             specs: vec![spec(
                 settings.config["tool"].as_str().unwrap_or(match bytes {

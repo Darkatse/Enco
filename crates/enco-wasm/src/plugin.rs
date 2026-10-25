@@ -8,9 +8,9 @@ use crate::{
         lifecycle,
     },
     convert,
-    credentials::{self, CallCredential, Placement},
+    credentials::{self, Placement},
     engine::WasmEngine,
-    host_imports::HostState,
+    host_imports::{HostState, Network},
     limits,
 };
 use async_trait::async_trait;
@@ -39,12 +39,12 @@ impl WasmPlugin {
     /// Every logical call owns a fresh Store and shares the same limits and failure boundary.
     pub(super) async fn invoke<T>(
         &self,
-        credentials: Vec<CallCredential>,
+        network: Network,
         cancel: tokio_util::sync::CancellationToken,
         call: impl AsyncFnOnce(Store<HostState>) -> wasmtime::Result<Result<T, types::Failure>>,
     ) -> Result<T, Failure> {
         let state = HostState {
-            credentials: Arc::new(credentials),
+            network,
             config: self.settings.config.to_string(),
             wasi: WasiCtx::builder().inherit_stderr().build(),
             table: ResourceTable::new(),
@@ -82,13 +82,17 @@ impl WasmPlugin {
         config: &serde_json::Value,
     ) -> Result<lifecycle::Description, Failure> {
         let config = config.to_string();
-        self.invoke(Vec::new(), Default::default(), async |mut store| {
-            let plugin = self.lifecycle.instantiate_async(&mut store).await?;
-            plugin
-                .enco_plugin_lifecycle()
-                .call_describe(&mut store, &config)
-                .await
-        })
+        self.invoke(
+            Network::open(Vec::new()),
+            Default::default(),
+            async |mut store| {
+                let plugin = self.lifecycle.instantiate_async(&mut store).await?;
+                plugin
+                    .enco_plugin_lifecycle()
+                    .call_describe(&mut store, &config)
+                    .await
+            },
+        )
         .await
     }
 }
@@ -112,7 +116,7 @@ fn trap(message: impl Into<String>) -> Failure {
 #[async_trait]
 impl Lifecycle for WasmPlugin {
     async fn probe(&self) -> Result<(), Failure> {
-        self.invoke(Vec::new(), Default::default(), async |mut store| {
+        self.invoke(Network::Closed, Default::default(), async |mut store| {
             let plugin = self.lifecycle.instantiate_async(&mut store).await?;
             store
                 .run_concurrent(async move |accessor| {
@@ -139,17 +143,21 @@ impl Provider for WasmPlugin {
         let settings = settings(params);
         let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
         let result = self
-            .invoke(credentials, Default::default(), async move |mut store| {
-                let plugin = pre.instantiate_async(&mut store).await?;
-                store
-                    .run_concurrent(async move |accessor| {
-                        plugin
-                            .enco_plugin_completion()
-                            .call_complete(accessor, settings, request)
-                            .await
-                    })
-                    .await?
-            })
+            .invoke(
+                Network::open(credentials),
+                Default::default(),
+                async move |mut store| {
+                    let plugin = pre.instantiate_async(&mut store).await?;
+                    store
+                        .run_concurrent(async move |accessor| {
+                            plugin
+                                .enco_plugin_completion()
+                                .call_complete(accessor, settings, request)
+                                .await
+                        })
+                        .await?
+                },
+            )
             .await?;
         convert::completion(result)
     }
@@ -170,17 +178,21 @@ impl Embedding for WasmPlugin {
         let settings = settings(params);
         let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
         let vectors = self
-            .invoke(credentials, Default::default(), async move |mut store| {
-                let plugin = pre.instantiate_async(&mut store).await?;
-                store
-                    .run_concurrent(async move |accessor| {
-                        plugin
-                            .enco_plugin_embedding()
-                            .call_embed(accessor, settings, inputs)
-                            .await
-                    })
-                    .await?
-            })
+            .invoke(
+                Network::open(credentials),
+                Default::default(),
+                async move |mut store| {
+                    let plugin = pre.instantiate_async(&mut store).await?;
+                    store
+                        .run_concurrent(async move |accessor| {
+                            plugin
+                                .enco_plugin_embedding()
+                                .call_embed(accessor, settings, inputs)
+                                .await
+                        })
+                        .await?
+                },
+            )
             .await?;
         convert::embeddings(vectors, count)
     }
@@ -202,17 +214,21 @@ impl Decision for WasmPlugin {
         let settings = settings(params);
         let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
         let answers = self
-            .invoke(credentials, Default::default(), async move |mut store| {
-                let plugin = pre.instantiate_async(&mut store).await?;
-                store
-                    .run_concurrent(async move |accessor| {
-                        plugin
-                            .enco_plugin_decision()
-                            .call_decide(accessor, settings, state, wire_questions)
-                            .await
-                    })
-                    .await?
-            })
+            .invoke(
+                Network::open(credentials),
+                Default::default(),
+                async move |mut store| {
+                    let plugin = pre.instantiate_async(&mut store).await?;
+                    store
+                        .run_concurrent(async move |accessor| {
+                            plugin
+                                .enco_plugin_decision()
+                                .call_decide(accessor, settings, state, wire_questions)
+                                .await
+                        })
+                        .await?
+                },
+            )
             .await?;
         convert::answers(answers, &questions)
     }

@@ -389,25 +389,44 @@ async fn propose(model: &MockServer, message: Value) {
         .await;
 }
 
+/// Code alone loads without the owner's secret mapping, so a build can describe a plugin whose
+/// credential is required; registration, which accepts code and settings together, rejects it
+/// while the mapping is missing.
 #[tokio::test]
-async fn required_secret_mapping_is_validated_when_loading_content() {
-    let error = WasmRuntime::new()
+async fn an_unmapped_required_credential_is_rejected_by_registration_not_by_loading() {
+    let services = Services::new().await;
+    let mut document = services.document(&["exa"]);
+    document["plugin"]["web"]["secrets"] = json!({});
+    let settings = PluginSettings {
+        config: document["plugin"]["web"]["config"].clone(),
+        secrets: Default::default(),
+    };
+    WasmRuntime::new()
         .unwrap()
-        .load(
-            include_bytes!(env!("ENCO_FACTORY_WEB")),
-            &PluginSettings {
-                config: json!({"search":["exa"]}),
-                secrets: Default::default(),
-            },
-        )
+        .load(include_bytes!(env!("ENCO_FACTORY_WEB")), &settings)
         .await
-        .err()
         .unwrap();
+    let mut daemon = Daemon::start_config(&toml::to_string(&services.document(&[])).unwrap()).await;
+    std::fs::write(
+        daemon.root.path().join("config.toml"),
+        toml::to_string(&document).unwrap(),
+    )
+    .unwrap();
+    let rejected = daemon
+        .connect()
+        .await
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
+        .await;
     assert!(
-        error
+        rejected
+            .unwrap_err()
             .to_string()
             .contains("required credential exa has no secret mapping")
     );
+    daemon.stop().await;
 }
 
 #[tokio::test]

@@ -2,7 +2,7 @@
 //!
 //! A request to a credential's origin carries that credential. Before a response or failure
 //! returns to the guest, each credential value in it is replaced with a placeholder; encoded forms,
-//! such as Base64, are not.
+//! such as Base64, are not. A probe has no network access at all.
 use crate::{bindings::enco::plugin::host, credentials::CallCredential, limits};
 use std::{sync::Arc, time::Duration};
 use wasmtime::component::{Accessor, HasSelf, ResourceTable};
@@ -14,8 +14,23 @@ pub(crate) struct HostState {
     pub http: reqwest::Client,
     pub name: String,
     pub limits: wasmtime::StoreLimits,
-    pub credentials: Arc<Vec<CallCredential>>,
+    pub network: Network,
     pub config: String,
+}
+
+/// What a call's HTTP requests may reach.
+#[derive(Clone)]
+pub(crate) enum Network {
+    /// Requests go out, each carrying the credential bound to its origin.
+    Open(Arc<Vec<CallCredential>>),
+    /// A probe, which the contract runs without network access.
+    Closed,
+}
+
+impl Network {
+    pub(crate) fn open(credentials: Vec<CallCredential>) -> Self {
+        Self::Open(Arc::new(credentials))
+    }
 }
 
 impl WasiView for HostState {
@@ -58,11 +73,18 @@ impl<U> host::HostWithStore<U> for HasSelf<HostState> {
         accessor: &Accessor<U, Self>,
         request: host::HttpRequest,
     ) -> Result<host::HttpResponse, host::HttpFailure> {
-        let (client, credentials) = accessor.with(|mut access| {
+        let (client, network) = accessor.with(|mut access| {
             let state = access.get();
-            (state.http.clone(), state.credentials.clone())
+            (state.http.clone(), state.network.clone())
         });
-        http(&client, &credentials, request).await
+        match network {
+            Network::Open(credentials) => http(&client, &credentials, request).await,
+            Network::Closed => Err(failure(
+                host::HttpErrorKind::InvalidRequest,
+                "a probe runs without network access; check only what the component can verify by itself",
+                false,
+            )),
+        }
     }
 }
 

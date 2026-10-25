@@ -14,7 +14,6 @@ use reqwest::{
 pub(crate) struct Placement {
     name: String,
     origin: Option<Url>,
-    required: bool,
     header: HeaderName,
     prefix: String,
 }
@@ -44,7 +43,6 @@ impl Placement {
                     })
                 })
                 .transpose()?,
-            required: credential.required,
             header,
             prefix: credential.prefix.clone(),
         })
@@ -52,10 +50,10 @@ impl Placement {
 }
 
 /// Accept declarations once, including the one-credential-per-origin rule.
-pub(crate) fn placements(
-    declared: &[lifecycle::Credential],
-    settings: &PluginSettings,
-) -> Result<Vec<Placement>, LoadError> {
+///
+/// Whether the owner's secret mapping fits these declarations is the registry's check, made when
+/// it accepts code and settings together.
+pub(crate) fn placements(declared: &[lifecycle::Credential]) -> Result<Vec<Placement>, LoadError> {
     let mut names = std::collections::HashSet::new();
     let mut origins = std::collections::HashMap::new();
     let mut placements = Vec::new();
@@ -87,27 +85,6 @@ pub(crate) fn placements(
             )));
         }
         placements.push(placement);
-    }
-    for name in settings.secrets.keys() {
-        if !placements
-            .iter()
-            .any(|placement| placement.name == *name && placement.origin.is_some())
-        {
-            return Err(LoadError::Settings(format!(
-                "secret {name} has no declared plugin-owned origin"
-            )));
-        }
-    }
-    for placement in &placements {
-        if placement.origin.is_some()
-            && placement.required
-            && !settings.secrets.contains_key(&placement.name)
-        {
-            return Err(LoadError::Settings(format!(
-                "required credential {} has no secret mapping",
-                placement.name
-            )));
-        }
     }
     Ok(placements)
 }

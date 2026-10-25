@@ -141,7 +141,7 @@ impl Runtime for WasmRuntime {
             .map_err(describe_error)?;
         let config_schema = serde_json::from_str(&description.config_schema)
             .map_err(|e| LoadError::Component(format!("configuration schema is not JSON: {e}")))?;
-        plugin.placements = credentials::placements(&description.credentials, settings)?;
+        plugin.placements = credentials::placements(&description.credentials)?;
         let unavailable = credentials::resolve(&plugin.placements, settings, None).err();
         let plugin = Arc::new(plugin);
         let tools = match tools {

@@ -5,7 +5,10 @@
 //! that is not read-only ends without a valid outcome from the plugin, for example on a timeout or
 //! a trap, the outcome is `unknown`: the effect may have happened.
 use crate::{
-    bindings::ToolPluginPre, convert, credentials, host_imports::HostState, plugin::WasmPlugin,
+    bindings::ToolPluginPre,
+    convert, credentials,
+    host_imports::{HostState, Network},
+    plugin::WasmPlugin,
 };
 use async_trait::async_trait;
 use enco_core::*;
@@ -22,13 +25,17 @@ pub(super) async fn load(
     pre: ToolPluginPre<HostState>,
 ) -> Result<LoadedTools, Failure> {
     let declared = plugin
-        .invoke(Vec::new(), Default::default(), async |mut store| {
-            let instance = pre.instantiate_async(&mut store).await?;
-            Ok(Ok(instance
-                .enco_plugin_tools()
-                .call_list(&mut store, &plugin.settings.config.to_string())
-                .await?))
-        })
+        .invoke(
+            Network::open(Vec::new()),
+            Default::default(),
+            async |mut store| {
+                let instance = pre.instantiate_async(&mut store).await?;
+                Ok(Ok(instance
+                    .enco_plugin_tools()
+                    .call_list(&mut store, &plugin.settings.config.to_string())
+                    .await?))
+            },
+        )
         .await?;
     let mut names = std::collections::HashSet::new();
     let specs = declared
@@ -84,7 +91,7 @@ impl Tools for WasmTools {
         let input = serde_json::Value::Object(args).to_string();
         let result = self
             .plugin
-            .invoke(credentials, ctx.cancel, async |mut store| {
+            .invoke(Network::open(credentials), ctx.cancel, async |mut store| {
                 let instance = self.pre.instantiate_async(&mut store).await?;
                 store
                     .run_concurrent(async move |accessor| {

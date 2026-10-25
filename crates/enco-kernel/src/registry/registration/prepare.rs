@@ -360,15 +360,46 @@ async fn load(
     name: &PluginName,
     candidate: Proposed,
 ) -> Result<Loaded, Cause> {
+    let rejected = |error| Cause::Load {
+        plugin: name.clone(),
+        candidate,
+        error,
+    };
     let loaded = runtime
         .load(&content.bytes, &content.settings)
         .await
-        .map_err(|error| Cause::Load {
-            plugin: name.clone(),
-            candidate,
-            error,
-        })?;
+        .map_err(rejected)?;
+    secrets_fit(&loaded.credentials, &content.settings).map_err(rejected)?;
     probe(loaded, name, candidate).await
+}
+
+/// Whether the owner's secret mapping fits the credentials the code declares.
+///
+/// Every mapped name must be a credential bound to a fixed origin, and every required credential
+/// with a fixed origin must be mapped. The rule joins code and settings, so it is checked here,
+/// where both are accepted together; a build loads code alone, with no settings to check.
+fn secrets_fit(declared: &[Credential], settings: &PluginSettings) -> Result<(), LoadError> {
+    let fixed = |name: &String| {
+        declared
+            .iter()
+            .any(|credential| credential.name == *name && credential.origin.is_some())
+    };
+    if let Some(name) = settings.secrets.keys().find(|name| !fixed(name)) {
+        return Err(LoadError::Settings(format!(
+            "secret {name} has no declared plugin-owned origin"
+        )));
+    }
+    if let Some(credential) = declared.iter().find(|credential| {
+        credential.origin.is_some()
+            && credential.required
+            && !settings.secrets.contains_key(&credential.name)
+    }) {
+        return Err(LoadError::Settings(format!(
+            "required credential {} has no secret mapping",
+            credential.name
+        )));
+    }
+    Ok(())
 }
 
 async fn probe(loaded: Loaded, name: &PluginName, candidate: Proposed) -> Result<Loaded, Cause> {
