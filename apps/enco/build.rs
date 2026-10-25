@@ -49,16 +49,20 @@ fn embed_factory(root: &Path) -> Result<(), Box<dyn Error>> {
 
 fn embed_sdk(root: &Path) -> Result<(), Box<dyn Error>> {
     let sdk = root.join("sdk");
-    let mut files = vec![sdk.join("Cargo.toml"), sdk.join("Cargo.lock")];
-    collect_files(&sdk.join("src"), &mut files)?;
-    collect_files(&sdk.join("wit"), &mut files)?;
+    let mut sources = vec![sdk.join("Cargo.toml"), sdk.join("Cargo.lock")];
+    collect_files(&sdk.join("src"), &mut sources)?;
+    collect_files(&sdk.join("wit"), &mut sources)?;
+    let mut files = sources
+        .into_iter()
+        .map(|path| Ok((path.strip_prefix(&sdk)?.to_owned(), path)))
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+    // Home builds use the toolchain that builds the host; the SDK hash covers it.
+    let toolchain = root.join("rust-toolchain.toml");
+    files.push(("rust-toolchain.toml".into(), toolchain.clone()));
     files.sort();
     let mut source = String::from("pub(crate) const SDK_FILES: &[(&str, &[u8])] = &[\n");
-    for path in files {
-        let relative = path
-            .strip_prefix(&sdk)?
-            .to_str()
-            .ok_or("SDK path is not UTF-8")?;
+    for (relative, path) in files {
+        let relative = relative.to_str().ok_or("SDK path is not UTF-8")?;
         source.push_str(&format!(
             "({relative:?}, include_bytes!({:?})),\n",
             path.to_str().ok_or("SDK path is not UTF-8")?
@@ -68,6 +72,7 @@ fn embed_sdk(root: &Path) -> Result<(), Box<dyn Error>> {
     for input in ["Cargo.toml", "Cargo.lock", "src", "wit"] {
         println!("cargo:rerun-if-changed={}", sdk.join(input).display());
     }
+    println!("cargo:rerun-if-changed={}", toolchain.display());
     fs::write(
         PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR is missing")?).join("sdk.rs"),
         source,

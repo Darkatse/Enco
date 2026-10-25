@@ -45,6 +45,95 @@ async fn first_start_rejects_a_failed_source_build() {
     assert!(state.registrations.is_empty() && state.active_config.is_none());
 }
 
+#[tokio::test]
+async fn first_start_checks_the_pinned_toolchain_before_cargo() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path();
+    let server = MockServer::start().await;
+    std::fs::write(
+        home.join("config.toml"),
+        Daemon::config(&server, "openai-compatible"),
+    )
+    .unwrap();
+    support::initialize(home).await;
+    support::copy_directory(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/test-fixture"),
+        &home.join("plugins/fixture"),
+    );
+    let toolchain: toml::Table = toml::from_str(
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rust-toolchain.toml"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let channel = toolchain["toolchain"]["channel"].as_str().unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    let cargo_ran = tools.path().join("cargo-ran");
+    script(
+        &tools.path().join("cargo"),
+        &format!("touch '{}'\nexit 1", cargo_ran.display()),
+    );
+    // A sysroot without the plugin target.
+    let sysroot = tempfile::tempdir().unwrap();
+    fake_rustc(tools.path(), "1.0.0", sysroot.path());
+    let error = serve_with_tools(home, tools.path()).await;
+    assert!(
+        error.contains(&format!(
+            "builds with Rust {channel}, but `rustc` is release 1.0.0"
+        )),
+        "{error}"
+    );
+    fake_rustc(tools.path(), channel, sysroot.path());
+    let error = serve_with_tools(home, tools.path()).await;
+    assert!(
+        error.contains("lacks the `wasm32-wasip2` target")
+            && error.contains(&format!(
+                "`rustup toolchain install {channel} --profile minimal --component clippy --target wasm32-wasip2`"
+            )),
+        "{error}"
+    );
+    assert!(!cargo_ran.exists());
+}
+
+/// Start the daemon with `tools` first on `PATH` and its `rustc` as `RUSTC`, expecting it to fail.
+async fn serve_with_tools(home: &Path, tools: &Path) -> String {
+    let path = std::env::join_paths(
+        std::iter::once(tools.to_owned())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+        .arg("serve")
+        .env("ENCO_HOME", home)
+        .env("PATH", path)
+        .env("RUSTC", tools.join("rustc"))
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(Duration::from_secs(60), output)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!output.status.success());
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn fake_rustc(tools: &Path, release: &str, sysroot: &Path) {
+    script(
+        &tools.join("rustc"),
+        &format!(
+            "case \"$1\" in\n-vV) printf 'rustc {release}\\nrelease: {release}\\n' ;;\n--print) printf '%s\\n' '{}' ;;\nesac",
+            sysroot.display()
+        ),
+    );
+}
+
+fn script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 pub(super) async fn register_with_agent(daemon: &Daemon) -> Value {
     let entries = tool_results(daemon, REGISTER).await;
     let call = entries

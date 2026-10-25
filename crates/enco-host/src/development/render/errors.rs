@@ -1,7 +1,8 @@
 //! A failure document says what the operation left behind, what failed, and what to do next.
 use super::{causes::causes, code, history, location, next, path};
 use crate::development::{
-    BuildFailure, DevelopmentError, Failed, Operation, RewindConflict, tree::WriteConflict,
+    BuildFailure, DevelopmentError, Failed, Operation, RewindConflict, ToolchainProblem,
+    build::TARGET, tree::WriteConflict,
 };
 use enco_core::IntentPath;
 use enco_kernel::RegistryError;
@@ -138,6 +139,30 @@ fn build(target: &IntentPath, failure: &BuildFailure) -> String {
             format!("{} cannot load with empty settings: {error}.", path(target))
         }
         BuildFailure::SourceChanged => format!("{} changed while it was built.", path(target)),
+        BuildFailure::Toolchain { channel, problem } => {
+            let install = code(&format!(
+                "rustup toolchain install {channel} --profile minimal --component clippy --target {TARGET}"
+            ));
+            match problem {
+                ToolchainProblem::Missing => format!(
+                    "{} builds with Rust {channel}, which is not installed. Install it with {install}.",
+                    path(target)
+                ),
+                ToolchainProblem::Target => format!(
+                    "{} builds with Rust {channel}, which lacks the {} target. Install it with {install}.",
+                    path(target),
+                    code(TARGET)
+                ),
+                ToolchainProblem::Release { found } => format!(
+                    "{} builds with Rust {channel}, but {} is release {found}, so it does not go through rustup. Point {} or {} at rustup's {}.",
+                    path(target),
+                    code("rustc"),
+                    code("RUSTC"),
+                    code("PATH"),
+                    code("rustc")
+                ),
+            }
+        }
     }
 }
 

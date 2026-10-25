@@ -1,11 +1,12 @@
 //! Building one plugin source into a component.
 //!
-//! For the same source and SDK, an earlier build is reused while its component is still stored. A
-//! fresh build fails on any clippy warning, on a component that does not load with an empty
+//! For the same source and SDK, an earlier build is reused while its component is still stored, and
+//! no command runs. A fresh build runs under the SDK's toolchain and fails when that toolchain
+//! cannot build, on any clippy warning, on a component that does not load with an empty
 //! configuration, or on a change to any file other than `Cargo.lock` and the README's generated
 //! section.
 use super::{
-    BuildFailure, Development, DevelopmentError, EntryError, EntryProblem,
+    BuildFailure, Development, DevelopmentError, EntryError, EntryProblem, ToolchainProblem,
     cache::Build,
     error::{entry, io},
     process, readme,
@@ -16,9 +17,12 @@ use enco_core::{ContentHash, IntentPath, PluginName, PluginSettings, Utc};
 use enco_kernel::{ArtifactSource, Store};
 use serde::Serialize;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+
+/// The target every plugin component is compiled for.
+pub(super) const TARGET: &str = "wasm32-wasip2";
 
 /// What happened to one plugin source during an apply.
 #[derive(Serialize)]
@@ -104,6 +108,7 @@ impl Development {
             name: name.clone(),
             failure,
         };
+        let toolchain = self.check_toolchain(name, cancel).await?;
         let (bytes, compiled) = self.compile(name, cancel).await?;
         let loaded = self
             .runtime
@@ -121,7 +126,6 @@ impl Development {
         {
             return Err(failed(BuildFailure::SourceChanged));
         }
-        let toolchain = toolchain(&directory, cancel).await?;
         self.store
             .remember_build(Build {
                 source: after.hash(),
@@ -169,7 +173,7 @@ impl Development {
             if stage == "clippy" {
                 command.args(["--", "-D", "warnings"]);
             }
-            let output = process::run(command, cancel).await?;
+            let output = process::run(command, self.sdk.toolchain(), cancel).await?;
             log.extend_from_slice(&output.stdout);
             log.extend_from_slice(&output.stderr);
             parse_messages(
@@ -207,25 +211,72 @@ impl Development {
             },
         ))
     }
-}
 
-async fn toolchain(
-    directory: &std::path::Path,
-    cancel: &CancellationToken,
-) -> Result<String, DevelopmentError> {
-    let mut command = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()));
-    command.current_dir(directory).arg("-vV");
-    let output = process::run(command, cancel).await?;
-    if !output.status.success() {
-        return Err(DevelopmentError::Host(format!(
-            "rustc -vV: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
+    /// Check that the SDK's toolchain and the plugin target are installed before Cargo runs, and
+    /// return the `rustc -vV` text the build record keeps.
+    async fn check_toolchain(
+        &self,
+        name: &PluginName,
+        cancel: &CancellationToken,
+    ) -> Result<String, DevelopmentError> {
+        let channel = self.sdk.toolchain();
+        let failed = |problem| DevelopmentError::Build {
+            name: name.clone(),
+            failure: BuildFailure::Toolchain {
+                channel: channel.to_owned(),
+                problem,
+            },
+        };
+        let Some(version) = self.rustc(&["-vV"], cancel).await? else {
+            return Err(failed(ToolchainProblem::Missing));
+        };
+        let release = version
+            .lines()
+            .find_map(|line| line.strip_prefix("release: "))
+            .ok_or_else(|| {
+                DevelopmentError::Host(format!("rustc -vV names no release: {version}"))
+            })?;
+        if release != channel {
+            return Err(failed(ToolchainProblem::Release {
+                found: release.to_owned(),
+            }));
+        }
+        let Some(sysroot) = self.rustc(&["--print", "sysroot"], cancel).await? else {
+            return Err(failed(ToolchainProblem::Missing));
+        };
+        let target = Path::new(sysroot.trim_end())
+            .join("lib/rustlib")
+            .join(TARGET);
+        match tokio::fs::try_exists(&target).await {
+            Ok(true) => Ok(version),
+            Ok(false) => Err(failed(ToolchainProblem::Target)),
+            Err(error) => Err(DevelopmentError::Host(format!(
+                "{}: {error}",
+                target.display()
+            ))),
+        }
     }
-    String::from_utf8(output.stdout).map_err(|error| DevelopmentError::Host(error.to_string()))
+
+    /// What `rustc` prints, or `None` when it fails. Cargo honors `RUSTC` the same way.
+    async fn rustc(
+        &self,
+        args: &[&str],
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, DevelopmentError> {
+        let mut command = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()));
+        // Any directory gives the same answer: `RUSTUP_TOOLCHAIN` outranks toolchain files.
+        command.current_dir(&self.home).args(args);
+        let output = process::run(command, self.sdk.toolchain(), cancel).await?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        String::from_utf8(output.stdout)
+            .map(Some)
+            .map_err(|error| DevelopmentError::Host(error.to_string()))
+    }
 }
 
-fn authored_readme(path: &std::path::Path, tree: &FileTree) -> Result<String, EntryError> {
+fn authored_readme(path: &Path, tree: &FileTree) -> Result<String, EntryError> {
     let bytes = tree.files.get(readme::FILE).map_or(&[][..], Vec::as_slice);
     let text = std::str::from_utf8(bytes).map_err(|_| entry(path, EntryProblem::NotText))?;
     readme::authored(path, text)
@@ -233,7 +284,7 @@ fn authored_readme(path: &std::path::Path, tree: &FileTree) -> Result<String, En
 
 fn parse_messages(
     bytes: &[u8],
-    manifest: &std::path::Path,
+    manifest: &Path,
     diagnostics: &mut Vec<(bool, String)>,
     artifact: &mut Option<PathBuf>,
 ) {
@@ -274,7 +325,7 @@ fn parse_messages(
             Some("compiler-artifact")
                 if message["manifest_path"]
                     .as_str()
-                    .is_some_and(|path| std::path::Path::new(path) == manifest) =>
+                    .is_some_and(|path| Path::new(path) == manifest) =>
             {
                 if let Some(paths) = message["filenames"].as_array() {
                     *artifact = paths

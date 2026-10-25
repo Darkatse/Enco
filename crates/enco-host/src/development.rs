@@ -15,7 +15,9 @@ pub use call::{
 };
 mod cache;
 mod error;
-pub use error::{BuildFailure, DevelopmentError, EntryError, EntryProblem, Failed, Operation};
+pub use error::{
+    BuildFailure, DevelopmentError, EntryError, EntryProblem, Failed, Operation, ToolchainProblem,
+};
 mod history;
 mod home;
 mod intent;

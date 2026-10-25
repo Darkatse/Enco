@@ -1,5 +1,6 @@
 //! A build owns its process group and waits for it to stop before another operation may change
-//! the plugin's files.
+//! the plugin's files. Every build process runs under the SDK's toolchain, which rustup must not
+//! install on the way: an install is a download the owner decides on.
 use super::DevelopmentError;
 use std::{
     os::unix::process::CommandExt,
@@ -16,6 +17,7 @@ pub(super) struct Output {
 
 pub(super) async fn run(
     mut command: Command,
+    toolchain: &str,
     cancel: &CancellationToken,
 ) -> Result<Output, DevelopmentError> {
     if cancel.is_cancelled() {
@@ -23,6 +25,8 @@ pub(super) async fn run(
     }
     command.as_std_mut().process_group(0);
     let mut child = command
+        .env("RUSTUP_TOOLCHAIN", toolchain)
+        .env("RUSTUP_AUTO_INSTALL", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -1,6 +1,15 @@
 use super::*;
 use enco_host::development;
 
+/// An SDK with no sources; builds here are retained, never compiled.
+fn sdk() -> development::Sdk {
+    development::Sdk::new(&[(
+        "rust-toolchain.toml",
+        b"[toolchain]\nchannel = \"1.99.0\"\n",
+    )])
+    .unwrap()
+}
+
 /// Host-facing tests use the real content store while replacing only the plugin runtime.
 pub async fn open_home(
     root: &Path,
@@ -13,12 +22,8 @@ pub async fn open_home(
     } else {
         development::Development::initialize(root).await.unwrap();
     }
-    let development = development::Development::new(
-        root.into(),
-        development::Sdk::new(&[]).unwrap(),
-        store,
-        deps.runtime.clone(),
-    );
+    let development =
+        development::Development::new(root.into(), sdk(), store, deps.runtime.clone());
     deps.host_tool_names.extend(
         development_tool_specs()
             .unwrap()
@@ -91,7 +96,7 @@ pub async fn retain_build(root: &Path, store: &SqliteStore, directory: &Path, by
             "INSERT INTO builds(source,sdk,artifact,toolchain,created_at) VALUES (?,?,?,?,?) ON CONFLICT(source,sdk) DO UPDATE SET artifact=excluded.artifact,toolchain=excluded.toolchain,created_at=excluded.created_at",
             rusqlite::params![
                 source.to_string(),
-                development::Sdk::new(&[]).unwrap().hash().to_string(),
+                sdk().hash().to_string(),
                 artifact.to_string(),
                 "scripted compiler",
                 Utc::now().to_rfc3339()

@@ -79,6 +79,30 @@ pub enum BuildFailure {
     EmptySettings(LoadError),
     #[error("source changed during the build")]
     SourceChanged,
+    /// Checked before Cargo runs; installing a toolchain downloads it, so the owner repairs this.
+    #[error("Rust {channel}: {problem}")]
+    Toolchain {
+        /// The toolchain the SDK pins, as rustup names it.
+        channel: String,
+        problem: ToolchainProblem,
+    },
+}
+
+/// Why the SDK's toolchain cannot build plugins on this machine.
+#[derive(Debug, thiserror::Error)]
+pub enum ToolchainProblem {
+    /// `rustc` fails under the pinned toolchain.
+    #[error("not installed")]
+    Missing,
+    /// The toolchain has no standard library for `wasm32-wasip2`.
+    #[error("the plugin target is not installed")]
+    Target,
+    /// The `rustc` Cargo would use does not go through rustup, so it ignores the pinned toolchain.
+    #[error("rustc is release {found}")]
+    Release {
+        /// The release that `rustc -vV` reports.
+        found: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]

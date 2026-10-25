@@ -86,6 +86,12 @@ impl DevelopmentError {
                 failure: BuildFailure::SourceChanged,
                 ..
             } => Repair::retry(),
+            Self::Build {
+                name,
+                failure: BuildFailure::Toolchain { .. },
+            } => Repair::only(vec![Step::AskOwner(OwnerAction::Environment {
+                name: name.clone(),
+            })]),
             Self::Build { name, .. } => {
                 Repair::then_retry(vec![Step::Fix(FixTarget::Source { name: name.clone() })])
             }
