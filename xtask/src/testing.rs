@@ -46,6 +46,7 @@ pub fn run(metadata: &[Metadata]) -> Result<()> {
     let (outputs, checked) = std::thread::scope(|scope| {
         let checks = scope.spawn(|| {
             super::clippy()?;
+            super::manual::api(metadata, true)?;
             doctests(documentation)
         });
         let outputs = execute(commands);

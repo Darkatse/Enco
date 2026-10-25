@@ -30,7 +30,7 @@
 
 ## 术：工程实践
 
-- **Crate 边界**：依赖方向为 `enco-core` ← `enco-kernel` ← `enco-host` / `enco-wasm` ← `apps/enco`。内核不依赖 wasmtime、网络或具体平台。（工程专题）
+- **Crate 边界**：依赖方向为 `enco-core` ← `enco-kernel` ← `enco-host` / `enco-wasm` ← `apps/enco`。内核不依赖 wasmtime、网络或具体平台。`enco-manual` 不依赖其他 Enco crate，只把 rustdoc 的 JSON 渲染成手册。（工程专题）
 - **Rust 哲学**：编写惯用的 Rust。库 crate 用 `thiserror` 定义错误类型，`anyhow` 只用于应用边界。注意所有权和借用规则。
 - **契约演进**：WIT 只包含宿主已经实现、有使用者验证的东西，不为将来预留字段、分支或"暂时拒绝"的规则，需要破坏就升主版本；`describe` 只放插件整体的事实与对导入的需求，导出接口各自声明自己。（插件专题）
 - **工具要少**：工具本身是认知负担，能用已有动词表达的操作不另立工具，例如撤销就是把意图倒带到某次登记再登记。（上下文专题）

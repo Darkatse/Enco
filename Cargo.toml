@@ -15,6 +15,7 @@ async-trait = "0.1.92"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 schemars = "1.2.3"
+rustdoc-types = "0.61.0"                 # matches the pinned toolchain's rustdoc JSON format
 ignore = "0.4.33"
 similar = "3.2.0"
 thiserror = "2.0.21"
@@ -45,6 +46,7 @@ enco-core = { path = "crates/enco-core" }
 enco-kernel = { path = "crates/enco-kernel" }
 enco-host = { path = "crates/enco-host" }
 enco-wasm = { path = "crates/enco-wasm" }
+enco-manual = { path = "crates/enco-manual" }
 
 # Our crates orchestrate IO, and the hot paths live in dependencies, which Cargo never
 # builds incrementally. Plugins keep clean builds because their bytes are content-addressed.

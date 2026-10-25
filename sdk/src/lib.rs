@@ -77,6 +77,8 @@ macro_rules! export {
         );
     };
     (@world $world:literal, $implementation:ident, $($types:tt)*) => {
+        // The contract's own documentation covers these bindings, so a plugin's manual omits them.
+        #[doc(hidden)]
         mod bindings {
             enco_sdk::wit_bindgen::generate!({
                 path: "../../sdk/wit",

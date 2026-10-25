@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+enco-manual = { workspace = true }
 cargo_metadata = { workspace = true }
 wit-parser = { workspace = true }
 serde_json = { workspace = true }

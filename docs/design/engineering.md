@@ -6,7 +6,7 @@
 
 ### crate 按概念划分，按触发条件拆分
 
-依赖方向是 `enco-core` ← `enco-kernel` ← `enco-host` / `enco-wasm` ← `apps/enco`，已经满足 Clean Architecture 的依赖规则：core 是实体，内核端口与 WIT 是端口，内核是用例，宿主、Wasm 运行时与插件是适配器，`apps/enco` 是组合根。所以 crate 的名字就是设计中的概念，命名沿用设计的词汇。只有出现明确的边界、独立的依赖成本或稳定的变化原因时才拆分。已知的第一个拆分点是 `enco-host`，它同时承载 Host 机制与原生能力；插件第一次需要 Host 机制提供的宿主导入时拆开，在那之前保持模块级的分隔。
+依赖方向是 `enco-core` ← `enco-kernel` ← `enco-host` / `enco-wasm` ← `apps/enco`，已经满足 Clean Architecture 的依赖规则：core 是实体，内核端口与 WIT 是端口，内核是用例，宿主、Wasm 运行时与插件是适配器，`apps/enco` 是组合根。所以 crate 的名字就是设计中的概念，命名沿用设计的词汇。只有出现明确的边界、独立的依赖成本或稳定的变化原因时才拆分。已知的第一个拆分点是 `enco-host`，它同时承载 Host 机制与原生能力；插件第一次需要 Host 机制提供的宿主导入时拆开，在那之前保持模块级的分隔。`enco-manual` 因依赖成本而独立：它只依赖 rustdoc 的类型，把 rustdoc JSON 渲染成手册，xtask 用它生成仓库中的 API.md 时不必编译宿主。
 
 落点：`cargo xtask boundaries` 检查依赖方向；每个插件、SDK 与评测运行器各是独立的工作区，引用不了宿主的 crate。
 

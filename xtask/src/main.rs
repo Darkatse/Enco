@@ -1,4 +1,5 @@
 mod docs;
+mod manual;
 mod testing;
 
 #[path = "../../plugins/factory.rs"]
@@ -33,7 +34,11 @@ fn main() -> Result<()> {
     )?;
     match std::env::args().nth(1).as_deref() {
         Some("boundaries") => boundaries(&metadata()?),
-        Some("docs") => docs::generate(std::env::args().any(|a| a == "--check")),
+        Some("docs") => {
+            let check = std::env::args().any(|a| a == "--check");
+            docs::generate(check)?;
+            manual::api(&metadata()?, check)
+        }
         Some("build-factory") => build_factory(),
         Some("check") => {
             in_workspaces(|manifest| {
@@ -116,8 +121,8 @@ fn boundaries(workspace_metadata: &[Metadata]) -> Result<()> {
         // Allowed workspace dependencies, and whether the crate is an application boundary,
         // the only place `anyhow` may appear; library crates define errors with thiserror.
         let (allowed, application): (&[&str], bool) = match package.name.as_str() {
-            "enco-core" => (&[], false),
-            "xtask" => (&[], true),
+            "enco-core" | "enco-manual" => (&[], false),
+            "xtask" => (&["enco-manual"], true),
             "enco-kernel" => (&["enco-core"], false),
             "enco-host" | "enco-wasm" => (&["enco-core", "enco-kernel"], false),
             "enco" => (

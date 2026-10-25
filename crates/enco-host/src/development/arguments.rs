@@ -30,7 +30,7 @@ pub struct RenameArguments<R = Reason> {
 pub struct RewindArguments {
     /// The registration whose versions are written back.
     pub registration: RegistrationId,
-    /// The paths to rewind, each "config.toml" or "plugins/<name>" with the plugin's current name.
+    /// The paths to rewind, each `config.toml` or `plugins/<name>` with the plugin's current name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<IntentPath>>,
 }
