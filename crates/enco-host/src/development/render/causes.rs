@@ -13,6 +13,7 @@ pub(in crate::development) fn causes(causes: &[Cause]) -> String {
 fn cause(cause: &Cause) -> String {
     let settings = |plugin: &str| code(&format!("[{}.{plugin}]", PLUGIN_SETTINGS_TABLE.name()));
     let target = |reference: &UseRef| match reference {
+        UseRef::Channel { name } => code(&format!("[channel.{name}]")),
         UseRef::Endpoint { endpoint } => code(&format!("[{}.{endpoint}]", ENDPOINT_TABLE.name())),
         UseRef::Composer { profile } => {
             code(&format!("[{}.{profile}].composer", PROFILE_TABLE.name()))

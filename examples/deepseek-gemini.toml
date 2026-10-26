@@ -39,7 +39,19 @@ embedding = "embed"
 [run]
 max_rounds = 24
 
-# Optional private Telegram channel. Set the token environment variable before serving.
-# [telegram]
-# token_env = "TELEGRAM_BOT_TOKEN"
-# owner_user_id = 123456789
+# Optional Telegram connection. Export the token variable before serving.
+# [channel.telegram]
+# plugin = "telegram"
+# base_url = "https://api.telegram.org"
+# owner = "123456789"
+# secrets = { token = "TELEGRAM_BOT_TOKEN" }
+# context = 0
+# group_profile = "group"  # Omit to serve private chats only.
+
+# A separate Session policy for group chats; only share tools safe for everyone in the group.
+# [profile.group]
+# reply = ["chat"]
+# compaction = ["chat"]
+# tools = ["web_search", "web_fetch"]
+# owner_context = false
+# requires_lifeline = false

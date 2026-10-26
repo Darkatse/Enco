@@ -44,14 +44,7 @@ impl Compaction {
                 for part in &item.message.parts {
                     match part {
                         Part::Text(text) => {
-                            let speaker = match item.event.as_ref().map(|event| &event.body) {
-                                Some(EventBody::UserMessage(_)) => "Owner",
-                                Some(EventBody::Reminder(_)) => "Reminder",
-                                Some(
-                                    EventBody::GenerationRolledBack(_) | EventBody::Backtrack(_),
-                                ) => "Notice",
-                                None => "You",
-                            };
+                            let speaker = crate::history::speaker(item.event.as_ref());
                             chunk.push_str(&format!("{speaker}: {text}\n"));
                         }
                         Part::ToolCall(call) => {

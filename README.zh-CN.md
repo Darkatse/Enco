@@ -119,7 +119,11 @@ cargo run -p enco -- chat      # 在另一个终端中
 
 补全 endpoint 默认只接受文本；在 endpoint 中加上 `accepts = ["image"]` 即可发送图片。`enco send --image <path>` 接受 PNG、JPEG 和 WebP，可重复，也可不附文字；Agent 通过 `fs_read` 读取这些图片。单张上限 10 MB，每次请求图片合计上限 32 MB。
 
-常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`。启用 Telegram 时，取消配置示例中 `[telegram]` 段的注释，填写主人的 user ID 并导出 token 环境变量。照片与图片文件连同 caption 进入同一条消息；不支持的附件会如实告知 Agent。`/session` 切换 Session，`/cancel` 取消当前 Run；`enco status` 列出渠道状态以及最近失败或未知的投递。
+常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`。启用 Telegram 时，取消配置示例中 `[channel.telegram]` 段的注释，把主人的用户 ID 以字符串填入 `owner`，并导出 `secrets` 指定的 token 环境变量。出厂 `telegram` 插件翻译协议，宿主持有连接与凭证。照片与图片文件连同 caption 进入同一条消息；不支持的附件会如实告知 Agent。私聊中的 `/session` 切换 Session；`/cancel` 停止当前 Run，回复一条消息并发送 `/backtrack` 可从那里继续。`enco status` 列出渠道状态以及最近失败或未知的投递。
+
+每个群用 `group_profile` 新建自己的 Session；未配置它时只服务私聊。群的 profile 必须设置 `owner_context = false`，并明确列出不含记忆工具的白名单，让群聊机器人与私人助理分开。只开放结果可以在群里分享的工具：文件与 shell 工具仍可能读到私人文件。示例使用网页工具，并以 `requires_lifeline = false` 关闭必备的修复工具集。
+
+默认只有主人发给 bot 的消息驱动群的 Session。主人发送 `/everyone on` 后，其他成员也可向它提问；`/everyone off` 恢复默认。成员的消息会保留其身份。`context = N` 随提问交出至多 N 条此前的消息，作为引用；设为零则不带。要收到群里其他消息，需在 BotFather 中关闭隐私模式，或把 bot 设为群管理员。命令菜单与正在输入的提示会自动设置。暂不支持论坛话题：回复会进入 General 话题。
 
 要在对话中回溯，在 Telegram 中回复其中一条消息并发送 `/backtrack`，或者执行 `enco backtrack <epoch>:<seq>`，位置取自 `enco log` 中条目的 `pos`。对话从那条消息继续；回到自己的消息时，Agent 会重新回答它。之后的消息仍有记录，只是离开了对话，所以也可以再回到它们。对话之外的改动，例如对文件、记忆、定时与插件的修改，都不会撤销，Agent 也会被告知这一点。
 

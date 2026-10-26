@@ -1,4 +1,5 @@
 //! Integration tests share one binary, so an edit relinks the host once rather than per file.
+mod channel_mapper;
 #[path = "../../src/client.rs"]
 mod client;
 mod composer;

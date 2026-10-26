@@ -2,8 +2,8 @@
 use super::{backend, rows, signed};
 use crate::sqlite::timestamp;
 use enco_core::*;
-use enco_kernel::StoreError;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use enco_kernel::{ConsumedMessage, NewSession, StoreError};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 const COLUMNS: &str = "id,name,created_at,binding_node,binding_epoch,profile";
 
@@ -96,6 +96,38 @@ pub(super) fn ensure(
     Ok(result)
 }
 
+/// Insert a Session chosen by its creator, never adopting one with the same display name.
+pub(super) fn insert_new(
+    tx: &Transaction<'_>,
+    node: NodeId,
+    new: &NewSession,
+) -> Result<SessionRecord, StoreError> {
+    let NewSession {
+        id,
+        name,
+        profile,
+        created_at,
+    } = new;
+    let occupied = tx
+        .prepare("SELECT name FROM sessions WHERE name=?1 OR substr(name,1,length(?1)+1)=?1||':'")
+        .map_err(backend)?
+        .query_map([name], |row| row.get::<_, String>(0))
+        .map_err(backend)?
+        .collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(backend)?;
+    let mut candidate = name.clone();
+    let mut suffix = 1_u64;
+    while occupied.contains(&candidate) {
+        suffix += 1;
+        candidate = format!("{name}:{suffix}");
+    }
+    tx.query_row(
+        &format!("INSERT INTO sessions(id,name,created_at,binding_node,binding_epoch,profile) VALUES (?,?,?,?,?,?) RETURNING {COLUMNS}"),
+        params![id.to_string(), candidate, timestamp(*created_at), node.to_string(), 1, profile],
+        rows::session,
+    ).map_err(backend)
+}
+
 pub(super) fn log(
     connection: &Connection,
     session: SessionId,
@@ -127,37 +159,37 @@ pub(super) fn log(
         .map_err(backend)
 }
 
-/// The Session and Log position where the owner's message with this protocol ID, from this
-/// channel conversation, was consumed.
+/// Where the message with this protocol ID, from this channel conversation, was consumed.
 ///
 /// Protocols keep message IDs unique within a conversation, so at most one input matches.
 pub(super) fn consumed_message(
     connection: &Connection,
-    channel: &str,
+    protocol: &str,
     account: &str,
     conversation: &str,
     message: &str,
-) -> Result<Option<(SessionId, LogPos)>, StoreError> {
+) -> Result<Option<ConsumedMessage>, StoreError> {
     // Only an owner's command asks, so this scans the Log instead of indexing every input.
     connection
         .query_row(
-            "SELECT session_id,epoch,seq
+            "SELECT session_id,epoch,seq,json_extract(body,'$.event.source.owner')
              FROM log
              WHERE kind='event_consumed'
                AND json_extract(body,'$.event.body.kind')='user_message'
-               AND json_extract(body,'$.event.source.channel')=?
+               AND json_extract(body,'$.event.source.protocol')=?
                AND json_extract(body,'$.event.source.account')=?
                AND json_extract(body,'$.event.source.conversation')=?
                AND json_extract(body,'$.event.source.message')=?",
-            params![channel, account, conversation, message],
+            params![protocol, account, conversation, message],
             |r| {
-                Ok((
-                    rows::text(r, 0)?,
-                    LogPos {
+                Ok(ConsumedMessage {
+                    session: rows::text(r, 0)?,
+                    pos: LogPos {
                         epoch: Epoch(rows::unsigned(r, 1)?),
                         seq: Seq(rows::unsigned(r, 2)?),
                     },
-                ))
+                    owner: r.get(3)?,
+                })
             },
         )
         .optional()

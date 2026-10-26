@@ -1,152 +1,255 @@
-//! The protocol side of a connection: polling updates, fetching attachments and sending messages
-//! part by part.
-//!
-//! The connection decides what to accept and when to send.
-use super::{Action, Adapter, Attachment, AttachmentContent, ChannelError, Fault, MessageContent};
+//! Polling, authorized attachment reads and bounded sends. The connection alone commits state.
+use super::{Action, Adapter, ChannelCallError, ChannelError, Fault};
+use crate::limits::{CHANNEL_MAX_BACKOFF, CHANNEL_SEND_ATTEMPTS};
 use enco_core::*;
-use enco_kernel::{ImageError, Kernel};
+use enco_kernel::{
+    AttachmentContent, ChannelAction, ChannelContent, ChannelInput, ChannelUpdate, ImageError,
+    Kernel,
+};
 use serde_json::Value;
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::limits::{CHANNEL_MAX_BACKOFF, CHANNEL_SEND_ATTEMPTS};
-
+pub(super) struct Policy {
+    pub protocol: Option<Value>,
+    pub everyone: BTreeSet<String>,
+}
 pub(super) struct Batch {
-    pub updates: Vec<Prepared>,
-    pub committed: oneshot::Sender<Value>,
+    pub change: Change,
+    pub committed: oneshot::Sender<Policy>,
 }
-
+pub(super) enum Change {
+    Update(Box<Prepared>),
+    Reset(Failure),
+}
 pub(super) struct Prepared {
+    pub key: String,
+    pub duplicate: bool,
     pub protocol: Value,
-    pub owner: Option<OwnerInput>,
+    pub origin: MappingOrigin,
+    pub input: Option<Input>,
+    pub earlier: Option<(String, EarlierMessage)>,
 }
-
-pub(super) struct OwnerInput {
+pub(super) struct Input {
     pub conversation: String,
     pub message: String,
+    pub sender: String,
+    pub sender_name: Option<String>,
+    pub owner: bool,
+    pub direct: bool,
+    pub reply_to: Option<String>,
     pub action: Action<Image>,
 }
 
-pub(super) async fn poll(
-    adapter: Arc<dyn Adapter>,
-    kernel: Arc<Kernel>,
-    owner: String,
-    mut protocol: Value,
-    batches: mpsc::Sender<Batch>,
-    stop: CancellationToken,
-) -> Result<(), ChannelError> {
-    let mut delay = Duration::from_secs(1);
-    loop {
-        let result = tokio::select! {
-            _ = stop.cancelled() => return Ok(()),
-            result = prepare(adapter.as_ref(), &kernel, &owner, protocol.clone()) => result,
-        };
-        let (updates, failure) = result?;
-        if !updates.is_empty() {
-            let (committed, next) = oneshot::channel();
-            tokio::select! {
+pub(super) struct Reader {
+    pub adapter: Arc<dyn Adapter>,
+    pub kernel: Arc<Kernel>,
+    pub settings: super::ConnectionSettings,
+    pub generation: GenerationId,
+    pub clock: Arc<dyn enco_kernel::Clock>,
+}
+impl Reader {
+    pub async fn poll(
+        self,
+        mut policy: Policy,
+        batches: mpsc::Sender<Batch>,
+        stop: CancellationToken,
+    ) -> Result<(), ChannelError> {
+        let Self {
+            adapter,
+            kernel,
+            settings,
+            generation,
+            clock,
+        } = self;
+        let mut delay = Duration::from_secs(1);
+        loop {
+            let result = tokio::select! {
                 _ = stop.cancelled() => return Ok(()),
-                result = batches.send(Batch { updates, committed }) => {
-                    result.map_err(|_| ChannelError::Task("connection stopped".into()))?;
-                }
-            }
-            protocol = tokio::select! {
-                _ = stop.cancelled() => return Ok(()),
-                result = next => result.map_err(|_| ChannelError::Task("update was not accepted".into()))?,
+                result = super::health::call(&kernel, generation, adapter.poll(policy.protocol.clone())) => result,
             };
+            let result = match result {
+                Err(ChannelError::Protocol(ChannelCallError::Protocol(error)))
+                    if error.failure.code == code::CHANNEL_INVALID_STATE =>
+                {
+                    if policy.protocol.is_none() {
+                        return Err(ChannelCallError::Protocol(error).into());
+                    }
+                    let Some(next) =
+                        handover(Change::Reset(error.failure), &batches, &stop).await?
+                    else {
+                        return Ok(());
+                    };
+                    policy = next;
+                    continue;
+                }
+                result => result,
+            };
+            let result = async {
+            for update in result? {
+                let prepared = tokio::select! {
+                    _ = stop.cancelled() => return Ok(()),
+                    result = prepare(adapter.as_ref(), &kernel, &settings, &policy, clock.as_ref(), generation, update) => result?,
+                };
+                let Some(next) = handover(Change::Update(Box::new(prepared)), &batches, &stop).await? else {
+                    return Ok(());
+                };
+                policy = next;
+            }
+            Ok::<_, ChannelError>(())
         }
-        if let Some(error) = failure {
-            if error.fatal || !error.failure.retryable {
-                return Err(error.into());
+        .await;
+            match result {
+                Ok(()) => delay = Duration::from_secs(1),
+                Err(ChannelError::Protocol(ChannelCallError::Protocol(error)))
+                    if !error.fatal && error.failure.retryable =>
+                {
+                    tracing::warn!(%error, "channel polling will retry");
+                    if wait(error.retry_after.unwrap_or(delay), &stop).await {
+                        return Ok(());
+                    }
+                    delay = (delay * 2).min(CHANNEL_MAX_BACKOFF);
+                }
+                Err(error) => return Err(error),
             }
-            tracing::warn!(%error, "channel polling will retry");
-            if wait(error.retry_after.unwrap_or(delay), &stop).await {
-                return Ok(());
-            }
-            delay = (delay * 2).min(CHANNEL_MAX_BACKOFF);
-        } else {
-            delay = Duration::from_secs(1);
         }
     }
 }
 
-/// A protocol fault stops preparation for a retry; the updates prepared before it are committed.
+async fn handover(
+    change: Change,
+    batches: &mpsc::Sender<Batch>,
+    stop: &CancellationToken,
+) -> Result<Option<Policy>, ChannelError> {
+    let (committed, next) = oneshot::channel();
+    tokio::select! {
+        _ = stop.cancelled() => return Ok(None),
+        result = batches.send(Batch { change, committed }) => result.map_err(|_| ChannelError::Task("connection stopped".into()))?,
+    }
+    tokio::select! {
+        _ = stop.cancelled() => Ok(None),
+        result = next => result.map(Some).map_err(|_| ChannelError::Task("update was not accepted".into())),
+    }
+}
+
 async fn prepare(
     adapter: &dyn Adapter,
     kernel: &Kernel,
-    owner: &str,
-    protocol: Value,
-) -> Result<(Vec<Prepared>, Option<Fault>), ChannelError> {
-    let updates = match adapter.poll(protocol).await {
-        Ok(updates) => updates,
-        Err(failure) => return Ok((Vec::new(), Some(failure))),
+    settings: &super::ConnectionSettings,
+    policy: &Policy,
+    clock: &dyn enco_kernel::Clock,
+    generation: GenerationId,
+    update: ChannelUpdate,
+) -> Result<Prepared, ChannelError> {
+    let mut prepared = Prepared {
+        key: update.key,
+        duplicate: false,
+        protocol: update.protocol,
+        origin: update.origin,
+        input: None,
+        earlier: None,
     };
-    let mut ready = Vec::new();
-    for update in updates {
-        let owner = match update.input {
-            Some(input) if input.direct && input.sender.as_deref() == Some(owner) => {
-                match input.action {
-                    Some(action) => match prepare_action(adapter, kernel, action).await? {
-                        Ok(action) => Some(OwnerInput {
-                            conversation: input.conversation,
-                            message: input.message,
-                            action,
-                        }),
-                        Err(fault) => return Ok((ready, Some(fault))),
-                    },
-                    None => None,
-                }
-            }
-            Some(input) => {
-                tracing::info!(
-                    sender_id = input.sender.as_deref().unwrap_or("unknown"),
-                    chat_id = %input.conversation,
-                    chat_type = %input.conversation_type,
-                    "channel input ignored"
-                );
-                None
-            }
-            None => None,
-        };
-        ready.push(Prepared {
-            protocol: update.protocol,
-            owner,
-        });
+    if kernel
+        .connection_update_seen(&adapter.identity().key(), &prepared.key)
+        .await?
+    {
+        prepared.duplicate = true;
+        return Ok(prepared);
     }
-    Ok((ready, None))
+    let Some(input) = update.input else {
+        return Ok(prepared);
+    };
+    let owner = input.sender.as_deref() == Some(&settings.owner);
+    // Members of a group open to everyone may ask, but never command.
+    let member = !input.direct
+        && policy.everyone.contains(&input.conversation)
+        && matches!(input.action, Action::Message(_));
+    if let Some(sender) = input.sender.clone()
+        && input.addressed
+        && (owner || member)
+    {
+        prepared.input =
+            Some(prepare_input(adapter, kernel, input, sender, owner, generation).await?);
+    } else if !input.direct
+        && let Action::Message(content) = input.action
+    {
+        prepared.earlier = Some((
+            input.conversation,
+            EarlierMessage {
+                received_at: clock.now(),
+                sender: input.sender,
+                sender_name: input.sender_name,
+                owner,
+                text: content.text,
+                attachments: content
+                    .images
+                    .into_iter()
+                    .map(|image| image.what)
+                    .chain(content.unviewable.into_iter().map(|item| item.what))
+                    .collect(),
+                origin: prepared.origin,
+            },
+        ));
+    }
+    Ok(prepared)
 }
 
-/// A protocol fault comes back inside for a retry; a store failure stops the channel.
-async fn prepare_action(
+async fn prepare_input(
     adapter: &dyn Adapter,
     kernel: &Kernel,
-    action: Action<Attachment>,
-) -> Result<Result<Action<Image>, Fault>, ChannelError> {
-    let message = match action {
-        Action::Message(message) => message,
-        Action::Sessions => return Ok(Ok(Action::Sessions)),
-        Action::SelectSession(name) => return Ok(Ok(Action::SelectSession(name))),
-        Action::Cancel => return Ok(Ok(Action::Cancel)),
-        Action::Backtrack(reply) => return Ok(Ok(Action::Backtrack(reply))),
+    input: ChannelInput,
+    sender: String,
+    owner: bool,
+    generation: GenerationId,
+) -> Result<Input, ChannelError> {
+    let action = match input.action {
+        ChannelAction::Message(content) => {
+            Action::Message(fetch(adapter, kernel, generation, content).await?)
+        }
+        ChannelAction::Sessions => Action::Sessions,
+        ChannelAction::SelectSession(name) => Action::SelectSession(name),
+        ChannelAction::Cancel => Action::Cancel,
+        ChannelAction::Backtrack => Action::Backtrack,
+        ChannelAction::Everyone(open) => Action::Everyone(open),
     };
-    let mut prepared = MessageContent {
+    Ok(Input {
+        conversation: input.conversation,
+        message: input.message,
+        sender,
+        sender_name: input.sender_name,
+        owner,
+        direct: input.direct,
+        reply_to: input.reply_to,
+        action,
+    })
+}
+
+async fn fetch(
+    adapter: &dyn Adapter,
+    kernel: &Kernel,
+    generation: GenerationId,
+    message: ChannelContent<enco_kernel::ChannelAttachment>,
+) -> Result<ChannelContent<Image>, ChannelError> {
+    let mut prepared = ChannelContent {
         text: message.text,
         images: Vec::new(),
         unviewable: message.unviewable,
     };
     for attachment in message.images {
-        let bytes = match adapter.fetch(&attachment.locator).await {
-            Ok(AttachmentContent::Image(bytes)) => bytes,
-            Ok(AttachmentContent::Unavailable(reason)) => {
-                prepared.unviewable.push(Unviewable {
-                    what: attachment.what,
-                    reason: UnviewableReason::Unavailable(reason),
-                });
-                continue;
-            }
-            Err(fault) => return Ok(Err(fault)),
-        };
+        let bytes =
+            match super::health::call(kernel, generation, adapter.fetch(&attachment.locator))
+                .await?
+            {
+                AttachmentContent::Image(bytes) => bytes,
+                AttachmentContent::Unavailable(reason) => {
+                    prepared.unviewable.push(Unviewable {
+                        what: attachment.what,
+                        reason: UnviewableReason::Unavailable(reason),
+                    });
+                    continue;
+                }
+            };
         let reason = match kernel.store_image(&bytes).await {
             Ok(image) => {
                 prepared.images.push(image);
@@ -161,35 +264,57 @@ async fn prepare_action(
             reason,
         });
     }
-    Ok(Ok(Action::Message(prepared)))
+    Ok(prepared)
 }
-
 pub(super) struct Sent {
     pub outcome: Settlement,
     /// The protocol's IDs for the parts confirmed sent, in order.
     pub messages: Vec<String>,
+    pub origins: Vec<MappingOrigin>,
     pub fatal: Option<Fault>,
 }
 
 /// Each successful part leaves this loop permanently; unknown effects are never retried.
 pub(super) async fn send(
     adapter: Arc<dyn Adapter>,
+    kernel: Arc<Kernel>,
+    generation: GenerationId,
     target: String,
     message: Outgoing<FileData>,
     stop: CancellationToken,
-) -> Sent {
-    let parts = adapter.split(message);
+) -> Result<Sent, ChannelError> {
+    let parts = match super::health::call(&kernel, generation, adapter.split(message)).await {
+        Ok(parts) => parts,
+        Err(ChannelError::Protocol(ChannelCallError::Protocol(error))) => {
+            return Ok(Sent {
+                outcome: Settlement::Failed {
+                    failure: error.failure.clone(),
+                },
+                messages: Vec::new(),
+                origins: Vec::new(),
+                fatal: error.fatal.then_some(*error),
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let mut origins = Vec::new();
     let mut messages = Vec::with_capacity(parts.len());
     for (part, message) in parts.iter().enumerate() {
         let mut delay = Duration::from_secs(1);
         for attempt in 1..=CHANNEL_SEND_ATTEMPTS {
             // A send future has effects: await it even after cancellation.
-            match adapter.send(&target, message).await {
-                Ok(id) => {
-                    messages.push(id);
+            match super::health::call(&kernel, generation, adapter.send(&target, message)).await {
+                Ok(sent) => {
+                    if let Some(id) = sent.message {
+                        messages.push(id);
+                    }
+                    origins.push(sent.origin);
                     break;
                 }
-                Err(mut error) => {
+                Err(ChannelError::Protocol(ChannelCallError::Protocol(mut error))) => {
+                    if let Some(origin) = &error.origin {
+                        origins.push(*origin);
+                    }
                     if !error.unknown
                         && !error.fatal
                         && error.failure.retryable
@@ -218,16 +343,18 @@ pub(super) async fn send(
                             failure: error.failure.clone(),
                         }
                     };
-                    return Sent {
+                    return Ok(Sent {
                         outcome,
                         messages,
-                        fatal: error.fatal.then_some(error),
-                    };
+                        origins,
+                        fatal: error.fatal.then_some(*error),
+                    });
                 }
+                Err(error) => return Err(error),
             }
         }
         if stop.is_cancelled() && part + 1 < parts.len() {
-            return Sent {
+            return Ok(Sent {
                 outcome: Settlement::Failed {
                     failure: Failure {
                         code: code::CANCELLED.into(),
@@ -240,15 +367,17 @@ pub(super) async fn send(
                     },
                 },
                 messages,
+                origins,
                 fatal: None,
-            };
+            });
         }
     }
-    Sent {
+    Ok(Sent {
         outcome: Settlement::Ok,
         messages,
+        origins,
         fatal: None,
-    }
+    })
 }
 
 async fn wait(delay: Duration, stop: &CancellationToken) -> bool {

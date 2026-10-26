@@ -106,6 +106,7 @@ pub fn composer_loaded(adapter: Arc<dyn Composer>) -> Loaded {
         completion: None,
         embedding: None,
         decision: None,
+        channel: None,
         tools: None,
     }
 }

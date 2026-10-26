@@ -7,6 +7,52 @@ use enco_kernel::*;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn channel_declarations_require_a_public_group_profile_and_a_mapper() {
+    let dir = tempfile::tempdir().unwrap();
+    let (kernel, _) = crate::support::kernel(dir.path(), ScriptedProvider::new(vec![])).await;
+    let mut document = configuration();
+    document["channel"]["chat"] = serde_json::json!({
+        "plugin": "fixture", "base_url": "https://chat.example", "owner": "owner", "group_profile": "group",
+    });
+    let public = serde_json::json!({
+        "reply": ["reply"], "compaction": ["compaction"],
+        "tools": [], "owner_context": false, "requires_lifeline": false,
+    });
+    for field in ["missing", "owner_context", "implicit_tools", "memory_tool"] {
+        let mut invalid = document.clone();
+        if field != "missing" {
+            invalid["profile"]["group"] = public.clone();
+        }
+        match field {
+            "owner_context" => invalid["profile"]["group"]["owner_context"] = true.into(),
+            "implicit_tools" => {
+                invalid["profile"]["group"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("tools");
+            }
+            "memory_tool" => {
+                invalid["profile"]["group"]["tools"] =
+                    serde_json::json!([memory_tool_specs().unwrap()[0].name])
+            }
+            _ => {}
+        }
+        let result = submit(kernel.registry(), configuration_request(invalid)).await;
+        assert!(
+            matches!(result, Err(RegistryError::Rejected(ref causes))
+            if matches!(causes.as_slice(), [Cause::Table(error)] if error.table == "channel.chat")),
+            "{field}"
+        );
+    }
+    document["profile"]["group"] = public;
+    let result = submit(kernel.registry(), configuration_request(document)).await;
+    assert!(matches!(result, Err(RegistryError::Rejected(causes))
+        if matches!(causes.as_slice(), [Cause::Use { target: UseRef::Channel { name }, failure, .. }]
+            if name == "chat" && failure.message.contains("requires channel"))));
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn admission_keeps_configured_exports_connected() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
@@ -32,6 +78,7 @@ async fn admission_keeps_configured_exports_connected() {
             completion: Some(provider),
             embedding: None,
             decision: None,
+            channel: None,
         },
     );
     let mut document = configuration();

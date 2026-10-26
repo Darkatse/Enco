@@ -39,25 +39,29 @@ pub trait Store: Send + Sync {
     async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreError>;
     /// Restore a recorded request plan and verify its complete content address.
     async fn plan(&self, hash: &ContentHash) -> Result<ContextPlan, StoreError>;
-    /// Find the Session and position where the owner's channel message with this protocol ID was
-    /// consumed.
+    /// Find where a channel message with this protocol ID was consumed.
     ///
     /// Commands recorded as inputs, such as backtracks, never match.
     async fn consumed_message(
         &self,
-        channel: &str,
+        protocol: &str,
         account: &str,
         conversation: &str,
         message: &str,
-    ) -> Result<Option<(SessionId, LogPos)>, StoreError>;
+    ) -> Result<Option<ConsumedMessage>, StoreError>;
 
     // ---- Inbox (any producer may submit; only the Session actor consumes through Commit)
-    /// Atomically accept Events, connection state and an optional final delivery outcome.
+    /// Atomically accept Events with a connection's state, and with it the protocol update, the
+    /// Session that update creates and a delivery outcome, if any.
+    ///
+    /// Accepting an update key twice is an error: the connection checks it before preparing.
     async fn accept(
         &self,
         events: &[Event],
         connection: Option<&ConnectionWrite>,
-    ) -> Result<Vec<Accepted>, StoreError>;
+    ) -> Result<Acceptance, StoreError>;
+    /// Check durable update acceptance before preparing attachments or creating Sessions.
+    async fn connection_update_seen(&self, key: &str, update: &str) -> Result<bool, StoreError>;
     /// Read the state owned by one channel connection.
     async fn connection(&self, key: &str) -> Result<Option<serde_json::Value>, StoreError>;
     /// Read recent failed or uncertain deliveries in reverse commit order.
@@ -168,12 +172,47 @@ impl PlanWrite {
 /// State returned to the connection owner for atomic acceptance.
 #[derive(Clone)]
 pub struct ConnectionWrite {
-    /// Adapter-declared protocol and account identity.
+    /// The connection-state key, `<protocol>:<account>`.
     pub key: String,
     /// Complete state snapshot owned by this connection.
     pub state: serde_json::Value,
+    /// Protocol update accepted with this state, absent for outbound or cursor-only progress.
+    pub update: Option<String>,
+    /// The Session this update creates, such as a group's first, never adopting an existing one.
+    pub session: Option<NewSession>,
     /// Final settlement of a Log-derived delivery, if any.
     pub settlement: Option<DeliverySettlement>,
+}
+
+/// A Session created together with the input that first reaches it.
+#[derive(Clone)]
+pub struct NewSession {
+    /// Identity chosen by the creator, which also records it in its own state.
+    pub id: SessionId,
+    /// Display name; an occupied name receives a numeric suffix.
+    pub name: String,
+    /// Registered profile the Session starts with.
+    pub profile: String,
+    /// Creation time for display.
+    pub created_at: DateTime<Utc>,
+}
+
+/// What an atomic acceptance committed.
+pub struct Acceptance {
+    /// Event results in input order.
+    pub events: Vec<Accepted>,
+    /// The Session created by this acceptance, as stored.
+    pub session: Option<SessionRecord>,
+}
+
+/// Where a channel message became a Session's input.
+pub struct ConsumedMessage {
+    /// The Session that consumed it.
+    pub session: SessionId,
+    /// Its position in that Session's Log.
+    pub pos: LogPos,
+    /// Whether its sender was the owner when it was accepted.
+    pub owner: bool,
 }
 
 /// Whether an Event was newly accepted.

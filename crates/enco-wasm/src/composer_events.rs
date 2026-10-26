@@ -45,17 +45,23 @@ pub(super) fn event(event: &Event, images: Vec<wire::ImageRef>) -> Result<wire::
     let source = match source {
         EventSource::Cli => wire::EventSource::Cli,
         EventSource::Channel {
-            channel,
+            protocol,
             account,
             conversation,
             sender,
+            sender_name,
+            owner,
+            // Mapper evidence is a host concern and does not enter the composer contract.
+            origin: _,
             // Composers do not point at platform messages; the contract does not carry the ID.
             message: _,
         } => wire::EventSource::Channel(wire::ChannelSource {
-            channel: channel.clone(),
+            protocol: protocol.clone(),
             account: account.clone(),
             conversation: conversation.clone(),
             sender: sender.clone(),
+            sender_name: sender_name.clone(),
+            owner: *owner,
         }),
         EventSource::Scheduler => wire::EventSource::Scheduler,
         EventSource::Registry => wire::EventSource::Registry,
@@ -66,10 +72,15 @@ pub(super) fn event(event: &Event, images: Vec<wire::ImageRef>) -> Result<wire::
             text,
             images: _,
             unviewable,
+            earlier,
         } => wire::EventBody::UserMessage(wire::UserMessage {
             text: text.clone(),
             images,
             unviewable: unviewable.iter().map(self::unviewable).collect(),
+            earlier: earlier
+                .iter()
+                .map(earlier_message)
+                .collect::<Result<_, _>>()?,
         }),
         EventBody::Reminder {
             schedule,
@@ -108,15 +119,35 @@ pub(super) fn event(event: &Event, images: Vec<wire::ImageRef>) -> Result<wire::
     })
 }
 
-fn unviewable(item: &Unviewable) -> wire::Unviewable {
+fn earlier_message(item: &EarlierMessage) -> Result<wire::EarlierMessage, Failure> {
+    let EarlierMessage {
+        received_at,
+        sender,
+        sender_name,
+        owner,
+        text,
+        attachments,
+        origin: _,
+    } = item;
+    Ok(wire::EarlierMessage {
+        received_at: datetime(*received_at)?,
+        sender: sender.clone(),
+        sender_name: sender_name.clone(),
+        owner: *owner,
+        text: text.clone(),
+        attachments: attachments.clone(),
+    })
+}
+
+fn unviewable(item: &Unviewable) -> types::Unviewable {
     let Unviewable { what, reason } = item;
-    wire::Unviewable {
+    types::Unviewable {
         what: what.clone(),
         reason: match reason {
-            UnviewableReason::Unsupported => wire::UnviewableReason::Unsupported,
-            UnviewableReason::TooLarge => wire::UnviewableReason::TooLarge,
+            UnviewableReason::Unsupported => types::UnviewableReason::Unsupported,
+            UnviewableReason::TooLarge => types::UnviewableReason::TooLarge,
             UnviewableReason::Unavailable(reason) => {
-                wire::UnviewableReason::Unavailable(reason.clone())
+                types::UnviewableReason::Unavailable(reason.clone())
             }
         },
     }

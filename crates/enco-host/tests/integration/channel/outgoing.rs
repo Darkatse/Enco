@@ -161,3 +161,33 @@ async fn restart_delivers_recorded_files_and_continues_after_missing_blobs() {
     ));
     kernel.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_split_failure_settles_as_failed_before_any_send_instead_of_recovering_as_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let Harness {
+        kernel,
+        adapter,
+        updates,
+        mut polling,
+        ..
+    } = harness(dir.path(), ScriptedProvider::new(vec![reply("reply")])).await;
+    adapter.split_failure.store(true, Ordering::SeqCst);
+    let channel = start(&kernel, &adapter);
+    receive(&mut polling).await;
+    updates
+        .send(vec![update(1, Action::Message("input".into()))])
+        .await
+        .unwrap();
+    receive(&mut polling).await;
+    adapter.split_called.notified().await;
+    channel.shutdown().await.unwrap();
+    let failures = channel.status().await.unwrap().recent_failures;
+    assert_eq!(adapter.sent.load(Ordering::SeqCst), 0);
+    assert_eq!(failures.len(), 1);
+    assert!(
+        matches!(&failures[0].settlement.outcome, Settlement::Failed { failure } if failure.code == code::PLUGIN_TRAP)
+    );
+    assert!(kernel.connection("controlled:bot").await.unwrap().unwrap()["sending"].is_null());
+    kernel.shutdown().await.unwrap();
+}

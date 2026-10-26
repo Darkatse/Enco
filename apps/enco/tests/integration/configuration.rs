@@ -352,7 +352,7 @@ async fn message(
 ) -> (bot::Request, bot::Request) {
     assert!(poll.path.ends_with("getUpdates"));
     poll.reply
-        .send(json!({"ok": true, "result": [{"update_id": update_id, "message": {"message_id": update_id, "chat": {"id": 7, "type": "private"}, "from": {"id": 9}, "text": text}}]}))
+        .send(json!({"ok": true, "result": [{"update_id": update_id, "message": {"message_id": update_id, "chat": {"id": 7, "type": "private"}, "from": {"id": 9, "first_name": "Fixture User"}, "text": text}}]}))
         .unwrap();
     let a = bot.next().await;
     let b = bot.next().await;
@@ -380,8 +380,7 @@ async fn switch_bot(fail_settlement: bool) {
     let mut first = bot::Bot::start().await;
     let mut second = bot::Bot::start().await;
     let mut document = configuration(&service);
-    document["telegram"] =
-        json!({"token_env": "ENCO_TEST_TELEGRAM_TOKEN", "owner_user_id": 9, "api_base": first.url});
+    document["channel"]["telegram"] = json!({"plugin": "telegram", "secrets": {"token": "ENCO_TEST_TELEGRAM_TOKEN"}, "owner": "9", "base_url": first.url});
     let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
     let poll = first.next().await;
     let (send, poll) = message(&mut first, poll, 10, "hello").await;
@@ -390,7 +389,7 @@ async fn switch_bot(fail_settlement: bool) {
         // Reject only the old owner's `ok` settlement; recording an interruption still works.
         sql.execute_batch("CREATE TRIGGER reject_settlement BEFORE INSERT ON deliveries WHEN json_extract(NEW.body, '$.outcome.kind') = 'ok' BEGIN SELECT RAISE(ABORT, 'injected settlement failure'); END;").unwrap();
     }
-    document["telegram"]["api_base"] = second.url.clone().into();
+    document["channel"]["telegram"]["base_url"] = second.url.clone().into();
     apply(&daemon, &document).await.unwrap();
     // The cancelled poll proves shutdown has begun; the send still owns its side effect.
     tokio::time::timeout(std::time::Duration::from_secs(15), poll.closed)
@@ -484,7 +483,7 @@ async fn fresh_home_rejects_invalid_configuration_before_serving() {
 async fn restart_restores_registered_configuration_without_credentials() {
     let server = MockServer::start().await;
     let mut document = configuration(&server);
-    document["telegram"] = json!({"token_env": "ENCO_TEST_TELEGRAM_TOKEN", "owner_user_id": 9, "api_base": server.uri()});
+    document["channel"]["telegram"] = json!({"plugin": "telegram", "secrets": {"token": "ENCO_TEST_TELEGRAM_TOKEN"}, "owner": "9", "base_url": server.uri()});
     let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
     let before = config_status(&daemon).await["running"].clone();
     daemon.stop().await;

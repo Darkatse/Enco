@@ -191,6 +191,7 @@ pub(super) fn activate(
     connection: &mut Connection,
     change: &ActivationWrite,
 ) -> Result<(), StoreError> {
+    let events = super::accept::encode_events(change.event.as_slice())?;
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
@@ -207,9 +208,7 @@ pub(super) fn activate(
         }
     }
     references(&tx, &change.plugins, change.configuration)?;
-    if let Some(event) = &change.event {
-        super::accept::events_in(&tx, std::slice::from_ref(event))?;
-    }
+    super::accept::events_in(&tx, &events)?;
     tx.commit().map_err(backend)
 }
 

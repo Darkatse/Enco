@@ -170,6 +170,7 @@ async fn open(
             store: store.clone(),
             runtime: runtime.clone(),
             host_tool_names: Default::default(),
+            lifeline: Default::default(),
             factory: FACTORY
                 .iter()
                 .map(|(name, id, bytes)| FactoryPlugin {

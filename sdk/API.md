@@ -12,7 +12,7 @@ it by path.
 - module `host` — Host-owned logging and transport available to plugins.
 - module `protocol` — Helpers for plugins that call model services through the host's `http` import, including OpenAI-compatible Chat Completions and embeddings.
 - module `types` — Canonical data exchanged between the host and plugins.
-- macro `export` — Export `$implementation` as the plugin for one world: `completion`, `provider` (completion and embedding), `decision`, `tools` or `composer`.
+- macro `export` — Export `$implementation` as the plugin for one world: `completion`, `provider` (completion and embedding), `decision`, `tools`, `composer` or `channel`.
 - fn `input_schema` — The canonical schema of `T`, used by tool arguments and composer options.
 - fn `parse_arguments` — Parse a tool call's `input` into `T`; a failure has code `tool.invalid_arguments` and is not retryable.
 - fn `parse_options` — Parse normalized composer options into the type that generated their schema.
@@ -31,13 +31,15 @@ macro_rules! export {
     (decision, $implementation:ident) => { ... };
     (tools, $implementation:ident) => { ... };
     (composer, $implementation:ident) => { ... };
+    (channel, $implementation:ident) => { ... };
     (@provider $world:literal, $implementation:ident) => { ... };
     (@world $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => { ... };
+    (@bindings $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => { ... };
 }
 ```
 
 Export `$implementation` as the plugin for one world: `completion`, `provider` (completion and
-embedding), `decision`, `tools` or `composer`.
+embedding), `decision`, `tools`, `composer` or `channel`.
 
 Call it in a crate in `plugins/<name>` that depends on this SDK as `enco_sdk`. It defines a
 `bindings` module beside the call, whose `exports` hold the `Guest` traits to implement; the
@@ -560,6 +562,8 @@ Canonical data exchanged between the host and plugins.
 - struct `types::ToolCall` — A proposed tool invocation.
 - struct `types::ToolResult` — A tool settlement.
 - struct `types::ToolSpec` — A tool disclosed to the model.
+- struct `types::Unviewable` — An attachment kept only as a description.
+- enum `types::UnviewableReason` — Why an attachment did not become an image.
 - type `types::Json` — A JSON document encoded as UTF-8 text.
 
 ## enum `types::Effect`
@@ -941,6 +945,56 @@ impl Debug for ToolSpec
 impl PartialEq for ToolSpec
 ```
 
+## struct `types::Unviewable`
+
+`src/lib.rs`
+
+```rust
+pub struct Unviewable {
+    pub what: String,
+    pub reason: UnviewableReason,
+}
+```
+
+An attachment kept only as a description.
+
+- `what` — The channel's description of it.
+- `reason` — Why it is not an image.
+
+Implements:
+
+```rust
+impl Clone for Unviewable
+impl Debug for Unviewable
+impl PartialEq for Unviewable
+```
+
+## enum `types::UnviewableReason`
+
+`src/lib.rs`
+
+```rust
+pub enum UnviewableReason {
+    Unsupported,
+    TooLarge,
+    Unavailable(String),
+}
+```
+
+Why an attachment did not become an image.
+
+- `Unsupported` — Its format is not an accepted image format.
+- `TooLarge` — It is larger than an image may be.
+- `Unavailable` — It could not be retrieved, for this reason.
+
+Implements:
+
+```rust
+impl Clone for UnviewableReason
+impl Debug for UnviewableReason
+impl PartialEq for UnviewableReason
+```
+
 ## type `types::Json`
 
 `src/lib.rs`
@@ -1059,6 +1113,8 @@ Describes and checks the component without assigning its registry identity.
 
 - struct `bindings::exports::enco::plugin::lifecycle::Credential` — Named credential attached to `origin`, or to the caller-selected service when absent.
 - struct `bindings::exports::enco::plugin::lifecycle::Description` — Plugin-wide facts and requirements.
+- struct `bindings::exports::enco::plugin::lifecycle::HeaderPlacement` — A request header that carries a credential.
+- enum `bindings::exports::enco::plugin::lifecycle::Placement` — Where the host writes a credential; the plugin never sees the value.
 - trait `bindings::exports::enco::plugin::lifecycle::Guest` — (no summary)
 - type `bindings::exports::enco::plugin::lifecycle::Failure` — (no summary)
 - type `bindings::exports::enco::plugin::lifecycle::Json` — (no summary)
@@ -1071,8 +1127,7 @@ Describes and checks the component without assigning its registry identity.
 pub struct Credential {
     pub name: String,
     pub origin: ::core::option::Option<String>,
-    pub header: String,
-    pub prefix: String,
+    pub placement: Placement,
     pub required: bool,
 }
 ```
@@ -1081,12 +1136,11 @@ Named credential attached to `origin`, or to the caller-selected service when ab
 
 A fixed origin uses the generation's secret mapping; an absent origin uses the endpoint's.
 Names and origins must be unique, including at most one absent origin.
-The host sets `header` to `prefix` followed by the credential value; plugins never see it.
+The host writes the value at `placement`; plugins never see it.
 
 - `name` — The name the owner's configuration maps to an environment variable.
 - `origin` — The origin the credential is sent to; absent for the service the caller selects.
-- `header` — The request header that carries the credential.
-- `prefix` — Text placed before the credential value in the header, such as `Bearer `.
+- `placement` — Where the host writes the credential.
 - `required` — Whether the plugin cannot work without it.
 
 Implements:
@@ -1121,6 +1175,54 @@ Implements:
 impl Clone for Description
 impl Debug for Description
 impl PartialEq for Description
+```
+
+## struct `bindings::exports::enco::plugin::lifecycle::HeaderPlacement`
+
+`src/lib.rs`
+
+```rust
+pub struct HeaderPlacement {
+    pub name: String,
+    pub prefix: String,
+}
+```
+
+A request header that carries a credential.
+
+- `name` — The header's name.
+- `prefix` — Text placed before the value, such as `Bearer `.
+
+Implements:
+
+```rust
+impl Clone for HeaderPlacement
+impl Debug for HeaderPlacement
+impl PartialEq for HeaderPlacement
+```
+
+## enum `bindings::exports::enco::plugin::lifecycle::Placement`
+
+`src/lib.rs`
+
+```rust
+pub enum Placement {
+    Header(HeaderPlacement),
+    Path(Vec<String>),
+}
+```
+
+Where the host writes a credential; the plugin never sees the value.
+
+- `Header` — A header set to its prefix followed by the value.
+- `Path` — Insert after the matching prefix at the beginning of the request path.
+
+Implements:
+
+```rust
+impl Clone for Placement
+impl Debug for Placement
+impl PartialEq for Placement
 ```
 
 ## trait `bindings::exports::enco::plugin::lifecycle::Guest`

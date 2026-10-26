@@ -1,6 +1,6 @@
 #![expect(clippy::unwrap_used, reason = "test helpers fail by panicking")]
+use crate::support::channel;
 use enco_core::{FileData, Outgoing};
-use enco_host::{Telegram, channel::Adapter};
 use serde_json::{Value, json};
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
 
@@ -30,9 +30,13 @@ fn rich_message(body: &[u8]) -> Value {
 
 #[tokio::test]
 async fn telegram_uploads_native_media_and_preserves_other_files() {
+    if channel::child("telegram_outgoing::telegram_uploads_native_media_and_preserves_other_files")
+    {
+        return;
+    }
     let server = MockServer::start().await;
-    let telegram = Telegram::new("42:secret".into(), &server.uri()).unwrap();
-    Mock::given(path("/bot42:secret/sendRichMessage"))
+    let (_root, _store, telegram) = channel::telegram(&server).await;
+    Mock::given(path("/bot42:test-secret/sendRichMessage"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true, "result": {"message_id": 1}
         })))
@@ -80,14 +84,19 @@ async fn telegram_uploads_native_media_and_preserves_other_files() {
         );
         assert!(String::from_utf8_lossy(&request.body).contains(&format!("filename=\"{name}\"")));
     }
-    assert_eq!(server.received_requests().await.unwrap().len(), 10);
+    assert_eq!(server.received_requests().await.unwrap().len(), 11);
 }
 
 #[tokio::test]
 async fn telegram_splits_text_without_copying_the_attachment_into_earlier_parts() {
+    if channel::child(
+        "telegram_outgoing::telegram_splits_text_without_copying_the_attachment_into_earlier_parts",
+    ) {
+        return;
+    }
     let server = MockServer::start().await;
-    let telegram = Telegram::new("42:secret".into(), &server.uri()).unwrap();
-    Mock::given(path("/bot42:secret/sendRichMessage"))
+    let (_root, _store, telegram) = channel::telegram(&server).await;
+    Mock::given(path("/bot42:test-secret/sendRichMessage"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true, "result": {"message_id": 1}
         })))
@@ -102,7 +111,7 @@ async fn telegram_splits_text_without_copying_the_attachment_into_earlier_parts(
     ] {
         let mut outgoing = message("a.pdf", b"file".to_vec());
         outgoing.text = text.clone();
-        let parts = telegram.split(outgoing);
+        let parts = telegram.split(outgoing).await.unwrap();
         assert_eq!(
             parts
                 .iter()
@@ -123,25 +132,29 @@ async fn telegram_splits_text_without_copying_the_attachment_into_earlier_parts(
     }
     let requests = server.received_requests().await.unwrap();
     assert_eq!(
-        rich_message(&requests[0].body)["markdown"],
+        rich_message(&requests[1].body)["markdown"],
         "![](tg://document?id=file)"
     );
 }
 
 #[tokio::test]
 async fn telegram_uploads_share_http_failure_classification() {
+    if channel::child("telegram_outgoing::telegram_uploads_share_http_failure_classification") {
+        return;
+    }
     let server = MockServer::start().await;
-    let telegram = Telegram::new("42:secret".into(), &server.uri()).unwrap();
+    let (_root, _store, telegram) = channel::telegram(&server).await;
     for (status, unknown) in [(403, false), (500, true)] {
-        let guard = Mock::given(path("/bot42:secret/sendRichMessage"))
+        let guard = Mock::given(path("/bot42:test-secret/sendRichMessage"))
             .respond_with(ResponseTemplate::new(status))
             .expect(1)
             .mount_as_scoped(&server)
             .await;
-        let fault = telegram
-            .send("7", &message("a.pdf", b"file".to_vec()))
-            .await
-            .unwrap_err();
+        let fault = channel::fault(
+            telegram
+                .send("7", &message("a.pdf", b"file".to_vec()))
+                .await,
+        );
         assert_eq!(fault.unknown, unknown);
         assert_eq!(fault.failure.code, format!("channel.http.{status}"));
         assert!(!fault.to_string().contains("secret"));
@@ -151,21 +164,20 @@ async fn telegram_uploads_share_http_failure_classification() {
 
 #[tokio::test]
 async fn telegram_upload_timeout_after_receipt_is_unknown() {
-    use tokio::{io::AsyncReadExt, sync::oneshot};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let telegram = Telegram::new(
-        "42:secret".into(),
-        &format!("http://{}", listener.local_addr().unwrap()),
-    )
-    .unwrap();
-    let (received, receipt) = oneshot::channel();
-    let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buffer = vec![0; 8192];
-        assert!(stream.read(&mut buffer).await.unwrap() > 0);
-        received.send(()).unwrap();
-        std::future::pending::<()>().await;
-    });
+    if channel::child("telegram_outgoing::telegram_upload_timeout_after_receipt_is_unknown") {
+        return;
+    }
+    let server = MockServer::start().await;
+    let (_root, _store, telegram) = channel::telegram(&server).await;
+    let (received, receipt) = tokio::sync::oneshot::channel();
+    let received = std::sync::Mutex::new(Some(received));
+    Mock::given(path("/bot42:test-secret/sendRichMessage"))
+        .respond_with(move |_request: &wiremock::Request| {
+            received.lock().unwrap().take().unwrap().send(()).unwrap();
+            ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(130))
+        })
+        .mount(&server)
+        .await;
     let send = tokio::spawn(async move {
         telegram
             .send("7", &message("a.pdf", b"file".to_vec()))
@@ -174,10 +186,8 @@ async fn telegram_upload_timeout_after_receipt_is_unknown() {
     receipt.await.unwrap();
     tokio::time::pause();
     tokio::time::advance(std::time::Duration::from_secs(121)).await;
-    let fault = send.await.unwrap().unwrap_err();
+    let fault = channel::fault(send.await.unwrap());
     assert!(fault.unknown);
     assert_eq!(fault.failure.code, "channel.network");
-    assert!(!fault.to_string().contains("secret"));
-    server.abort();
-    assert!(server.await.unwrap_err().is_cancelled());
+    assert!(!fault.to_string().contains("test-secret"));
 }

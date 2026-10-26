@@ -58,6 +58,7 @@ pub(super) fn bind_composer(
 impl Use {
     pub(super) fn plugin(&self) -> &PluginName {
         match &self.target {
+            UseTarget::Channel { plugin, .. } => plugin,
             UseTarget::Endpoint { endpoint, .. } => &endpoint.plugin,
             UseTarget::Composer { settings, .. } => &settings.plugin,
         }
@@ -65,6 +66,7 @@ impl Use {
 
     pub(super) fn reference(&self) -> UseRef {
         match &self.target {
+            UseTarget::Channel { name, .. } => UseRef::Channel { name: name.clone() },
             UseTarget::Endpoint { endpoint, .. } => UseRef::Endpoint {
                 endpoint: endpoint.name.clone(),
             },
@@ -77,6 +79,34 @@ impl Use {
     /// Availability belongs to this use, not to the generation serving it.
     pub(super) fn check(&self, loaded: &Loaded) -> Result<(), Failure> {
         match &self.target {
+            UseTarget::Channel { settings, .. } => {
+                let unavailable = |message: String| Failure {
+                    code: code::PLUGIN_UNAVAILABLE.into(),
+                    message,
+                    retryable: false,
+                };
+                if loaded.channel.is_none() {
+                    return Err(unavailable("requires channel".into()));
+                }
+                for credential in &loaded.credentials {
+                    if credential.required && !settings.secrets.contains_key(&credential.name) {
+                        return Err(unavailable(format!(
+                            "missing secret mapping for {}",
+                            credential.name
+                        )));
+                    }
+                }
+                for name in settings.secrets.keys() {
+                    if !loaded
+                        .credentials
+                        .iter()
+                        .any(|credential| &credential.name == name)
+                    {
+                        return Err(unavailable(format!("undeclared credential {name}")));
+                    }
+                }
+                Ok(())
+            }
             UseTarget::Endpoint { endpoint, need } => match need {
                 Need::Completion { .. } => endpoint
                     .export(loaded, loaded.completion.as_ref(), "completion")
@@ -96,6 +126,20 @@ impl Use {
 
     pub(super) fn same_call(&self, other: &Self) -> bool {
         match (&self.target, &other.target) {
+            (
+                UseTarget::Channel {
+                    plugin, settings, ..
+                },
+                UseTarget::Channel {
+                    plugin: other,
+                    settings: other_settings,
+                    ..
+                },
+            ) => {
+                plugin == other
+                    && settings.base_url == other_settings.base_url
+                    && settings.secrets == other_settings.secrets
+            }
             (
                 UseTarget::Endpoint { endpoint, need },
                 UseTarget::Endpoint {

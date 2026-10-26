@@ -8,6 +8,8 @@ use wasmtime_wasi::{HostMonotonicClock, HostWallClock, WasiCtx};
 pub(crate) enum CallWorld {
     /// Serving a call: the plugin's configuration, and network carrying these credentials.
     Regular(Vec<CallCredential>),
+    /// Mapping recorded protocol input: fixed clocks and random seed, no configuration or network.
+    Mapper,
     /// Declaring what the generation offers: its configuration, without network, so a reload
     /// never depends on an outside service.
     Declaration,
@@ -23,11 +25,21 @@ impl CallWorld {
         config: &serde_json::Value,
     ) -> Result<(Network, String, WasiCtx), enco_core::Failure> {
         let mut wasi = WasiCtx::builder();
-        wasi.inherit_stderr();
+        if !matches!(self, Self::Mapper) {
+            wasi.inherit_stderr();
+        }
         let (network, config) = match self {
             Self::Regular(credentials) => (Network::open(credentials), config.to_string()),
             Self::Declaration => (Network::Closed, config.to_string()),
             Self::Probe => (Network::Closed, "{}".into()),
+            Self::Mapper => {
+                wasi.wall_clock(RoundClock(Duration::ZERO))
+                    .monotonic_clock(FrozenClock)
+                    .secure_random(StdRng::from_seed([0; 32]))
+                    .insecure_random(StdRng::from_seed([0; 32]))
+                    .insecure_random_seed(0);
+                (Network::Closed, "{}".into())
+            }
             Self::Composer { now, round } => {
                 let seconds = now
                     .timestamp()

@@ -14,6 +14,7 @@ impl SessionActor {
         &self,
         snapshot: &Snapshot,
         safe_mode: bool,
+        owner_context: bool,
         token: &CancellationToken,
     ) -> Result<Gathered, RoundError> {
         // A Round reads its history from the conversation as it now stands, not the whole Log.
@@ -33,7 +34,7 @@ impl SessionActor {
             new_input,
             cancel: token.child_token(),
         };
-        let (instructions, offered) = if safe_mode {
+        let (instructions, offered) = if safe_mode || !owner_context {
             (None, OfferedMemories::default())
         } else {
             (

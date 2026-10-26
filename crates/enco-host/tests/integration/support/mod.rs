@@ -181,6 +181,7 @@ pub fn fixture(completion: Arc<dyn Provider>, embedding: Arc<dyn Embedding>) -> 
         completion: Some(completion),
         embedding: Some(embedding),
         decision: None,
+        channel: None,
     }
 }
 
@@ -190,6 +191,7 @@ pub fn registry_deps(
     factory: &[u8],
 ) -> RegistryDeps {
     RegistryDeps {
+        lifeline: LIFELINE.map(String::from).into(),
         host_tool_names: native_tools(Default::default())
             .unwrap()
             .iter()
@@ -282,7 +284,6 @@ pub fn kernel_deps(
         instructions: Arc::new(InstructionsContextSource::new(root.join("AGENTS.md"))),
         memories: offered,
         tools,
-        lifeline: LIFELINE.map(String::from).into(),
         clock: Arc::new(SystemClock),
     }
 }
@@ -524,8 +525,10 @@ pub fn credential(required: bool) -> Credential {
         name: "service".into(),
         origin: None,
         required,
-        header: "authorization".into(),
-        prefix: "Bearer ".into(),
+        placement: Placement::Header(HeaderPlacement {
+            name: "authorization".into(),
+            prefix: "Bearer ".into(),
+        }),
     }
 }
 

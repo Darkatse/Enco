@@ -1,9 +1,12 @@
 //! The connection's actor, the only writer of its state: it accepts the owner's input, sends
 //! replies and settles deliveries, one at a time.
+mod activity;
 mod backtrack;
+mod delivery;
+mod input;
 
 use super::{projection, transport, *};
-use enco_kernel::{ConnectionWrite, StoreError};
+use enco_kernel::{ConnectionWrite, NewSession, StoreError};
 use std::collections::{BTreeSet, VecDeque};
 use tokio::{
     sync::{broadcast, mpsc},
@@ -14,8 +17,10 @@ struct Connection {
     kernel: Arc<Kernel>,
     adapter: Arc<dyn Adapter>,
     identity: Identity,
-    owner_id: String,
+    settings: ConnectionSettings,
+    generation: GenerationId,
     state: State,
+    menu_failure: Arc<Mutex<Option<String>>>,
     clock: Arc<dyn Clock>,
     stop: CancellationToken,
     readers: JoinSet<Result<(), ChannelError>>,
@@ -34,12 +39,12 @@ struct Receipt {
 
 /// Runtime sending kind is explicit; persisted `State::sending` is only the recovery checkpoint.
 enum InFlight {
-    Receipt(JoinHandle<transport::Sent>),
-    Delivery(Delivery, JoinHandle<transport::Sent>),
+    Receipt(JoinHandle<Result<transport::Sent, ChannelError>>),
+    Delivery(Delivery, JoinHandle<Result<transport::Sent, ChannelError>>),
 }
 
 impl InFlight {
-    fn task(&mut self) -> &mut JoinHandle<transport::Sent> {
+    fn task(&mut self) -> &mut JoinHandle<Result<transport::Sent, ChannelError>> {
         match self {
             Self::Receipt(task) | Self::Delivery(_, task) => task,
         }
@@ -55,11 +60,13 @@ pub(super) struct Exit {
 pub(super) async fn run(
     kernel: Arc<Kernel>,
     adapter: Arc<dyn Adapter>,
-    owner_id: String,
+    settings: ConnectionSettings,
+    generation: GenerationId,
     clock: Arc<dyn Clock>,
     stop: CancellationToken,
+    menu_failure: Arc<Mutex<Option<String>>>,
 ) -> Exit {
-    let state = match restore(&kernel, adapter.as_ref()).await {
+    let mut state = match restore(&kernel, adapter.as_ref()).await {
         Ok(state) => state,
         Err(error) => {
             return Exit {
@@ -68,12 +75,19 @@ pub(super) async fn run(
             };
         }
     };
+    for messages in state.context.values_mut() {
+        let excess = messages.len().saturating_sub(settings.context);
+        messages.drain(..excess);
+    }
+    state.context.retain(|_, messages| !messages.is_empty());
     let (wake, wakes) = mpsc::channel(crate::limits::CHANNEL_WAKE_CAPACITY);
     let mut connection = Connection {
         identity: adapter.identity(),
         kernel,
         adapter,
-        owner_id,
+        settings,
+        generation,
+        menu_failure,
         state,
         clock,
         stop: stop.child_token(),
@@ -94,8 +108,10 @@ async fn restore(kernel: &Kernel, adapter: &dyn Adapter) -> Result<State, Channe
     Ok(match kernel.connection(&adapter.identity().key()).await? {
         Some(state) => serde_json::from_value(state)?,
         None => State {
-            protocol: adapter.initial_state(),
+            protocol: None,
             chats: BTreeMap::new(),
+            context: BTreeMap::new(),
+            everyone: BTreeSet::new(),
             outbound: BTreeMap::new(),
             sending: None,
         },
@@ -119,22 +135,33 @@ impl Connection {
                     },
                 },
                 Vec::new(),
+                Vec::new(),
             )
             .await?;
         }
+        self.register_commands().await;
         let sessions: Vec<_> = self.state.outbound.keys().copied().collect();
         for session in sessions {
             self.follow(session)?;
         }
         let (batches, mut incoming) = mpsc::channel(1);
-        self.readers.spawn(transport::poll(
-            self.adapter.clone(),
-            self.kernel.clone(),
-            self.owner_id.clone(),
-            self.state.protocol.clone(),
-            batches,
-            self.stop.clone(),
-        ));
+        self.readers.spawn(
+            transport::Reader {
+                adapter: self.adapter.clone(),
+                kernel: self.kernel.clone(),
+                settings: self.settings.clone(),
+                generation: self.generation,
+                clock: self.clock.clone(),
+            }
+            .poll(
+                transport::Policy {
+                    protocol: self.state.protocol.clone(),
+                    everyone: self.state.everyone.clone(),
+                },
+                batches,
+                self.stop.clone(),
+            ),
+        );
         loop {
             if self.stop.is_cancelled() {
                 return Ok(());
@@ -150,15 +177,23 @@ impl Connection {
                     }
                 } => {
                     let flight = self.in_flight.take().ok_or_else(|| ChannelError::Task("send completed without an in-flight operation".into()))?;
-                    if let Some(error) = self.sent(flight, result).await? { return Err(error.into()); }
+                    if let Some(error) = self.sent(flight, result).await? { return Err(ChannelCallError::from(error).into()); }
                 },
                 Some(result) = self.readers.join_next() => {
                     result.map_err(|error| ChannelError::Task(error.to_string()))??;
                     return Err(ChannelError::Task("channel reader stopped unexpectedly".into()));
                 }
                 Some(batch) = incoming.recv() => {
-                    for update in batch.updates { self.accept(update).await?; }
-                    let _ = batch.committed.send(self.state.protocol.clone());
+                    match batch.change {
+                        transport::Change::Update(update) => self.accept(*update).await?,
+                        transport::Change::Reset(failure) => {
+                            tracing::warn!(connection = %self.identity.key(), code = %failure.code, reason = %failure.message, "channel protocol state reset; reading from initial state");
+                            let mut state = self.state.clone();
+                            state.protocol = None;
+                            self.commit(state, None).await?;
+                        }
+                    }
+                    let _ = batch.committed.send(transport::Policy { protocol: self.state.protocol.clone(), everyone: self.state.everyone.clone() });
                 }
                 Some(session) = wakes.recv() => { self.dirty.insert(session); }
             }
@@ -176,7 +211,8 @@ impl Connection {
             let result = flight.task().await;
             match self.sent(flight, result).await {
                 Ok(Some(error)) => {
-                    exit.stopped.get_or_insert(error.into());
+                    exit.stopped
+                        .get_or_insert(ChannelCallError::from(error).into());
                 }
                 Ok(None) => {}
                 Err(error) => exit.shutdown = Err(error),
@@ -194,18 +230,43 @@ impl Connection {
         exit
     }
 
+    /// Commit progress that accepts no protocol update: protocol state after a reset, cursors, or
+    /// a delivery's final outcome.
     async fn commit(
         &mut self,
         state: State,
-        events: &[Event],
+        settlement: Option<DeliverySettlement>,
+    ) -> Result<(), ChannelError> {
+        self.write(state, None, None, None, settlement).await
+    }
+
+    /// Accept one protocol update with the state it leads to, and the input and Session it brings.
+    async fn commit_update(
+        &mut self,
+        state: State,
+        update: String,
+        event: Option<Event>,
+        session: Option<NewSession>,
+    ) -> Result<(), ChannelError> {
+        self.write(state, Some(update), event, session, None).await
+    }
+
+    async fn write(
+        &mut self,
+        state: State,
+        update: Option<String>,
+        event: Option<Event>,
+        session: Option<NewSession>,
         settlement: Option<DeliverySettlement>,
     ) -> Result<(), ChannelError> {
         self.kernel
             .accept(
-                events,
+                event.as_slice(),
                 Some(&ConnectionWrite {
                     key: self.identity.key(),
                     state: serde_json::to_value(&state)?,
+                    update,
+                    session,
                     settlement,
                 }),
             )
@@ -224,6 +285,13 @@ impl Connection {
         self.dirty.insert(session);
         let wake = self.wake.clone();
         let stop = self.stop.clone();
+        self.readers.spawn(activity::follow(
+            self.kernel.clone(),
+            self.adapter.clone(),
+            self.generation,
+            session,
+            self.stop.clone(),
+        ));
         self.readers.spawn(async move {
             loop {
                 let event = tokio::select! {
@@ -231,7 +299,7 @@ impl Connection {
                     event = entries.recv() => event,
                 };
                 match event {
-                    Ok(Entry { body: EntryBody::RoundEnded { .. } | EntryBody::RunEnded { .. } | EntryBody::ToolCallSettled { outgoing: Some(_), .. }, .. })
+                    Ok(Entry { body: EntryBody::RunStarted { .. } | EntryBody::EventConsumed { .. } | EntryBody::RoundEnded { .. } | EntryBody::RunEnded { .. } | EntryBody::ToolCallSettled { outgoing: Some(_), .. }, .. })
                     | Err(broadcast::error::RecvError::Lagged(_)) => {
                         tokio::select! {
                             _ = stop.cancelled() => return Ok(()),
@@ -244,92 +312,6 @@ impl Connection {
             }
         });
         Ok(())
-    }
-
-    async fn accept(&mut self, update: transport::Prepared) -> Result<(), ChannelError> {
-        let mut state = self.state.clone();
-        state.protocol = update.protocol;
-        let Some(transport::OwnerInput {
-            conversation: target,
-            message,
-            action,
-        }) = update.owner
-        else {
-            return self.commit(state, &[], None).await;
-        };
-        let receipt = match action {
-            Action::Message(content) => {
-                let session = match state.chats.get(&target) {
-                    Some(session) => *session,
-                    None => self.kernel.open_session("main").await?.id,
-                };
-                state.chats.insert(target.clone(), session);
-                let body = EventBody::UserMessage {
-                    text: content.text,
-                    images: content.images,
-                    unviewable: content.unviewable,
-                };
-                return self.submit(state, session, &target, message, body).await;
-            }
-            Action::Backtrack(reply) => self.backtrack(state, &target, message, reply).await?,
-            Action::SelectSession(name) => {
-                let session = self.kernel.open_session(&name).await?.id;
-                state.chats.insert(target.clone(), session);
-                self.commit(state, &[], None).await?;
-                format!("Switched to {name}.")
-            }
-            Action::Sessions => {
-                self.commit(state, &[], None).await?;
-                self.sessions(&target).await?
-            }
-            Action::Cancel => {
-                self.commit(state, &[], None).await?;
-                let result = self
-                    .state
-                    .chats
-                    .get(&target)
-                    .map(|session| self.kernel.cancel(*session))
-                    .transpose();
-                match result {
-                    Ok(Some(true)) => "Cancellation requested.".into(),
-                    Ok(_) => "No active Run.".into(),
-                    Err(error) => format!("Cancel failed: {error}"),
-                }
-            }
-        };
-        self.receipts.push_back(Receipt {
-            target,
-            text: receipt,
-        });
-        Ok(())
-    }
-
-    /// Commit the owner's input to `session` together with `state`, then follow the Session so
-    /// its replies come back through this connection.
-    async fn submit(
-        &mut self,
-        mut state: State,
-        session: SessionId,
-        conversation: &str,
-        message: String,
-        body: EventBody,
-    ) -> Result<(), ChannelError> {
-        state.outbound.entry(session).or_default();
-        let event = Event {
-            id: EventId::new(),
-            session,
-            source: EventSource::Channel {
-                channel: self.identity.channel.clone(),
-                account: self.identity.account.clone(),
-                conversation: conversation.into(),
-                sender: self.owner_id.clone(),
-                message,
-            },
-            body,
-            received_at: self.clock.now(),
-        };
-        self.commit(state, &[event], None).await?;
-        self.follow(session)
     }
 
     /// The Sessions to choose from, marking the one this conversation is routed to.
@@ -366,124 +348,5 @@ impl Connection {
             .find(|s| s.id == session)
             .ok_or(KernelError::UnknownSession(session))?;
         Ok(record.name)
-    }
-
-    async fn next_delivery(&mut self) -> Result<(), ChannelError> {
-        if self.in_flight.is_some() {
-            return Ok(());
-        }
-        if let Some(Receipt { target, text }) = self.receipts.pop_front() {
-            self.in_flight = Some(InFlight::Receipt(
-                self.send(target, Outgoing { text, file: None }),
-            ));
-            return Ok(());
-        }
-        while let Some(session) = self.dirty.pop_first() {
-            let mut cursor = self.state.outbound[&session].clone();
-            let previous = cursor.processed;
-            let entries = self.kernel.log(session, cursor.processed).await?;
-            let outgoing = projection::project(&mut cursor, &self.identity, session, entries);
-            if let Some((delivery, mut message)) = outgoing {
-                let target = delivery.target.clone();
-                if self.state.chats.get(&target) != Some(&session) {
-                    let name = self.session_name(session).await?;
-                    message.text = format!("[{name}]\n\n{}", message.text);
-                }
-                let file = match message.file {
-                    Some(file) => match self.kernel.outgoing_file(&file).await {
-                        Ok(file) => Some(file),
-                        Err(KernelError::Store(error @ StoreError::Blob(_))) => {
-                            self.settle(
-                                delivery,
-                                Settlement::Failed {
-                                    failure: Failure {
-                                        code: "channel.file_unavailable".into(),
-                                        message: error.to_string(),
-                                        retryable: false,
-                                    },
-                                },
-                                Vec::new(),
-                            )
-                            .await?;
-                            continue;
-                        }
-                        Err(error) => return Err(error.into()),
-                    },
-                    None => None,
-                };
-                let message = Outgoing {
-                    text: message.text,
-                    file,
-                };
-                let mut state = self.state.clone();
-                state.sending = Some(delivery.clone());
-                self.commit(state, &[], None).await?;
-                self.in_flight = Some(InFlight::Delivery(delivery, self.send(target, message)));
-                break;
-            }
-            if previous != cursor.processed {
-                let mut state = self.state.clone();
-                state.outbound.insert(session, cursor);
-                self.commit(state, &[], None).await?;
-            }
-        }
-        Ok(())
-    }
-
-    fn send(&self, target: String, message: Outgoing<FileData>) -> JoinHandle<transport::Sent> {
-        tokio::spawn(transport::send(
-            self.adapter.clone(),
-            target,
-            message,
-            self.stop.clone(),
-        ))
-    }
-
-    async fn sent(
-        &mut self,
-        flight: InFlight,
-        result: Result<transport::Sent, tokio::task::JoinError>,
-    ) -> Result<Option<Fault>, ChannelError> {
-        let sent = result.map_err(|error| ChannelError::Task(error.to_string()))?;
-        match flight {
-            InFlight::Delivery(delivery, _) => {
-                self.settle(delivery, sent.outcome, sent.messages).await?;
-            }
-            InFlight::Receipt(_) if !matches!(sent.outcome, Settlement::Ok) => {
-                tracing::warn!(outcome = ?sent.outcome, "command receipt was not delivered");
-            }
-            InFlight::Receipt(_) => {}
-        }
-        Ok(sent.fatal)
-    }
-
-    /// Record the delivery's outcome and the protocol's IDs for the parts confirmed sent.
-    async fn settle(
-        &mut self,
-        delivery: Delivery,
-        outcome: Settlement,
-        messages: Vec<String>,
-    ) -> Result<(), ChannelError> {
-        let mut state = self.state.clone();
-        state.sending = None;
-        state.outbound.insert(
-            delivery.session,
-            Cursor {
-                processed: Some(delivery.pos),
-                target: Some(delivery.target.clone()),
-            },
-        );
-        self.dirty.insert(delivery.session);
-        self.commit(
-            state,
-            &[],
-            Some(DeliverySettlement {
-                delivery,
-                outcome,
-                messages,
-                at: self.clock.now(),
-            }),
-        )
-        .await
     }
 }

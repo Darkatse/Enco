@@ -6,6 +6,7 @@
     reason = "shared test support fails the test by panicking"
 )]
 pub mod bot;
+pub mod channel;
 
 use crate::{client, protocol::ServerMessage};
 use enco_core::*;

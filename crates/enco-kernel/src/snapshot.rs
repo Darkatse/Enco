@@ -40,7 +40,8 @@ impl Snapshot {
             });
         }
         let lifeline = deps
-            .lifeline
+            .registry
+            .lifeline()
             .iter()
             .map(|name| {
                 tools

@@ -160,6 +160,10 @@ impl Arguments {
 
 /// Stable failure codes shared with WIT plugins.
 pub mod code {
+    /// The channel mapper cannot resume this protocol state; the connection may restart from none.
+    pub const CHANNEL_INVALID_STATE: &str = "channel.invalid_state";
+    /// A channel request failed in transport, before a protocol response was read.
+    pub const CHANNEL_NETWORK: &str = "channel.network";
     /// A registered configuration table is invalid for the current host.
     pub const CONFIG_INVALID: &str = "config.invalid";
     /// An intentional configuration registration failed validation or lost a commit race.

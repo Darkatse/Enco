@@ -1,6 +1,7 @@
 //! Chooses whole image entries newest first and describes every owner attachment.
 use crate::composer::*;
 use crate::{key, limits::*, tokens};
+use enco_sdk::types::UnviewableReason;
 use std::collections::BTreeSet;
 
 pub(super) fn selected(input: &ComposeInput, omitted: &mut Vec<Omission>) -> BTreeSet<(u64, u64)> {

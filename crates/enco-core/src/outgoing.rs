@@ -26,6 +26,6 @@ pub struct OutgoingFile {
 pub struct FileData {
     /// Filename without its original directory.
     pub name: String,
-    /// Original bytes, encoded only by the channel adapter.
+    /// Original bytes, encoded only by the channel mapper.
     pub data: Vec<u8>,
 }

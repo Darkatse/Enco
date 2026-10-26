@@ -9,7 +9,6 @@ Native storage, tools and context policies.
 - module `development` — Turns the plugin sources and `config.toml` in a home into registrations, and registered versions back into files.
 - module `memory` — The owner's memories: a SQLite database holds them, and a derived vector index finds them.
 - module `status` — Enco's state as `self_status` reports it, and what in it needs attention.
-- module `telegram` — Telegram-specific configuration, transport evidence and text limits.
 - struct `InstructionsContextSource` — Supplies the owner's current standing instructions once per Round.
 - struct `Memories` — Sole entry point for memory writes and recall. The index never owns memory content.
 - struct `MemoryContextSource` — Offers the pinned memories, and the memories recalled for a new message, to each Round.
@@ -20,7 +19,6 @@ Native storage, tools and context policies.
 - struct `SqliteStore` — Enco's store: the SQLite database, with the content files and node identity that go with it.
 - struct `StorePaths` — Files owned by the persistence adapter.
 - struct `SystemClock` — Host wall clock; Log order is assigned independently by the Session.
-- struct `Telegram` — The adapter for one Telegram bot, speaking the Bot API.
 - fn `blob_path` — Address a blob without opening the store.
 - fn `development_tool_specs` — The development tools' declarations, available before their handlers exist.
 - fn `development_tools` — The development tools, running the same operations as the CLI.
@@ -312,34 +310,6 @@ Implements:
 impl Clock for SystemClock
 ```
 
-## struct `Telegram`
-
-`src/telegram.rs`
-
-```rust
-pub struct Telegram {
-    /* private fields */
-}
-```
-
-The adapter for one Telegram bot, speaking the Bot API.
-
-### `Telegram::new`
-
-```rust
-pub fn new(token: String, api_base: &str) -> Result<Self, ChannelError>
-```
-
-An adapter for the bot whose token is `token`, sending requests to `api_base`.
-
-Fails when the token is not a bot token or the base is not a plain HTTP(S) URL.
-
-Implements:
-
-```rust
-impl Adapter for Telegram
-```
-
 ## fn `blob_path`
 
 `src/store/blob.rs`
@@ -447,79 +417,12 @@ Connections between a messaging protocol and Sessions.
 
 A connection owns its routing state; adapters own only protocol interpretation.
 
-- enum `channel::Action` — What an incoming message asks for, whatever the protocol's command syntax.
-- struct `channel::Attachment` — An image attached to a message, still held by the protocol.
-- enum `channel::AttachmentContent` — What fetching an attachment produced.
 - struct `channel::Channel` — A running connection.
 - enum `channel::ChannelError` — Why a connection stopped or could not start.
 - struct `channel::ChannelStatus` — A connection's health, and the deliveries that failed for good.
-- struct `channel::Fault` — A protocol failure, with what the connection needs to decide whether to retry.
-- struct `channel::Identity` — Stable identity declared by a protocol adapter.
-- struct `channel::Input` — One incoming message as the protocol reports it.
-- struct `channel::MessageContent` — A message's text and attachments; `T` is an attachment before or after fetching.
-- struct `channel::Update` — One protocol update with its resulting protocol state.
-- trait `channel::Adapter` — The protocol side of a channel: reading updates, fetching attachments and sending replies.
-
-## enum `channel::Action`
-
-`src/channel.rs`
-
-```rust
-pub enum Action<T = Attachment> {
-    Message(MessageContent<T>),
-    Sessions,
-    SelectSession(String),
-    Cancel,
-    Backtrack(Option<String>),
-}
-```
-
-What an incoming message asks for, whatever the protocol's command syntax.
-
-- `Message` — A message for the conversation's Session.
-- `Sessions` — List the Sessions to choose from.
-- `SelectSession` — Route this conversation to the Session with this name, opening it if needed.
-- `Cancel` — Stop the work the conversation's Session is doing.
-- `Backtrack` — Take the conversation back to the message this one replies to, named by the protocol's ID;
-  absent when it replies to none.
-
-## struct `channel::Attachment`
-
-`src/channel.rs`
-
-```rust
-pub struct Attachment {
-    pub what: String,
-    pub locator: String,
-}
-```
-
-An image attached to a message, still held by the protocol.
-
-- `what` — How to name it when telling the owner about it, such as `photo` or a file's name and type.
-- `locator` — The protocol's handle for fetching it.
-
-## enum `channel::AttachmentContent`
-
-`src/channel.rs`
-
-```rust
-pub enum AttachmentContent {
-    Image(Vec<u8>),
-    Unavailable(String),
-}
-```
-
-What fetching an attachment produced.
-
-- `Image` — The image's bytes.
-- `Unavailable` — It cannot be used; the text says why.
-
-Implements:
-
-```rust
-impl Debug for AttachmentContent
-```
+- struct `channel::ChannelSupervisor` — Maintains the configured connections and joins each old owner before replacing it.
+- struct `channel::ConnectionSettings` — One configured account and its host routing policy.
+- const `channel::TABLE_OWNER` — Named connection tables, interpreted by the host and admitted by the registry.
 
 ## struct `channel::Channel`
 
@@ -538,11 +441,11 @@ Shutdown signals the connection actor and all its helpers, then waits for them.
 ### `channel::Channel::start`
 
 ```rust
-pub fn start(kernel: Arc<Kernel>, adapter: Arc<dyn Adapter>, owner_id: String, clock: Arc<dyn Clock>) -> Self
+pub fn start(kernel: Arc<Kernel>, adapter: Arc<dyn Adapter>, settings: ConnectionSettings, generation: GenerationId, clock: Arc<dyn Clock>) -> Self
 ```
 
-Start the connection; it carries the owner's direct messages to Sessions and their replies
-back until shutdown.
+Start the connection; it carries addressed messages to Sessions and their replies back
+until shutdown.
 
 ### `channel::Channel::status`
 
@@ -574,7 +477,7 @@ impl Drop for Channel
 pub enum ChannelError {
     Kernel(enco_kernel::KernelError),
     State(serde_json::Error),
-    Protocol(Fault),
+    Protocol(enco_kernel::ChannelCallError),
     Task(String),
     Unjoined(tokio::task::JoinError),
     Config(String),
@@ -596,8 +499,8 @@ Implements:
 impl Debug for ChannelError
 impl Display for ChannelError
 impl Error for ChannelError
+impl From<ChannelCallError> for ChannelError
 impl From<Error> for ChannelError
-impl From<Fault> for ChannelError
 impl From<KernelError> for ChannelError
 ```
 
@@ -607,19 +510,25 @@ impl From<KernelError> for ChannelError
 
 ```rust
 pub struct ChannelStatus {
-    pub key: String,
+    pub name: String,
+    pub key: Option<String>,
     pub running: bool,
     pub stopped: Option<String>,
+    pub failure_origin: Option<MappingOrigin>,
+    pub menu_failure: Option<String>,
     pub recent_failures: Vec<enco_kernel::DeliveryStatus>,
 }
 ```
 
 A connection's health, and the deliveries that failed for good.
 
-- `key` — The connection's key, `<channel>:<account>`.
+- `name` — The connection's name in the `channel` table.
+- `key` — The account's state key, `<protocol>:<account>`, once the mapper identified it.
 - `running` — Whether the connection is working now.
 - `stopped` — Why it stopped, when it stopped on a failure.
-- `recent_failures` — The latest deliveries that failed for good, with the Sessions they came from.
+- `failure_origin` — Recorded mapper call responsible for the stopped connection, when one exists.
+- `menu_failure` — Why publishing the protocol command menu failed; the connection continues running.
+- `recent_failures` — The latest deliveries that failed for good.
 
 Implements:
 
@@ -627,197 +536,94 @@ Implements:
 impl Serialize for ChannelStatus
 ```
 
-## struct `channel::Fault`
+## struct `channel::ChannelSupervisor`
 
-`src/channel.rs`
+`src/channel/supervisor.rs`
 
 ```rust
-pub struct Fault {
-    pub failure: Failure,
-    pub unknown: bool,
-    pub fatal: bool,
-    pub retry_after: Option<std::time::Duration>,
+pub struct ChannelSupervisor {
+    /* private fields */
 }
 ```
 
-A protocol failure, with what the connection needs to decide whether to retry.
+Maintains the configured connections and joins each old owner before replacing it.
 
-The common retry and settlement path reads it.
+### `channel::ChannelSupervisor::start`
 
-- `failure` — What failed.
-- `unknown` — True when effects may have occurred; this always forbids an automatic resend.
-- `fatal` — True when the whole connection is unusable, rather than just this destination.
-- `retry_after` — How long the protocol asks to wait before trying again, when it says.
+```rust
+pub fn start(kernel: Arc<Kernel>, store: Arc<dyn Store>, clock: Arc<dyn Clock>) -> Self
+```
+
+Follow the registry's active view, opening accounts through their fixed mapper generation.
+
+### `channel::ChannelSupervisor::status`
+
+```rust
+pub async fn status(&self) -> Result<Vec<ChannelStatus>, KernelError>
+```
+
+Status for every configured connection, including account and menu failures.
+
+### `channel::ChannelSupervisor::shutdown`
+
+```rust
+pub async fn shutdown(&self) -> Result<(), ChannelError>
+```
+
+Signal stop and wait until every connection and its helpers have stopped.
 
 Implements:
 
 ```rust
-impl Debug for Fault
-impl Display for Fault
-impl Error for Fault
-impl From<Fault> for ChannelError
+impl Drop for ChannelSupervisor
 ```
 
-## struct `channel::Identity`
+## struct `channel::ConnectionSettings`
 
-`src/channel.rs`
+`src/channel/settings.rs`
 
 ```rust
-pub struct Identity {
-    pub channel: String,
-    pub account: String,
+pub struct ConnectionSettings {
+    pub plugin: enco_core::PluginName,
+    pub base_url: String,
+    pub owner: String,
+    pub secrets: std::collections::BTreeMap<String, String>,
+    pub context: usize,
+    pub group_profile: Option<String>,
+    pub name: String,
 }
 ```
 
-Stable identity declared by a protocol adapter.
+One configured account and its host routing policy.
 
-- `channel` — The protocol, such as `telegram`.
-- `account` — The account the adapter uses on that protocol, such as a bot's ID.
-
-### `channel::Identity::key`
-
-```rust
-pub fn key(&self) -> String
-```
-
-The connection's key, `<channel>:<account>`, under which its state and deliveries are kept.
+- `plugin` — Registered mapper plugin.
+- `base_url` — Service origin, with an optional base path.
+- `owner` — Protocol ID of the owner.
+- `secrets` — Credential names mapped to environment variable names.
+- `context` — Maximum number of earlier group messages quoted with the next input.
+- `group_profile` — Profile for the Sessions this connection creates for groups; absent, it serves private
+  chats only.
+- `name` — Configuration name used to name new group Sessions.
 
 Implements:
 
 ```rust
-impl Clone for Identity
+impl Clone for ConnectionSettings
+impl<'de> Deserialize<'de> for ConnectionSettings
+impl Eq for ConnectionSettings
+impl PartialEq for ConnectionSettings
+impl Serialize for ConnectionSettings
 ```
 
-## struct `channel::Input`
+## const `channel::TABLE_OWNER`
 
-`src/channel.rs`
+`src/channel/settings.rs`
 
 ```rust
-pub struct Input {
-    pub conversation: String,
-    pub message: String,
-    pub sender: Option<String>,
-    pub conversation_type: String,
-    pub direct: bool,
-    pub action: Option<Action<Attachment>>,
-}
+pub const TABLE_OWNER: enco_kernel::TableOwner = _;
 ```
 
-One incoming message as the protocol reports it.
-
-The connection acts only on direct messages from the owner; it ignores the rest.
-
-- `conversation` — The protocol's ID for the conversation, where replies go.
-- `message` — The protocol's ID for this message, unique within the conversation.
-- `sender` — The protocol's ID for the sender, when it reports one.
-- `conversation_type` — Adapter-provided label retained for diagnostics, not interpreted by the connection.
-- `direct` — Whether the conversation is one to one, rather than a group.
-- `action` — What the message asks for; absent when it holds nothing the host understands.
-
-## struct `channel::MessageContent`
-
-`src/channel.rs`
-
-```rust
-pub struct MessageContent<T> {
-    pub text: String,
-    pub images: Vec<T>,
-    pub unviewable: Vec<Unviewable>,
-}
-```
-
-A message's text and attachments; `T` is an attachment before or after fetching.
-
-- `text` — The text as written.
-- `images` — Images to show the model.
-- `unviewable` — Attachments that could not be made into images, each with the reason.
-
-Implements:
-
-```rust
-impl<T> From<&str> for MessageContent<T>
-impl<T> From<String> for MessageContent<T>
-```
-
-## struct `channel::Update`
-
-`src/channel.rs`
-
-```rust
-pub struct Update {
-    pub protocol: serde_json::Value,
-    pub input: Option<Input>,
-}
-```
-
-One protocol update with its resulting protocol state.
-
-- `protocol` — The protocol state after this update, such as the offset to poll from next.
-- `input` — What the update brings, if anything the connection reads.
-
-## trait `channel::Adapter`
-
-`src/channel.rs`
-
-```rust
-pub trait Adapter: Send + Sync
-```
-
-The protocol side of a channel: reading updates, fetching attachments and sending replies.
-
-This native boundary stands until channels become plugins. Outbound Markdown and optional files
-are mapped to the channel protocol here.
-
-### `channel::Adapter::identity`
-
-```rust
-fn identity(&self) -> Identity
-```
-
-Declare the connection identity; it must remain stable for this adapter instance.
-
-### `channel::Adapter::initial_state`
-
-```rust
-fn initial_state(&self) -> Value
-```
-
-Protocol state used only when no connection state has been accepted yet.
-
-### `channel::Adapter::poll`
-
-```rust
-async fn poll(&self, protocol: Value) -> Result<Vec<Update>, Fault>
-```
-
-Read replayable updates using committed state; cancellation has no external effect.
-Each returned update carries the protocol state after accepting that update.
-
-### `channel::Adapter::fetch`
-
-```rust
-async fn fetch(&self, locator: &str) -> Result<AttachmentContent, Fault>
-```
-
-Fetch a protocol-owned attachment after authorization; reads have no external effect.
-
-### `channel::Adapter::split`
-
-```rust
-fn split(&self, message: Outgoing<FileData>) -> Vec<Outgoing<FileData>>
-```
-
-Preserve all text; attach the file to the last part, or a separate final part.
-Each part has text or a file; a file-only message produces exactly one part.
-
-### `channel::Adapter::send`
-
-```rust
-async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<String, Fault>
-```
-
-Perform one bounded attempt, returning the protocol's ID for the sent message.
-Never retry internally or drop an in-flight side effect.
+Named connection tables, interpreted by the host and admitted by the registry.
 
 # module `enco_host::development`
 
@@ -3211,70 +3017,6 @@ Implements:
 ```rust
 impl<'a> Serialize for StopCause<'a>
 ```
-
-# module `enco_host::telegram`
-
-`src/telegram.rs`
-
-Telegram-specific configuration, transport evidence and text limits.
-
-- struct `telegram::Telegram` — same as `Telegram`
-- struct `telegram::TelegramChannel` — The Telegram connection, restarted whenever the `[telegram]` table changes.
-- const `telegram::TABLE_OWNER` — Telegram owns its table and declares no model endpoints.
-
-## struct `telegram::TelegramChannel`
-
-`src/telegram/supervisor.rs`
-
-```rust
-pub struct TelegramChannel {
-    /* private fields */
-}
-```
-
-The Telegram connection, restarted whenever the `[telegram]` table changes.
-
-It waits for the old connection to stop before starting the next one.
-
-### `telegram::TelegramChannel::start`
-
-```rust
-pub fn start(kernel: Arc<Kernel>, clock: Arc<dyn Clock>) -> Self
-```
-
-Start the connection the `[telegram]` table configures, if any, and follow its changes.
-
-### `telegram::TelegramChannel::status`
-
-```rust
-pub async fn status(&self) -> Result<Vec<ChannelStatus>, KernelError>
-```
-
-The connection's status; empty when no `[telegram]` table is configured.
-
-### `telegram::TelegramChannel::shutdown`
-
-```rust
-pub async fn shutdown(&self) -> Result<(), ChannelError>
-```
-
-Stop following the configuration and wait until the connection has stopped.
-
-Implements:
-
-```rust
-impl Drop for TelegramChannel
-```
-
-## const `telegram::TABLE_OWNER`
-
-`src/telegram.rs`
-
-```rust
-pub const TABLE_OWNER: enco_kernel::TableOwner = _;
-```
-
-Telegram owns its table and declares no model endpoints.
 
 # module `enco_host::development::tree`
 

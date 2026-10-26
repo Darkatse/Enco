@@ -72,7 +72,7 @@ mod composer {
 }
 
 /// Package version of `sdk/wit/plugin.wit`; change it together with the WIT.
-pub(crate) const CONTRACT_VERSION: &str = "0.7.0";
+pub(crate) const CONTRACT_VERSION: &str = "0.8.0";
 
 pub(crate) use base::BasePre;
 pub(crate) use base::exports::enco::plugin::lifecycle;
@@ -82,3 +82,16 @@ pub(crate) use embedding::EmbeddingPluginPre;
 pub(crate) use tools::ToolPluginPre;
 
 pub(crate) use composer::{ComposerPluginPre, exports::enco::plugin::composer as composers};
+
+mod channel {
+    wasmtime::component::bindgen!({
+        path: "../../sdk/wit",
+        world: "channel-plugin",
+        exports: { default: async },
+        with: {
+            "enco:plugin/types": super::completion::enco::plugin::types,
+        },
+    });
+}
+
+pub(crate) use channel::{ChannelPluginPre, exports::enco::plugin::channel as channels};

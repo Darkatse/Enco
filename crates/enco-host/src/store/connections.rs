@@ -5,6 +5,20 @@ use enco_core::*;
 use enco_kernel::StoreError;
 use rusqlite::{Connection, OptionalExtension, params};
 
+pub(super) fn update_seen(
+    connection: &Connection,
+    key: &str,
+    update: &str,
+) -> Result<bool, StoreError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM connection_updates WHERE connection=? AND update_key=?)",
+            params![key, update],
+            |r| r.get(0),
+        )
+        .map_err(backend)
+}
+
 /// A connection's committed state, written together with the input it accepted.
 pub(super) fn state(
     connection: &Connection,

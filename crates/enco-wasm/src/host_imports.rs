@@ -102,7 +102,7 @@ fn failure(
 
 /// Everything the plugin sends and sees passes here: the credential is attached on the way out
 /// and redacted from whatever comes back.
-async fn http(
+pub(crate) async fn http(
     client: &reqwest::Client,
     credentials: &[CallCredential],
     request: host::HttpRequest,

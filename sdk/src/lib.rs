@@ -78,7 +78,7 @@ pub fn parse_arguments<T: serde::de::DeserializeOwned>(input: &str) -> Result<T,
 }
 
 /// Export `$implementation` as the plugin for one world: `completion`, `provider` (completion and
-/// embedding), `decision`, `tools` or `composer`.
+/// embedding), `decision`, `tools`, `composer` or `channel`.
 ///
 /// Call it in a crate in `plugins/<name>` that depends on this SDK as `enco_sdk`. It defines a
 /// `bindings` module beside the call, whose `exports` hold the `Guest` traits to implement; the
@@ -90,15 +90,22 @@ macro_rules! export {
     (decision, $implementation:ident) => { $crate::export!(@world "decision-plugin", $implementation, [],); };
     (tools, $implementation:ident) => { $crate::export!(@world "tool-plugin", $implementation, [],); };
     (composer, $implementation:ident) => { $crate::export!(@world "composer-plugin", $implementation, [PartialEq],); };
+    (channel, $implementation:ident) => { $crate::export!(@bindings "channel-plugin", $implementation, [PartialEq],); };
     (@provider $world:literal, $implementation:ident) => {
         $crate::export!(@world $world, $implementation, [],
-            "enco:plugin/completion@0.7.0/request": enco_sdk::protocol::Request,
-            "enco:plugin/completion@0.7.0/completion": enco_sdk::protocol::Completion,
-            "enco:plugin/completion@0.7.0/usage": enco_sdk::protocol::Usage,
-            "enco:plugin/completion@0.7.0/stop-reason": enco_sdk::protocol::StopReason,
+            "enco:plugin/completion@0.8.0/request": enco_sdk::protocol::Request,
+            "enco:plugin/completion@0.8.0/completion": enco_sdk::protocol::Completion,
+            "enco:plugin/completion@0.8.0/usage": enco_sdk::protocol::Usage,
+            "enco:plugin/completion@0.8.0/stop-reason": enco_sdk::protocol::StopReason,
         );
     };
     (@world $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => {
+        $crate::export!(@bindings $world, $implementation, [$($derives),*],
+            "enco:plugin/host@0.8.0": enco_sdk::host,
+            $($types)*
+        );
+    };
+    (@bindings $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => {
         // The contract's own documentation covers these bindings, so a plugin's manual omits them.
         #[doc(hidden)]
         mod bindings {
@@ -108,8 +115,7 @@ macro_rules! export {
                 runtime_path: "enco_sdk::wit_bindgen::rt",
                 additional_derives: [$($derives),*],
                 with: {
-                    "enco:plugin/host@0.7.0": enco_sdk::host,
-                    "enco:plugin/types@0.7.0": enco_sdk::types,
+                    "enco:plugin/types@0.8.0": enco_sdk::types,
                     $($types)*
                 },
             });

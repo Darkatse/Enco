@@ -352,3 +352,107 @@ async fn configuration_probes_conflict_with_registration_but_not_trial_promotion
         kernel.shutdown().await.unwrap();
     }
 }
+
+struct PrivateMemories;
+
+#[async_trait]
+impl ContextSource for PrivateMemories {
+    type Supply = OfferedMemories;
+
+    async fn contribute(&self, _: &ContextQuery) -> Result<OfferedMemories, ContextError> {
+        Err(ContextError("private memories must not be queried".into()))
+    }
+}
+
+struct PublicComposer;
+
+#[async_trait]
+impl Composer for PublicComposer {
+    async fn compose(
+        &self,
+        _: &ComposerOptions,
+        input: &ComposeInput,
+    ) -> Result<Composition, Failure> {
+        assert!(input.instructions.is_none());
+        assert!(input.memories.is_empty());
+        Ok(Composition::Plan(reply_plan(input)))
+    }
+}
+
+#[tokio::test]
+async fn restricted_profiles_filter_requests_and_dispatch_in_both_modes() {
+    for safe in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("AGENTS.md"),
+            "Private standing instructions",
+        )
+        .unwrap();
+        let provider = ScriptedProvider::new(vec![
+            calls(vec![call(
+                "fs_write",
+                r#"{"path":"forbidden.txt","content":"must not be written"}"#,
+            )]),
+            reply("understood"),
+        ]);
+        let mut document = configuration();
+        document["profile"]["group"] = serde_json::json!({
+            "reply": ["reply"], "compaction": ["compaction"],
+            "tools": ["fs_list", "message_send"], "owner_context": false, "requires_lifeline": false,
+        });
+        let (kernel, _) = kernel_configured_composer(
+            dir.path(),
+            provider.clone(),
+            document,
+            vec![],
+            Arc::new(PublicComposer),
+            |deps| deps.memories = Arc::new(PrivateMemories),
+        )
+        .await;
+        kernel.set_safe_mode(safe).await.unwrap();
+        let session = kernel.open_session("group").await.unwrap();
+        kernel.set_profile(session.id, "group").await.unwrap();
+        let mut rx = kernel.subscribe(session.id).unwrap();
+        kernel
+            .submit(
+                session.id,
+                EventId::new(),
+                "a public question".into(),
+                vec![],
+            )
+            .await
+            .unwrap();
+        let entries = finish(&mut rx).await;
+        let tools: Vec<_> = provider.requests.lock().unwrap()[0]
+            .tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect();
+        assert_eq!(
+            tools,
+            if safe {
+                vec!["fs_list"]
+            } else {
+                vec!["fs_list", "message_send"]
+            }
+        );
+        assert!(entries.iter().any(|entry| matches!(&entry.body,
+            EntryBody::ToolCallSettled { outcome: Settlement::Failed { failure }, .. }
+                if failure.code == code::TOOL_UNAVAILABLE)));
+        assert!(!dir.path().join("workspace/forbidden.txt").exists());
+        kernel.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn profiles_requiring_the_lifeline_cannot_exclude_its_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let (kernel, _) = support::kernel(dir.path(), ScriptedProvider::new(vec![])).await;
+    let mut document = configuration();
+    document["profile"]["default"]["tools"] = serde_json::json!(["fs_list"]);
+    let result = submit(kernel.registry(), configuration_request(document)).await;
+    assert!(matches!(result, Err(RegistryError::Rejected(causes))
+        if matches!(causes.as_slice(), [Cause::Table(error)]
+            if error.table == "profile.default" && error.message.contains("lifeline"))));
+    kernel.shutdown().await.unwrap();
+}

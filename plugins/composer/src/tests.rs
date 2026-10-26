@@ -1,6 +1,7 @@
 use super::*;
+mod channel;
 use crate::composer::*;
-use enco_sdk::types::{ImageFormat, Role};
+use enco_sdk::types::{ImageFormat, Role, Unviewable, UnviewableReason};
 
 fn pos(seq: u64) -> LogPos {
     LogPos { epoch: 1, seq }
@@ -80,6 +81,7 @@ fn incoming(seq: u64, at: &str, text: &str) -> TranscriptItem {
                 text: text.into(),
                 images: vec![],
                 unviewable: vec![],
+                earlier: vec![],
             }),
         }),
     }
@@ -273,23 +275,36 @@ fn compaction_carries_circumstances_and_attachments_without_pinned_memory_or_too
         "2026-10-02T14:03:00Z",
         &"context ".repeat(2500),
     ));
-    let EventBody::UserMessage(message) =
-        &mut input.transcript.items[0].event.as_mut().unwrap().body
-    else {
-        panic!("owner fixture")
+    let event = input.transcript.items[0].event.as_mut().unwrap();
+    event.source = member(false);
+    let EventBody::UserMessage(message) = &mut event.body else {
+        panic!("message fixture")
     };
+    message.earlier.push(EarlierMessage {
+        received_at: datetime("2026-10-02T14:00:00Z"),
+        sender: Some("55".into()),
+        sender_name: None,
+        owner: false,
+        text: "We were discussing the deadline".into(),
+        attachments: vec!["photo".into()],
+    });
     message.unviewable.push(Unviewable {
         what: "voice message".into(),
         reason: UnviewableReason::Unsupported,
     });
     input.transcript.round_ends.push(pos(4));
-    let Composition::Compact(compaction) = compose::compose(&input).unwrap() else {
+    let Composition::Compact(compaction) = Plugin::compose("{}".into(), input).unwrap() else {
         panic!("expected compaction")
     };
     let text = text(&compaction.plan);
     assert!(text.contains("2026-10-02 10:03"));
     assert!(text.contains("provider.bad_request: request rejected"));
     assert!(text.contains("voice message: unsupported"));
+    assert!(text.contains("Earlier messages in this chat, quoted for context."));
+    assert!(text.contains("55: We were discussing the deadline"));
+    assert!(text.contains("55: [attachment: photo]"));
+    assert!(text.contains("The next message is from Ada, a member of this group, not the owner."));
+    assert!(text.contains("Ada: context"));
     assert!(!text.contains("Owner is River"));
     assert!(compaction.plan.tools.is_empty());
 }
@@ -412,4 +427,15 @@ fn a_small_compaction_window_allows_replies_until_the_reply_itself_overflows() {
     assert!(replies > 0);
     let failure = overflow.expect("history must outgrow the reply window");
     assert_eq!(failure.code, "context.overflow");
+}
+
+fn member(owner: bool) -> EventSource {
+    EventSource::Channel(ChannelSource {
+        protocol: "telegram".into(),
+        account: "42".into(),
+        conversation: "-100".into(),
+        sender: "7".into(),
+        sender_name: Some("Ada".into()),
+        owner,
+    })
 }

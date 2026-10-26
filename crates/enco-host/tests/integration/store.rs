@@ -6,7 +6,7 @@ use crate::support;
 use chrono::SubsecRound;
 use enco_core::*;
 use enco_host::SqliteStore;
-use enco_kernel::{Accepted, Commit, ConnectionWrite, Store, StoreError};
+use enco_kernel::{Accepted, Commit, ConnectionWrite, NewSession, Store, StoreError};
 use std::path::Path;
 mod plans;
 
@@ -24,6 +24,7 @@ async fn main_session(root: &Path) -> (SqliteStore, Event) {
         body: EventBody::UserMessage {
             images: Vec::new(),
             unviewable: Vec::new(),
+            earlier: Vec::new(),
             text: "hello".into(),
         },
         received_at: Utc::now().trunc_subsecs(3),
@@ -53,14 +54,16 @@ async fn accepting_an_event_again_reports_a_duplicate() {
         store
             .accept(std::slice::from_ref(&event), None)
             .await
-            .unwrap(),
+            .unwrap()
+            .events,
         vec![Accepted::New]
     );
     assert_eq!(
         store
             .accept(std::slice::from_ref(&event), None)
             .await
-            .unwrap(),
+            .unwrap()
+            .events,
         vec![Accepted::Duplicate]
     );
 }
@@ -77,6 +80,8 @@ async fn a_failed_acceptance_discards_its_connection_write() {
         key: "channel:account".into(),
         state: serde_json::json!({"offset": 1}),
         settlement: None,
+        update: None,
+        session: None,
     };
     store.accept(&[], Some(&write)).await.unwrap();
     let uncommitted = Event {
@@ -90,6 +95,13 @@ async fn a_failed_acceptance_discards_its_connection_write() {
     };
     let advance = ConnectionWrite {
         state: serde_json::json!({"offset": 2}),
+        update: Some("update-2".into()),
+        session: Some(NewSession {
+            id: SessionId::new(),
+            name: "group".into(),
+            profile: "default".into(),
+            created_at: Utc::now().trunc_subsecs(3),
+        }),
         ..write.clone()
     };
     assert!(
@@ -103,6 +115,52 @@ async fn a_failed_acceptance_discards_its_connection_write() {
         Some(write.state)
     );
     assert_eq!(store.pending(event.session).await.unwrap(), vec![event]);
+    assert!(
+        !store
+            .connection_update_seen(&write.key, "update-2")
+            .await
+            .unwrap()
+    );
+    assert!(store.session_by_name("group").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn accepted_update_keys_survive_restarts_and_are_never_accepted_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, event) = main_session(dir.path()).await;
+    let write = ConnectionWrite {
+        key: "protocol:account".into(),
+        state: serde_json::json!({"everyone": true}),
+        update: Some("command-1".into()),
+        session: None,
+        settlement: None,
+    };
+    store.accept(&[], Some(&write)).await.unwrap();
+    drop(store);
+    let store = SqliteStore::open(support::store_paths(dir.path()))
+        .await
+        .unwrap();
+    assert!(
+        store
+            .connection_update_seen(&write.key, "command-1")
+            .await
+            .unwrap()
+    );
+    let repeated = ConnectionWrite {
+        state: serde_json::json!({"everyone": false}),
+        ..write.clone()
+    };
+    assert!(
+        store
+            .accept(std::slice::from_ref(&event), Some(&repeated))
+            .await
+            .is_err()
+    );
+    assert!(store.pending(event.session).await.unwrap().is_empty());
+    assert_eq!(
+        store.connection(&write.key).await.unwrap(),
+        Some(write.state)
+    );
 }
 
 #[tokio::test]
@@ -223,7 +281,8 @@ async fn committed_entries_consume_their_events_and_survive_reopening() {
         reopened
             .accept(std::slice::from_ref(&event), None)
             .await
-            .unwrap(),
+            .unwrap()
+            .events,
         vec![Accepted::Duplicate]
     );
 }

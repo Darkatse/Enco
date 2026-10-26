@@ -5,6 +5,7 @@
 
 Session execution through explicit ports.
 
+- struct `Acceptance` — What an atomic acceptance committed.
 - enum `Accepted` — Whether an Event was newly accepted.
 - struct `Activation` — One selected generation and where it came from; the running and registered layers share it.
 - struct `ActivationWrite` — Mechanical recovery moves references; it never creates new intent.
@@ -12,10 +13,23 @@ Session execution through explicit ports.
 - struct `ActiveConfig` — The active configuration generation: registered content plus the declarations derived from it.
 - enum `Answer` — Finite probabilities in [0, 1], or a refusal for this question. Choice and score distributions follow label order and sum to one, allowing rounding.
 - enum `ArtifactSource` — Newly built bytes or a content address already known to the store.
+- enum `AttachmentContent` — The result of reading an attachment.
 - struct `BoundComposer` — A composer generation paired with options accepted by that generation's schema.
 - struct `Budget` — Context limits supplied by configuration.
 - struct `CallContext` — Invocation identity, cooperative cancellation and the inline result budget.
 - enum `Cause` — A failure attributed to the part of the intent it concerns.
+- enum `ChannelAction` — The meaning of an incoming message, independent of protocol command syntax.
+- struct `ChannelAttachment` — An image still held by the protocol.
+- enum `ChannelCallError` — A mapper or protocol failure, distinct from failing to record its evidence.
+- struct `ChannelCommand` — A command offered by the host in protocol menus.
+- enum `ChannelCommandKind` — The commands understood by the connection owner.
+- struct `ChannelContent` — Text and attachments before or after fetching.
+- struct `ChannelFault` — A protocol failure and the facts that determine retry and settlement.
+- struct `ChannelIdentity` — Stable account identity declared by a mapper.
+- struct `ChannelInput` — An incoming message, before host authorization or attachment fetching.
+- struct `ChannelSent` — The confirmed result of sending one part.
+- struct `ChannelSettings` — The service and secret names chosen for one connection; values remain in transport.
+- struct `ChannelUpdate` — One update and the protocol state after accepting it.
 - struct `CodeProvenance` — Where a generation's code came from; settings-only generations follow their code generation.
 - enum `CodeSource` — How a generation's code entered the registry.
 - struct `Commit` — An atomic append of Log facts and consumption of their corresponding Inbox rows.
@@ -30,6 +44,7 @@ Session execution through explicit ports.
 - enum `ConfigTable` — The structural unit owned by one configuration declaration.
 - struct `ConfigurationSource` — Parsed configuration paired with the exact input retained by the host.
 - struct `ConnectionWrite` — State returned to the connection owner for atomic acceptance.
+- struct `ConsumedMessage` — Where a channel message became a Session's input.
 - struct `ContextError` — A context source failed to supply its authoritative content.
 - struct `ContextQuery` — Shared input to a Round's context sources.
 - struct `Credential` — A declared credential; transport validates placement and alone reads its value.
@@ -43,6 +58,7 @@ Session execution through explicit ports.
 - struct `Exports` — Derived routing view. Holding it does not prevent the registry from publishing a new view.
 - struct `FactoryPlugin` — A plugin supplied with the host binary.
 - struct `FactoryStatus` — Current host-owned recovery code and whether registered intent needs to follow it.
+- struct `HeaderPlacement` — A request header carrying a credential.
 - enum `ImageError` — Image ingestion either rejects its input or reports a storage failure.
 - struct `Inspection` — An Attempt reconstructed exclusively from its recorded plan and Log prefix.
 - enum `IntentPart` — The part of the owner's intent that a cause points to.
@@ -57,8 +73,10 @@ Session execution through explicit ports.
 - struct `LoadedTools` — Tool declarations are evaluated once with the generation's accepted configuration.
 - struct `LocatedImage` — An image reference with the node-local address supplied by its store.
 - enum `Need` — A use's interface and behavior requirements, shared by wiring checks and real probes.
+- struct `NewSession` — A Session created together with the input that first reaches it.
 - struct `NodeRecord` — Persistent node identity and recovery policy.
 - struct `OfferedMemories` — The memories offered for one Round, and what could not be offered.
+- enum `Placement` — Where transport alone writes a credential value.
 - struct `PlanWrite` — An immutable request plan whose complete content address is computed once before committing.
 - enum `PluginChange` — One plugin's contribution to an atomic registration.
 - enum `PluginChangeKind` — Accepted changes to one plugin; each variant carries only its own facts.
@@ -109,6 +127,8 @@ Session execution through explicit ports.
 - enum `UseTarget` — The configured invocation, preserving the facts its actual interface consumes.
 - enum `Verdict` — One completed invocation's verdict, before caller-specific result handling.
 - struct `View` — The one published snapshot of routing and registered configuration.
+- trait `Channel` — Opens accounts through one loaded, pure protocol mapper.
+- trait `ChannelAdapter` — One identified account, using the same generation until it is stopped.
 - trait `Clock` — Time boundary used for reminders and observation, never Log ordering.
 - trait `Composer` — Pure policy boundary: identical inputs must produce identical plans.
 - trait `ContextSource` — Supplies one owner's facts for a Round, in that owner's type; never called in safe mode.
@@ -130,6 +150,22 @@ Session execution through explicit ports.
 - const `PROFILE_TABLE` — Named profile entries: `[profile.<name>]`.
 - const `RECENT_REGISTRATIONS` — The bounded registration history shown with current state.
 - const `TRIAL_CALLS` — Successful trial calls required before a generation becomes a rollback target.
+
+## struct `Acceptance`
+
+`src/ports/store.rs`
+
+```rust
+pub struct Acceptance {
+    pub events: Vec<Accepted>,
+    pub session: Option<SessionRecord>,
+}
+```
+
+What an atomic acceptance committed.
+
+- `events` — Event results in input order.
+- `session` — The Session created by this acceptance, as stored.
 
 ## enum `Accepted`
 
@@ -307,6 +343,28 @@ pub fn hash(&self) -> ContentHash
 ```
 
 Address the offered code without loading it or changing retention.
+
+## enum `AttachmentContent`
+
+`src/ports/channel.rs`
+
+```rust
+pub enum AttachmentContent {
+    Image(Vec<u8>),
+    Unavailable(String),
+}
+```
+
+The result of reading an attachment.
+
+- `Image` — Image bytes to validate and store.
+- `Unavailable` — Why the protocol cannot provide a usable image.
+
+Implements:
+
+```rust
+impl Debug for AttachmentContent
+```
 
 ## struct `BoundComposer`
 
@@ -499,6 +557,286 @@ impl Display for Cause
 impl Error for Cause
 impl Serialize for Cause
 ```
+
+## enum `ChannelAction`
+
+`src/ports/channel.rs`
+
+```rust
+pub enum ChannelAction<T = ChannelAttachment> {
+    Message(ChannelContent<T>),
+    Sessions,
+    SelectSession(String),
+    Cancel,
+    Backtrack,
+    Everyone(Option<bool>),
+}
+```
+
+The meaning of an incoming message, independent of protocol command syntax.
+
+- `Message` — Text and attachments for the conversation's Session.
+- `Sessions` — List available Sessions.
+- `SelectSession` — Select or create the named Session.
+- `Cancel` — Stop the conversation's current work.
+- `Backtrack` — Return to the message named by the input's reply target.
+- `Everyone` — Open or close a group to members; absent queries its current setting.
+
+## struct `ChannelAttachment`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelAttachment {
+    pub what: String,
+    pub locator: String,
+}
+```
+
+An image still held by the protocol.
+
+- `what` — A description, such as a file name and media type.
+- `locator` — The mapper's opaque locator for fetching it.
+
+## enum `ChannelCallError`
+
+`src/ports/channel.rs`
+
+```rust
+pub enum ChannelCallError {
+    Protocol(Box<ChannelFault>),
+    Store(crate::StoreError),
+}
+```
+
+A mapper or protocol failure, distinct from failing to record its evidence.
+
+- `Protocol` — The mapper or remote protocol rejected the operation.
+- `Store` — Persistence failed; the operation must stop rather than treating this as a protocol refusal.
+
+Implements:
+
+```rust
+impl Debug for ChannelCallError
+impl Display for ChannelCallError
+impl Error for ChannelCallError
+impl From<ChannelFault> for ChannelCallError
+impl From<StoreError> for ChannelCallError
+```
+
+## struct `ChannelCommand`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelCommand {
+    pub kind: ChannelCommandKind,
+    pub description: String,
+    pub direct: bool,
+    pub group: bool,
+}
+```
+
+A command offered by the host in protocol menus.
+
+- `kind` — Which host command this is.
+- `description` — Menu explanation supplied by the host.
+- `direct` — Applies in one-to-one conversations.
+- `group` — Applies in group conversations.
+
+## enum `ChannelCommandKind`
+
+`src/ports/channel.rs`
+
+```rust
+pub enum ChannelCommandKind {
+    Session,
+    Cancel,
+    Backtrack,
+    Everyone,
+}
+```
+
+The commands understood by the connection owner.
+
+- `Session` — List or select Sessions.
+- `Cancel` — Stop current work.
+- `Backtrack` — Return to a previous message.
+- `Everyone` — Change who can address the Agent in a group.
+
+## struct `ChannelContent`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelContent<T> {
+    pub text: String,
+    pub images: Vec<T>,
+    pub unviewable: Vec<enco_core::Unviewable>,
+}
+```
+
+Text and attachments before or after fetching.
+
+- `text` — The message's text.
+- `images` — Images in protocol order, before or after attachment fetching.
+- `unviewable` — Other attachments and why they cannot be viewed.
+
+Implements:
+
+```rust
+impl<T> From<&str> for ChannelContent<T>
+impl<T> From<String> for ChannelContent<T>
+```
+
+## struct `ChannelFault`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelFault {
+    pub failure: enco_core::Failure,
+    pub unknown: bool,
+    pub fatal: bool,
+    pub retry_after: Option<std::time::Duration>,
+    pub origin: Option<enco_core::MappingOrigin>,
+}
+```
+
+A protocol failure and the facts that determine retry and settlement.
+
+- `failure` — The reported failure.
+- `unknown` — Effects may have occurred, forbidding automatic resend.
+- `fatal` — The connection is unusable, rather than only this destination.
+- `retry_after` — Protocol-requested delay before another attempt.
+- `origin` — Recorded response call when this failure arose while mapping a response.
+
+Implements:
+
+```rust
+impl Debug for ChannelFault
+impl Display for ChannelFault
+impl Error for ChannelFault
+impl From<ChannelFault> for ChannelCallError
+```
+
+## struct `ChannelIdentity`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelIdentity {
+    pub protocol: String,
+    pub account: String,
+    pub facts: serde_json::Value,
+}
+```
+
+Stable account identity declared by a mapper.
+
+- `protocol` — A nonempty protocol name without colons, such as `telegram`.
+- `account` — A nonempty, opaque account ID within that protocol; colons are allowed.
+- `facts` — Protocol facts needed by subsequent mapper calls.
+
+### `ChannelIdentity::key`
+
+```rust
+pub fn key(&self) -> String
+```
+
+The connection-state key, `<protocol>:<account>`.
+
+Implements:
+
+```rust
+impl Clone for ChannelIdentity
+```
+
+## struct `ChannelInput`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelInput {
+    pub conversation: String,
+    pub message: String,
+    pub sender: Option<String>,
+    pub sender_name: Option<String>,
+    pub direct: bool,
+    pub addressed: bool,
+    pub reply_to: Option<String>,
+    pub action: ChannelAction,
+}
+```
+
+An incoming message, before host authorization or attachment fetching.
+
+- `conversation` — The conversation where replies go.
+- `message` — This message's ID within its conversation.
+- `sender` — The sender's protocol ID, when reported.
+- `sender_name` — The sender's display name, when reported.
+- `direct` — Whether the conversation is one to one.
+- `addressed` — Whether this message addresses the bot.
+- `reply_to` — The protocol ID of the message it replies to, when present.
+- `action` — The host action requested by this message.
+
+## struct `ChannelSent`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelSent {
+    pub message: Option<String>,
+    pub origin: enco_core::MappingOrigin,
+}
+```
+
+The confirmed result of sending one part.
+
+- `message` — Protocol ID, absent when the protocol does not expose one.
+- `origin` — The recorded call interpreting the send response.
+
+## struct `ChannelSettings`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelSettings {
+    pub base_url: String,
+    pub secrets: std::collections::BTreeMap<String, String>,
+}
+```
+
+The service and secret names chosen for one connection; values remain in transport.
+
+- `base_url` — HTTP origin and optional base path used by this connection.
+- `secrets` — Mapper credential names mapped to environment variable names.
+
+Implements:
+
+```rust
+impl Clone for ChannelSettings
+```
+
+## struct `ChannelUpdate`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelUpdate {
+    pub key: String,
+    pub protocol: serde_json::Value,
+    pub input: Option<ChannelInput>,
+    pub origin: enco_core::MappingOrigin,
+}
+```
+
+One update and the protocol state after accepting it.
+
+- `key` — Protocol key accepted at most once, including for commands.
+- `protocol` — The protocol state after this update.
+- `input` — What the update brings, if the host should consider it.
+- `origin` — The recorded mapper call and this update's position in its result.
 
 ## struct `CodeProvenance`
 
@@ -857,14 +1195,18 @@ Parsed configuration paired with the exact input retained by the host.
 pub struct ConnectionWrite {
     pub key: String,
     pub state: serde_json::Value,
+    pub update: Option<String>,
+    pub session: Option<NewSession>,
     pub settlement: Option<DeliverySettlement>,
 }
 ```
 
 State returned to the connection owner for atomic acceptance.
 
-- `key` — Adapter-declared protocol and account identity.
+- `key` — The connection-state key, `<protocol>:<account>`.
 - `state` — Complete state snapshot owned by this connection.
+- `update` — Protocol update accepted with this state, absent for outbound or cursor-only progress.
+- `session` — The Session this update creates, such as a group's first, never adopting an existing one.
 - `settlement` — Final settlement of a Log-derived delivery, if any.
 
 Implements:
@@ -872,6 +1214,24 @@ Implements:
 ```rust
 impl Clone for ConnectionWrite
 ```
+
+## struct `ConsumedMessage`
+
+`src/ports/store.rs`
+
+```rust
+pub struct ConsumedMessage {
+    pub session: SessionId,
+    pub pos: LogPos,
+    pub owner: bool,
+}
+```
+
+Where a channel message became a Session's input.
+
+- `session` — The Session that consumed it.
+- `pos` — Its position in that Session's Log.
+- `owner` — Whether its sender was the owner when it was accepted.
 
 ## struct `ContextError`
 
@@ -920,8 +1280,7 @@ pub struct Credential {
     pub name: String,
     pub origin: Option<String>,
     pub required: bool,
-    pub header: String,
-    pub prefix: String,
+    pub placement: Placement,
 }
 ```
 
@@ -930,8 +1289,7 @@ A declared credential; transport validates placement and alone reads its value.
 - `name` — Name used in the owner's secret mapping.
 - `origin` — Fixed service origin, or the service selected by the caller.
 - `required` — Whether the mapping must be present.
-- `header` — Header populated by the transport.
-- `prefix` — Literal prefix before the secret value.
+- `placement` — The location populated by transport.
 
 Implements:
 
@@ -1147,6 +1505,14 @@ pub fn plugin_of(&self, generation: GenerationId) -> Option<PluginId>
 
 Look up any recorded generation, including failed or unloaded history.
 
+### `Exports::channel`
+
+```rust
+pub fn channel(&self, plugin: &PluginName) -> Result<Export<dyn Channel>, Failure>
+```
+
+Resolve the active mapper; connection settings were checked during registration.
+
 ### `Exports::completion`
 
 ```rust
@@ -1238,6 +1604,29 @@ Implements:
 ```rust
 impl Clone for FactoryStatus
 impl Serialize for FactoryStatus
+```
+
+## struct `HeaderPlacement`
+
+`src/ports/runtime.rs`
+
+```rust
+pub struct HeaderPlacement {
+    pub name: String,
+    pub prefix: String,
+}
+```
+
+A request header carrying a credential.
+
+- `name` — Header name overwritten by the transport.
+- `prefix` — Literal text before the secret value.
+
+Implements:
+
+```rust
+impl Clone for HeaderPlacement
+impl Serialize for HeaderPlacement
 ```
 
 ## enum `ImageError`
@@ -1407,6 +1796,42 @@ pub async fn inspect(&self, session: SessionId, attempt: Option<AttemptId>) -> R
 
 Inspect a specified Attempt, or the latest one, without composing or invoking a model.
 
+### `Kernel::submit`
+
+`src/kernel/input.rs`
+
+```rust
+pub async fn submit(&self, session: SessionId, event_id: EventId, text: String, images: Vec<Image>) -> Result<Accepted, KernelError>
+```
+
+Persist input before waking its owner; duplicate IDs remain harmless.
+
+### `Kernel::backtrack`
+
+`src/kernel/input.rs`
+
+```rust
+pub async fn backtrack(&self, session: SessionId, event_id: EventId, to: LogPos) -> Result<Accepted, KernelError>
+```
+
+Take the conversation back to a recorded position, as the owner asked from the CLI.
+
+Like `submit`, a repeated event ID is accepted once.
+
+### `Kernel::accept`
+
+`src/kernel/input.rs`
+
+```rust
+pub async fn accept(&self, events: &[Event], connection: Option<&ConnectionWrite>) -> Result<Vec<Accepted>, KernelError>
+```
+
+Accept inputs and connection progress before waking the affected Session owners.
+
+A Session the connection creates with this acceptance starts once it is committed. A
+backtrack must point at a recorded position other than another backtrack; a newly accepted
+one signals the Session's current Run, which stops at its next boundary.
+
 ### `Kernel::start`
 
 ```rust
@@ -1423,34 +1848,13 @@ pub async fn open_session(&self, name: &str) -> Result<SessionRecord, KernelErro
 
 Create a Session if needed and ensure its owner is running.
 
-### `Kernel::submit`
+### `Kernel::connection_update_seen`
 
 ```rust
-pub async fn submit(&self, session: SessionId, event_id: EventId, text: String, images: Vec<Image>) -> Result<Accepted, KernelError>
+pub async fn connection_update_seen(&self, key: &str, update: &str) -> Result<bool, KernelError>
 ```
 
-Persist input before waking its owner; duplicate IDs remain harmless.
-
-### `Kernel::backtrack`
-
-```rust
-pub async fn backtrack(&self, session: SessionId, event_id: EventId, to: LogPos) -> Result<Accepted, KernelError>
-```
-
-Take the conversation back to a recorded position, as the owner asked from the CLI.
-
-Like `submit`, a repeated event ID is accepted once.
-
-### `Kernel::accept`
-
-```rust
-pub async fn accept(&self, events: &[Event], connection: Option<&ConnectionWrite>) -> Result<Vec<Accepted>, KernelError>
-```
-
-Accept inputs and connection progress before waking the affected Session owners.
-
-A backtrack must point at a recorded position other than another backtrack; a newly accepted
-one signals the Session's current Run, which stops at its next boundary.
+Check protocol update acceptance before preparing its content or routes.
 
 ### `Kernel::connection`
 
@@ -1471,10 +1875,10 @@ Read recent final failures, retaining their original Session and Log references.
 ### `Kernel::consumed_message`
 
 ```rust
-pub async fn consumed_message(&self, channel: &str, account: &str, conversation: &str, message: &str) -> Result<Option<(SessionId, LogPos)>, KernelError>
+pub async fn consumed_message(&self, protocol: &str, account: &str, conversation: &str, message: &str) -> Result<Option<ConsumedMessage>, KernelError>
 ```
 
-Find where the owner's channel message with this protocol ID became a Session's input.
+Find where a channel message with this protocol ID became a Session's input.
 
 Commands recorded as inputs, such as backtracks, never match.
 
@@ -1594,7 +1998,6 @@ pub struct KernelDeps {
     pub instructions: std::sync::Arc<dyn ContextSource<Supply = Option<String>>>,
     pub memories: std::sync::Arc<dyn ContextSource<Supply = OfferedMemories>>,
     pub tools: Vec<std::sync::Arc<dyn Tool>>,
-    pub lifeline: Vec<String>,
     pub clock: std::sync::Arc<dyn Clock>,
 }
 ```
@@ -1607,7 +2010,6 @@ Ports assembled once by the application; no service locator is involved.
 - `instructions` — The owner's standing instructions, read once per Round.
 - `memories` — The memories offered once per Round.
 - `tools` — Host capabilities exposed through the ordinary Tool port.
-- `lifeline` — Tool names required by Sessions with requires_lifeline.
 - `clock` — Clock supplied by the host or tests.
 
 ## enum `KernelError`
@@ -1791,6 +2193,7 @@ pub struct Loaded {
     pub unavailable: Option<enco_core::Failure>,
     pub lifecycle: std::sync::Arc<dyn Lifecycle>,
     pub composer: Option<LoadedComposer>,
+    pub channel: Option<std::sync::Arc<dyn Channel>>,
     pub completion: Option<std::sync::Arc<dyn Provider>>,
     pub embedding: Option<std::sync::Arc<dyn Embedding>>,
     pub decision: Option<std::sync::Arc<dyn Decision>>,
@@ -1806,6 +2209,7 @@ Exports returned by loading a component. Each invocation owns its own runtime st
 - `unavailable` — A missing environment requirement; the code still loads and retains its health.
 - `lifecycle` — Self-check required before a deployment is admitted.
 - `composer` — Context policy and its profile options, fixed with the loaded generation.
+- `channel` — Messaging protocol mapper when supplied by the component.
 - `completion` — Completion interface when supplied by the component.
 - `embedding` — Embedding interface when supplied by the component.
 - `decision` — Decision interface when supplied by the component.
@@ -1921,6 +2325,32 @@ impl Eq for Need
 impl PartialEq for Need
 ```
 
+## struct `NewSession`
+
+`src/ports/store.rs`
+
+```rust
+pub struct NewSession {
+    pub id: SessionId,
+    pub name: String,
+    pub profile: String,
+    pub created_at: DateTime<Utc>,
+}
+```
+
+A Session created together with the input that first reaches it.
+
+- `id` — Identity chosen by the creator, which also records it in its own state.
+- `name` — Display name; an occupied name receives a numeric suffix.
+- `profile` — Registered profile the Session starts with.
+- `created_at` — Creation time for display.
+
+Implements:
+
+```rust
+impl Clone for NewSession
+```
+
 ## struct `NodeRecord`
 
 `src/ports/store.rs`
@@ -1966,6 +2396,29 @@ Implements:
 impl Clone for OfferedMemories
 impl Debug for OfferedMemories
 impl Default for OfferedMemories
+```
+
+## enum `Placement`
+
+`src/ports/runtime.rs`
+
+```rust
+pub enum Placement {
+    Header(HeaderPlacement),
+    Path(Vec<String>),
+}
+```
+
+Where transport alone writes a credential value.
+
+- `Header` — One header populated with a prefix and the secret.
+- `Path` — Insert immediately after the matching request-path prefix.
+
+Implements:
+
+```rust
+impl Clone for Placement
+impl Serialize for Placement
 ```
 
 ## struct `PlanWrite`
@@ -2144,6 +2597,8 @@ pub struct Profile {
     pub reply: Endpoints,
     pub compaction: Endpoints,
     pub requires_lifeline: bool,
+    pub tools: Option<std::collections::BTreeSet<String>>,
+    pub owner_context: bool,
 }
 ```
 
@@ -2153,6 +2608,8 @@ Session policy sampled once at the start of a Round.
 - `reply` — Ordered candidates for ordinary replies.
 - `compaction` — Ordered candidates for summarizing history.
 - `requires_lifeline` — Whether every reply plan must disclose all lifeline tools.
+- `tools` — Allowed tool names; absent exposes all available tools, including future additions.
+- `owner_context` — Whether composition receives the owner's standing instructions and memories.
 
 Implements:
 
@@ -2587,6 +3044,16 @@ pub async fn rollback(&self) -> Result<Rollback, RegistryError>
 
 Restore the still-effective parts of the newest accepted change.
 
+### `Registry::lifeline`
+
+`src/registry/configuration.rs`
+
+```rust
+pub fn lifeline(&self) -> &[String]
+```
+
+The host's repair set, also used when validating profile tool restrictions.
+
 ### `Registry::set_profile`
 
 `src/registry/configuration.rs`
@@ -2705,6 +3172,7 @@ pub struct RegistryDeps {
     pub composer: PluginName,
     pub owners: Vec<TableOwner>,
     pub host_tool_names: Vec<String>,
+    pub lifeline: Vec<String>,
     pub clock: std::sync::Arc<dyn Clock>,
 }
 ```
@@ -2717,6 +3185,7 @@ Durable registry dependencies assembled by the application.
 - `composer` — The factory plugin that composes for profiles naming no composer, and in safe mode.
 - `owners` — Host-owned tables and their declaration functions.
 - `host_tool_names` — Names from the native tool declarations assembled by the composition root.
+- `lifeline` — Native repair tool names required by profiles that request the lifeline.
 - `clock` — Observation time, never generation ordering.
 
 ## enum `RegistryError`
@@ -3346,6 +3815,7 @@ Implements:
 impl Debug for StoreError
 impl Display for StoreError
 impl Error for StoreError
+impl From<StoreError> for ChannelCallError
 impl From<StoreError> for ImageError
 impl From<StoreError> for KernelError
 impl From<StoreError> for RegistryError
@@ -3551,6 +4021,9 @@ impl Clone for Use
 
 ```rust
 pub enum UseRef {
+    Channel {
+        name: String,
+    },
     Endpoint {
         endpoint: String,
     },
@@ -3562,6 +4035,8 @@ pub enum UseRef {
 
 The configuration entry a use names, without copying its invocation parameters.
 
+- `Channel` — A named channel connection.
+  - `name` — Name in the channel table.
 - `Endpoint` — A named model service.
   - `endpoint` — Name in the endpoint table.
 - `Composer` — A profile's composer selection and options.
@@ -3584,6 +4059,11 @@ impl Serialize for UseRef
 
 ```rust
 pub enum UseTarget {
+    Channel {
+        name: String,
+        plugin: PluginName,
+        settings: crate::ChannelSettings,
+    },
     Endpoint {
         endpoint: crate::Endpoint,
         need: Need,
@@ -3597,6 +4077,10 @@ pub enum UseTarget {
 
 The configured invocation, preserving the facts its actual interface consumes.
 
+- `Channel` — One connection's pure channel mapper and credential bindings.
+  - `name` — Connection name in the channel table.
+  - `plugin` — Registered plugin exporting the protocol mapper.
+  - `settings` — Transport parameters and credential names.
 - `Endpoint` — A model service and the behavior its consumer requires.
   - `endpoint` — Named service and its invocation parameters.
   - `need` — Required model interface and behavior.
@@ -3641,6 +4125,90 @@ The one published snapshot of routing and registered configuration.
 
 - `exports` — Derived invocation routes.
 - `config` — Registered content and parsed kernel tables.
+
+## trait `Channel`
+
+`src/ports/channel.rs`
+
+```rust
+pub trait Channel: Send + Sync
+```
+
+Opens accounts through one loaded, pure protocol mapper.
+
+### `Channel::open`
+
+```rust
+async fn open(&self, settings: &ChannelSettings, generation: GenerationId, store: Arc<dyn Store>) -> Result<Arc<dyn ChannelAdapter>, ChannelCallError>
+```
+
+Bind transport settings and identify the account, retaining this generation for all calls.
+
+## trait `ChannelAdapter`
+
+`src/ports/channel.rs`
+
+```rust
+pub trait ChannelAdapter: Send + Sync
+```
+
+One identified account, using the same generation until it is stopped.
+
+### `ChannelAdapter::identity`
+
+```rust
+fn identity(&self) -> ChannelIdentity
+```
+
+The stable account reached by this connection.
+
+### `ChannelAdapter::poll`
+
+```rust
+async fn poll(&self, protocol: Option<Value>) -> Result<Vec<ChannelUpdate>, ChannelCallError>
+```
+
+Read updates from committed protocol state; cancellation has no external effects.
+
+### `ChannelAdapter::fetch`
+
+```rust
+async fn fetch(&self, locator: &str) -> Result<AttachmentContent, ChannelCallError>
+```
+
+Fetch an authorized attachment; reads have no external effects.
+
+### `ChannelAdapter::split`
+
+```rust
+async fn split(&self, message: Outgoing<FileData>) -> Result<Vec<Outgoing<FileData>>, ChannelCallError>
+```
+
+Preserve all text and attach a file once, propagating mapper invocation failures.
+
+### `ChannelAdapter::send`
+
+```rust
+async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<ChannelSent, ChannelCallError>
+```
+
+Send once without internal retries, retaining evidence for the returned outcome.
+
+### `ChannelAdapter::commands`
+
+```rust
+async fn commands(&self, commands: &[ChannelCommand]) -> Result<(), ChannelCallError>
+```
+
+Offer the host's commands in the protocol's menus.
+
+### `ChannelAdapter::typing`
+
+```rust
+async fn typing(&self, target: &str) -> Result<(), ChannelCallError>
+```
+
+Show activity when the protocol supports it.
 
 ## trait `Clock`
 
@@ -3881,21 +4449,31 @@ Restore a recorded request plan and verify its complete content address.
 ### `Store::consumed_message`
 
 ```rust
-async fn consumed_message(&self, channel: &str, account: &str, conversation: &str, message: &str) -> Result<Option<(SessionId, LogPos)>, StoreError>
+async fn consumed_message(&self, protocol: &str, account: &str, conversation: &str, message: &str) -> Result<Option<ConsumedMessage>, StoreError>
 ```
 
-Find the Session and position where the owner's channel message with this protocol ID was
-consumed.
+Find where a channel message with this protocol ID was consumed.
 
 Commands recorded as inputs, such as backtracks, never match.
 
 ### `Store::accept`
 
 ```rust
-async fn accept(&self, events: &[Event], connection: Option<&ConnectionWrite>) -> Result<Vec<Accepted>, StoreError>
+async fn accept(&self, events: &[Event], connection: Option<&ConnectionWrite>) -> Result<Acceptance, StoreError>
 ```
 
-Atomically accept Events, connection state and an optional final delivery outcome.
+Atomically accept Events with a connection's state, and with it the protocol update, the
+Session that update creates and a delivery outcome, if any.
+
+Accepting an update key twice is an error: the connection checks it before preparing.
+
+### `Store::connection_update_seen`
+
+```rust
+async fn connection_update_seen(&self, key: &str, update: &str) -> Result<bool, StoreError>
+```
+
+Check durable update acceptance before preparing attachments or creating Sessions.
 
 ### `Store::connection`
 

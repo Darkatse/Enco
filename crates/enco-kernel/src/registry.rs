@@ -20,8 +20,9 @@ mod status;
 mod wiring;
 
 use crate::{
-    Clock, Composer, ComposerOptions, ComposerSettings, Credential, Decision, Embedding, Endpoint,
-    KernelSettings, LoadError, Loaded, Provider, Runtime, SettingsError, Store, StoreError,
+    Channel, ChannelSettings, Clock, Composer, ComposerOptions, ComposerSettings, Credential,
+    Decision, Embedding, Endpoint, KernelSettings, LoadError, Loaded, Provider, Runtime,
+    SettingsError, Store, StoreError,
 };
 use admission::users;
 pub use configuration::{PLUGIN_SETTINGS_TABLE, plugin_settings};
@@ -56,6 +57,8 @@ pub struct RegistryDeps {
     pub owners: Vec<TableOwner>,
     /// Names from the native tool declarations assembled by the composition root.
     pub host_tool_names: Vec<String>,
+    /// Native repair tool names required by profiles that request the lifeline.
+    pub lifeline: Vec<String>,
     /// Observation time, never generation ordering.
     pub clock: Arc<dyn Clock>,
 }
@@ -109,6 +112,15 @@ pub struct Use {
 /// The configured invocation, preserving the facts its actual interface consumes.
 #[derive(Clone)]
 pub enum UseTarget {
+    /// One connection's pure channel mapper and credential bindings.
+    Channel {
+        /// Connection name in the channel table.
+        name: String,
+        /// Registered plugin exporting the protocol mapper.
+        plugin: PluginName,
+        /// Transport parameters and credential names.
+        settings: ChannelSettings,
+    },
     /// A model service and the behavior its consumer requires.
     Endpoint {
         /// Named service and its invocation parameters.
@@ -129,6 +141,11 @@ pub enum UseTarget {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UseRef {
+    /// A named channel connection.
+    Channel {
+        /// Name in the channel table.
+        name: String,
+    },
     /// A named model service.
     Endpoint {
         /// Name in the endpoint table.
@@ -144,6 +161,7 @@ pub enum UseRef {
 impl std::fmt::Display for UseRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Channel { name } => write!(f, "channel {name}"),
             Self::Endpoint { endpoint } => write!(f, "endpoint {endpoint}"),
             Self::Composer { .. } => f.write_str("composer"),
         }

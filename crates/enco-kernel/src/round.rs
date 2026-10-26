@@ -93,7 +93,9 @@ impl SessionActor {
             omitted,
             previous_plan,
             transcript,
-        } = self.gather(&snapshot, safe_mode, token).await?;
+        } = self
+            .gather(&snapshot, safe_mode, profile.owner_context, token)
+            .await?;
         let mut input = ComposeInput {
             round,
             now,
@@ -109,6 +111,12 @@ impl SessionActor {
                 .tools
                 .iter()
                 .filter(|tool| !safe_mode || snapshot.lifeline.contains(&tool.id))
+                .filter(|tool| {
+                    profile
+                        .tools
+                        .as_ref()
+                        .is_none_or(|names| names.contains(&tool.id.name))
+                })
                 .map(|tool| (tool.id.clone(), tool.spec.clone()))
                 .collect(),
             lifeline: if profile.requires_lifeline {

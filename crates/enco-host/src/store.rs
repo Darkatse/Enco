@@ -25,7 +25,7 @@ use std::{
 ///
 /// It covers the SQLite schema, plan records included. Until P4, persistent format changes
 /// require a new database; opening never migrates or deletes the old one.
-const SCHEMA_VERSION: u32 = 14;
+const SCHEMA_VERSION: u32 = 15;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -229,15 +229,15 @@ impl Store for SqliteStore {
 
     async fn consumed_message(
         &self,
-        channel: &str,
+        protocol: &str,
         account: &str,
         conversation: &str,
         message: &str,
-    ) -> Result<Option<(SessionId, LogPos)>, StoreError> {
-        let [channel, account, conversation, message] =
-            [channel, account, conversation, message].map(str::to_owned);
+    ) -> Result<Option<ConsumedMessage>, StoreError> {
+        let [protocol, account, conversation, message] =
+            [protocol, account, conversation, message].map(str::to_owned);
         self.run(move |connection| {
-            sessions::consumed_message(connection, &channel, &account, &conversation, &message)
+            sessions::consumed_message(connection, &protocol, &account, &conversation, &message)
         })
         .await
     }
@@ -246,10 +246,17 @@ impl Store for SqliteStore {
         &self,
         events: &[Event],
         connection: Option<&ConnectionWrite>,
-    ) -> Result<Vec<Accepted>, StoreError> {
+    ) -> Result<Acceptance, StoreError> {
         let events = events.to_vec();
         let write = connection.cloned();
-        self.run(move |connection| accept::accept(connection, &events, write.as_ref()))
+        let node = self.node;
+        self.run(move |connection| accept::accept(connection, node, &events, write.as_ref()))
+            .await
+    }
+
+    async fn connection_update_seen(&self, key: &str, update: &str) -> Result<bool, StoreError> {
+        let (key, update) = (key.to_owned(), update.to_owned());
+        self.run(move |connection| connections::update_seen(connection, &key, &update))
             .await
     }
 

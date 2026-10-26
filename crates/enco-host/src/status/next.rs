@@ -332,6 +332,9 @@ pub(crate) fn repair(part: &IntentPart) -> Repair {
             })])
         }
         IntentPart::Use { target, .. } => Repair::then_retry(vec![Step::Fix(match target {
+            enco_kernel::UseRef::Channel { name } => FixTarget::Table {
+                name: format!("channel.{name}"),
+            },
             enco_kernel::UseRef::Endpoint { endpoint } => FixTarget::Endpoint {
                 name: endpoint.clone(),
             },

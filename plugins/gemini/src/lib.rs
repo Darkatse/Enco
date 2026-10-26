@@ -17,8 +17,10 @@ impl lifecycle::Guest for Plugin {
             credentials: vec![lifecycle::Credential {
                 name: "api-key".into(),
                 origin: None,
-                header: "x-goog-api-key".into(),
-                prefix: "".into(),
+                placement: lifecycle::Placement::Header(lifecycle::HeaderPlacement {
+                    name: "x-goog-api-key".into(),
+                    prefix: "".into(),
+                }),
                 required: true,
             }],
         })

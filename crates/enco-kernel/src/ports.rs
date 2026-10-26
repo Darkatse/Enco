@@ -1,3 +1,4 @@
+mod channel;
 mod clock;
 mod composer;
 mod context;
@@ -8,6 +9,7 @@ mod runtime;
 mod store;
 mod tool;
 
+pub use channel::*;
 pub use clock::*;
 pub use composer::*;
 pub use context::*;

@@ -1,6 +1,6 @@
 use crate::{
-    DateTime, EventId, Image, LogPos, Message, Part, Role, RolledBack, ScheduleId, SessionId,
-    Unviewable, Utc,
+    DateTime, EventId, Image, LogPos, MappingOrigin, Message, Part, Role, RolledBack, ScheduleId,
+    SessionId, Unviewable, Utc,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,14 +27,20 @@ pub enum EventSource {
     Cli,
     /// Interactive input from a channel connection.
     Channel {
-        /// Protocol declared by the channel adapter.
-        channel: String,
+        /// Protocol declared by the channel mapper, such as `telegram`.
+        protocol: String,
         /// Account identity within the protocol.
         account: String,
         /// Conversation to which default replies return.
         conversation: String,
         /// Authenticated sender within the protocol.
         sender: String,
+        /// Display name reported when this input was accepted.
+        sender_name: Option<String>,
+        /// Whether the sender was the owner when this input was accepted.
+        owner: bool,
+        /// The recorded protocol translation that produced this input.
+        origin: MappingOrigin,
         /// The protocol's ID for the message this input came from, by which the owner can point
         /// at it later.
         message: String,
@@ -56,14 +62,16 @@ pub enum EventBody {
         /// Notice written by the Registry when the rollback committed.
         text: String,
     },
-    /// A message from the owner.
+    /// A message that drives this Session, with quoted context from its conversation.
     UserMessage {
-        /// Text supplied by the owner.
+        /// Text supplied by the sender.
         text: String,
         /// Images stored before this Event was accepted.
         images: Vec<Image>,
         /// Attachments whose content could not be accepted as images.
         unviewable: Vec<Unviewable>,
+        /// Earlier messages quoted for context; excluded from the canonical message.
+        earlier: Vec<EarlierMessage>,
     },
     /// A reminder reaching its scheduled time.
     Reminder {
@@ -84,6 +92,25 @@ pub enum EventBody {
         /// The position the owner pointed at; the kernel derives what the conversation keeps.
         to: LogPos,
     },
+}
+
+/// A prior chat message quoted as context, without starting a Session Run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EarlierMessage {
+    /// Reception time for display, not ordering.
+    pub received_at: DateTime<Utc>,
+    /// Protocol sender ID, when reported.
+    pub sender: Option<String>,
+    /// Display name reported when this message arrived.
+    pub sender_name: Option<String>,
+    /// Whether the sender was the owner when this message arrived.
+    pub owner: bool,
+    /// Quoted text, never an instruction from the owner on another sender's behalf.
+    pub text: String,
+    /// Attachment descriptions; their content is not fetched for context.
+    pub attachments: Vec<String>,
+    /// The recorded protocol translation that produced this message.
+    pub origin: MappingOrigin,
 }
 
 impl Event {

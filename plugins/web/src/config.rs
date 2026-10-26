@@ -1,4 +1,8 @@
-use crate::{bad, bindings::exports::enco::plugin::lifecycle::Credential, types::Failure};
+use crate::{
+    bad,
+    bindings::exports::enco::plugin::lifecycle::{Credential, HeaderPlacement, Placement},
+    types::Failure,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -108,8 +112,10 @@ impl Config {
                     name: service.name().into(),
                     origin: Some(self.url(service).into()),
                     required,
-                    header: header.into(),
-                    prefix: prefix.into(),
+                    placement: Placement::Header(HeaderPlacement {
+                        name: header.into(),
+                        prefix: prefix.into(),
+                    }),
                 }
             })
             .collect()

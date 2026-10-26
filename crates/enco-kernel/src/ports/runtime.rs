@@ -1,4 +1,4 @@
-use crate::{CallContext, Composer, Decision, Embedding, Provider};
+use crate::{CallContext, Channel, Composer, Decision, Embedding, Provider};
 use async_trait::async_trait;
 use enco_core::{Failure, Outcome, PluginSettings, ToolSpec};
 use std::sync::Arc;
@@ -25,6 +25,8 @@ pub struct Loaded {
     pub lifecycle: Arc<dyn Lifecycle>,
     /// Context policy and its profile options, fixed with the loaded generation.
     pub composer: Option<LoadedComposer>,
+    /// Messaging protocol mapper when supplied by the component.
+    pub channel: Option<Arc<dyn Channel>>,
     /// Completion interface when supplied by the component.
     pub completion: Option<Arc<dyn Provider>>,
     /// Embedding interface when supplied by the component.
@@ -74,10 +76,27 @@ pub struct Credential {
     pub origin: Option<String>,
     /// Whether the mapping must be present.
     pub required: bool,
-    /// Header populated by the transport.
-    pub header: String,
-    /// Literal prefix before the secret value.
+    /// The location populated by transport.
+    pub placement: Placement,
+}
+
+/// A request header carrying a credential.
+#[derive(Clone, serde::Serialize)]
+pub struct HeaderPlacement {
+    /// Header name overwritten by the transport.
+    pub name: String,
+    /// Literal text before the secret value.
     pub prefix: String,
+}
+
+/// Where transport alone writes a credential value.
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum Placement {
+    /// One header populated with a prefix and the secret.
+    Header(HeaderPlacement),
+    /// Insert immediately after the matching request-path prefix.
+    Path(Vec<String>),
 }
 
 /// Why a component cannot be loaded, attributed to its code or to the settings it was given.

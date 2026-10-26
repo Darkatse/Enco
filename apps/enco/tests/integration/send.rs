@@ -108,6 +108,7 @@ fn run_entries(session: SessionId, event_id: EventId, run: RunId) -> [Entry; 2] 
                 body: EventBody::UserMessage {
                     images: Vec::new(),
                     unviewable: Vec::new(),
+                    earlier: Vec::new(),
                     text: "second input".into(),
                 },
                 received_at: Utc::now(),

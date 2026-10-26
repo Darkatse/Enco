@@ -65,6 +65,12 @@ CREATE TABLE connections (
   state TEXT NOT NULL
 ) STRICT;
 
+CREATE TABLE connection_updates (
+  connection TEXT NOT NULL,
+  update_key TEXT NOT NULL,
+  PRIMARY KEY (connection, update_key)
+) STRICT;
+
 -- One final outcome per logical delivery; the body contains no reply text.
 CREATE TABLE deliveries (
   order_no   INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -47,10 +47,7 @@ async fn a_reply_with_backtrack_goes_back_to_that_agent_or_owner_message() {
     exchange(&updates, &mut polling, &mut sending, 2, "two").await;
 
     // An Agent message is found through the delivery that sent it.
-    updates
-        .send(vec![update(3, Action::Backtrack(Some(first)))])
-        .await
-        .unwrap();
+    updates.send(vec![backtrack(3, Some(first))]).await.unwrap();
     receive(&mut polling).await;
     let receipt = receive(&mut sending).await;
     assert!(receipt.text.starts_with("Back at that message."));
@@ -63,7 +60,7 @@ async fn a_reply_with_backtrack_goes_back_to_that_agent_or_owner_message() {
 
     // The owner's message is found through the input it became, even in the part left behind.
     updates
-        .send(vec![update(5, Action::Backtrack(Some("2".into())))])
+        .send(vec![backtrack(5, Some("2".into()))])
         .await
         .unwrap();
     receive(&mut polling).await;
@@ -108,9 +105,9 @@ async fn a_backtrack_without_a_recorded_message_in_the_current_session_is_refuse
 
     updates
         .send(vec![
-            update(3, Action::Backtrack(None)),
-            update(4, Action::Backtrack(Some(first))),
-            update(5, Action::Backtrack(Some(command_receipt))),
+            backtrack(3, None),
+            backtrack(4, Some(first)),
+            backtrack(5, Some(command_receipt)),
         ])
         .await
         .unwrap();
@@ -146,4 +143,10 @@ async fn a_backtrack_without_a_recorded_message_in_the_current_session_is_refuse
     assert_eq!(provider.requests.lock().unwrap().len(), 1);
     channel.shutdown().await.unwrap();
     kernel.shutdown().await.unwrap();
+}
+
+fn backtrack(offset: u32, reply: Option<String>) -> Update {
+    let mut value = update(offset, Action::Backtrack);
+    value.input.as_mut().unwrap().reply_to = reply;
+    value
 }

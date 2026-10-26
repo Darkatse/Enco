@@ -1,4 +1,5 @@
 use super::*;
+use crate::{Acceptance, ConnectionWrite, NewSession};
 
 /// The registry owns the named settings sections of plugins.
 pub const PLUGIN_SETTINGS_TABLE: ConfigTable = ConfigTable::Named("plugin");
@@ -42,6 +43,30 @@ pub(super) fn declare(
 ) -> Result<Declaration, SettingsError> {
     let owners = &deps.owners;
     let kernel = KernelSettings::from_document(document, &deps.composer)?;
+    for (name, profile) in &kernel.profiles {
+        if profile.requires_lifeline
+            && let Some(tools) = &profile.tools
+        {
+            let missing: Vec<_> = deps
+                .lifeline
+                .iter()
+                .filter(|name| !tools.contains(*name))
+                .collect();
+            if !missing.is_empty() {
+                return Err(SettingsError::new(
+                    format!("profile.{name}"),
+                    format!(
+                        "tools must include the required lifeline: {}",
+                        missing
+                            .iter()
+                            .map(|name| name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+            }
+        }
+    }
     let tables = document
         .as_object()
         .ok_or_else(|| SettingsError::new("config", "expected a document of named tables"))?;
@@ -201,6 +226,11 @@ pub(super) async fn check_profiles(
 }
 
 impl Registry {
+    /// The host's repair set, also used when validating profile tool restrictions.
+    pub fn lifeline(&self) -> &[String] {
+        &self.deps.lifeline
+    }
+
     /// Session creation and profile selection observe one registered configuration.
     pub(crate) async fn session_view(
         &self,
@@ -214,6 +244,28 @@ impl Registry {
             .await?
             .ok_or(StoreError::UnknownSession(session))?;
         Ok((session, self.view()))
+    }
+
+    /// Accept input that creates a Session, under the committer that also changes profiles.
+    ///
+    /// The Session thus never starts with a profile that a concurrent registration removes.
+    pub(crate) async fn accept_creating(
+        &self,
+        session: &NewSession,
+        events: &[Event],
+        connection: Option<&ConnectionWrite>,
+    ) -> Result<Acceptance, RegistryError> {
+        let _state = self.state.lock().await;
+        if !self
+            .view()
+            .config
+            .kernel
+            .profiles
+            .contains_key(&session.profile)
+        {
+            return Err(RegistryError::UnknownProfile(session.profile.clone()));
+        }
+        Ok(self.deps.store.accept(events, connection).await?)
     }
 
     /// Profile assignments share the registry's committer with configuration changes.

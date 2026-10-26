@@ -4,8 +4,8 @@
 //! compatible version; any other import, `completion` included, is rejected at load.
 use crate::{
     bindings::{
-        BasePre, CONTRACT_VERSION, CompletionPluginPre, ComposerPluginPre, DecisionPluginPre,
-        EmbeddingPluginPre, ToolPluginPre, enco::plugin::host,
+        BasePre, CONTRACT_VERSION, ChannelPluginPre, CompletionPluginPre, ComposerPluginPre,
+        DecisionPluginPre, EmbeddingPluginPre, ToolPluginPre, enco::plugin::host,
     },
     credentials,
     engine::WasmEngine,
@@ -14,7 +14,10 @@ use crate::{
 };
 use async_trait::async_trait;
 use enco_core::{ContentHash, Failure, PluginSettings, code};
-use enco_kernel::{Credential, Decision, Embedding, LoadError, Loaded, Provider, Runtime};
+use enco_kernel::{
+    Channel, Credential, Decision, Embedding, HeaderPlacement, LoadError, Loaded, Placement,
+    Provider, Runtime,
+};
 use std::sync::Arc;
 use wasmtime::component::{Component, HasSelf, Linker};
 
@@ -119,6 +122,20 @@ impl Runtime for WasmRuntime {
             .then(|| ComposerPluginPre::new(pre.clone()))
             .transpose()
             .map_err(load_error)?;
+        if exports("channel")
+            && component
+                .component_type()
+                .imports(&self.engine.engine)
+                .any(|(name, _)| name.starts_with("enco:plugin/host@"))
+        {
+            return Err(LoadError::Component(
+                "channel mappers cannot import host capabilities".into(),
+            ));
+        }
+        let channel = exports("channel")
+            .then(|| ChannelPluginPre::new(pre.clone()))
+            .transpose()
+            .map_err(load_error)?;
         let tools = exports("tools")
             .then(|| ToolPluginPre::new(pre))
             .transpose()
@@ -128,9 +145,10 @@ impl Runtime for WasmRuntime {
             && decision.is_none()
             && tools.is_none()
             && composer.is_none()
+            && channel.is_none()
         {
             return Err(LoadError::Component(
-                "component exports none of completion, embedding, decision, composer or tools"
+                "component exports none of completion, embedding, decision, composer, channel or tools"
                     .into(),
             ));
         }
@@ -145,7 +163,7 @@ impl Runtime for WasmRuntime {
             settings: settings.clone(),
             placements: Vec::new(),
         };
-        describe(plugin, tools, composer).await
+        describe(plugin, tools, composer, channel).await
     }
 }
 
@@ -154,6 +172,7 @@ async fn describe(
     mut plugin: WasmPlugin,
     tools: Option<ToolPluginPre<HostState>>,
     composer: Option<ComposerPluginPre<HostState>>,
+    channel: Option<ChannelPluginPre<HostState>>,
 ) -> Result<Loaded, LoadError> {
     let description = plugin
         .describe(&plugin.settings.config)
@@ -186,17 +205,36 @@ async fn describe(
         credentials: description
             .credentials
             .into_iter()
-            .map(|credential| Credential {
-                name: credential.name,
-                origin: credential.origin,
-                required: credential.required,
-                header: credential.header,
-                prefix: credential.prefix,
+            .map(|credential| {
+                let crate::bindings::lifecycle::Credential {
+                    name,
+                    origin,
+                    required,
+                    placement,
+                } = credential;
+                let placement = match placement {
+                    crate::bindings::lifecycle::Placement::Header(value) => {
+                        let crate::bindings::lifecycle::HeaderPlacement { name, prefix } = value;
+                        Placement::Header(HeaderPlacement { name, prefix })
+                    }
+                    crate::bindings::lifecycle::Placement::Path(prefixes) => {
+                        Placement::Path(prefixes)
+                    }
+                };
+                Credential {
+                    name,
+                    origin,
+                    required,
+                    placement,
+                }
             })
             .collect(),
         unavailable,
         tools,
         composer,
+        channel: channel.map(|pre| {
+            Arc::new(crate::channel::WasmChannel::new(plugin.clone(), pre)) as Arc<dyn Channel>
+        }),
         lifecycle: plugin.clone(),
         completion: plugin
             .completion

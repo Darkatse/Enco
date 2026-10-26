@@ -82,6 +82,7 @@ pub(super) fn fire(
             return Err(StoreError::Inbox("event is not a Reminder".into()));
         }
     };
+    let events = super::accept::encode_events(std::slice::from_ref(event))?;
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
@@ -105,7 +106,7 @@ pub(super) fn fire(
     if inserted == 0 {
         return Err(StoreError::ScheduleNotActive(id));
     }
-    if super::accept::events_in(&tx, std::slice::from_ref(event))? == [Accepted::Duplicate] {
+    if super::accept::events_in(&tx, &events)? == [Accepted::Duplicate] {
         return Err(StoreError::Inbox(format!(
             "reminder {} was already accepted",
             event.id

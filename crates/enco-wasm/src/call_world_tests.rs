@@ -104,3 +104,27 @@ fn declarations_and_probes_have_no_network() {
     assert!(matches!(network, Network::Closed));
     assert_eq!(config, "{}");
 }
+
+#[test]
+fn mapper_wasi_repeats_clocks_and_randomness_without_capabilities() {
+    let (network, config, mut first) = CallWorld::Mapper
+        .configure(&serde_json::json!({"ignored": true}))
+        .unwrap();
+    let (_, _, mut second) = CallWorld::Mapper.configure(&serde_json::json!({})).unwrap();
+    assert!(matches!(network, Network::Closed));
+    assert_eq!(config, "{}");
+    for _ in 0..3 {
+        assert_eq!(
+            random::Host::get_random_bytes(first.random(), 64).unwrap(),
+            random::Host::get_random_bytes(second.random(), 64).unwrap()
+        );
+    }
+    let mut table = ResourceTable::new();
+    let mut clocks = WasiClocksCtxView {
+        ctx: first.clocks(),
+        table: &mut table,
+    };
+    let instant = wall_clock::Host::now(&mut clocks).unwrap();
+    assert_eq!((instant.seconds, instant.nanoseconds), (0, 0));
+    assert_eq!(monotonic_clock::Host::now(&mut clocks).unwrap(), 0);
+}

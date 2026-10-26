@@ -163,7 +163,7 @@ fn node(out: &mut String, status: &Status, timezone: Tz) {
         .map(|channel| {
             format!(
                 "{} {}",
-                code(&channel.key),
+                code(&channel.name),
                 if channel.running {
                     "running"
                 } else {
@@ -177,7 +177,7 @@ fn node(out: &mut String, status: &Status, timezone: Tz) {
     }
     for channel in &node.channels {
         if let Some(reason) = &channel.stopped {
-            out.push_str(&format!("- {} stopped: {reason}\n", code(&channel.key)));
+            out.push_str(&format!("- {} stopped: {reason}\n", code(&channel.name)));
         }
         for status in &channel.recent_failures {
             let failure = &status.settlement;

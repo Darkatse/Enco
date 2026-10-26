@@ -88,9 +88,34 @@ async fn request(stream: TcpStream, requests: mpsc::UnboundedSender<Request>) {
             length = Some(value.trim().parse::<usize>().unwrap());
         }
     }
-    let mut bytes = vec![0; length.unwrap()];
+    let mut bytes = vec![0; length.unwrap_or(0)];
     stream.read_exact(&mut bytes).await.unwrap();
-    let body = serde_json::from_slice(&bytes).unwrap();
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    let automatic = if path.ends_with("/getMe") {
+        Some(serde_json::json!({"ok": true, "result": {"id": 42, "username": "FixtureBot"}}))
+    } else if path.ends_with("/setMyCommands") || path.ends_with("/sendChatAction") {
+        Some(serde_json::json!({"ok": true, "result": true}))
+    } else {
+        None
+    };
+    if let Some(body) = automatic {
+        let body = body.to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .get_mut()
+            .write_all(response.as_bytes())
+            .await
+            .unwrap();
+        stream.get_mut().shutdown().await.unwrap();
+        return;
+    }
     let (reply, response) = oneshot::channel();
     let (closed, disconnected) = oneshot::channel();
     requests

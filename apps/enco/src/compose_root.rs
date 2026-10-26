@@ -23,7 +23,7 @@ pub(crate) struct Application {
     pub kernel: Arc<Kernel>,
     pub memories: Arc<Memories>,
     pub development: Arc<Development>,
-    pub channels: enco_host::telegram::TelegramChannel,
+    pub channels: enco_host::channel::ChannelSupervisor,
     pub manual: Following,
     pub paths: Paths,
 }
@@ -69,6 +69,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
     let registry = development
         .open(RegistryDeps {
             host_tool_names,
+            lifeline: LIFELINE.iter().map(|s| s.to_string()).collect(),
             store: store.clone(),
             runtime,
             factory: factory()?,
@@ -94,18 +95,17 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
     let status = Arc::new(crate::status::StatusTool::default());
     tools.push(status.clone());
     let kernel = Kernel::start(KernelDeps {
-        store,
+        store: store.clone(),
         registry,
         home: paths.home.clone(),
         instructions: Arc::new(InstructionsContextSource::new(paths.instructions())),
         memories: Arc::new(MemoryContextSource::new(memories.clone())),
         tools,
-        lifeline: LIFELINE.iter().map(|s| s.to_string()).collect(),
         clock: clock.clone(),
     })
     .await?;
     let kernel = Arc::new(kernel);
-    let channels = enco_host::telegram::TelegramChannel::start(kernel.clone(), clock);
+    let channels = enco_host::channel::ChannelSupervisor::start(kernel.clone(), store, clock);
     let application = Arc::new(Application {
         kernel,
         memories,

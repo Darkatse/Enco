@@ -1,24 +1,29 @@
 #![expect(clippy::unwrap_used, reason = "test coordination fails by panicking")]
+mod activity;
 mod backtrack;
+mod groups;
 mod outgoing;
+mod supervisor;
 use crate::support;
 
 use async_trait::async_trait;
 use enco_core::*;
 use enco_host::{
     SqliteStore,
-    channel::{
-        Action, Adapter, Attachment, AttachmentContent, Channel, Fault, Identity, Input,
-        MessageContent, Update,
-    },
+    channel::{Channel, ConnectionSettings},
 };
-use enco_kernel::{ConnectionWrite, Kernel, Store};
+use enco_kernel::{
+    AttachmentContent, ChannelAction as Action, ChannelAdapter as Adapter,
+    ChannelAttachment as Attachment, ChannelCallError, ChannelCommand,
+    ChannelContent as MessageContent, ChannelFault as Fault, ChannelIdentity as Identity,
+    ChannelInput as Input, ChannelSent, ChannelUpdate as Update, ConnectionWrite, Kernel, Store,
+};
 use serde_json::{Value, json};
 use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -45,24 +50,49 @@ struct ControlledChannel {
     sends: mpsc::UnboundedSender<Send>,
     fetches: mpsc::UnboundedSender<Fetch>,
     sent: AtomicU32,
+    invalid_state: Mutex<Option<Option<Value>>>,
+    split_failure: AtomicBool,
+    split_called: tokio::sync::Notify,
+    menu_failure: AtomicBool,
+    menu_scopes: Mutex<Vec<(bool, bool)>>,
+    typing_failure: AtomicBool,
+    typed: AtomicU32,
+    typing_notify: tokio::sync::Notify,
 }
 
 #[async_trait]
 impl Adapter for ControlledChannel {
     fn identity(&self) -> Identity {
         Identity {
-            channel: "controlled".into(),
+            protocol: "controlled".into(),
             account: "bot".into(),
+            facts: Value::Null,
         }
     }
-    fn initial_state(&self) -> Value {
-        json!(0)
-    }
-    async fn poll(&self, protocol: Value) -> Result<Vec<Update>, Fault> {
-        self.polls.send(protocol).unwrap();
+    async fn poll(&self, protocol: Option<Value>) -> Result<Vec<Update>, ChannelCallError> {
+        self.polls
+            .send(protocol.clone().unwrap_or(Value::Null))
+            .unwrap();
+        let mut invalid = self.invalid_state.lock().await;
+        if invalid.as_ref() == Some(&protocol) {
+            *invalid = None;
+            return Err(Fault {
+                failure: Failure {
+                    code: code::CHANNEL_INVALID_STATE.into(),
+                    message: "this mapper no longer reads the stored state".into(),
+                    retryable: false,
+                },
+                unknown: false,
+                fatal: true,
+                retry_after: None,
+                origin: None,
+            }
+            .into());
+        }
+        drop(invalid);
         Ok(self.updates.lock().await.recv().await.unwrap())
     }
-    async fn fetch(&self, locator: &str) -> Result<AttachmentContent, Fault> {
+    async fn fetch(&self, locator: &str) -> Result<AttachmentContent, ChannelCallError> {
         let (result, receive) = oneshot::channel();
         self.fetches
             .send(Fetch {
@@ -70,12 +100,34 @@ impl Adapter for ControlledChannel {
                 result,
             })
             .unwrap();
-        receive.await.unwrap()
+        receive.await.unwrap().map_err(Into::into)
     }
-    fn split(&self, message: Outgoing<FileData>) -> Vec<Outgoing<FileData>> {
-        vec![message]
+    async fn split(
+        &self,
+        message: Outgoing<FileData>,
+    ) -> Result<Vec<Outgoing<FileData>>, ChannelCallError> {
+        self.split_called.notify_one();
+        if self.split_failure.load(Ordering::SeqCst) {
+            return Err(Fault {
+                failure: Failure {
+                    code: code::PLUGIN_TRAP.into(),
+                    message: "split trapped before sending".into(),
+                    retryable: false,
+                },
+                unknown: false,
+                fatal: true,
+                retry_after: None,
+                origin: None,
+            }
+            .into());
+        }
+        Ok(vec![message])
     }
-    async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<String, Fault> {
+    async fn send(
+        &self,
+        target: &str,
+        message: &Outgoing<FileData>,
+    ) -> Result<ChannelSent, ChannelCallError> {
         let (result, receive) = oneshot::channel();
         let id = format!("sent-{}", self.sent.fetch_add(1, Ordering::SeqCst));
         self.sends
@@ -87,7 +139,32 @@ impl Adapter for ControlledChannel {
                 result,
             })
             .unwrap();
-        receive.await.unwrap().map(|()| id)
+        receive
+            .await
+            .unwrap()
+            .map(|()| ChannelSent {
+                message: Some(id),
+                origin: origin(),
+            })
+            .map_err(Into::into)
+    }
+    async fn commands(&self, commands: &[ChannelCommand]) -> Result<(), ChannelCallError> {
+        *self.menu_scopes.lock().await = commands
+            .iter()
+            .map(|command| (command.direct, command.group))
+            .collect();
+        if self.menu_failure.load(Ordering::SeqCst) {
+            return Err(lost_response().into());
+        }
+        Ok(())
+    }
+    async fn typing(&self, _target: &str) -> Result<(), ChannelCallError> {
+        self.typed.fetch_add(1, Ordering::SeqCst);
+        self.typing_notify.notify_one();
+        if self.typing_failure.load(Ordering::SeqCst) {
+            return Err(lost_response().into());
+        }
+        Ok(())
     }
 }
 
@@ -104,6 +181,17 @@ struct Harness {
 
 async fn harness(root: &Path, provider: Arc<ScriptedProvider>) -> Harness {
     let (kernel, store) = kernel(root, provider).await;
+    controlled(kernel, store)
+}
+
+struct Traffic {
+    adapter: Arc<ControlledChannel>,
+    updates: mpsc::Sender<Vec<Update>>,
+    polling: mpsc::UnboundedReceiver<Value>,
+    sending: mpsc::UnboundedReceiver<Send>,
+    fetching: mpsc::UnboundedReceiver<Fetch>,
+}
+fn traffic() -> Traffic {
     let (updates, rx) = mpsc::channel(4);
     let (polls, polling) = mpsc::unbounded_channel();
     let (sends, sending) = mpsc::unbounded_channel();
@@ -114,7 +202,32 @@ async fn harness(root: &Path, provider: Arc<ScriptedProvider>) -> Harness {
         sends,
         fetches,
         sent: AtomicU32::new(0),
+        invalid_state: Mutex::new(None),
+        split_failure: AtomicBool::new(false),
+        split_called: tokio::sync::Notify::new(),
+        menu_failure: AtomicBool::new(false),
+        menu_scopes: Mutex::new(Vec::new()),
+        typing_failure: AtomicBool::new(false),
+        typed: AtomicU32::new(0),
+        typing_notify: tokio::sync::Notify::new(),
     });
+    Traffic {
+        adapter,
+        updates,
+        polling,
+        sending,
+        fetching,
+    }
+}
+
+fn controlled(kernel: Kernel, store: Arc<SqliteStore>) -> Harness {
+    let Traffic {
+        adapter,
+        updates,
+        polling,
+        sending,
+        fetching,
+    } = traffic();
     Harness {
         kernel: Arc::new(kernel),
         store,
@@ -126,11 +239,37 @@ async fn harness(root: &Path, provider: Arc<ScriptedProvider>) -> Harness {
     }
 }
 
+fn settings() -> ConnectionSettings {
+    ConnectionSettings {
+        plugin: "fixture".parse().unwrap(),
+        base_url: "http://localhost".into(),
+        owner: "owner".into(),
+        secrets: Default::default(),
+        context: 0,
+        group_profile: None,
+        name: "controlled".into(),
+    }
+}
 fn start(kernel: &Arc<Kernel>, adapter: &Arc<ControlledChannel>) -> Channel {
+    start_with(kernel, adapter, settings())
+}
+fn start_with(
+    kernel: &Arc<Kernel>,
+    adapter: &Arc<ControlledChannel>,
+    settings: ConnectionSettings,
+) -> Channel {
     Channel::start(
         kernel.clone(),
         adapter.clone(),
-        "owner".into(),
+        settings,
+        kernel
+            .registry()
+            .view()
+            .exports
+            .active()
+            .find(|active| active.name.as_ref() == "fixture")
+            .unwrap()
+            .generation,
         Arc::new(enco_host::SystemClock),
     )
 }
@@ -145,15 +284,26 @@ async fn receive<T>(receiver: &mut mpsc::UnboundedReceiver<T>) -> T {
 /// The owner's message in `chat`; the protocol's ID for it is its offset.
 fn update(offset: u32, action: Action) -> Update {
     Update {
+        key: EventId::new().to_string(),
+        origin: origin(),
         protocol: json!(offset),
         input: Some(Input {
             conversation: "chat".into(),
             message: offset.to_string(),
             sender: Some("owner".into()),
-            conversation_type: "private".into(),
+            sender_name: Some("Owner".into()),
+            addressed: true,
+            reply_to: None,
             direct: true,
-            action: Some(action),
+            action,
         }),
+    }
+}
+
+fn origin() -> MappingOrigin {
+    MappingOrigin {
+        call: ContentHash::of(b"controlled response"),
+        index: 0,
     }
 }
 
@@ -168,6 +318,7 @@ fn lost_response() -> Fault {
         unknown: true,
         fatal: false,
         retry_after: None,
+        origin: None,
     }
 }
 
@@ -190,12 +341,12 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
         ..
     } = harness(dir.path(), provider.clone()).await;
     let channel = start(&kernel, &adapter);
-    assert_eq!(receive(&mut polling).await, json!(0));
+    assert_eq!(receive(&mut polling).await, Value::Null);
     let mut foreign = update(0, Action::Message("unauthorized".into()));
     foreign.input.as_mut().unwrap().sender = Some("another user".into());
     let mut group = update(0, Action::Message("group input".into()));
     group.input.as_mut().unwrap().direct = false;
-    group.input.as_mut().unwrap().conversation_type = "group".into();
+    group.input.as_mut().unwrap().addressed = false;
     updates
         .send(vec![
             foreign,
@@ -337,6 +488,8 @@ async fn a_delivery_left_unsettled_by_a_crash_is_recorded_as_unknown_on_restart(
                 key: "controlled:bot".into(),
                 state,
                 settlement: None,
+                update: None,
+                session: None,
             }),
         )
         .await
@@ -383,6 +536,7 @@ async fn a_fatal_send_failure_stops_the_connection_as_status() {
             unknown: false,
             fatal: true,
             retry_after: None,
+            origin: None,
         }))
         .unwrap();
     channel.shutdown().await.unwrap();
@@ -495,6 +649,7 @@ async fn attachments_are_authorized_before_fetch_and_retry_after_the_committed_p
         text,
         images,
         unviewable,
+        ..
     } = &events[2]
     else {
         panic!("expected owner message")

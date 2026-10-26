@@ -128,6 +128,25 @@ impl Exports {
             .map(|record| record.plugin)
     }
 
+    /// Resolve the active mapper; connection settings were checked during registration.
+    pub fn channel(&self, plugin: &PluginName) -> Result<Export<dyn Channel>, Failure> {
+        let (selected, loaded) = match self.selected(plugin, false) {
+            Some(Ok(selected)) => selected,
+            Some(Err(causes)) => return Err(unavailable_failure(causes)),
+            None => return Err(not_running(plugin)),
+        };
+        let adapter = loaded.channel.clone().ok_or_else(|| Failure {
+            code: code::PLUGIN_UNAVAILABLE.into(),
+            message: format!("plugin {plugin}: requires channel"),
+            retryable: false,
+        })?;
+        Ok(Export {
+            plugin: selected.plugin,
+            generation: selected.generation,
+            adapter,
+        })
+    }
+
     /// Resolve a completion use, using the Round's fixed mode.
     pub fn completion(
         &self,

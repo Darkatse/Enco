@@ -1,4 +1,4 @@
-use crate::{DateTime, LogPos, SessionId, Settlement, Utc};
+use crate::{DateTime, LogPos, MappingOrigin, SessionId, Settlement, Utc};
 use serde::{Deserialize, Serialize};
 
 /// A logical channel delivery referencing its original Log fact.
@@ -22,6 +22,8 @@ pub struct DeliverySettlement {
     /// The protocol's IDs for the parts confirmed sent, in order; after a failed or unknown
     /// outcome, those confirmed before it.
     pub messages: Vec<String>,
+    /// Recorded send-response translations, including a final failed or uncertain part.
+    pub origins: Vec<MappingOrigin>,
     /// Observation time for display, never ordering.
     pub at: DateTime<Utc>,
 }

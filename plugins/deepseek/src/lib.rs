@@ -15,8 +15,10 @@ impl lifecycle::Guest for Plugin {
             credentials: vec![lifecycle::Credential {
                 name: "api-key".into(),
                 origin: None,
-                header: "authorization".into(),
-                prefix: "Bearer ".into(),
+                placement: lifecycle::Placement::Header(lifecycle::HeaderPlacement {
+                    name: "authorization".into(),
+                    prefix: "Bearer ".into(),
+                }),
                 required: true,
             }],
         })

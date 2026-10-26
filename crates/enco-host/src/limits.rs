@@ -17,13 +17,8 @@ pub(crate) const EMBED_BATCH: usize = 64;
 pub(crate) const CHANNEL_SEND_ATTEMPTS: u32 = 4;
 pub(crate) const CHANNEL_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 pub(crate) const CHANNEL_WAKE_CAPACITY: usize = 32;
-pub(crate) const TELEGRAM_POLL_SECONDS: u64 = 30;
-pub(crate) const TELEGRAM_SEND_SECONDS: u64 = 15;
-pub(crate) const TELEGRAM_UPLOAD_SECONDS: u64 = 120;
-pub(crate) const TELEGRAM_PHOTO_MAX_BYTES: usize = 10_000_000;
-pub(crate) const TELEGRAM_PHOTO_MAX_DIMENSION_SUM: usize = 10_000;
-pub(crate) const TELEGRAM_PHOTO_MAX_ASPECT_RATIO: usize = 20;
-pub(crate) const TELEGRAM_MESSAGE_CHARS: usize = 32768;
+// Renewed before the shortest protocol indicator lapses: Telegram's lasts five seconds.
+pub(crate) const CHANNEL_TYPING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
 pub(crate) const RECENT_DELIVERY_FAILURES: u32 = 10;
 pub(crate) const BUILD_DIAGNOSTICS: usize = 12;
 pub(crate) const PLAN_CHAIN_LIMIT: usize = 32;

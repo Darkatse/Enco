@@ -82,7 +82,7 @@ async fn cli_to_wasm_to_http_records_a_reply() {
     let waited: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let entries = finish(&mut client).await;
     assert!(entries.iter().any(|entry| matches!(&entry.body,
-        EntryBody::EventConsumed { event: Event { body: EventBody::UserMessage { text, images, unviewable }, .. } }
+        EntryBody::EventConsumed { event: Event { body: EventBody::UserMessage { text, images, unviewable, .. }, .. } }
             if text.is_empty() && images.len() == 1 && images[0].format == ImageFormat::Png && unviewable.is_empty()
     )));
     let ended = entries.last().unwrap();
@@ -553,29 +553,32 @@ fn telegram_text(text: &str) -> Outgoing<FileData> {
 
 #[tokio::test]
 async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
-    use enco_host::{
-        Telegram,
-        channel::{Action, Adapter},
-    };
+    if support::channel::child(
+        "daemon::telegram_protocol_owns_commands_text_limits_and_delivery_evidence",
+    ) {
+        return;
+    }
+    use crate::support::channel;
+    use enco_kernel::ChannelAction as Action;
     let server = MockServer::start().await;
-    let telegram = Telegram::new("42:test-secret".into(), &server.uri()).unwrap();
+    let (_root, _store, telegram) = channel::telegram(&server).await;
     Mock::given(path("/bot42:test-secret/getUpdates"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true, "result": [
-                {"update_id": 8, "message": {"message_id": 4, "chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "text": "/session work"}},
-                {"update_id": 9, "message": {"message_id": 5, "chat": {"id": 1, "type": "group"}, "from": {"id": 3}, "text": "ignored by owner"}},
-                {"update_id": 10, "message": {"message_id": 6, "chat": {"id": 1, "type": "private"}, "from": {"id": 2}}}
+                {"update_id": 8, "message": {"message_id": 4, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}, "text": "/session work"}},
+                {"update_id": 9, "message": {"message_id": 5, "chat": {"id": 1, "type": "group"}, "from": {"id": 3, "first_name": "Fixture User"}, "text": "ignored by owner"}},
+                {"update_id": 10, "message": {"message_id": 6, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}}}
             ]
         }))).mount(&server).await;
-    let updates = telegram.poll(telegram.initial_state()).await.unwrap();
+    let updates = telegram.poll(None).await.unwrap();
     assert!(
-        matches!(&updates[0].input.as_ref().unwrap().action, Some(Action::SelectSession(name)) if name == "work")
+        matches!(&updates[0].input.as_ref().unwrap().action, Action::SelectSession(name) if name == "work")
     );
     assert!(!updates[1].input.as_ref().unwrap().direct);
-    assert!(updates[2].input.as_ref().unwrap().action.is_none());
+    assert!(updates[2].input.is_none());
     assert_eq!(updates[2].protocol["offset"], 11);
     let text = format!("{}\n{}", "🌱".repeat(32767), "汉字".repeat(18000));
-    let parts = telegram.split(telegram_text(&text));
+    let parts = telegram.split(telegram_text(&text)).await.unwrap();
     assert!(parts.iter().all(|s| s.text.chars().count() <= 32768));
     assert_eq!(
         parts.iter().map(|s| s.text.as_str()).collect::<String>(),
@@ -595,7 +598,7 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
         .mount_as_scoped(&server)
         .await;
     let sent = telegram.send("1", &telegram_text(markdown)).await.unwrap();
-    assert_eq!(sent, "1");
+    assert_eq!(sent.message.as_deref(), Some("1"));
     drop(success);
     for (status, body, unknown, retry, fatal) in [
         (
@@ -639,10 +642,7 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
             .respond_with(ResponseTemplate::new(status).set_body_json(body))
             .mount_as_scoped(&server)
             .await;
-        let error = telegram
-            .send("1", &telegram_text("hello"))
-            .await
-            .unwrap_err();
+        let error = channel::fault(telegram.send("1", &telegram_text("hello")).await);
         assert_eq!(
             (error.unknown, error.failure.retryable, error.fatal),
             (unknown, retry, fatal)
@@ -657,28 +657,30 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
 
 #[tokio::test]
 async fn telegram_backtrack_names_the_message_it_replies_to() {
-    use enco_host::{
-        Telegram,
-        channel::{Action, Adapter},
-    };
+    if support::channel::child("daemon::telegram_backtrack_names_the_message_it_replies_to") {
+        return;
+    }
+    use crate::support::channel;
+    use enco_kernel::ChannelAction as Action;
     let server = MockServer::start().await;
-    let telegram = Telegram::new("42:test-secret".into(), &server.uri()).unwrap();
+    let (_root, _store, telegram) = channel::telegram(&server).await;
     Mock::given(path("/bot42:test-secret/getUpdates"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true, "result": [
-                {"update_id": 1, "message": {"message_id": 7, "chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "text": "/backtrack", "reply_to_message": {
+                {"update_id": 1, "message": {"message_id": 7, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}, "text": "/backtrack", "reply_to_message": {
                     "message_id": 3, "chat": {"id": 1, "type": "private"}, "date": 0, "text": "an earlier reply"
                 }}},
-                {"update_id": 2, "message": {"message_id": 8, "chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "text": "/backtrack"}}
+                {"update_id": 2, "message": {"message_id": 8, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}, "text": "/backtrack"}}
             ]
         }))).mount(&server).await;
-    let updates = telegram.poll(telegram.initial_state()).await.unwrap();
+    let updates = telegram.poll(None).await.unwrap();
     let replying = updates[0].input.as_ref().unwrap();
     assert_eq!(replying.message, "7");
-    assert!(matches!(&replying.action, Some(Action::Backtrack(Some(reply))) if reply == "3"));
+    assert!(matches!(&replying.action, Action::Backtrack));
+    assert_eq!(replying.reply_to.as_deref(), Some("3"));
     assert!(matches!(
         updates[1].input.as_ref().unwrap().action,
-        Some(Action::Backtrack(None))
+        Action::Backtrack
     ));
 }
 

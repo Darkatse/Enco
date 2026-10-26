@@ -23,6 +23,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `Delivery` — A logical channel delivery referencing its original Log fact.
 - struct `DeliverySettlement` — Final outcome, committed atomically with the connection's outbound progress.
 - struct `DisclosedTool` — A tool as a plan disclosed it to the model, kept verbatim.
+- struct `EarlierMessage` — A prior chat message quoted as context, without starting a Session Run.
 - enum `Effect` — Describes external effects so recovery can settle an interrupted invocation honestly.
 - struct `Entry` — One immutable fact at a structurally ordered position.
 - enum `EntryBody` — Facts accepted by the Session owner.
@@ -47,6 +48,8 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `InvalidPluginName` — A plugin name outside the public naming grammar.
 - enum `InvalidReason` — A reason that cannot be stored as a single bounded line.
 - struct `LogPos` — Structural Log ordering; wall clocks never determine this order.
+- struct `MappingOrigin` — An output's position in one immutable mapper call.
+- struct `MappingRecord` — A recorded mapper call; response bodies are separate blobs referenced by its arguments.
 - struct `Memory` — A self-contained fact about the owner; its current authority is the memory database.
 - struct `MemoryId` — Identity of an editable memory.
 - struct `Message` — Provider-independent message; this shape is part of the Log format.
@@ -602,6 +605,7 @@ pub struct DeliverySettlement {
     pub delivery: Delivery,
     pub outcome: crate::Settlement,
     pub messages: Vec<String>,
+    pub origins: Vec<crate::MappingOrigin>,
     pub at: crate::DateTime<crate::Utc>,
 }
 ```
@@ -612,6 +616,7 @@ Final outcome, committed atomically with the connection's outbound progress.
 - `outcome` — One final outcome for the entire logical delivery.
 - `messages` — The protocol's IDs for the parts confirmed sent, in order; after a failed or unknown
   outcome, those confirmed before it.
+- `origins` — Recorded send-response translations, including a final failed or uncertain part.
 - `at` — Observation time for display, never ordering.
 
 Implements:
@@ -656,6 +661,42 @@ impl<'de> Deserialize<'de> for DisclosedTool
 impl From<&ToolSpec> for DisclosedTool
 impl PartialEq for DisclosedTool
 impl Serialize for DisclosedTool
+```
+
+## struct `EarlierMessage`
+
+`src/event.rs`
+
+```rust
+pub struct EarlierMessage {
+    pub received_at: crate::DateTime<crate::Utc>,
+    pub sender: Option<String>,
+    pub sender_name: Option<String>,
+    pub owner: bool,
+    pub text: String,
+    pub attachments: Vec<String>,
+    pub origin: crate::MappingOrigin,
+}
+```
+
+A prior chat message quoted as context, without starting a Session Run.
+
+- `received_at` — Reception time for display, not ordering.
+- `sender` — Protocol sender ID, when reported.
+- `sender_name` — Display name reported when this message arrived.
+- `owner` — Whether the sender was the owner when this message arrived.
+- `text` — Quoted text, never an instruction from the owner on another sender's behalf.
+- `attachments` — Attachment descriptions; their content is not fetched for context.
+- `origin` — The recorded protocol translation that produced this message.
+
+Implements:
+
+```rust
+impl Clone for EarlierMessage
+impl Debug for EarlierMessage
+impl<'de> Deserialize<'de> for EarlierMessage
+impl PartialEq for EarlierMessage
+impl Serialize for EarlierMessage
 ```
 
 ## enum `Effect`
@@ -923,6 +964,7 @@ pub enum EventBody {
         text: String,
         images: Vec<crate::Image>,
         unviewable: Vec<crate::Unviewable>,
+        earlier: Vec<EarlierMessage>,
     },
     Reminder {
         schedule: crate::ScheduleId,
@@ -941,10 +983,11 @@ Input to a Session, consumed in Inbox order.
 - `GenerationRolledBack` — A failed trial generation and its committed replacement.
   - `rollback` — Committed recovery facts.
   - `text` — Notice written by the Registry when the rollback committed.
-- `UserMessage` — A message from the owner.
-  - `text` — Text supplied by the owner.
+- `UserMessage` — A message that drives this Session, with quoted context from its conversation.
+  - `text` — Text supplied by the sender.
   - `images` — Images stored before this Event was accepted.
   - `unviewable` — Attachments whose content could not be accepted as images.
+  - `earlier` — Earlier messages quoted for context; excluded from the canonical message.
 - `Reminder` — A reminder reaching its scheduled time.
   - `schedule` — The Schedule which produced this input.
   - `due_at` — Planned time in UTC; this occurrence's identity together with the schedule.
@@ -1011,10 +1054,13 @@ impl Serialize for EventId
 pub enum EventSource {
     Cli,
     Channel {
-        channel: String,
+        protocol: String,
         account: String,
         conversation: String,
         sender: String,
+        sender_name: Option<String>,
+        owner: bool,
+        origin: crate::MappingOrigin,
         message: String,
     },
     Scheduler,
@@ -1026,10 +1072,13 @@ The producer of an Inbox input.
 
 - `Cli` — Input submitted through the native interface.
 - `Channel` — Interactive input from a channel connection.
-  - `channel` — Protocol declared by the channel adapter.
+  - `protocol` — Protocol declared by the channel mapper, such as `telegram`.
   - `account` — Account identity within the protocol.
   - `conversation` — Conversation to which default replies return.
   - `sender` — Authenticated sender within the protocol.
+  - `sender_name` — Display name reported when this input was accepted.
+  - `owner` — Whether the sender was the owner when this input was accepted.
+  - `origin` — The recorded protocol translation that produced this input.
   - `message` — The protocol's ID for the message this input came from, by which the owner can point
     at it later.
 - `Scheduler` — Input generated by a durable schedule.
@@ -1111,7 +1160,7 @@ pub struct FileData {
 File bytes handed to the kernel at settlement, or resolved for one delivery.
 
 - `name` — Filename without its original directory.
-- `data` — Original bytes, encoded only by the channel adapter.
+- `data` — Original bytes, encoded only by the channel mapper.
 
 Implements:
 
@@ -1560,6 +1609,61 @@ impl Ord for LogPos
 impl PartialEq for LogPos
 impl PartialOrd for LogPos
 impl Serialize for LogPos
+```
+
+## struct `MappingOrigin`
+
+`src/mapping.rs`
+
+```rust
+pub struct MappingOrigin {
+    pub call: crate::ContentHash,
+    pub index: u32,
+}
+```
+
+An output's position in one immutable mapper call.
+
+- `call` — Content address of the serialized mapping record.
+- `index` — Zero-based position in the returned values; zero for a single result.
+
+Implements:
+
+```rust
+impl Clone for MappingOrigin
+impl Copy for MappingOrigin
+impl Debug for MappingOrigin
+impl<'de> Deserialize<'de> for MappingOrigin
+impl Eq for MappingOrigin
+impl PartialEq for MappingOrigin
+impl Serialize for MappingOrigin
+```
+
+## struct `MappingRecord`
+
+`src/mapping.rs`
+
+```rust
+pub struct MappingRecord {
+    pub generation: crate::GenerationId,
+    pub export: String,
+    pub arguments: serde_json::Value,
+}
+```
+
+A recorded mapper call; response bodies are separate blobs referenced by its arguments.
+
+- `generation` — The registered generation that interpreted these arguments.
+- `export` — The exported function, such as `channel.received`.
+- `arguments` — Complete arguments, with each response body replaced by its content address.
+
+Implements:
+
+```rust
+impl Clone for MappingRecord
+impl Debug for MappingRecord
+impl<'de> Deserialize<'de> for MappingRecord
+impl Serialize for MappingRecord
 ```
 
 ## struct `Memory`
@@ -3209,6 +3313,8 @@ Reserved marker in suggested calls; it is never an acceptable registration reaso
 Stable failure codes shared with WIT plugins.
 
 - const `code::CANCELLED` — Execution stopped in response to its cancellation token.
+- const `code::CHANNEL_INVALID_STATE` — The channel mapper cannot resume this protocol state; the connection may restart from none.
+- const `code::CHANNEL_NETWORK` — A channel request failed in transport, before a protocol response was read.
 - const `code::COMPOSE_FAILED` — The composer could not prepare a request.
 - const `code::CONFIG_INVALID` — A registered configuration table is invalid for the current host.
 - const `code::CONFIG_REJECTED` — An intentional configuration registration failed validation or lost a commit race.
@@ -3245,6 +3351,26 @@ pub const CANCELLED: &str = "cancelled";
 ```
 
 Execution stopped in response to its cancellation token.
+
+## const `code::CHANNEL_INVALID_STATE`
+
+`src/tool.rs`
+
+```rust
+pub const CHANNEL_INVALID_STATE: &str = "channel.invalid_state";
+```
+
+The channel mapper cannot resume this protocol state; the connection may restart from none.
+
+## const `code::CHANNEL_NETWORK`
+
+`src/tool.rs`
+
+```rust
+pub const CHANNEL_NETWORK: &str = "channel.network";
+```
+
+A channel request failed in transport, before a protocol response was read.
 
 ## const `code::COMPOSE_FAILED`
 

@@ -113,7 +113,7 @@ struct RawEndpoint {
 fn empty_options() -> Value {
     serde_json::json!({})
 }
-fn requires_lifeline() -> bool {
+fn enabled_by_default() -> bool {
     true
 }
 
@@ -123,8 +123,11 @@ struct RawProfile {
     composer: Option<ComposerSettings>,
     reply: Vec<String>,
     compaction: Vec<String>,
-    #[serde(default = "requires_lifeline")]
+    #[serde(default = "enabled_by_default")]
     requires_lifeline: bool,
+    tools: Option<BTreeSet<String>>,
+    #[serde(default = "enabled_by_default")]
+    owner_context: bool,
 }
 
 /// Named endpoint entries: `[endpoint.<name>]`.
@@ -223,6 +226,8 @@ impl KernelSettings {
                     reply: endpoints("reply", &raw.reply)?,
                     compaction: endpoints("compaction", &raw.compaction)?,
                     requires_lifeline: raw.requires_lifeline,
+                    tools: raw.tools,
+                    owner_context: raw.owner_context,
                 },
             );
         }

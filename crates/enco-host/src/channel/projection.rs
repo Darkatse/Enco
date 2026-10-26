@@ -20,19 +20,7 @@ pub(super) fn project(
     for entry in entries {
         let outgoing = match entry.body {
             EntryBody::EventConsumed { event } => {
-                match event.source {
-                    EventSource::Cli => target = None,
-                    EventSource::Channel {
-                        channel,
-                        account,
-                        conversation,
-                        ..
-                    } => {
-                        target = (channel == identity.channel && account == identity.account)
-                            .then_some(conversation);
-                    }
-                    EventSource::Scheduler | EventSource::Registry => {}
-                }
+                route(&mut target, identity, event.source);
                 continue;
             }
             EntryBody::RoundStarted { .. } => {
@@ -91,4 +79,21 @@ pub(super) fn project(
         }
     }
     None
+}
+
+/// Interactive inputs move the reply destination; noninteractive events leave it in place.
+pub(super) fn route(target: &mut Option<String>, identity: &Identity, source: EventSource) {
+    match source {
+        EventSource::Cli => *target = None,
+        EventSource::Channel {
+            protocol,
+            account,
+            conversation,
+            ..
+        } => {
+            *target = (protocol == identity.protocol && account == identity.account)
+                .then_some(conversation);
+        }
+        EventSource::Scheduler | EventSource::Registry => {}
+    }
 }
