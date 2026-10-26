@@ -1,4 +1,5 @@
-//! Keeps recorded notes stable and annotates inputs with arrival time, source and previous work outcomes.
+//! Keeps recorded notes stable and annotates inputs with arrival time, source, previous work
+//! outcomes and backtracks.
 use crate::composer::*;
 use crate::{context, images, key, limits::*, tokens};
 use chrono::{Offset, Timelike, Utc};
@@ -175,7 +176,7 @@ pub(super) fn annotated(
                 }
                 for part in [
                     previous_end.and_then(work_stopped),
-                    producer(&event.body, timezone)?,
+                    producer(&event.body, &input.transcript, timezone)?,
                     images::attachments(&event.body),
                 ]
                 .into_iter()
@@ -205,7 +206,11 @@ fn work_stopped(end: &RunEnd) -> Option<String> {
     ))
 }
 
-fn producer(body: &EventBody, timezone: Tz) -> Result<Option<String>, Failure> {
+fn producer(
+    body: &EventBody,
+    transcript: &Transcript,
+    timezone: Tz,
+) -> Result<Option<String>, Failure> {
     Ok(match body {
         EventBody::UserMessage(_) => None,
         EventBody::Reminder(reminder) => {
@@ -226,5 +231,20 @@ fn producer(body: &EventBody, timezone: Tz) -> Result<Option<String>, Failure> {
         EventBody::GenerationRolledBack(_) => {
             Some("The next message is a notice from the plugin registry.".into())
         }
+        // The agent cannot see what the owner left, only that the world may not match the history.
+        EventBody::Backtrack(to) => {
+            let input = transcript
+                .items
+                .iter()
+                .any(|item| key(&item.pos) == key(to) && item.event.is_some());
+            let back = if input {
+                "The owner went back to their message above and asks for a reply to it."
+            } else {
+                "The owner went back to the message above to continue from it."
+            };
+            Some(format!("{back} {BACKTRACK_STATE}"))
+        }
     })
 }
+
+const BACKTRACK_STATE: &str = "Anything changed since then stays changed: files, memories, schedules, plugins and other state outside this conversation may not match what it shows, so check them before relying on them.";

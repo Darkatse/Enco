@@ -88,7 +88,17 @@ impl SessionActor {
             if self.deps.shutdown.is_cancelled() {
                 return Ok(());
             }
-            if self.deps.store.pending(self.session.id).await?.is_empty() {
+            let pending = self.deps.store.pending(self.session.id).await?;
+            if let Some(last) = pending.iter().rposition(crate::transcript::is_backtrack) {
+                // A backtrack takes effect between Runs, superseding the inputs that preceded it.
+                let consumed = pending
+                    .into_iter()
+                    .take(last + 1)
+                    .map(|event| EntryBody::EventConsumed { event })
+                    .collect();
+                self.commit(consumed, None).await?;
+            } else if pending.is_empty() && !crate::transcript::backtracked_to_input(&self.entries)
+            {
                 tokio::select! {
                     _ = self.handle.wake.notified() => {},
                     _ = self.deps.shutdown.cancelled() => return Ok(()),

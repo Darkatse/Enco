@@ -108,6 +108,16 @@ pub enum KernelError {
     /// The requested profile is absent from the node configuration.
     #[error("unknown profile {0}")]
     UnknownProfile(String),
+    /// A backtrack must point at a position that this Session's conversation has recorded.
+    #[error("session {session} cannot go back to {to:?}: {reason}")]
+    Backtrack {
+        /// The Session the owner addressed.
+        session: SessionId,
+        /// The position the owner pointed at.
+        to: LogPos,
+        /// Why the position cannot be a target.
+        reason: &'static str,
+    },
 }
 
 /// A delivery failure with the Session name resolved before presentation.
@@ -227,7 +237,34 @@ impl Kernel {
         Ok(accepted[0])
     }
 
+    /// Take the conversation back to a recorded position, as the owner asked from the CLI.
+    ///
+    /// Like `submit`, a repeated event ID is accepted once.
+    pub async fn backtrack(
+        &self,
+        session: SessionId,
+        event_id: EventId,
+        to: LogPos,
+    ) -> Result<Accepted, KernelError> {
+        let accepted = self
+            .accept(
+                &[Event {
+                    id: event_id,
+                    session,
+                    source: EventSource::Cli,
+                    body: EventBody::Backtrack { to },
+                    received_at: self.deps.clock.now(),
+                }],
+                None,
+            )
+            .await?;
+        Ok(accepted[0])
+    }
+
     /// Accept inputs and connection progress before waking the affected Session owners.
+    ///
+    /// A backtrack must point at a recorded position other than another backtrack; a newly accepted
+    /// one signals the Session's current Run, which stops at its next boundary.
     pub async fn accept(
         &self,
         events: &[Event],
@@ -240,11 +277,39 @@ impl Kernel {
             .iter()
             .map(|event| self.handle(event.session))
             .collect::<Result<Vec<_>, _>>()?;
+        for event in events {
+            if let EventBody::Backtrack { to } = event.body {
+                self.check_backtrack(event.session, to).await?;
+            }
+        }
         let accepted = self.deps.store.accept(events, connection).await?;
-        for handle in handles {
+        for ((event, handle), accepted) in events.iter().zip(handles).zip(&accepted) {
             handle.wake.notify_one();
+            // A resent backtrack already took effect; the Run now going may be a later one.
+            if *accepted == Accepted::New && crate::transcript::is_backtrack(event) {
+                self.cancel(event.session)?;
+            }
         }
         Ok(accepted)
+    }
+
+    async fn check_backtrack(&self, session: SessionId, to: LogPos) -> Result<(), KernelError> {
+        let rejected = |reason| KernelError::Backtrack {
+            session,
+            to,
+            reason,
+        };
+        let entries = self.deps.store.log(session, None).await?;
+        let entry = entries
+            .iter()
+            .find(|entry| entry.pos == to)
+            .ok_or_else(|| rejected("the position is not in its Log"))?;
+        match &entry.body {
+            EntryBody::EventConsumed { event } if crate::transcript::is_backtrack(event) => {
+                Err(rejected("the position is another backtrack"))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Read a connection's last accepted state.
@@ -273,6 +338,37 @@ impl Kernel {
             });
         }
         Ok(result)
+    }
+
+    /// Find where the owner's channel message with this protocol ID became a Session's input.
+    ///
+    /// Commands recorded as inputs, such as backtracks, never match.
+    pub async fn consumed_message(
+        &self,
+        channel: &str,
+        account: &str,
+        conversation: &str,
+        message: &str,
+    ) -> Result<Option<(SessionId, LogPos)>, KernelError> {
+        Ok(self
+            .deps
+            .store
+            .consumed_message(channel, account, conversation, message)
+            .await?)
+    }
+
+    /// Find the connection's delivery to `target` that sent the protocol message `message`.
+    pub async fn delivered_message(
+        &self,
+        key: &str,
+        target: &str,
+        message: &str,
+    ) -> Result<Option<Delivery>, KernelError> {
+        Ok(self
+            .deps
+            .store
+            .delivered_message(key, target, message)
+            .await?)
     }
 
     /// Subscribe to newly committed facts; Log remains the durable source.

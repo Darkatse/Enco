@@ -352,7 +352,7 @@ async fn message(
 ) -> (bot::Request, bot::Request) {
     assert!(poll.path.ends_with("getUpdates"));
     poll.reply
-        .send(json!({"ok": true, "result": [{"update_id": update_id, "message": {"chat": {"id": 7, "type": "private"}, "from": {"id": 9}, "text": text}}]}))
+        .send(json!({"ok": true, "result": [{"update_id": update_id, "message": {"message_id": update_id, "chat": {"id": 7, "type": "private"}, "from": {"id": 9}, "text": text}}]}))
         .unwrap();
     let a = bot.next().await;
     let b = bot.next().await;

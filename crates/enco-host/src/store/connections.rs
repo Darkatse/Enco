@@ -1,4 +1,4 @@
-//! Channel connections' committed state, and the deliveries that failed.
+//! Channel connections' committed state and their settled deliveries.
 use super::{backend, rows};
 use crate::limits::RECENT_DELIVERY_FAILURES;
 use enco_core::*;
@@ -37,4 +37,25 @@ pub(super) fn recent_failures(
         .map_err(backend)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(backend)
+}
+
+/// The delivery to `target` whose confirmed parts include the protocol message `message`.
+pub(super) fn delivered(
+    connection: &Connection,
+    key: &str,
+    target: &str,
+    message: &str,
+) -> Result<Option<Delivery>, StoreError> {
+    let settlement: Option<DeliverySettlement> = connection
+        .query_row(
+            "SELECT body FROM deliveries
+             WHERE connection=?1
+               AND json_extract(body,'$.delivery.target')=?2
+               AND EXISTS (SELECT 1 FROM json_each(body,'$.messages') WHERE value=?3)",
+            params![key, target, message],
+            |r| rows::document(r, 0),
+        )
+        .optional()
+        .map_err(backend)?;
+    Ok(settlement.map(|settlement| settlement.delivery))
 }

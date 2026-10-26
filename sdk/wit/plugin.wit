@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.6.0;
+package enco:plugin@0.7.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -595,6 +595,11 @@ interface composer {
         reminder(reminder),
         /// A notice of an automatic rollback.
         generation-rolled-back(rollback),
+        /// The owner went back to the message at this Log position; the transcript continues from it.
+        ///
+        /// When that message is an input, the backtrack asks for a reply to it. Changes made after
+        /// it outside the conversation, such as to files, were not undone.
+        backtrack(log-pos),
     }
 
     /// An input this Session consumed.
@@ -753,9 +758,12 @@ interface composer {
         /// instructions, `plugins/<name>/`, `sdk/`, `manual/` and `workspace/`. `.data/` is Enco's
         /// own store and not part of it.
         home: string,
-        /// The history a plan may refer to.
+        /// The conversation as it stands, which a plan may refer to.
+        ///
+        /// After a backtrack it is the Log up to the backtrack's target, then everything from the
+        /// backtrack on, so positions can skip.
         transcript: transcript,
-        /// This Session's latest recorded reply plan; absent at the start, or when it
+        /// The latest recorded reply plan in that conversation; absent at the start, or when it
         /// could not be read, which `omitted` then says.
         previous: option<plan>,
         /// The text of `AGENTS.md`, as read at the start of this Round; absent when the file does

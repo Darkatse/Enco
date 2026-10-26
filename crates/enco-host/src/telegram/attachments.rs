@@ -31,7 +31,8 @@ struct Document {
 }
 
 impl Content {
-    pub(super) fn action(self) -> Option<Action> {
+    /// What the message asks for; `reply` is the ID of the message it replies to, if any.
+    pub(super) fn action(self, reply: Option<String>) -> Option<Action> {
         let mut message = MessageContent {
             text: self.text.clone().or(self.caption).unwrap_or_default(),
             images: Vec::new(),
@@ -87,7 +88,7 @@ impl Content {
         if !message.images.is_empty() || !message.unviewable.is_empty() {
             Some(Action::Message(message))
         } else {
-            self.text.map(parse_action)
+            self.text.map(|text| parse_action(text, reply))
         }
     }
 }

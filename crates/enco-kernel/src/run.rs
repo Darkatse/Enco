@@ -43,12 +43,29 @@ impl SessionActor {
         let mut prefix = vec![EntryBody::RunStarted { run }];
         let mut ending = RunEnd::BudgetExhausted;
         let max_rounds = self.deps.registry.view().config.kernel.max_rounds_per_run;
+        let mut pending = self.deps.store.pending(self.session.id).await?;
         for _ in 0..max_rounds.get() {
-            let (end, safe_mode) = self.round(run, &token, std::mem::take(&mut prefix)).await?;
+            // The owner went back: the Run stops at this boundary, and the backtrack follows it.
+            if pending.iter().any(crate::transcript::is_backtrack) {
+                if !prefix.is_empty() {
+                    // Nothing of this Run is recorded yet, so it does not start at all.
+                    return Ok(());
+                }
+                ending = RunEnd::Cancelled;
+                break;
+            }
+            let inputs = std::mem::take(&mut pending);
+            let (end, safe_mode) = self
+                .round(run, &token, std::mem::take(&mut prefix), inputs)
+                .await?;
+            pending = self.deps.store.pending(self.session.id).await?;
             // How the Run ends if it stops after this Round, and whether it stops now.
             let stop;
             (ending, stop) = match end {
-                RoundEnd::Replied if self.deps.store.pending(self.session.id).await?.is_empty() => {
+                RoundEnd::Replied
+                    if pending.is_empty()
+                        || pending.iter().any(crate::transcript::is_backtrack) =>
+                {
                     (RunEnd::Completed, true)
                 }
                 RoundEnd::Replied | RoundEnd::ToolsSettled => (RunEnd::BudgetExhausted, false),

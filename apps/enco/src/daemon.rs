@@ -190,10 +190,10 @@ struct CommandError {
 impl From<KernelError> for CommandError {
     fn from(error: KernelError) -> Self {
         Self {
-            code: if matches!(error, KernelError::UnknownSession(_)) {
-                "unknown_session"
-            } else {
-                "kernel"
+            code: match error {
+                KernelError::UnknownSession(_) => "unknown_session",
+                KernelError::Backtrack { .. } => "bad_request",
+                _ => "kernel",
             },
             message: error.to_string(),
         }
@@ -287,6 +287,18 @@ async fn process(
         Command::Cancel { session: name } => {
             let session = existing_session(kernel, &name).await?;
             json!({ "cancelled": kernel.cancel(session.id)? })
+        }
+        Command::Backtrack {
+            session: name,
+            to,
+            event_id,
+        } => {
+            let session = existing_session(kernel, &name).await?;
+            let accepted = match kernel.backtrack(session.id, event_id, to).await? {
+                Accepted::New => "new",
+                Accepted::Duplicate => "duplicate",
+            };
+            json!({ "session_id": session.id, "event_id": event_id, "accepted": accepted })
         }
         Command::Schedules {} => json!(
             kernel

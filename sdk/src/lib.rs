@@ -92,10 +92,10 @@ macro_rules! export {
     (composer, $implementation:ident) => { $crate::export!(@world "composer-plugin", $implementation, [PartialEq],); };
     (@provider $world:literal, $implementation:ident) => {
         $crate::export!(@world $world, $implementation, [],
-            "enco:plugin/completion@0.6.0/request": enco_sdk::protocol::Request,
-            "enco:plugin/completion@0.6.0/completion": enco_sdk::protocol::Completion,
-            "enco:plugin/completion@0.6.0/usage": enco_sdk::protocol::Usage,
-            "enco:plugin/completion@0.6.0/stop-reason": enco_sdk::protocol::StopReason,
+            "enco:plugin/completion@0.7.0/request": enco_sdk::protocol::Request,
+            "enco:plugin/completion@0.7.0/completion": enco_sdk::protocol::Completion,
+            "enco:plugin/completion@0.7.0/usage": enco_sdk::protocol::Usage,
+            "enco:plugin/completion@0.7.0/stop-reason": enco_sdk::protocol::StopReason,
         );
     };
     (@world $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => {
@@ -108,8 +108,8 @@ macro_rules! export {
                 runtime_path: "enco_sdk::wit_bindgen::rt",
                 additional_derives: [$($derives),*],
                 with: {
-                    "enco:plugin/host@0.6.0": enco_sdk::host,
-                    "enco:plugin/types@0.6.0": enco_sdk::types,
+                    "enco:plugin/host@0.7.0": enco_sdk::host,
+                    "enco:plugin/types@0.7.0": enco_sdk::types,
                     $($types)*
                 },
             });

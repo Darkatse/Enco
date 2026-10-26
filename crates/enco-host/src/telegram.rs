@@ -209,10 +209,18 @@ struct TelegramUpdate {
 
 #[derive(Deserialize)]
 struct TelegramMessage {
+    message_id: i64,
     chat: Chat,
     from: Option<User>,
+    reply_to_message: Option<Replied>,
     #[serde(flatten)]
     content: attachments::Content,
+}
+
+/// The message another one replies to, in the same chat.
+#[derive(Deserialize)]
+struct Replied {
+    message_id: i64,
 }
 
 #[derive(Deserialize)]
@@ -256,10 +264,15 @@ impl Adapter for Telegram {
                 }
                 let input = update.message.map(|message| Input {
                     conversation: message.chat.id.to_string(),
+                    message: message.message_id.to_string(),
                     sender: message.from.map(|sender| sender.id.to_string()),
                     direct: message.chat.kind == "private",
                     conversation_type: message.chat.kind,
-                    action: message.content.action(),
+                    action: message.content.action(
+                        message
+                            .reply_to_message
+                            .map(|replied| replied.message_id.to_string()),
+                    ),
                 });
                 Ok(Update {
                     protocol: json!({"offset": offset}),
@@ -284,12 +297,13 @@ impl Adapter for Telegram {
         outgoing::split(message)
     }
 
-    async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<(), Fault> {
+    async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<String, Fault> {
         outgoing::send(self, target, message).await
     }
 }
 
-fn parse_action(text: String) -> Action {
+/// Read a command, or else a message; `reply` is the ID of the message this one replies to.
+fn parse_action(text: String, reply: Option<String>) -> Action {
     let (command, argument) = text
         .trim()
         .split_once(char::is_whitespace)
@@ -299,6 +313,7 @@ fn parse_action(text: String) -> Action {
         ("/session", "") => Action::Sessions,
         ("/session", name) => Action::SelectSession(name.into()),
         ("/cancel", "") => Action::Cancel,
+        ("/backtrack", "") => Action::Backtrack(reply),
         _ => Action::Message(text.into()),
     }
 }

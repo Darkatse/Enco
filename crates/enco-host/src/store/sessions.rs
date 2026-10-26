@@ -127,6 +127,43 @@ pub(super) fn log(
         .map_err(backend)
 }
 
+/// The Session and Log position where the owner's message with this protocol ID, from this
+/// channel conversation, was consumed.
+///
+/// Protocols keep message IDs unique within a conversation, so at most one input matches.
+pub(super) fn consumed_message(
+    connection: &Connection,
+    channel: &str,
+    account: &str,
+    conversation: &str,
+    message: &str,
+) -> Result<Option<(SessionId, LogPos)>, StoreError> {
+    // Only an owner's command asks, so this scans the Log instead of indexing every input.
+    connection
+        .query_row(
+            "SELECT session_id,epoch,seq
+             FROM log
+             WHERE kind='event_consumed'
+               AND json_extract(body,'$.event.body.kind')='user_message'
+               AND json_extract(body,'$.event.source.channel')=?
+               AND json_extract(body,'$.event.source.account')=?
+               AND json_extract(body,'$.event.source.conversation')=?
+               AND json_extract(body,'$.event.source.message')=?",
+            params![channel, account, conversation, message],
+            |r| {
+                Ok((
+                    rows::text(r, 0)?,
+                    LogPos {
+                        epoch: Epoch(rows::unsigned(r, 1)?),
+                        seq: Seq(rows::unsigned(r, 2)?),
+                    },
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)
+}
+
 /// Unconsumed Inbox rows in delivery order; only a commit consumes them.
 pub(super) fn pending(
     connection: &Connection,

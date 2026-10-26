@@ -24,6 +24,7 @@ pub(super) struct Prepared {
 
 pub(super) struct OwnerInput {
     pub conversation: String,
+    pub message: String,
     pub action: Action<Image>,
 }
 
@@ -89,6 +90,7 @@ async fn prepare(
                     Some(action) => match prepare_action(adapter, kernel, action).await? {
                         Ok(action) => Some(OwnerInput {
                             conversation: input.conversation,
+                            message: input.message,
                             action,
                         }),
                         Err(fault) => return Ok((ready, Some(fault))),
@@ -126,6 +128,7 @@ async fn prepare_action(
         Action::Sessions => return Ok(Ok(Action::Sessions)),
         Action::SelectSession(name) => return Ok(Ok(Action::SelectSession(name))),
         Action::Cancel => return Ok(Ok(Action::Cancel)),
+        Action::Backtrack(reply) => return Ok(Ok(Action::Backtrack(reply))),
     };
     let mut prepared = MessageContent {
         text: message.text,
@@ -163,6 +166,8 @@ async fn prepare_action(
 
 pub(super) struct Sent {
     pub outcome: Settlement,
+    /// The protocol's IDs for the parts confirmed sent, in order.
+    pub messages: Vec<String>,
     pub fatal: Option<Fault>,
 }
 
@@ -174,12 +179,16 @@ pub(super) async fn send(
     stop: CancellationToken,
 ) -> Sent {
     let parts = adapter.split(message);
+    let mut messages = Vec::with_capacity(parts.len());
     for (part, message) in parts.iter().enumerate() {
         let mut delay = Duration::from_secs(1);
         for attempt in 1..=CHANNEL_SEND_ATTEMPTS {
             // A send future has effects: await it even after cancellation.
             match adapter.send(&target, message).await {
-                Ok(()) => break,
+                Ok(id) => {
+                    messages.push(id);
+                    break;
+                }
                 Err(mut error) => {
                     if !error.unknown
                         && !error.fatal
@@ -211,6 +220,7 @@ pub(super) async fn send(
                     };
                     return Sent {
                         outcome,
+                        messages,
                         fatal: error.fatal.then_some(error),
                     };
                 }
@@ -229,12 +239,14 @@ pub(super) async fn send(
                         retryable: false,
                     },
                 },
+                messages,
                 fatal: None,
             };
         }
     }
     Sent {
         outcome: Settlement::Ok,
+        messages,
         fatal: None,
     }
 }

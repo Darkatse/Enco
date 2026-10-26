@@ -430,7 +430,7 @@ impl<'a> View<'a> {
             } else {
                 format!(
                     "{indent}- `{name}` — {}",
-                    docs.replace('\n', &format!("\n{indent}  "))
+                    text::continued(&docs, &format!("{indent}  "))
                 )
             });
             lines.extend(nested);

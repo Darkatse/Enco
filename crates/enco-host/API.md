@@ -470,6 +470,7 @@ pub enum Action<T = Attachment> {
     Sessions,
     SelectSession(String),
     Cancel,
+    Backtrack(Option<String>),
 }
 ```
 
@@ -479,6 +480,8 @@ What an incoming message asks for, whatever the protocol's command syntax.
 - `Sessions` — List the Sessions to choose from.
 - `SelectSession` — Route this conversation to the Session with this name, opening it if needed.
 - `Cancel` — Stop the work the conversation's Session is doing.
+- `Backtrack` — Take the conversation back to the message this one replies to, named by the protocol's ID;
+  absent when it replies to none.
 
 ## struct `channel::Attachment`
 
@@ -692,6 +695,7 @@ impl Clone for Identity
 ```rust
 pub struct Input {
     pub conversation: String,
+    pub message: String,
     pub sender: Option<String>,
     pub conversation_type: String,
     pub direct: bool,
@@ -704,6 +708,7 @@ One incoming message as the protocol reports it.
 The connection acts only on direct messages from the owner; it ignores the rest.
 
 - `conversation` — The protocol's ID for the conversation, where replies go.
+- `message` — The protocol's ID for this message, unique within the conversation.
 - `sender` — The protocol's ID for the sender, when it reports one.
 - `conversation_type` — Adapter-provided label retained for diagnostics, not interpreted by the connection.
 - `direct` — Whether the conversation is one to one, rather than a group.
@@ -808,10 +813,11 @@ Each part has text or a file; a file-only message produces exactly one part.
 ### `channel::Adapter::send`
 
 ```rust
-async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<(), Fault>
+async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<String, Fault>
 ```
 
-Perform one bounded attempt. Never retry internally or drop an in-flight side effect.
+Perform one bounded attempt, returning the protocol's ID for the sent message.
+Never retry internally or drop an in-flight side effect.
 
 # module `enco_host::development`
 
@@ -997,7 +1003,7 @@ Why one plugin's source did not build.
 - `EmptySettings` — The component does not load with an empty configuration, which every plugin must accept.
 - `SourceChanged` — Files in the source directory changed while the build was reading them.
 - `Toolchain` — The pinned Rust toolchain cannot build plugins on this machine.
-  
+
   This is checked before Cargo runs. Installing a toolchain downloads it, so the owner repairs
   this.
   - `channel` — The toolchain the SDK pins, as rustup names it.
@@ -1064,7 +1070,7 @@ How the files of two sides differ, and what to do about it.
 - `units` — One entry for each unit that differs: `config.toml` or a plugin directory.
 - `conflicting_paths` — Directories that two plugins would both need, so no rewind can write them.
 - `next` — What to do about the differences, if anything.
-  
+
   Actions include only paths addressable by the rewind tool.
 
 Implements:
@@ -1613,7 +1619,7 @@ What is wrong with a file or directory in the home.
   link.
 - `NotUtf8` — Its name is not valid UTF-8.
 - `UnsupportedName` — Its name cannot be part of a source path.
-  
+
   Source paths use `/` as their only separator, so names cannot contain `\\`.
 - `NotText` — Its content is not UTF-8 text.
 - `IgnoreRule` — A `.gitignore` rule cannot be parsed; the text is the parser's message.
@@ -1864,7 +1870,7 @@ What a history request asks for: a page of registrations, or a comparison of two
 - `List` — A page of registrations, newest first.
   - `before` — Only registrations older than this one; the newest page when absent.
 - `Compare` — The differences between the files of two sides.
-  
+
   Without `from`, the home is compared with the latest registration, and a registration with
   the one before it.
   - `from` — The side the comparison starts from.

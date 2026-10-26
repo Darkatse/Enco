@@ -111,6 +111,14 @@ enum Action {
         #[arg(long, default_value = "main")]
         session: String,
     },
+    /// Take a conversation back to a Log position; changes made after it outside the conversation stay.
+    Backtrack {
+        #[arg(long, default_value = "main")]
+        session: String,
+        /// The position as `<epoch>:<seq>`, from an entry's `pos` in `enco log`.
+        #[arg(value_parser = position)]
+        to: enco_core::LogPos,
+    },
 }
 
 #[derive(Subcommand)]
@@ -244,6 +252,11 @@ async fn main() -> Result<()> {
             enabled: matches!(state, Switch::On),
         },
         Action::Cancel { session } => Command::Cancel { session },
+        Action::Backtrack { session, to } => Command::Backtrack {
+            session,
+            to,
+            event_id: EventId::new(),
+        },
     };
     let output = command.output();
     let data = client::Client::connect(&paths.socket())
@@ -341,6 +354,7 @@ impl Command {
             Self::Send { .. }
             | Self::Subscribe { .. }
             | Self::Cancel { .. }
+            | Self::Backtrack { .. }
             | Self::Schedules { .. }
             | Self::CancelSchedule { .. }
             | Self::Memories { .. }
@@ -354,4 +368,19 @@ impl Command {
             | Self::SafeMode { .. } => Output::Json,
         }
     }
+}
+
+/// A Log position written `<epoch>:<seq>`.
+fn position(text: &str) -> Result<enco_core::LogPos, String> {
+    let (epoch, seq) = text
+        .split_once(':')
+        .ok_or_else(|| format!("{text}: expected <epoch>:<seq>"))?;
+    let number = |part: &str| {
+        part.parse::<u64>()
+            .map_err(|error| format!("{text}: {part}: {error}"))
+    };
+    Ok(enco_core::LogPos {
+        epoch: enco_core::Epoch(number(epoch)?),
+        seq: enco_core::Seq(number(seq)?),
+    })
 }

@@ -49,6 +49,8 @@ pub(super) fn event(event: &Event, images: Vec<wire::ImageRef>) -> Result<wire::
             account,
             conversation,
             sender,
+            // Composers do not point at platform messages; the contract does not carry the ID.
+            message: _,
         } => wire::EventSource::Channel(wire::ChannelSource {
             channel: channel.clone(),
             account: account.clone(),
@@ -96,6 +98,7 @@ pub(super) fn event(event: &Event, images: Vec<wire::ImageRef>) -> Result<wire::
             failure: failure(fault),
             text: text.clone(),
         }),
+        EventBody::Backtrack { to } => wire::EventBody::Backtrack(pos(*to)),
     };
     Ok(wire::Event {
         id: id.to_string(),

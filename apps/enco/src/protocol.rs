@@ -23,6 +23,11 @@ pub(crate) enum Command {
     Cancel {
         session: String,
     },
+    Backtrack {
+        session: String,
+        to: enco_core::LogPos,
+        event_id: EventId,
+    },
     // Empty struct variants retain deny_unknown_fields for argument-free commands.
     Schedules {},
     CancelSchedule {

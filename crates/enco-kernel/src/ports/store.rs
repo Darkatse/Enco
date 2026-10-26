@@ -39,6 +39,17 @@ pub trait Store: Send + Sync {
     async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreError>;
     /// Restore a recorded request plan and verify its complete content address.
     async fn plan(&self, hash: &ContentHash) -> Result<ContextPlan, StoreError>;
+    /// Find the Session and position where the owner's channel message with this protocol ID was
+    /// consumed.
+    ///
+    /// Commands recorded as inputs, such as backtracks, never match.
+    async fn consumed_message(
+        &self,
+        channel: &str,
+        account: &str,
+        conversation: &str,
+        message: &str,
+    ) -> Result<Option<(SessionId, LogPos)>, StoreError>;
 
     // ---- Inbox (any producer may submit; only the Session actor consumes through Commit)
     /// Atomically accept Events, connection state and an optional final delivery outcome.
@@ -51,6 +62,14 @@ pub trait Store: Send + Sync {
     async fn connection(&self, key: &str) -> Result<Option<serde_json::Value>, StoreError>;
     /// Read recent failed or uncertain deliveries in reverse commit order.
     async fn delivery_failures(&self, key: &str) -> Result<Vec<DeliverySettlement>, StoreError>;
+    /// Find the connection's delivery to `target` whose confirmed parts include the protocol
+    /// message `message`.
+    async fn delivered_message(
+        &self,
+        key: &str,
+        target: &str,
+        message: &str,
+    ) -> Result<Option<Delivery>, StoreError>;
     /// Read unconsumed inputs in acceptance order.
     async fn pending(&self, session: SessionId) -> Result<Vec<Event>, StoreError>;
 

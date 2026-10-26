@@ -111,7 +111,7 @@ cargo run -p enco -- chat      # 在另一个终端中
 
 `enco init` 创建插件目录，并把宿主自带的 SDK 写到 `sdk/`。插件源码放在 `plugins/<名字>/` 下，也可以用 `enco plugin scaffold <名字>` 创建工具插件。`composer` 这样的出厂插件运行宿主自带的代码，并随宿主升级；`enco plugin scaffold composer` 会写出它随宿主分发的源码，下一次 apply 起这个目录就取代出厂代码，删掉目录再 apply 即回到出厂代码。每个插件是独立的 Cargo 工作区，以 `../../sdk` 为路径依赖；目录自己的 `.gitignore` 决定哪些文件计入源码，不需要 Git。
 
-改好源码与 `config.toml` 后，执行 `enco apply --reason "说明修改意图"`，一起构建并登记发生变化的意图。主人可以省略理由，Agent 的 `self_apply` 必须填写。`enco status` 与 `self_status` 按单元并排展示运行中、已登记与 home 的事实；脚本使用 `enco status --json`。`enco rollback` 以一次登记为单位机械回退仍在生效的部分，不需要 Cargo 或模型调用。重启恢复已登记的状态。数据库模式版本 13 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
+改好源码与 `config.toml` 后，执行 `enco apply --reason "说明修改意图"`，一起构建并登记发生变化的意图。主人可以省略理由，Agent 的 `self_apply` 必须填写。`enco status` 与 `self_status` 按单元并排展示运行中、已登记与 home 的事实；脚本使用 `enco status --json`。`enco rollback` 以一次登记为单位机械回退仍在生效的部分，不需要 Cargo 或模型调用。重启恢复已登记的状态。数据库模式版本 14 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
 
 每个 profile 可以写 `composer = { plugin = "<名字>", options = {} }`；不写时使用出厂 composer 与空选项。composer 声明自己的选项 schema，登记时据此校验每个 profile。它接收已记录的历史、常驻说明与召回的记忆，没有文件或网络访问权。安全模式使用二进制内嵌的出厂 composer 与空选项。
 
@@ -120,6 +120,8 @@ cargo run -p enco -- chat      # 在另一个终端中
 补全 endpoint 默认只接受文本；在 endpoint 中加上 `accepts = ["image"]` 即可发送图片。`enco send --image <path>` 接受 PNG、JPEG 和 WebP，可重复，也可不附文字；Agent 通过 `fs_read` 读取这些图片。单张上限 10 MB，每次请求图片合计上限 32 MB。
 
 常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`。启用 Telegram 时，取消配置示例中 `[telegram]` 段的注释，填写主人的 user ID 并导出 token 环境变量。照片与图片文件连同 caption 进入同一条消息；不支持的附件会如实告知 Agent。`/session` 切换 Session，`/cancel` 取消当前 Run；`enco status` 列出渠道状态以及最近失败或未知的投递。
+
+要在对话中回溯，在 Telegram 中回复其中一条消息并发送 `/backtrack`，或者执行 `enco backtrack <epoch>:<seq>`，位置取自 `enco log` 中条目的 `pos`。对话从那条消息继续；回到自己的消息时，Agent 会重新回答它。之后的消息仍有记录，只是离开了对话，所以也可以再回到它们。对话之外的改动，例如对文件、记忆、定时与插件的修改，都不会撤销，Agent 也会被告知这一点。
 
 设置 `ENCO_HOME` 可以使用 `~/.enco` 以外的目录。提交改动前请运行 `cargo xtask check`。
 

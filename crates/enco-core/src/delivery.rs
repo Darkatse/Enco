@@ -19,6 +19,9 @@ pub struct DeliverySettlement {
     pub delivery: Delivery,
     /// One final outcome for the entire logical delivery.
     pub outcome: Settlement,
+    /// The protocol's IDs for the parts confirmed sent, in order; after a failed or unknown
+    /// outcome, those confirmed before it.
+    pub messages: Vec<String>,
     /// Observation time for display, never ordering.
     pub at: DateTime<Utc>,
 }

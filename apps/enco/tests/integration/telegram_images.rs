@@ -15,14 +15,14 @@ async fn telegram_photos_documents_and_unsupported_attachments_keep_their_messag
     let telegram = Telegram::new("42:secret".into(), &server.uri()).unwrap();
     Mock::given(path("/bot42:secret/getUpdates"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true, "result": [
-            {"update_id": 1, "message": {"chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "caption": "look", "photo": [
+            {"update_id": 1, "message": {"message_id": 1, "chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "caption": "look", "photo": [
                 {"file_id": "large", "width": 200, "height": 200},
                 {"file_id": "small", "width": 10, "height": 10}
             ]}},
-            {"update_id": 2, "message": {"chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "document": {
+            {"update_id": 2, "message": {"message_id": 2, "chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "document": {
                 "file_id": "document", "file_name": "picture.webp", "mime_type": "image/webp"
             }}},
-            {"update_id": 3, "message": {"chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "voice": {"file_id": "voice"}}}
+            {"update_id": 3, "message": {"message_id": 3, "chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "voice": {"file_id": "voice"}}}
         ]}))).expect(1).mount(&server).await;
     let updates = telegram.poll(telegram.initial_state()).await.unwrap();
     let Some(Action::Message(photo)) = &updates[0].input.as_ref().unwrap().action else {

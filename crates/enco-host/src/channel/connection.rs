@@ -1,5 +1,7 @@
 //! The connection's actor, the only writer of its state: it accepts the owner's input, sends
 //! replies and settles deliveries, one at a time.
+mod backtrack;
+
 use super::{projection, transport, *};
 use enco_kernel::{ConnectionWrite, StoreError};
 use std::collections::{BTreeSet, VecDeque};
@@ -116,6 +118,7 @@ impl Connection {
                         retryable: false,
                     },
                 },
+                Vec::new(),
             )
             .await?;
         }
@@ -248,71 +251,39 @@ impl Connection {
         state.protocol = update.protocol;
         let Some(transport::OwnerInput {
             conversation: target,
+            message,
             action,
         }) = update.owner
         else {
             return self.commit(state, &[], None).await;
         };
-        let selected = match &action {
-            Action::SelectSession(name) => Some(self.kernel.open_session(name).await?.id),
-            Action::Message(_) if !state.chats.contains_key(&target) => {
-                Some(self.kernel.open_session("main").await?.id)
+        let receipt = match action {
+            Action::Message(content) => {
+                let session = match state.chats.get(&target) {
+                    Some(session) => *session,
+                    None => self.kernel.open_session("main").await?.id,
+                };
+                state.chats.insert(target.clone(), session);
+                let body = EventBody::UserMessage {
+                    text: content.text,
+                    images: content.images,
+                    unviewable: content.unviewable,
+                };
+                return self.submit(state, session, &target, message, body).await;
             }
-            _ => None,
-        };
-        if let Some(session) = selected {
-            state.chats.insert(target.clone(), session);
-        }
-        let events = if let Action::Message(message) = &action {
-            let session = state.chats[&target];
-            state.outbound.entry(session).or_default();
-            vec![Event {
-                id: EventId::new(),
-                session,
-                source: EventSource::Channel {
-                    channel: self.identity.channel.clone(),
-                    account: self.identity.account.clone(),
-                    conversation: target.clone(),
-                    sender: self.owner_id.clone(),
-                },
-                body: EventBody::UserMessage {
-                    text: message.text.clone(),
-                    images: message.images.clone(),
-                    unviewable: message.unviewable.clone(),
-                },
-                received_at: self.clock.now(),
-            }]
-        } else {
-            Vec::new()
-        };
-        self.commit(state, &events, None).await?;
-        let response = match action {
-            Action::Message(_) => {
-                self.follow(self.state.chats[&target])?;
-                return Ok(());
+            Action::Backtrack(reply) => self.backtrack(state, &target, message, reply).await?,
+            Action::SelectSession(name) => {
+                let session = self.kernel.open_session(&name).await?.id;
+                state.chats.insert(target.clone(), session);
+                self.commit(state, &[], None).await?;
+                format!("Switched to {name}.")
             }
             Action::Sessions => {
-                let sessions = self.kernel.sessions().await?;
-                let current = self.state.chats.get(&target);
-                let names = sessions
-                    .iter()
-                    .map(|s| {
-                        if Some(&s.id) == current {
-                            format!("- **{}** (current)", s.name)
-                        } else {
-                            format!("- {}", s.name)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if names.is_empty() {
-                    "No Sessions yet. Send a message to open main.".into()
-                } else {
-                    names
-                }
+                self.commit(state, &[], None).await?;
+                self.sessions(&target).await?
             }
-            Action::SelectSession(name) => format!("Switched to {name}."),
             Action::Cancel => {
+                self.commit(state, &[], None).await?;
                 let result = self
                     .state
                     .chats
@@ -328,9 +299,73 @@ impl Connection {
         };
         self.receipts.push_back(Receipt {
             target,
-            text: response,
+            text: receipt,
         });
         Ok(())
+    }
+
+    /// Commit the owner's input to `session` together with `state`, then follow the Session so
+    /// its replies come back through this connection.
+    async fn submit(
+        &mut self,
+        mut state: State,
+        session: SessionId,
+        conversation: &str,
+        message: String,
+        body: EventBody,
+    ) -> Result<(), ChannelError> {
+        state.outbound.entry(session).or_default();
+        let event = Event {
+            id: EventId::new(),
+            session,
+            source: EventSource::Channel {
+                channel: self.identity.channel.clone(),
+                account: self.identity.account.clone(),
+                conversation: conversation.into(),
+                sender: self.owner_id.clone(),
+                message,
+            },
+            body,
+            received_at: self.clock.now(),
+        };
+        self.commit(state, &[event], None).await?;
+        self.follow(session)
+    }
+
+    /// The Sessions to choose from, marking the one this conversation is routed to.
+    async fn sessions(&self, conversation: &str) -> Result<String, ChannelError> {
+        let current = self.state.chats.get(conversation);
+        let names = self
+            .kernel
+            .sessions()
+            .await?
+            .iter()
+            .map(|s| {
+                if Some(&s.id) == current {
+                    format!("- **{}** (current)", s.name)
+                } else {
+                    format!("- {}", s.name)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(if names.is_empty() {
+            "No Sessions yet. Send a message to open main.".into()
+        } else {
+            names
+        })
+    }
+
+    /// The Session's name, for telling the owner where something belongs.
+    async fn session_name(&self, session: SessionId) -> Result<String, ChannelError> {
+        let record = self
+            .kernel
+            .sessions()
+            .await?
+            .into_iter()
+            .find(|s| s.id == session)
+            .ok_or(KernelError::UnknownSession(session))?;
+        Ok(record.name)
     }
 
     async fn next_delivery(&mut self) -> Result<(), ChannelError> {
@@ -351,14 +386,8 @@ impl Connection {
             if let Some((delivery, mut message)) = outgoing {
                 let target = delivery.target.clone();
                 if self.state.chats.get(&target) != Some(&session) {
-                    let record = self
-                        .kernel
-                        .sessions()
-                        .await?
-                        .into_iter()
-                        .find(|s| s.id == session)
-                        .ok_or(KernelError::UnknownSession(session))?;
-                    message.text = format!("[{}]\n\n{}", record.name, message.text);
+                    let name = self.session_name(session).await?;
+                    message.text = format!("[{name}]\n\n{}", message.text);
                 }
                 let file = match message.file {
                     Some(file) => match self.kernel.outgoing_file(&file).await {
@@ -373,6 +402,7 @@ impl Connection {
                                         retryable: false,
                                     },
                                 },
+                                Vec::new(),
                             )
                             .await?;
                             continue;
@@ -416,7 +446,9 @@ impl Connection {
     ) -> Result<Option<Fault>, ChannelError> {
         let sent = result.map_err(|error| ChannelError::Task(error.to_string()))?;
         match flight {
-            InFlight::Delivery(delivery, _) => self.settle(delivery, sent.outcome).await?,
+            InFlight::Delivery(delivery, _) => {
+                self.settle(delivery, sent.outcome, sent.messages).await?;
+            }
             InFlight::Receipt(_) if !matches!(sent.outcome, Settlement::Ok) => {
                 tracing::warn!(outcome = ?sent.outcome, "command receipt was not delivered");
             }
@@ -425,10 +457,12 @@ impl Connection {
         Ok(sent.fatal)
     }
 
+    /// Record the delivery's outcome and the protocol's IDs for the parts confirmed sent.
     async fn settle(
         &mut self,
         delivery: Delivery,
         outcome: Settlement,
+        messages: Vec<String>,
     ) -> Result<(), ChannelError> {
         let mut state = self.state.clone();
         state.sending = None;
@@ -446,6 +480,7 @@ impl Connection {
             Some(DeliverySettlement {
                 delivery,
                 outcome,
+                messages,
                 at: self.clock.now(),
             }),
         )

@@ -1,4 +1,5 @@
 #![expect(clippy::unwrap_used, reason = "test coordination fails by panicking")]
+mod backtrack;
 mod outgoing;
 use crate::support;
 
@@ -13,7 +14,14 @@ use enco_host::{
 };
 use enco_kernel::{ConnectionWrite, Kernel, Store};
 use serde_json::{Value, json};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 use support::*;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -21,6 +29,8 @@ struct Send {
     target: String,
     text: String,
     file: Option<FileData>,
+    /// The ID the service gives the message if the send succeeds.
+    id: String,
     result: oneshot::Sender<Result<(), Fault>>,
 }
 
@@ -34,6 +44,7 @@ struct ControlledChannel {
     polls: mpsc::UnboundedSender<Value>,
     sends: mpsc::UnboundedSender<Send>,
     fetches: mpsc::UnboundedSender<Fetch>,
+    sent: AtomicU32,
 }
 
 #[async_trait]
@@ -64,17 +75,19 @@ impl Adapter for ControlledChannel {
     fn split(&self, message: Outgoing<FileData>) -> Vec<Outgoing<FileData>> {
         vec![message]
     }
-    async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<(), Fault> {
+    async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<String, Fault> {
         let (result, receive) = oneshot::channel();
+        let id = format!("sent-{}", self.sent.fetch_add(1, Ordering::SeqCst));
         self.sends
             .send(Send {
                 target: target.into(),
                 text: message.text.clone(),
                 file: message.file.clone(),
+                id: id.clone(),
                 result,
             })
             .unwrap();
-        receive.await.unwrap()
+        receive.await.unwrap().map(|()| id)
     }
 }
 
@@ -100,6 +113,7 @@ async fn harness(root: &Path, provider: Arc<ScriptedProvider>) -> Harness {
         polls,
         sends,
         fetches,
+        sent: AtomicU32::new(0),
     });
     Harness {
         kernel: Arc::new(kernel),
@@ -128,11 +142,13 @@ async fn receive<T>(receiver: &mut mpsc::UnboundedReceiver<T>) -> T {
         .unwrap()
 }
 
+/// The owner's message in `chat`; the protocol's ID for it is its offset.
 fn update(offset: u32, action: Action) -> Update {
     Update {
         protocol: json!(offset),
         input: Some(Input {
             conversation: "chat".into(),
+            message: offset.to_string(),
             sender: Some("owner".into()),
             conversation_type: "private".into(),
             direct: true,

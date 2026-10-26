@@ -48,6 +48,8 @@ pub struct Update {
 pub struct Input {
     /// The protocol's ID for the conversation, where replies go.
     pub conversation: String,
+    /// The protocol's ID for this message, unique within the conversation.
+    pub message: String,
     /// The protocol's ID for the sender, when it reports one.
     pub sender: Option<String>,
     /// Adapter-provided label retained for diagnostics, not interpreted by the connection.
@@ -68,6 +70,9 @@ pub enum Action<T = Attachment> {
     SelectSession(String),
     /// Stop the work the conversation's Session is doing.
     Cancel,
+    /// Take the conversation back to the message this one replies to, named by the protocol's ID;
+    /// absent when it replies to none.
+    Backtrack(Option<String>),
 }
 
 /// An image attached to a message, still held by the protocol.
@@ -147,8 +152,9 @@ pub trait Adapter: Send + Sync {
     /// Preserve all text; attach the file to the last part, or a separate final part.
     /// Each part has text or a file; a file-only message produces exactly one part.
     fn split(&self, message: Outgoing<FileData>) -> Vec<Outgoing<FileData>>;
-    /// Perform one bounded attempt. Never retry internally or drop an in-flight side effect.
-    async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<(), Fault>;
+    /// Perform one bounded attempt, returning the protocol's ID for the sent message.
+    /// Never retry internally or drop an in-flight side effect.
+    async fn send(&self, target: &str, message: &Outgoing<FileData>) -> Result<String, Fault>;
 }
 
 /// Why a connection stopped or could not start.

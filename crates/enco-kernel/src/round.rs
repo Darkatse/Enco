@@ -14,13 +14,14 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 impl SessionActor {
-    /// Run and settle one Round; returns its end and whether it ran in safe mode, from which the
-    /// Run decides whether to continue.
+    /// Run and settle one Round that consumes `inputs` as it starts; returns its end and whether it
+    /// ran in safe mode, from which the Run decides whether to continue.
     pub(crate) async fn round(
         &mut self,
         run: RunId,
         token: &CancellationToken,
         mut prefix: Vec<EntryBody>,
+        inputs: Vec<Event>,
     ) -> Result<(RoundEnd, bool), KernelError> {
         let round = RoundId::new();
         let (session, view) = self.deps.registry.session_view(self.session.id).await?;
@@ -32,9 +33,8 @@ impl SessionActor {
             &view.active_generations(),
         );
         let safe_mode = mode.is_some();
-        let pending = self.deps.store.pending(self.session.id).await?;
         prefix.extend(
-            pending
+            inputs
                 .into_iter()
                 .map(|event| EntryBody::EventConsumed { event }),
         );

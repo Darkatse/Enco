@@ -1,4 +1,5 @@
 //! Integration tests share one binary, so an edit relinks the host once rather than per file.
+mod backtrack;
 mod channel;
 mod continuity;
 mod fallback;

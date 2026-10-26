@@ -16,16 +16,17 @@ impl SessionActor {
         safe_mode: bool,
         token: &CancellationToken,
     ) -> Result<Gathered, RoundError> {
-        let latest_event = self.entries.iter().rev().find_map(|e| match &e.body {
-            EntryBody::EventConsumed { event } => Some(event.clone()),
-            _ => None,
-        });
-        let new_input = self
-            .entries
+        // A Round reads its history from the conversation as it now stands, not the whole Log.
+        let conversation = crate::transcript::conversation(&self.entries);
+        let latest_event = conversation
+            .iter()
+            .rev()
+            .find_map(|entry| crate::transcript::input(entry).cloned());
+        let new_input = conversation
             .iter()
             .rev()
             .take_while(|entry| !matches!(entry.body, EntryBody::RoundEnded { .. }))
-            .any(|entry| matches!(entry.body, EntryBody::EventConsumed { .. }));
+            .any(|entry| crate::transcript::input(entry).is_some());
         let query = ContextQuery {
             session: self.session.clone(),
             latest_event,
@@ -41,7 +42,7 @@ impl SessionActor {
             )
         };
         let mut omitted = offered.omitted;
-        let previous_plan = self.previous_plan(&mut omitted).await?;
+        let previous_plan = self.previous_plan(&conversation, &mut omitted).await?;
         Ok(Gathered {
             instructions,
             memories: offered.memories,
@@ -52,7 +53,8 @@ impl SessionActor {
     }
 
     pub(super) fn located_transcript(&self) -> Transcript<LocatedImage> {
-        crate::transcript::project(&self.entries).map_images(|image| LocatedImage {
+        let conversation = crate::transcript::conversation(&self.entries);
+        crate::transcript::project(&conversation).map_images(|image| LocatedImage {
             path: self.deps.store.blob_path(&image.content),
             image,
         })
@@ -60,10 +62,10 @@ impl SessionActor {
 
     async fn previous_plan(
         &self,
+        conversation: &[&Entry],
         omitted: &mut Vec<Omission>,
     ) -> Result<Option<ContextPlan>, RoundError> {
-        let Some(hash) = self
-            .entries
+        let Some(hash) = conversation
             .iter()
             .rev()
             .find_map(|entry| match &entry.body {

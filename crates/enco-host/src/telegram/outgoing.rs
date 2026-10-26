@@ -70,11 +70,12 @@ pub(super) fn split(message: Outgoing<FileData>) -> Vec<Outgoing<FileData>> {
     parts
 }
 
+/// Send one part, returning Telegram's ID for the sent message.
 pub(super) async fn send(
     telegram: &Telegram,
     target: &str,
     message: &Outgoing<FileData>,
-) -> Result<(), Fault> {
+) -> Result<String, Fault> {
     let (body, timeout) = match &message.file {
         None => (
             Body::Json(json!({"chat_id": target, "rich_message": {"markdown": message.text}})),
@@ -103,8 +104,9 @@ pub(super) async fn send(
         }
     };
     let value = telegram.request("sendRichMessage", body, timeout).await?;
-    if value.get("message_id").and_then(Value::as_i64).is_none() {
-        return Err(invalid_response("sendRichMessage"));
-    }
-    Ok(())
+    value
+        .get("message_id")
+        .and_then(Value::as_i64)
+        .map(|id| id.to_string())
+        .ok_or_else(|| invalid_response("sendRichMessage"))
 }

@@ -62,7 +62,7 @@ impl Kernel {
             .ok_or(StoreError::UnknownGeneration(*provider))?;
         let request = plan::resolve(
             &plan,
-            &transcript::project(&entries[..index]),
+            &transcript::project(&transcript::conversation(&entries[..index])),
             exports,
             target,
         )

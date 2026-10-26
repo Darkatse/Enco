@@ -562,9 +562,9 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
     Mock::given(path("/bot42:test-secret/getUpdates"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true, "result": [
-                {"update_id": 8, "message": {"chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "text": "/session work"}},
-                {"update_id": 9, "message": {"chat": {"id": 1, "type": "group"}, "from": {"id": 3}, "text": "ignored by owner"}},
-                {"update_id": 10, "message": {"chat": {"id": 1, "type": "private"}, "from": {"id": 2}}}
+                {"update_id": 8, "message": {"message_id": 4, "chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "text": "/session work"}},
+                {"update_id": 9, "message": {"message_id": 5, "chat": {"id": 1, "type": "group"}, "from": {"id": 3}, "text": "ignored by owner"}},
+                {"update_id": 10, "message": {"message_id": 6, "chat": {"id": 1, "type": "private"}, "from": {"id": 2}}}
             ]
         }))).mount(&server).await;
     let updates = telegram.poll(telegram.initial_state()).await.unwrap();
@@ -594,7 +594,8 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
         .expect(1)
         .mount_as_scoped(&server)
         .await;
-    telegram.send("1", &telegram_text(markdown)).await.unwrap();
+    let sent = telegram.send("1", &telegram_text(markdown)).await.unwrap();
+    assert_eq!(sent, "1");
     drop(success);
     for (status, body, unknown, retry, fatal) in [
         (
@@ -655,11 +656,38 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
 }
 
 #[tokio::test]
+async fn telegram_backtrack_names_the_message_it_replies_to() {
+    use enco_host::{
+        Telegram,
+        channel::{Action, Adapter},
+    };
+    let server = MockServer::start().await;
+    let telegram = Telegram::new("42:test-secret".into(), &server.uri()).unwrap();
+    Mock::given(path("/bot42:test-secret/getUpdates"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "result": [
+                {"update_id": 1, "message": {"message_id": 7, "chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "text": "/backtrack", "reply_to_message": {
+                    "message_id": 3, "chat": {"id": 1, "type": "private"}, "date": 0, "text": "an earlier reply"
+                }}},
+                {"update_id": 2, "message": {"message_id": 8, "chat": {"id": 1, "type": "private"}, "from": {"id": 2}, "text": "/backtrack"}}
+            ]
+        }))).mount(&server).await;
+    let updates = telegram.poll(telegram.initial_state()).await.unwrap();
+    let replying = updates[0].input.as_ref().unwrap();
+    assert_eq!(replying.message, "7");
+    assert!(matches!(&replying.action, Some(Action::Backtrack(Some(reply))) if reply == "3"));
+    assert!(matches!(
+        updates[1].input.as_ref().unwrap().action,
+        Some(Action::Backtrack(None))
+    ));
+}
+
+#[tokio::test]
 async fn completion_imports_are_rejected_before_linking_a_plugin() {
     let runtime = WasmRuntime::new().unwrap();
     let error = runtime
         .load(
-            br#"(component (import "enco:plugin/completion@0.6.0" (instance)))"#,
+            br#"(component (import "enco:plugin/completion@0.7.0" (instance)))"#,
             &PluginSettings::default(),
         )
         .await

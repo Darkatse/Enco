@@ -25,7 +25,7 @@ use std::{
 ///
 /// It covers the SQLite schema, plan records included. Until P4, persistent format changes
 /// require a new database; opening never migrates or deletes the old one.
-const SCHEMA_VERSION: u32 = 13;
+const SCHEMA_VERSION: u32 = 14;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -227,6 +227,21 @@ impl Store for SqliteStore {
             .map_err(backend)?
     }
 
+    async fn consumed_message(
+        &self,
+        channel: &str,
+        account: &str,
+        conversation: &str,
+        message: &str,
+    ) -> Result<Option<(SessionId, LogPos)>, StoreError> {
+        let [channel, account, conversation, message] =
+            [channel, account, conversation, message].map(str::to_owned);
+        self.run(move |connection| {
+            sessions::consumed_message(connection, &channel, &account, &conversation, &message)
+        })
+        .await
+    }
+
     async fn accept(
         &self,
         events: &[Event],
@@ -247,6 +262,17 @@ impl Store for SqliteStore {
     async fn delivery_failures(&self, key: &str) -> Result<Vec<DeliverySettlement>, StoreError> {
         let key = key.to_owned();
         self.run(move |connection| connections::recent_failures(connection, &key))
+            .await
+    }
+
+    async fn delivered_message(
+        &self,
+        key: &str,
+        target: &str,
+        message: &str,
+    ) -> Result<Option<Delivery>, StoreError> {
+        let [key, target, message] = [key, target, message].map(str::to_owned);
+        self.run(move |connection| connections::delivered(connection, &key, &target, &message))
             .await
     }
 

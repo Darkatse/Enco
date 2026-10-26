@@ -1431,6 +1431,16 @@ pub async fn submit(&self, session: SessionId, event_id: EventId, text: String, 
 
 Persist input before waking its owner; duplicate IDs remain harmless.
 
+### `Kernel::backtrack`
+
+```rust
+pub async fn backtrack(&self, session: SessionId, event_id: EventId, to: LogPos) -> Result<Accepted, KernelError>
+```
+
+Take the conversation back to a recorded position, as the owner asked from the CLI.
+
+Like `submit`, a repeated event ID is accepted once.
+
 ### `Kernel::accept`
 
 ```rust
@@ -1438,6 +1448,9 @@ pub async fn accept(&self, events: &[Event], connection: Option<&ConnectionWrite
 ```
 
 Accept inputs and connection progress before waking the affected Session owners.
+
+A backtrack must point at a recorded position other than another backtrack; a newly accepted
+one signals the Session's current Run, which stops at its next boundary.
 
 ### `Kernel::connection`
 
@@ -1454,6 +1467,24 @@ pub async fn delivery_failures(&self, key: &str) -> Result<Vec<DeliveryStatus>, 
 ```
 
 Read recent final failures, retaining their original Session and Log references.
+
+### `Kernel::consumed_message`
+
+```rust
+pub async fn consumed_message(&self, channel: &str, account: &str, conversation: &str, message: &str) -> Result<Option<(SessionId, LogPos)>, KernelError>
+```
+
+Find where the owner's channel message with this protocol ID became a Session's input.
+
+Commands recorded as inputs, such as backtracks, never match.
+
+### `Kernel::delivered_message`
+
+```rust
+pub async fn delivered_message(&self, key: &str, target: &str, message: &str) -> Result<Option<Delivery>, KernelError>
+```
+
+Find the connection's delivery to `target` that sent the protocol message `message`.
 
 ### `Kernel::subscribe`
 
@@ -1599,6 +1630,11 @@ pub enum KernelError {
     },
     UnknownSession(SessionId),
     UnknownProfile(String),
+    Backtrack {
+        session: SessionId,
+        to: LogPos,
+        reason: &'static str,
+    },
 }
 ```
 
@@ -1617,6 +1653,10 @@ Public command failure; Round failures are recorded in the Log instead.
   - `reason` — Decoding or resolution failure.
 - `UnknownSession` — No such Session is registered.
 - `UnknownProfile` — The requested profile is absent from the node configuration.
+- `Backtrack` — A backtrack must point at a position that this Session's conversation has recorded.
+  - `session` — The Session the owner addressed.
+  - `to` — The position the owner pointed at.
+  - `reason` — Why the position cannot be a target.
 
 Implements:
 
@@ -3838,6 +3878,17 @@ async fn plan(&self, hash: &ContentHash) -> Result<ContextPlan, StoreError>
 
 Restore a recorded request plan and verify its complete content address.
 
+### `Store::consumed_message`
+
+```rust
+async fn consumed_message(&self, channel: &str, account: &str, conversation: &str, message: &str) -> Result<Option<(SessionId, LogPos)>, StoreError>
+```
+
+Find the Session and position where the owner's channel message with this protocol ID was
+consumed.
+
+Commands recorded as inputs, such as backtracks, never match.
+
 ### `Store::accept`
 
 ```rust
@@ -3861,6 +3912,15 @@ async fn delivery_failures(&self, key: &str) -> Result<Vec<DeliverySettlement>, 
 ```
 
 Read recent failed or uncertain deliveries in reverse commit order.
+
+### `Store::delivered_message`
+
+```rust
+async fn delivered_message(&self, key: &str, target: &str, message: &str) -> Result<Option<Delivery>, StoreError>
+```
+
+Find the connection's delivery to `target` whose confirmed parts include the protocol
+message `message`.
 
 ### `Store::pending`
 

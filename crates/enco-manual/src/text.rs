@@ -19,6 +19,22 @@ pub(crate) fn summary(docs: Option<&str>, links: &LinkTargets) -> String {
     )
 }
 
+/// Text continued under a list item: lines after the first take `indent`, and blank lines stay
+/// empty so that no line ends in spaces.
+pub(crate) fn continued(text: &str, indent: &str) -> String {
+    text.split('\n')
+        .enumerate()
+        .map(|(index, line)| {
+            if index == 0 || line.is_empty() {
+                line.to_owned()
+            } else {
+                format!("{indent}{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The whole doc comment, with its headings moved `depth` levels down.
 pub(crate) fn body(docs: Option<&str>, links: &LinkTargets, depth: usize) -> String {
     let mut out = Vec::new();
@@ -97,7 +113,7 @@ fn unlink(line: &str, links: &LinkTargets) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{LinkTargets, body, summary};
+    use super::{LinkTargets, body, continued, summary};
     use rustdoc_types::Id;
 
     #[test]
@@ -120,6 +136,14 @@ mod tests {
             "Uses `Thing` and [the guide](https://example.org).\n\n\
              ### Errors\n\nFails when `Thing` is absent.\n\n\
              ```rust\nlet thing = Thing;\n```"
+        );
+    }
+
+    #[test]
+    fn continued_paragraphs_leave_blank_lines_without_trailing_spaces() {
+        assert_eq!(
+            continued("First.\n\nSecond\nline.", "  "),
+            "First.\n\n  Second\n  line."
         );
     }
 }

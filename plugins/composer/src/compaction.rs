@@ -47,7 +47,9 @@ impl Compaction {
                             let speaker = match item.event.as_ref().map(|event| &event.body) {
                                 Some(EventBody::UserMessage(_)) => "Owner",
                                 Some(EventBody::Reminder(_)) => "Reminder",
-                                Some(EventBody::GenerationRolledBack(_)) => "Notice",
+                                Some(
+                                    EventBody::GenerationRolledBack(_) | EventBody::Backtrack(_),
+                                ) => "Notice",
                                 None => "You",
                             };
                             chunk.push_str(&format!("{speaker}: {text}\n"));
