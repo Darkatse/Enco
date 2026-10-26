@@ -247,14 +247,12 @@ fn failure(activation: &Activation) -> Option<GenerationFailure<'_>> {
     Some(
         match (activation.generation.origin, activation.code.source) {
             (Origin::Settings { .. }, _) => GenerationFailure::Settings { failure },
-            (
-                Origin::Code { .. } | Origin::Artifact { .. } | Origin::Factory,
-                CodeSource::Factory,
-            ) => GenerationFailure::Factory { failure },
-            (
-                Origin::Code { .. } | Origin::Artifact { .. } | Origin::Factory,
-                CodeSource::Directory { .. } | CodeSource::Artifact,
-            ) => GenerationFailure::Code { failure },
+            (Origin::Code { .. } | Origin::Factory, CodeSource::Factory) => {
+                GenerationFailure::Factory { failure }
+            }
+            (Origin::Code { .. } | Origin::Factory, CodeSource::Directory { .. }) => {
+                GenerationFailure::Code { failure }
+            }
         },
     )
 }

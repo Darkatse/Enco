@@ -122,12 +122,13 @@ impl State {
             )
         });
         let source = match intent {
-            None | Some((_, Some(CodeIntent::Factory))) => CodeSource::Factory,
             Some((registration, Some(CodeIntent::Directory { source }))) => CodeSource::Directory {
                 registration,
                 source,
             },
-            Some((_, None)) => CodeSource::Artifact,
+            // Factory generations, and factory code registered with settings. The registration
+            // that creates a code generation always records its intent.
+            None | Some((_, Some(CodeIntent::Factory) | None)) => CodeSource::Factory,
         };
         CodeProvenance { generation, source }
     }
@@ -268,10 +269,11 @@ impl State {
         config: ActiveConfig,
         admission: admission::Admission,
         factory: &[FactoryPlugin],
+        composer: &PluginName,
     ) -> View {
         View {
             config,
-            exports: self.exports(admission, factory),
+            exports: self.exports(admission, factory, composer),
         }
     }
 }

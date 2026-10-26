@@ -12,6 +12,7 @@ Session execution through explicit ports.
 - struct `ActiveConfig` — The active configuration generation: registered content plus the declarations derived from it.
 - enum `Answer` — Finite probabilities in [0, 1], or a refusal for this question. Choice and score distributions follow label order and sum to one, allowing rounding.
 - enum `ArtifactSource` — Newly built bytes or a content address already known to the store.
+- struct `BoundComposer` — A composer generation paired with options accepted by that generation's schema.
 - struct `Budget` — Context limits supplied by configuration.
 - struct `CallContext` — Invocation identity, cooperative cancellation and the inline result budget.
 - enum `Cause` — A failure attributed to the part of the intent it concerns.
@@ -20,9 +21,11 @@ Session execution through explicit ports.
 - struct `Commit` — An atomic append of Log facts and consumption of their corresponding Inbox rows.
 - struct `Completion` — Provider output with host-assigned call identities.
 - struct `CompletionEndpoint` — A profile's endpoint with the context limits required by completion.
-- enum `ComposeError` — A policy could not produce a valid request.
 - struct `ComposeInput` — Fixed Round inputs, with the selected budgets and recorded recovery facts for this composition.
+- struct `ComposerSettings` — A profile's selected composer and its invocation options.
 - enum `Composition` — A ready reply request or a request to summarize earlier complete Rounds first.
+- enum `CompositionItem` — Text written by a composer, or a reference to a recorded message.
+- struct `CompositionPlan` — Composer output before the kernel freezes the Round's tool definitions with it.
 - struct `ConfigStatus` — Configuration is one intent document; a rollback changes only its active reference.
 - enum `ConfigTable` — The structural unit owned by one configuration declaration.
 - struct `ConfigurationSource` — Parsed configuration paired with the exact input retained by the host.
@@ -50,9 +53,13 @@ Session execution through explicit ports.
 - struct `Label` — An option or score level. Names are unique within a question.
 - enum `LoadError` — Why a component cannot be loaded, attributed to its code or to the settings it was given.
 - struct `Loaded` — Exports returned by loading a component. Each invocation owns its own runtime state.
+- struct `LoadedComposer` — A composer's option declaration and invocation, loaded from the same content.
 - struct `LoadedTools` — Tool declarations are evaluated once with the generation's accepted configuration.
+- struct `LocatedImage` — An image reference with the node-local address supplied by its store.
 - enum `Need` — A use's interface and behavior requirements, shared by wiring checks and real probes.
 - struct `NodeRecord` — Persistent node identity and recovery policy.
+- struct `OfferedMemories` — The memories offered for one Round, and what could not be offered.
+- struct `PlanWrite` — An immutable request plan whose complete content address is computed once before committing.
 - enum `PluginChange` — One plugin's contribution to an atomic registration.
 - enum `PluginChangeKind` — Accepted changes to one plugin; each variant carries only its own facts.
 - struct `PluginStatus` — What runs for one plugin, and how that differs from its registered intent.
@@ -97,12 +104,14 @@ Session execution through explicit ports.
 - struct `TranscriptItem` — One canonical message and its immutable source.
 - enum `UnitChange` — One path's accepted change, named at the registration where it happened.
 - struct `UnservedUse` — One current configured use that cannot be served by the selected exports.
-- struct `Use` — One configured user's endpoint and requirements.
+- struct `Use` — One configured caller and the invocation it requires.
+- enum `UseRef` — The configuration entry a use names, without copying its invocation parameters.
+- enum `UseTarget` — The configured invocation, preserving the facts its actual interface consumes.
 - enum `Verdict` — One completed invocation's verdict, before caller-specific result handling.
 - struct `View` — The one published snapshot of routing and registered configuration.
 - trait `Clock` — Time boundary used for reminders and observation, never Log ordering.
 - trait `Composer` — Pure policy boundary: identical inputs must produce identical plans.
-- trait `ContextSource` — Supplies current candidate content; never called in safe mode.
+- trait `ContextSource` — Supplies one owner's facts for a Round, in that owner's type; never called in safe mode.
 - trait `Decision` — Typed judgments consumed by host policies, independently of Session completion.
 - trait `Embedding` — Embedding boundary consumed by host memory, independently of completion.
 - trait `Lifecycle` — Component lifecycle shared by all exported interfaces.
@@ -114,6 +123,7 @@ Session execution through explicit ports.
 - fn `builtin_tool_specs` — Native declarations available before their stateful handlers are constructed.
 - fn `parse_table` — Parse one owner's table without interpreting other tables.
 - fn `plugin_settings` — Parse plugin settings using the same ownership boundary as registration.
+- type `ComposerOptions` — A profile's composer options: a JSON object whose shape the composer's schema declares.
 - const `ENDPOINT_TABLE` — Named endpoint entries: `[endpoint.<name>]`.
 - const `IMAGE_MAX_BYTES` — Maximum original bytes accepted for one image.
 - const `PLUGIN_SETTINGS_TABLE` — The registry owns the named settings sections of plugins.
@@ -298,6 +308,22 @@ pub fn hash(&self) -> ContentHash
 
 Address the offered code without loading it or changing retention.
 
+## struct `BoundComposer`
+
+`src/registry/exports.rs`
+
+```rust
+pub struct BoundComposer {
+    pub export: Export<dyn Composer>,
+    pub options: crate::ComposerOptions,
+}
+```
+
+A composer generation paired with options accepted by that generation's schema.
+
+- `export` — Exact code selected for this composition.
+- `options` — Normalized invocation options.
+
 ## struct `Budget`
 
 `src/ports/composer.rs`
@@ -372,17 +398,17 @@ pub enum Cause {
     },
     UnknownPlugin {
         user: String,
-        endpoint: String,
+        target: UseRef,
         plugin: PluginName,
     },
     PluginUnavailable {
         user: String,
-        endpoint: String,
+        target: UseRef,
         plugin: PluginName,
     },
     Use {
         user: String,
-        endpoint: String,
+        target: UseRef,
         failure: Failure,
     },
     Table(crate::SettingsError),
@@ -428,17 +454,17 @@ A failure attributed to the part of the intent it concerns.
   - `plugin` — Plugin exporting the tool.
   - `tool` — Conflicting tool name.
   - `with` — The host or the other plugins exporting it.
-- `UnknownPlugin` — A configured endpoint names a plugin that does not run.
+- `UnknownPlugin` — A configured invocation names a plugin that does not run.
   - `user` — Configured consumer.
-  - `endpoint` — Endpoint named by that consumer.
-  - `plugin` — Plugin named by the endpoint.
-- `PluginUnavailable` — A configured endpoint names a plugin that runs but cannot serve calls.
+  - `target` — Configuration entry named by that consumer.
+  - `plugin` — Plugin named by the invocation.
+- `PluginUnavailable` — A configured invocation names a plugin that runs but cannot serve calls.
   - `user` — Configured consumer.
-  - `endpoint` — Endpoint named by that consumer.
-  - `plugin` — Plugin named by the endpoint.
-- `Use` — A configured user's endpoint cannot be served.
+  - `target` — Configuration entry named by that consumer.
+  - `plugin` — Plugin named by the invocation.
+- `Use` — A configured invocation cannot be served.
   - `user` — Configured consumer.
-  - `endpoint` — Endpoint named by that consumer.
+  - `target` — Configuration entry named by that consumer.
   - `failure` — Interface check or real call failure.
 - `Table` — A configuration table cannot be interpreted.
 - `ProfileInUse` — Removing a profile would strand the Sessions that use it.
@@ -511,7 +537,6 @@ pub enum CodeSource {
         registration: RegistrationId,
         source: ContentHash,
     },
-    Artifact,
 }
 ```
 
@@ -521,7 +546,6 @@ How a generation's code entered the registry.
 - `Directory` — A registered source directory.
   - `registration` — Registration that registered the directory.
   - `source` — The directory's content, as stored when it was registered.
-- `Artifact` — A directly supplied component.
 
 Implements:
 
@@ -540,12 +564,14 @@ impl Serialize for CodeSource
 ```rust
 pub struct Commit {
     pub entries: Vec<Entry>,
+    pub plan: Option<std::sync::Arc<PlanWrite>>,
 }
 ```
 
 An atomic append of Log facts and consumption of their corresponding Inbox rows.
 
 - `entries` — Ordered facts to append.
+- `plan` — A request plan accepted together with the Attempt that refers to it.
 
 ## struct `Completion`
 
@@ -596,80 +622,81 @@ Implements:
 impl Clone for CompletionEndpoint
 ```
 
-## enum `ComposeError`
-
-`src/ports/composer.rs`
-
-```rust
-pub enum ComposeError {
-    CompactionUnavailable,
-    ContextOverflow {
-        needed: u32,
-        window: u32,
-    },
-    Invalid(String),
-}
-```
-
-A policy could not produce a valid request.
-
-- `CompactionUnavailable` — The request fits only after compaction, and no compaction candidate is usable.
-- `ContextOverflow` — Even the smallest valid request exceeds the model's window.
-  - `needed` — Estimated total size.
-  - `window` — Configured context window.
-- `Invalid` — Policy inputs could not be composed.
-
-Implements:
-
-```rust
-impl Debug for ComposeError
-impl Display for ComposeError
-impl Error for ComposeError
-```
-
 ## struct `ComposeInput`
 
 `src/ports/composer.rs`
 
 ```rust
 pub struct ComposeInput {
+    pub round: RoundId,
+    pub home: std::path::PathBuf,
     pub now: DateTime<Utc>,
     pub timezone: Tz,
     pub session: SessionRecord,
-    pub transcript: Transcript,
+    pub transcript: Transcript<LocatedImage>,
     pub previous_plan: Option<ContextPlan>,
-    pub context: Contribution,
+    pub instructions: Option<String>,
+    pub memories: Vec<Memory>,
+    pub omitted: Vec<Omission>,
     pub unavailable: Vec<(String, Failure)>,
     pub tools: Vec<(CapabilityId, ToolSpec)>,
+    pub lifeline: Vec<CapabilityId>,
     pub safe_mode: Option<SafeMode>,
     pub reply: ReplyTarget,
     pub compaction: Option<Budget>,
     pub compactions_left: u32,
-    pub image_paths: std::collections::HashMap<ContentHash, std::path::PathBuf>,
 }
 ```
 
 Fixed Round inputs, with the selected budgets and recorded recovery facts for this composition.
 
+- `round` — Identity used to seed this Round's deterministic runtime.
+- `home` — Absolute home location used to describe paths to the Agent.
 - `now` — UTC instant sampled once for this Round.
 - `timezone` — Owner's time zone, shared with recurring schedules.
 - `session` — Session metadata sampled for this Round.
 - `transcript` — Canonical history after the latest compaction.
 - `previous_plan` — Most recent reply plan; the composer decides whether to reuse it.
-- `context` — Candidate content from the configured sources, in priority order, plus omissions the
-  kernel records itself, such as an unreadable previous plan.
+- `instructions` — The text of the owner's standing instructions; absent when there are none.
+- `memories` — Pinned memories first, then those recalled for the latest input, most relevant first.
+- `omitted` — Content the host could not supply, recorded with the plan whatever the composer returns.
 - `unavailable` — Published plugins excluded from the Round's capabilities and their current reasons.
 - `tools` — All capabilities which may be disclosed this Round.
+- `lifeline` — Capabilities that every reply plan of this Session must disclose.
 - `safe_mode` — Why this Round uses factory instructions and lifeline tools, if applicable.
 - `reply` — The reply model this composition is for.
 - `compaction` — The summarizing model's limits; absent when no compaction candidate is usable.
 - `compactions_left` — Compactions this Round still allows; at zero the composer must return a plan or fail.
-- `image_paths` — Local blob addresses supplied by the store for image annotations.
 
 Implements:
 
 ```rust
 impl Clone for ComposeInput
+```
+
+## struct `ComposerSettings`
+
+`src/profile.rs`
+
+```rust
+pub struct ComposerSettings {
+    pub plugin: enco_core::PluginName,
+    pub options: ComposerOptions,
+}
+```
+
+A profile's selected composer and its invocation options.
+
+- `plugin` — Registered name of the plugin exporting composition.
+- `options` — Options checked against the generation selected for each composition.
+
+Implements:
+
+```rust
+impl Clone for ComposerSettings
+impl Debug for ComposerSettings
+impl<'de> Deserialize<'de> for ComposerSettings
+impl PartialEq for ComposerSettings
 ```
 
 ## enum `Composition`
@@ -678,10 +705,10 @@ impl Clone for ComposeInput
 
 ```rust
 pub enum Composition {
-    Plan(ContextPlan),
+    Plan(CompositionPlan),
     Compact {
         upto: LogPos,
-        plan: ContextPlan,
+        plan: CompositionPlan,
     },
 }
 ```
@@ -692,6 +719,68 @@ A ready reply request or a request to summarize earlier complete Rounds first.
 - `Compact` — Summarize an inclusive prefix ending at a complete Round.
   - `upto` — Inclusive compaction boundary.
   - `plan` — Tool-free request to generate the summary.
+
+## enum `CompositionItem`
+
+`src/ports/composer.rs`
+
+```rust
+pub enum CompositionItem {
+    Message {
+        role: Role,
+        text: String,
+        sources: Vec<Source>,
+    },
+    Log {
+        pos: LogPos,
+        images: bool,
+    },
+}
+```
+
+Text written by a composer, or a reference to a recorded message.
+
+- `Message` — Inline text and the sources it renders.
+  - `role` — Speaker of the text.
+  - `text` — Text written by this composition.
+  - `sources` — Sources used to write it, in rendering order.
+- `Log` — An immutable message from the transcript.
+  - `pos` — Position of the message.
+  - `images` — Whether its images accompany the text.
+
+Implements:
+
+```rust
+impl Clone for CompositionItem
+impl Debug for CompositionItem
+```
+
+## struct `CompositionPlan`
+
+`src/ports/composer.rs`
+
+```rust
+pub struct CompositionPlan {
+    pub items: Vec<CompositionItem>,
+    pub tools: Vec<CapabilityId>,
+    pub max_output_tokens: Option<u32>,
+    pub omitted: Vec<Omission>,
+}
+```
+
+Composer output before the kernel freezes the Round's tool definitions with it.
+
+- `items` — Messages in request order.
+- `tools` — Capabilities selected from this Round.
+- `max_output_tokens` — Requested output budget; absent means provider default.
+- `omitted` — Content this policy left out, with its reasons.
+
+Implements:
+
+```rust
+impl Clone for CompositionPlan
+impl Debug for CompositionPlan
+```
 
 ## struct `ConfigStatus`
 
@@ -1082,6 +1171,16 @@ pub fn decision(&self, endpoint: &Endpoint) -> Result<Export<dyn Decision>, Fail
 
 Resolve decision at the start of one policy evaluation.
 
+### `Exports::composer`
+
+```rust
+pub fn composer(&self, settings: &ComposerSettings, safe_mode: bool) -> Result<BoundComposer, Failure>
+```
+
+Select the current composer and normalize its profile options in one binding step.
+
+Safe mode always uses the factory generation of the host's composer with empty options.
+
 ### `Exports::active`
 
 ```rust
@@ -1179,7 +1278,7 @@ impl From<StoreError> for ImageError
 pub struct Inspection {
     pub attempt: AttemptId,
     pub purpose: AttemptPurpose,
-    pub composer: CodeRef,
+    pub composer: GenerationId,
     pub provider: GenerationId,
     pub settings: ProviderSettings,
     pub request: crate::ProviderRequest<Image>,
@@ -1192,7 +1291,7 @@ An Attempt reconstructed exclusively from its recorded plan and Log prefix.
 
 - `attempt` — Recorded Attempt identity.
 - `purpose` — Reply or compaction.
-- `composer` — Code which produced the frozen plan.
+- `composer` — Composer generation which produced the frozen plan.
 - `provider` — Provider generation to which the recorded request was bound.
 - `settings` — Recorded invocation parameters, excluding the credential itself.
 - `request` — Exact canonical request at this Attempt's Log position.
@@ -1227,7 +1326,7 @@ pub enum IntentPart {
     },
     Use {
         user: String,
-        endpoint: String,
+        target: UseRef,
     },
     Table {
         table: String,
@@ -1254,9 +1353,9 @@ The part of the owner's intent that a cause points to.
   - `name` — The name that cannot be used.
 - `References` — Configuration that still refers to a plugin name.
   - `name` — The referenced name.
-- `Use` — A configured endpoint as one user needs it.
+- `Use` — A configured invocation as one caller needs it.
   - `user` — Configured consumer, such as `profile default.reply`.
-  - `endpoint` — Endpoint named by that consumer.
+  - `target` — Configuration entry named by that consumer.
 - `Table` — A top-level configuration table, including a name for named entries.
   - `table` — Table such as `memory` or `endpoint.chat`.
 - `Factory` — Code shipped with this host; registration cannot change it.
@@ -1460,8 +1559,9 @@ impl Drop for Kernel
 pub struct KernelDeps {
     pub store: std::sync::Arc<dyn Store>,
     pub registry: std::sync::Arc<Registry>,
-    pub composer: std::sync::Arc<dyn Composer>,
-    pub context: Vec<std::sync::Arc<dyn ContextSource>>,
+    pub home: std::path::PathBuf,
+    pub instructions: std::sync::Arc<dyn ContextSource<Supply = Option<String>>>,
+    pub memories: std::sync::Arc<dyn ContextSource<Supply = OfferedMemories>>,
     pub tools: Vec<std::sync::Arc<dyn Tool>>,
     pub lifeline: Vec<String>,
     pub clock: std::sync::Arc<dyn Clock>,
@@ -1472,8 +1572,9 @@ Ports assembled once by the application; no service locator is involved.
 
 - `store` — Durable authority.
 - `registry` — Sole owner of plugin generations and published exports.
-- `composer` — Pure context policy.
-- `context` — Context sources in contribution order.
+- `home` — Absolute home location supplied to context policies.
+- `instructions` — The owner's standing instructions, read once per Round.
+- `memories` — The memories offered once per Round.
 - `tools` — Host capabilities exposed through the ordinary Tool port.
 - `lifeline` — Tool names required by Sessions with requires_lifeline.
 - `clock` — Clock supplied by the host or tests.
@@ -1558,10 +1659,12 @@ Table ownership used by the registry's declaration evaluation.
 ### `KernelSettings::from_document`
 
 ```rust
-pub fn from_document(document: &Value) -> Result<Self, SettingsError>
+pub fn from_document(document: &Value, factory_composer: &PluginName) -> Result<Self, SettingsError>
 ```
 
 Parse and validate only the kernel-owned tables.
+
+A profile that names no composer uses `factory_composer` with empty options.
 
 ### `KernelSettings::endpoint`
 
@@ -1647,6 +1750,7 @@ pub struct Loaded {
     pub credentials: Vec<Credential>,
     pub unavailable: Option<enco_core::Failure>,
     pub lifecycle: std::sync::Arc<dyn Lifecycle>,
+    pub composer: Option<LoadedComposer>,
     pub completion: Option<std::sync::Arc<dyn Provider>>,
     pub embedding: Option<std::sync::Arc<dyn Embedding>>,
     pub decision: Option<std::sync::Arc<dyn Decision>>,
@@ -1661,6 +1765,7 @@ Exports returned by loading a component. Each invocation owns its own runtime st
 - `credentials` — Credential declarations used by transport, wiring and generated documentation.
 - `unavailable` — A missing environment requirement; the code still loads and retains its health.
 - `lifecycle` — Self-check required before a deployment is admitted.
+- `composer` — Context policy and its profile options, fixed with the loaded generation.
 - `completion` — Completion interface when supplied by the component.
 - `embedding` — Embedding interface when supplied by the component.
 - `decision` — Decision interface when supplied by the component.
@@ -1670,6 +1775,28 @@ Implements:
 
 ```rust
 impl Clone for Loaded
+```
+
+## struct `LoadedComposer`
+
+`src/ports/runtime.rs`
+
+```rust
+pub struct LoadedComposer {
+    pub schema: enco_core::InputSchema,
+    pub adapter: std::sync::Arc<dyn Composer>,
+}
+```
+
+A composer's option declaration and invocation, loaded from the same content.
+
+- `schema` — Profile options accepted by this generation.
+- `adapter` — Writes requests from the host's fixed facts.
+
+Implements:
+
+```rust
+impl Clone for LoadedComposer
 ```
 
 ## struct `LoadedTools`
@@ -1692,6 +1819,30 @@ Implements:
 
 ```rust
 impl Clone for LoadedTools
+```
+
+## struct `LocatedImage`
+
+`src/ports/composer.rs`
+
+```rust
+pub struct LocatedImage {
+    pub image: Image,
+    pub path: std::path::PathBuf,
+}
+```
+
+An image reference with the node-local address supplied by its store.
+
+- `image` — Immutable image identity and metadata.
+- `path` — Local file holding the bytes.
+
+Implements:
+
+```rust
+impl Borrow<Image> for LocatedImage
+impl Clone for LocatedImage
+impl Debug for LocatedImage
 ```
 
 ## enum `Need`
@@ -1753,6 +1904,66 @@ impl Clone for NodeRecord
 impl Debug for NodeRecord
 ```
 
+## struct `OfferedMemories`
+
+`src/ports/context.rs`
+
+```rust
+pub struct OfferedMemories {
+    pub memories: Vec<Memory>,
+    pub omitted: Vec<Omission>,
+}
+```
+
+The memories offered for one Round, and what could not be offered.
+
+- `memories` — Pinned memories first, then those recalled for the latest input, most relevant first.
+- `omitted` — Degraded or skipped recall, with reasons the plan records.
+
+Implements:
+
+```rust
+impl Clone for OfferedMemories
+impl Debug for OfferedMemories
+impl Default for OfferedMemories
+```
+
+## struct `PlanWrite`
+
+`src/ports/store.rs`
+
+```rust
+pub struct PlanWrite {
+    /* private fields */
+}
+```
+
+An immutable request plan whose complete content address is computed once before committing.
+
+### `PlanWrite::new`
+
+```rust
+pub fn new(plan: ContextPlan) -> Result<Self, StoreError>
+```
+
+Prepare a plan for atomic acceptance with its Attempt, without changing storage.
+
+### `PlanWrite::hash`
+
+```rust
+pub fn hash(&self) -> ContentHash
+```
+
+The address of the complete plan, independent of its storage representation.
+
+### `PlanWrite::plan`
+
+```rust
+pub fn plan(&self) -> &ContextPlan
+```
+
+The exact content accepted with the Attempt and shared with the request sender.
+
 ## enum `PluginChange`
 
 `src/registry/request.rs`
@@ -1764,7 +1975,6 @@ pub enum PluginChange {
         source: ContentHash,
         artifact: ArtifactSource,
     },
-    Artifact(Vec<u8>),
     Remove,
     Rename(PluginName),
 }
@@ -1776,7 +1986,6 @@ One plugin's contribution to an atomic registration.
 - `Code` — A component built from source intent.
   - `source` — Source tree already persisted by the host.
   - `artifact` — Compiled component offered for validation.
-- `Artifact` — A component supplied independently of source intent.
 - `Remove` — Remove the identity associated with the registered source name.
 - `Rename` — Change a registered name without changing code or settings.
 
@@ -1800,9 +2009,6 @@ pub enum PluginChangeKind {
     Settings {
         generation: Box<GenerationRecord>,
     },
-    Artifact {
-        generation: Box<GenerationRecord>,
-    },
 }
 ```
 
@@ -1817,8 +2023,6 @@ Accepted changes to one plugin; each variant carries only its own facts.
 - `Factory` — The host's factory code was selected.
   - `generation` — Selected generation and its current outcome.
 - `Settings` — New settings selected a generation using existing code.
-  - `generation` — Selected generation and its current outcome.
-- `Artifact` — A component file was accepted independently of source.
   - `generation` — Selected generation and its current outcome.
 
 ### `PluginChangeKind::generation`
@@ -1896,6 +2100,7 @@ impl Serialize for Probe
 
 ```rust
 pub struct Profile {
+    pub composer: ComposerSettings,
     pub reply: Endpoints,
     pub compaction: Endpoints,
     pub requires_lifeline: bool,
@@ -1904,6 +2109,7 @@ pub struct Profile {
 
 Session policy sampled once at the start of a Round.
 
+- `composer` — Plugin and typed invocation options used to compose this Session's requests.
 - `reply` — Ordered candidates for ordinary replies.
 - `compaction` — Ordered candidates for summarizing history.
 - `requires_lifeline` — Whether every reply plan must disclose all lifeline tools.
@@ -2035,7 +2241,7 @@ pub enum Referrer {
 
 What in the configuration refers to a plugin name.
 
-- `User` — A configured user, through an endpoint naming the plugin.
+- `User` — A configured caller naming the plugin.
   - `user` — The user, such as `profile default.reply`.
 - `Settings` — The plugin's own `[plugin.<name>]` table.
 
@@ -2161,7 +2367,7 @@ An accepted name, plus the code choice and current host implementation available
 
 - `id` — Immutable plugin identity.
 - `named_by` — Registration that supplied this name; absent for a newly supplied factory name.
-- `code` — Last accepted code intent; direct artifacts do not introduce source intent.
+- `code` — Last accepted code intent; absent for a factory name that has never registered one.
 - `activation` — Generation selected by the latest accepted activation, or this host's unregistered factory code.
 - `factory` — Host-owned code and its follow decision, when the name is reserved.
 
@@ -2456,6 +2662,7 @@ pub struct RegistryDeps {
     pub store: std::sync::Arc<dyn Store>,
     pub runtime: std::sync::Arc<dyn Runtime>,
     pub factory: Vec<FactoryPlugin>,
+    pub composer: PluginName,
     pub owners: Vec<TableOwner>,
     pub host_tool_names: Vec<String>,
     pub clock: std::sync::Arc<dyn Clock>,
@@ -2467,6 +2674,7 @@ Durable registry dependencies assembled by the application.
 - `store` — Sole persistence port for registry facts and component artifacts.
 - `runtime` — Component compilation and export discovery.
 - `factory` — Host-reserved identities and embedded bytes.
+- `composer` — The factory plugin that composes for profiles naming no composer, and in safe mode.
 - `owners` — Host-owned tables and their declaration functions.
 - `host_tool_names` — Names from the native tool declarations assembled by the composition root.
 - `clock` — Observation time, never generation ordering.
@@ -3011,7 +3219,6 @@ pub struct Status {
     pub timezone: Tz,
     pub node: NodeId,
     pub safe_mode: bool,
-    pub composer: CodeRef,
     pub profiles: Vec<String>,
     pub sessions: Vec<SessionStatus>,
     pub scheduler_stopped: Option<String>,
@@ -3023,7 +3230,6 @@ Current node and Session execution state.
 - `timezone` — Owner's timezone from the selected configuration.
 - `node` — Persistent node identity.
 - `safe_mode` — Policy observed at the next Round boundary.
-- `composer` — Configured composer code.
 - `profiles` — Available profile names; endpoint credentials are never exposed.
 - `sessions` — State of every registered Session actor.
 - `scheduler_stopped` — Failure that stopped the Scheduler, if any.
@@ -3055,6 +3261,10 @@ pub enum StoreError {
     ScheduleNotActive(ScheduleId),
     UnknownSession(SessionId),
     Blob(ContentHash),
+    Plan {
+        hash: ContentHash,
+        reason: String,
+    },
     Artifact(ContentHash),
     UnknownGeneration(GenerationId),
     SchemaVersion {
@@ -3080,6 +3290,9 @@ A failed storage operation or commit precondition.
 - `ScheduleNotActive` — The scheduler's expected state no longer matches the authority.
 - `UnknownSession` — The target Session does not exist.
 - `Blob` — Immutable bytes are missing or do not match their address.
+- `Plan` — A plan or one of its storage dependencies is missing or fails content verification.
+  - `hash` — Address of the complete plan being restored.
+  - `reason` — The missing dependency or invalid stored content.
 - `Artifact` — Component bytes are missing or do not match their address.
 - `UnknownGeneration` — A referenced registry record does not exist.
 - `SchemaVersion` — The authority uses another schema version; opening it never deletes or migrates data.
@@ -3113,7 +3326,7 @@ pub struct TableOwner {
 A host-owned group of tables and its pure declaration function.
 
 - `tables` — Top-level tables exclusively owned by this component.
-- `declare` — Parse the owned tables and project their endpoint requirements.
+- `declare` — Parse the owned tables and project their configured invocations.
 
 ## enum `ToolOwner`
 
@@ -3147,9 +3360,9 @@ impl Serialize for ToolOwner
 `src/ports/composer.rs`
 
 ```rust
-pub struct Transcript {
+pub struct Transcript<I = Image> {
     pub summary: Option<String>,
-    pub items: Vec<TranscriptItem>,
+    pub items: Vec<TranscriptItem<I>>,
     pub round_ends: Vec<LogPos>,
     pub run_ends: Vec<(LogPos, RunEnd)>,
 }
@@ -3162,12 +3375,20 @@ Model-facing projection of immutable Log facts.
 - `round_ends` — Complete Round boundaries eligible for compaction, in ascending Log position order.
 - `run_ends` — Run outcomes after the summary, in Log order; the composer decides how to describe them.
 
+### `Transcript::map_images`
+
+```rust
+pub fn map_images<J>(self, image: impl FnMut(I) -> J) -> Transcript<J>
+```
+
+Change the image representation without copying the other message content.
+
 Implements:
 
 ```rust
-impl Clone for Transcript
-impl Debug for Transcript
-impl Default for Transcript
+impl<I: Clone> Clone for Transcript<I>
+impl<I: Debug> Debug for Transcript<I>
+impl<I> Default for Transcript<I>
 ```
 
 ## struct `TranscriptItem`
@@ -3175,9 +3396,9 @@ impl Default for Transcript
 `src/ports/composer.rs`
 
 ```rust
-pub struct TranscriptItem {
+pub struct TranscriptItem<I = Image> {
     pub pos: LogPos,
-    pub message: Message,
+    pub message: Message<I>,
     pub generation: Option<GenerationId>,
     pub event: Option<Event>,
 }
@@ -3193,8 +3414,8 @@ One canonical message and its immutable source.
 Implements:
 
 ```rust
-impl Clone for TranscriptItem
-impl Debug for TranscriptItem
+impl<I: Clone> Clone for TranscriptItem<I>
+impl<I: Debug> Debug for TranscriptItem<I>
 ```
 
 ## enum `UnitChange`
@@ -3245,7 +3466,7 @@ impl Serialize for UnitChange
 ```rust
 pub struct UnservedUse {
     pub user: String,
-    pub endpoint: String,
+    pub target: UseRef,
     pub causes: Vec<Cause>,
 }
 ```
@@ -3253,7 +3474,7 @@ pub struct UnservedUse {
 One current configured use that cannot be served by the selected exports.
 
 - `user` — Configured consumer, such as `memory.embedding`.
-- `endpoint` — Endpoint named by that consumer.
+- `target` — Configuration entry named by that consumer.
 - `causes` — Why the selected exports cannot serve it.
 
 Implements:
@@ -3269,21 +3490,84 @@ impl Serialize for UnservedUse
 ```rust
 pub struct Use {
     pub user: String,
-    pub endpoint: crate::Endpoint,
-    pub need: Need,
+    pub target: UseTarget,
 }
 ```
 
-One configured user's endpoint and requirements.
+One configured caller and the invocation it requires.
 
-- `user` — Human-readable user, such as `profile default.reply`.
-- `endpoint` — Resolved service and invocation parameters.
-- `need` — Required interface and behavior.
+- `user` — Human-readable caller, such as `profile default.reply`.
+- `target` — The invocation this caller configures.
 
 Implements:
 
 ```rust
 impl Clone for Use
+```
+
+## enum `UseRef`
+
+`src/registry.rs`
+
+```rust
+pub enum UseRef {
+    Endpoint {
+        endpoint: String,
+    },
+    Composer {
+        profile: String,
+    },
+}
+```
+
+The configuration entry a use names, without copying its invocation parameters.
+
+- `Endpoint` — A named model service.
+  - `endpoint` — Name in the endpoint table.
+- `Composer` — A profile's composer selection and options.
+  - `profile` — Name in the profile table.
+
+Implements:
+
+```rust
+impl Clone for UseRef
+impl Debug for UseRef
+impl Display for UseRef
+impl Eq for UseRef
+impl PartialEq for UseRef
+impl Serialize for UseRef
+```
+
+## enum `UseTarget`
+
+`src/registry.rs`
+
+```rust
+pub enum UseTarget {
+    Endpoint {
+        endpoint: crate::Endpoint,
+        need: Need,
+    },
+    Composer {
+        profile: String,
+        settings: crate::ComposerSettings,
+    },
+}
+```
+
+The configured invocation, preserving the facts its actual interface consumes.
+
+- `Endpoint` — A model service and the behavior its consumer requires.
+  - `endpoint` — Named service and its invocation parameters.
+  - `need` — Required model interface and behavior.
+- `Composer` — A profile's pure composer invocation.
+  - `profile` — Profile owning these options, used to attribute repair.
+  - `settings` — Plugin and invocation options.
+
+Implements:
+
+```rust
+impl Clone for UseTarget
 ```
 
 ## enum `Verdict`
@@ -3299,7 +3583,7 @@ pub enum Verdict {
 
 One completed invocation's verdict, before caller-specific result handling.
 
-- `Ok` — A valid plugin result, regardless of the caller's subsequent policy checks.
+- `Ok` — The result passed its interface contract checks, including composer plan binding.
 - `Failed` — A failed invocation; only attributable plugin faults affect health.
 
 ## struct `View`
@@ -3346,21 +3630,13 @@ pub trait Composer: Send + Sync
 
 Pure policy boundary: identical inputs must produce identical plans.
 
-### `Composer::code`
-
-```rust
-fn code(&self) -> CodeRef
-```
-
-Composer code recorded with every attempt.
-
 ### `Composer::compose`
 
 ```rust
-fn compose(&self, input: &ComposeInput) -> Result<Composition, ComposeError>
+async fn compose(&self, options: &crate::ComposerOptions, input: &ComposeInput) -> Result<Composition, Failure>
 ```
 
-Select, order and budget content without IO or hidden inputs.
+Select, order and budget content using options already checked against this generation.
 
 ## trait `ContextSource`
 
@@ -3370,12 +3646,20 @@ Select, order and budget content without IO or hidden inputs.
 pub trait ContextSource: Send + Sync
 ```
 
-Supplies current candidate content; never called in safe mode.
+Supplies one owner's facts for a Round, in that owner's type; never called in safe mode.
+
+### `ContextSource::Supply`
+
+```rust
+type Supply: Send;
+```
+
+What this source supplies.
 
 ### `ContextSource::contribute`
 
 ```rust
-async fn contribute(&self, query: &ContextQuery) -> Result<Contribution, ContextError>
+async fn contribute(&self, query: &ContextQuery) -> Result<<Self as >::Supply, ContextError>
 ```
 
 Stop external waits on cancellation, then finish any local write before returning.
@@ -3545,6 +3829,14 @@ async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreEr
 ```
 
 Atomically append facts and consume their Inbox inputs after checking ownership and positions.
+
+### `Store::plan`
+
+```rust
+async fn plan(&self, hash: &ContentHash) -> Result<ContextPlan, StoreError>
+```
+
+Restore a recorded request plan and verify its complete content address.
 
 ### `Store::accept`
 
@@ -3792,6 +4084,16 @@ pub fn plugin_settings(document: &serde_json::Value) -> Result<std::collections:
 ```
 
 Parse plugin settings using the same ownership boundary as registration.
+
+## type `ComposerOptions`
+
+`src/profile.rs`
+
+```rust
+pub type ComposerOptions = serde_json::Map<String, serde_json::Value>;
+```
+
+A profile's composer options: a JSON object whose shape the composer's schema declares.
 
 ## const `ENDPOINT_TABLE`
 

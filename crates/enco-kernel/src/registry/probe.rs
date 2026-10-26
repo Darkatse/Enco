@@ -2,17 +2,18 @@ use super::*;
 use crate::{ProviderRequest, Question, QuestionKind, limits::*};
 
 /// A new use is checked against its candidate code, before that code receives a generation ID.
-pub(super) async fn call(loaded: &Loaded, usage: &Use) -> Result<Probed, Failure> {
-    match &usage.need {
+pub(super) async fn call(
+    loaded: &Loaded,
+    endpoint: &Endpoint,
+    need: &Need,
+) -> Result<Probed, Failure> {
+    match need {
         Need::Completion {
             tools,
             max_output_tokens,
             accepts,
         } => {
-            let provider =
-                usage
-                    .endpoint
-                    .export(loaded, loaded.completion.as_ref(), "completion")?;
+            let provider = endpoint.export(loaded, loaded.completion.as_ref(), "completion")?;
             let mut message = Message::text(Role::User, CONFIG_PROBE_PROMPT);
             if accepts.contains(&Modality::Image) {
                 message.parts.push(Part::Image(ImageData {
@@ -22,7 +23,7 @@ pub(super) async fn call(loaded: &Loaded, usage: &Use) -> Result<Probed, Failure
             }
             let result = provider
                 .complete(
-                    &usage.endpoint.settings,
+                    &endpoint.settings,
                     ProviderRequest {
                         messages: vec![message],
                         tools: if *tools {
@@ -37,11 +38,9 @@ pub(super) async fn call(loaded: &Loaded, usage: &Use) -> Result<Probed, Failure
             Ok(checked(result, |_| Ok(())))
         }
         Need::Embedding { dimensions } => {
-            let provider = usage
-                .endpoint
-                .export(loaded, loaded.embedding.as_ref(), "embedding")?;
+            let provider = endpoint.export(loaded, loaded.embedding.as_ref(), "embedding")?;
             let result = provider
-                .embed(&usage.endpoint.settings, vec![CONFIG_PROBE_PROMPT.into()])
+                .embed(&endpoint.settings, vec![CONFIG_PROBE_PROMPT.into()])
                 .await;
             Ok(checked(result, |vectors| {
                 if vectors.len() == 1 && vectors[0].len() == dimensions.get() {
@@ -56,12 +55,10 @@ pub(super) async fn call(loaded: &Loaded, usage: &Use) -> Result<Probed, Failure
             }))
         }
         Need::Decision => {
-            let provider = usage
-                .endpoint
-                .export(loaded, loaded.decision.as_ref(), "decision")?;
+            let provider = endpoint.export(loaded, loaded.decision.as_ref(), "decision")?;
             let result = provider
                 .decide(
-                    &usage.endpoint.settings,
+                    &endpoint.settings,
                     CONFIG_PROBE_PROMPT.into(),
                     vec![Question {
                         instructions: CONFIG_PROBE_QUESTION.into(),

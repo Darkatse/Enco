@@ -62,13 +62,10 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
         reply("corrected"),
     ]);
     send(&kernel, session.id, "correct my drink").await;
-    let context = provider.requests.lock().unwrap()[1]
-        .messages
-        .first()
-        .unwrap()
-        .joined_text();
-    assert!(context.contains("Owner likes tea"));
-    assert!(!context.contains("Owner likes coffee"));
+    assert_eq!(
+        memories.list().await.unwrap().memories[0].text,
+        "Owner likes tea"
+    );
     kernel.shutdown().await.unwrap();
     drop(kernel);
     drop(memories);
@@ -80,18 +77,9 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
     let (kernel, memories) =
         kernel_with_memory(dir.path(), provider.clone(), configuration(), |_| {}).await;
     send(&kernel, session.id, "unrelated topic").await;
-    assert!(
-        provider
-            .requests
-            .lock()
-            .unwrap()
-            .last()
-            .unwrap()
-            .messages
-            .first()
-            .unwrap()
-            .joined_text()
-            .contains("Owner likes tea")
+    assert_eq!(
+        memories.list().await.unwrap().memories[0].text,
+        "Owner likes tea"
     );
     provider.steps.lock().unwrap().extend([
         calls(vec![call(
@@ -102,65 +90,6 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
     ]);
     send(&kernel, session.id, "forget it").await;
     assert!(memories.list().await.unwrap().memories.is_empty());
-    assert!(
-        !provider
-            .requests
-            .lock()
-            .unwrap()
-            .last()
-            .unwrap()
-            .messages
-            .first()
-            .unwrap()
-            .joined_text()
-            .contains("Owner likes tea")
-    );
-    kernel.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn recalled_sources_keep_corrections_and_deduplicate_after_restart() {
-    let dir = tempfile::tempdir().unwrap();
-    let provider = ScriptedProvider::new((0..4).map(|_| reply("recalled")).collect());
-    let (kernel, memories) =
-        kernel_with_memory(dir.path(), provider.clone(), configuration(), |_| {}).await;
-    let first = "Owner likes tea";
-    let second = "Owner likes coffee";
-    let memory = memories.save(first.into(), false).await.unwrap();
-    provider.steps.lock().unwrap().push_front(calls(vec![call(
-        "memory_update",
-        &serde_json::json!({ "id": memory.id, "text": second }).to_string(),
-    )]));
-    let session = kernel.open_session("main").await.unwrap();
-    send(&kernel, session.id, "What drink do I like?").await;
-    send(&kernel, session.id, "What drink do I like now?").await;
-    memories
-        .update(memory.id, Some(first.into()), None)
-        .await
-        .unwrap();
-    send(&kernel, session.id, "What drink do I like again?").await;
-    kernel.shutdown().await.unwrap();
-    drop(kernel);
-    drop(memories);
-
-    let (kernel, _memories) =
-        kernel_with_memory(dir.path(), provider, configuration(), |_| {}).await;
-    send(&kernel, session.id, "What drink do I like?").await;
-    let inspection = kernel.inspect(session.id, None).await.unwrap();
-    let source_id = format!("memory:{}", memory.id);
-    let mut recalled = Vec::new();
-    for item in &inspection.plan.items {
-        if let PlanItem::Message { message, sources } = item {
-            for source in sources.iter().filter(|source| source.id == source_id) {
-                recalled.push((source.hash, message.joined_text()));
-            }
-        }
-    }
-    assert_eq!(recalled.len(), 3);
-    for ((hash, note), expected) in recalled.iter().zip([first, second, first]) {
-        assert_eq!(*hash, ContentHash::of(expected.as_bytes()));
-        assert!(note.contains(expected));
-    }
     kernel.shutdown().await.unwrap();
 }
 

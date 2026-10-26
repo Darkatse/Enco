@@ -2,7 +2,7 @@
 //! relevance.
 use enco_core::GenerationId;
 use enco_kernel::{
-    Endpoint, KernelSettings, Need, SettingsError, TableOwner, Use, View, parse_table,
+    Endpoint, KernelSettings, Need, SettingsError, TableOwner, Use, UseTarget, View, parse_table,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -71,16 +71,20 @@ impl MemorySettings {
         let embed = &self.embedding;
         let mut uses = vec![Use {
             user: "memory.embedding".into(),
-            endpoint: embed.endpoint.clone(),
-            need: Need::Embedding {
-                dimensions: embed.dimensions,
+            target: UseTarget::Endpoint {
+                endpoint: embed.endpoint.clone(),
+                need: Need::Embedding {
+                    dimensions: embed.dimensions,
+                },
             },
         }];
         if let Some(endpoint) = &self.relevance {
             uses.push(Use {
                 user: "memory.relevance".into(),
-                endpoint: endpoint.clone(),
-                need: Need::Decision,
+                target: UseTarget::Endpoint {
+                    endpoint: endpoint.clone(),
+                    need: Need::Decision,
+                },
             });
         }
         uses

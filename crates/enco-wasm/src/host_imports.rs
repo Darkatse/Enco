@@ -23,7 +23,7 @@ pub(crate) struct HostState {
 pub(crate) enum Network {
     /// Requests go out, each carrying the credential bound to its origin.
     Open(Arc<Vec<CallCredential>>),
-    /// A probe, which the contract runs without network access.
+    /// An invocation whose role permits no network access.
     Closed,
 }
 
@@ -81,7 +81,7 @@ impl<U> host::HostWithStore<U> for HasSelf<HostState> {
             Network::Open(credentials) => http(&client, &credentials, request).await,
             Network::Closed => Err(failure(
                 host::HttpErrorKind::InvalidRequest,
-                "a probe runs without network access; check only what the component can verify by itself",
+                "this invocation runs without network access; use only the supplied inputs",
                 false,
             )),
         }

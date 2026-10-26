@@ -205,6 +205,8 @@ interface tools {
     use types.{json, tool-spec, outcome};
 
     /// Project tool definitions from configuration already accepted by `lifecycle.describe`.
+    ///
+    /// Definitions are fixed with the generation, so this runs without network access.
     %list: func(config: json) -> list<tool-spec>;
 
     /// Execute one tool.
@@ -364,7 +366,7 @@ interface lifecycle {
     /// Describe the component or reject its configuration.
     ///
     /// An empty object must be accepted and provide the plugin's minimum capabilities.
-    /// Declarations are fixed with the generation.
+    /// Declarations are fixed with the generation, so this runs without network access.
     describe: func(config: json) -> result<description, failure>;
 
     /// Check the component without network access or owner-specific configuration.
@@ -406,4 +408,468 @@ world decision-plugin {
 world tool-plugin {
     include base;
     export tools;
+}
+
+/// Writes the model requests of the Sessions whose profile names this plugin.
+///
+/// A composition is a pure function of its arguments, the plugin's configuration and its own code,
+/// and changes nothing but its result: it has no files, no environment variables and no network, so
+/// `host.http` fails. The wall clock reads the Round's instant, the monotonic clock stands still and
+/// randomness is seeded by the Round, so the same generation, called again within a Round with the
+/// same arguments, returns the same plan.
+///
+/// The host records each plan before sending it and resolves its Log references. A plan breaks
+/// this contract when it discloses a capability outside this Round, refers to a position outside
+/// the transcript, or sends images to a model that does not accept them; when a reply plan leaves
+/// out a capability in `lifeline`; or when a compaction discloses any tool or stops where no Round
+/// ends.
+interface composer {
+    use types.{failure, image-format, json, role, tool-spec};
+
+    /// A UTC instant, shaped like `wasi:clocks/wall-clock.datetime`.
+    record datetime {
+        /// Seconds since the Unix epoch.
+        seconds: u64,
+        /// Nanoseconds past `seconds`.
+        nanoseconds: u32,
+    }
+
+    /// The position of an entry in this Session's Log.
+    record log-pos {
+        /// The ownership epoch that wrote the entry; 1 on a single node.
+        epoch: u64,
+        /// The entry's place within its epoch.
+        seq: u64,
+    }
+
+    /// The Session the request is for.
+    record session {
+        /// Its permanent ID.
+        id: string,
+        /// Its unique name, as the owner's commands use it.
+        name: string,
+        /// The profile it uses, by name.
+        profile: string,
+        /// When it was created.
+        created-at: datetime,
+    }
+
+    /// A recorded image, by reference rather than by its bytes.
+    record image-ref {
+        /// How the bytes are encoded.
+        format: image-format,
+        /// The size of the bytes.
+        size: u64,
+        /// The BLAKE3 digest of the bytes, in lowercase hex.
+        content: string,
+        /// The file that holds the bytes.
+        path: string,
+    }
+
+    /// A tool call that a reply proposed.
+    record call {
+        /// Enco's ID for the call, which its result repeats.
+        id: string,
+        /// The tool called.
+        name: string,
+        /// The arguments as the model wrote them, as JSON text.
+        arguments: string,
+    }
+
+    /// What the model read as the result of a call.
+    record call-result {
+        /// Matches the proposed call so its result can remain adjacent in the request.
+        call-id: string,
+        /// The result text.
+        content: string,
+        /// Whether the call failed.
+        is-error: bool,
+    }
+
+    /// One piece of a recorded message.
+    variant part {
+        /// Words recorded from a speaker or returned by a tool.
+        text(string),
+        /// A proposed tool call.
+        tool-call(call),
+        /// The result of a call.
+        tool-result(call-result),
+        /// The size in bytes of adapter fields, which the host gives only to the plugin that wrote
+        /// them.
+        extension(u64),
+        /// A recorded picture the plan may include when the target accepts images.
+        image(image-ref),
+    }
+
+    /// A message as the Log records it.
+    record message {
+        /// Who speaks.
+        role: role,
+        /// The content, in order.
+        parts: list<part>,
+    }
+
+    /// The channel conversation an input came from.
+    record channel-source {
+        /// The protocol, as the channel adapter names it.
+        channel: string,
+        /// The account within the protocol.
+        account: string,
+        /// The conversation that replies return to.
+        conversation: string,
+        /// The authenticated sender.
+        sender: string,
+    }
+
+    /// Who produced an input.
+    variant event-source {
+        /// The owner, through Enco's own interface.
+        cli,
+        /// Someone in a channel conversation.
+        channel(channel-source),
+        /// A schedule.
+        scheduler,
+        /// The plugin registry, after an automatic rollback.
+        registry,
+    }
+
+    /// Why an attachment did not become an image.
+    variant unviewable-reason {
+        /// Its format is not an accepted image format.
+        unsupported,
+        /// It is larger than an image may be.
+        too-large,
+        /// It could not be retrieved, for this reason.
+        unavailable(string),
+    }
+
+    /// An attachment kept only as a description.
+    record unviewable {
+        /// The channel's description of it.
+        what: string,
+        /// Why it is not an image.
+        reason: unviewable-reason,
+    }
+
+    /// A message from the owner.
+    record user-message {
+        /// What the owner wrote.
+        text: string,
+        /// The images sent with it.
+        images: list<image-ref>,
+        /// The attachments that are not images.
+        unviewable: list<unviewable>,
+    }
+
+    /// A schedule reaching its time.
+    record reminder {
+        /// The schedule's ID.
+        schedule: string,
+        /// When this occurrence was due.
+        due-at: datetime,
+        /// Earlier occurrences that were missed and not delivered.
+        skipped: u32,
+        /// The instruction recorded when this occurrence became due.
+        text: string,
+    }
+
+    /// A trial generation that failed, and what runs instead.
+    record rollback {
+        /// The plugin, by name.
+        plugin: string,
+        /// The failed trial generation.
+        trial: u64,
+        /// The generation running now; absent when none is healthy.
+        replacement: option<u64>,
+        /// The fault that caused the rollback.
+        failure: failure,
+        /// The notice the registry wrote.
+        text: string,
+    }
+
+    /// What an input says.
+    variant event-body {
+        /// A message from the owner.
+        user-message(user-message),
+        /// A scheduled reminder.
+        reminder(reminder),
+        /// A notice of an automatic rollback.
+        generation-rolled-back(rollback),
+    }
+
+    /// An input this Session consumed.
+    record event {
+        /// The globally unique identity assigned when the input was accepted.
+        id: string,
+        /// When it arrived.
+        received-at: datetime,
+        /// Who produced it.
+        source: event-source,
+        /// What it says.
+        body: event-body,
+    }
+
+    /// How a Run ended.
+    variant run-end {
+        /// It finished.
+        completed,
+        /// It used every Round it was allowed.
+        budget-exhausted,
+        /// The process stopped before it finished.
+        interrupted,
+        /// It was cancelled.
+        cancelled,
+        /// Execution stopped with this recorded failure.
+        failed(failure),
+    }
+
+    /// A Run's end, and where the Log records it.
+    record run-ended {
+        /// The entry that records the end.
+        pos: log-pos,
+        /// How the Run ended.
+        end: run-end,
+    }
+
+    /// A message the Log records, with the input it came from.
+    record transcript-item {
+        /// Where the Log records it.
+        pos: log-pos,
+        /// Canonical content a plan can repeat through this Log position.
+        message: message,
+        /// The input it records; absent for replies and tool results.
+        event: option<event>,
+    }
+
+    /// The history a plan may refer to.
+    record transcript {
+        /// The latest summary, which replaces the history before it.
+        summary: option<string>,
+        /// The messages after that summary, in Log order.
+        items: list<transcript-item>,
+        /// The ends of complete Rounds, where a compaction may stop, in Log order.
+        round-ends: list<log-pos>,
+        /// How each Run after the summary ended, in Log order.
+        run-ends: list<run-ended>,
+    }
+
+    /// A durable fact about the owner, as the memory records hold it.
+    record memory {
+        /// Its identity, kept through corrections; the memory tools take it.
+        id: string,
+        /// The current statement.
+        text: string,
+        /// Whether it is offered every Round regardless of the input.
+        pinned: bool,
+        /// When it was created.
+        created-at: datetime,
+        /// When it was last changed.
+        updated-at: datetime,
+        /// Starts at one and grows with each correction.
+        rev: u64,
+    }
+
+    /// Content left out of a request, and why.
+    record omission {
+        /// What was left out, such as `memory:<id>`.
+        source: string,
+        /// Why, for whoever inspects the request.
+        reason: string,
+    }
+
+    /// A tool's identity, qualified by the node that provides it.
+    record capability-id {
+        /// The node that provides the tool.
+        node: string,
+        /// The tool's name, unique within a Round.
+        name: string,
+    }
+
+    /// A tool this Round may disclose.
+    record capability {
+        /// The identity a plan discloses it by.
+        id: capability-id,
+        /// The definition the host records with a plan that discloses it.
+        spec: tool-spec,
+    }
+
+    /// A plugin left out of this Round.
+    record unavailable-plugin {
+        /// The plugin, by name.
+        plugin: string,
+        /// Why it is left out.
+        failure: failure,
+    }
+
+    /// Why this Round runs in safe mode.
+    variant safe-mode {
+        /// The owner turned safe mode on.
+        owner,
+        /// This Run failed against the generations that are still running.
+        failed(failure),
+    }
+
+    /// A model's limits.
+    record budget {
+        /// The context window, output included.
+        context-tokens: u32,
+        /// The most tokens a reply may use.
+        max-output-tokens: u32,
+    }
+
+    /// Input other than text that a model accepts.
+    enum modality {
+        /// Images.
+        image,
+    }
+
+    /// A reply endpoint passed over, and why.
+    record skipped-endpoint {
+        /// The endpoint, by its configured name.
+        endpoint: string,
+        /// Why it was passed over.
+        failure: failure,
+    }
+
+    /// The model a reply plan is for.
+    record reply-target {
+        /// Its limits.
+        budget: budget,
+        /// What it accepts besides text.
+        accepts: list<modality>,
+        /// Earlier candidates that are unavailable or exhausted in this Run, in configured order.
+        skipped: list<skipped-endpoint>,
+    }
+
+    /// Everything the host supplies for one composition.
+    record compose-input {
+        /// The Session the request is for.
+        session: session,
+        /// The owner's time zone, as an IANA name such as `Asia/Shanghai`.
+        timezone: string,
+        /// The home's absolute path on the node running this Round.
+        ///
+        /// Its layout is part of this contract: `config.toml`, `AGENTS.md` for the standing
+        /// instructions, `plugins/<name>/`, `sdk/`, `manual/` and `workspace/`. `.data/` is Enco's
+        /// own store and not part of it.
+        home: string,
+        /// The history a plan may refer to.
+        transcript: transcript,
+        /// This Session's latest recorded reply plan; absent at the start, or when it
+        /// could not be read, which `omitted` then says.
+        previous: option<plan>,
+        /// The text of `AGENTS.md`, as read at the start of this Round; absent when the file does
+        /// not exist, and in safe mode.
+        instructions: option<string>,
+        /// Memories for this Round in priority order: pinned ones first, then those recalled for
+        /// the latest input, most relevant first; empty in safe mode.
+        memories: list<memory>,
+        /// Content the host could not supply; the host records it with the plan.
+        omitted: list<omission>,
+        /// Every tool this Round may disclose; in safe mode, only the lifeline.
+        capabilities: list<capability>,
+        /// The tools every reply plan must disclose; empty when the Session does not require the
+        /// lifeline.
+        lifeline: list<capability-id>,
+        /// Plugins left out of this Round.
+        unavailable: list<unavailable-plugin>,
+        /// Why this Round runs in safe mode; absent in normal operation.
+        safe-mode: option<safe-mode>,
+        /// The model a reply plan is for.
+        reply: reply-target,
+        /// The summarizing model's limits; absent when no summarizing model is usable.
+        compaction: option<budget>,
+        /// How many more compactions this Round allows.
+        compactions-left: u32,
+    }
+
+    /// A source a plan renders, with a digest a later composition can compare.
+    record source {
+        /// The source, such as `memory:<id>`.
+        id: string,
+        /// The BLAKE3 digest of its text before formatting, in lowercase hex.
+        hash: string,
+    }
+
+    /// Text the composer wrote, recorded verbatim.
+    record inline {
+        /// Who speaks.
+        role: role,
+        /// The exact words the host will record and send to the model.
+        text: string,
+        /// The sources it renders, in order.
+        sources: list<source>,
+    }
+
+    /// A Log message the request repeats.
+    record log-ref {
+        /// The message, by its position in the transcript.
+        pos: log-pos,
+        /// Whether its images go with it; all of them or none.
+        images: bool,
+    }
+
+    /// One message of a request.
+    variant plan-item {
+        /// Text the composer wrote.
+        message(inline),
+        /// A message from the Log.
+        log(log-ref),
+    }
+
+    /// A request, before the host records and resolves it.
+    record plan {
+        /// The messages, in order.
+        items: list<plan-item>,
+        /// The tools to disclose, by identity.
+        tools: list<capability-id>,
+        /// The most tokens the reply may use; the service's default when absent.
+        max-output-tokens: option<u32>,
+        /// What the composer left out, and why.
+        omitted: list<omission>,
+    }
+
+    /// A request to summarize history before replying.
+    record compaction {
+        /// The last Round end to summarize, one of `transcript.round-ends`.
+        upto: log-pos,
+        /// The summarizing request; it discloses no tools.
+        plan: plan,
+    }
+
+    /// What a composition returns.
+    variant composition {
+        /// A reply request.
+        reply(plan),
+        /// Summarize history first; the host composes again once the summary is recorded.
+        compact(compaction),
+    }
+
+    /// The JSON Schema of the options a profile passes to `compose`, in the subset `tool-spec`
+    /// states.
+    ///
+    /// An empty object must fit it. The host checks a profile's options against the schema of the
+    /// generation that runs them: registering configuration or code that breaks a profile's options
+    /// is rejected, and a profile whose options no longer fit, as after a rollback, cannot use this
+    /// plugin until they do. The schema is fixed with the generation, so this runs without network
+    /// access.
+    options-schema: func(config: json) -> json;
+
+    /// Write the next request.
+    ///
+    /// `options` fit the running generation's `options-schema` and are normalized as tool arguments
+    /// are. Return `compact` only while `compaction` is present and `compactions-left` is above
+    /// zero.
+    ///
+    /// # Errors
+    /// `context.overflow` when no valid request fits the window; when only a compaction would make
+    /// it fit and `compaction` is absent, the host records why no summarizing model is usable. The
+    /// host records any other code as `compose.failed`.
+    compose: func(options: json, input: compose-input) -> result<composition, failure>;
+}
+
+/// A plugin that writes model requests.
+world composer-plugin {
+    include base;
+    export composer;
 }

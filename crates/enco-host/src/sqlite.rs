@@ -3,19 +3,24 @@ use enco_core::{DateTime, Utc};
 use rusqlite::{Connection, Row, types::Type};
 use serde::de::DeserializeOwned;
 use std::path::Path;
-pub(crate) fn open(path: &Path) -> rusqlite::Result<Connection> {
+pub(crate) fn open(path: &Path) -> rusqlite::Result<(Connection, Option<u32>)> {
     let connection = Connection::open(path)?;
+    let version = schema_version(&connection)?;
+    if version.is_none() {
+        // WAL initializes the file header, after which changing this mode requires VACUUM.
+        connection.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+    }
     connection.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA synchronous=FULL;
          PRAGMA foreign_keys=ON;
          PRAGMA busy_timeout=5000;",
     )?;
-    Ok(connection)
+    Ok((connection, version))
 }
 
 /// `PRAGMA user_version` of an existing schema, or `None` for a database with no schema yet.
-pub(crate) fn schema_version(connection: &Connection) -> rusqlite::Result<Option<u32>> {
+fn schema_version(connection: &Connection) -> rusqlite::Result<Option<u32>> {
     let empty: bool = connection.query_row(
         "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master)",
         [],

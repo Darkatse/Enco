@@ -19,7 +19,7 @@ pub enum ToolOwner {
 
 pub(super) fn users(uses: &[Use], name: &PluginName) -> Vec<String> {
     uses.iter()
-        .filter(|usage| usage.endpoint.plugin == *name)
+        .filter(|usage| usage.plugin() == name)
         .map(|usage| usage.user.clone())
         .collect()
 }
@@ -32,7 +32,7 @@ pub(super) fn serve(
         Some(Ok(loaded)) => usage.check(loaded).map_err(|failure| {
             vec![Cause::Use {
                 user: usage.user.clone(),
-                endpoint: usage.endpoint.name.clone(),
+                target: usage.reference(),
                 failure,
             }]
         }),
@@ -45,16 +45,16 @@ pub(super) fn serve(
 pub(super) fn plugin_unavailable(usage: &Use) -> Cause {
     Cause::PluginUnavailable {
         user: usage.user.clone(),
-        endpoint: usage.endpoint.name.clone(),
-        plugin: usage.endpoint.plugin.clone(),
+        target: usage.reference(),
+        plugin: usage.plugin().clone(),
     }
 }
 
 pub(super) fn unknown_plugin(usage: &Use) -> Cause {
     Cause::UnknownPlugin {
         user: usage.user.clone(),
-        endpoint: usage.endpoint.name.clone(),
-        plugin: usage.endpoint.plugin.clone(),
+        target: usage.reference(),
+        plugin: usage.plugin().clone(),
     }
 }
 
@@ -167,7 +167,7 @@ impl Admission {
             let changed = !previous
                 .iter()
                 .any(|old| old.user == usage.user && old.same_call(usage));
-            let served = |admission: &Self| serve(usage, admission.get(&usage.endpoint.plugin));
+            let served = |admission: &Self| serve(usage, admission.get(usage.plugin()));
             if let Err(causes) = served(self)
                 && (changed || served(before).is_ok())
             {

@@ -53,12 +53,6 @@ pub(crate) enum Command {
         arguments: enco_host::development::RewindArguments,
     },
     Rollback {},
-    PluginDeploy {
-        output: Output,
-        name: PluginName,
-        path: std::path::PathBuf,
-        reason: Option<Reason>,
-    },
     PluginScaffold {
         name: PluginName,
     },

@@ -3,8 +3,7 @@
 
 `src/lib.rs`
 
-Rust bindings for the plugin contract, the `export!` macro, and helpers for plugins that call
-JSON services over HTTP.
+Rust bindings, world exports, and shared schema and protocol helpers for plugins.
 
 The host writes this crate to `sdk/` in every home, replacing any edits there; plugins depend on
 it by path.
@@ -13,9 +12,11 @@ it by path.
 - module `host` — Host-owned logging and transport available to plugins.
 - module `protocol` — Helpers for plugins that call model services through the host's `http` import, including OpenAI-compatible Chat Completions and embeddings.
 - module `types` — Canonical data exchanged between the host and plugins.
-- macro `export` — Export `$implementation` as the plugin for one world: `completion`, `provider` (completion and embedding), `decision` or `tools`.
-- fn `input_schema` — The canonical argument schema of `T`; a `types::ToolSpec` takes it as JSON text.
+- macro `export` — Export `$implementation` as the plugin for one world: `completion`, `provider` (completion and embedding), `decision`, `tools` or `composer`.
+- fn `input_schema` — The canonical schema of `T`, used by tool arguments and composer options.
 - fn `parse_arguments` — Parse a tool call's `input` into `T`; a failure has code `tool.invalid_arguments` and is not retryable.
+- fn `parse_options` — Parse normalized composer options into the type that generated their schema.
+- fn `source_hash` — The lowercase BLAKE3 digest of source text before the composer formats it.
 
 Re-exports `wit_bindgen`.
 
@@ -29,13 +30,14 @@ macro_rules! export {
     (provider, $implementation:ident) => { ... };
     (decision, $implementation:ident) => { ... };
     (tools, $implementation:ident) => { ... };
+    (composer, $implementation:ident) => { ... };
     (@provider $world:literal, $implementation:ident) => { ... };
-    (@world $world:literal, $implementation:ident, $($types:tt)*) => { ... };
+    (@world $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => { ... };
 }
 ```
 
 Export `$implementation` as the plugin for one world: `completion`, `provider` (completion and
-embedding), `decision` or `tools`.
+embedding), `decision`, `tools` or `composer`.
 
 Call it in a crate in `plugins/<name>` that depends on this SDK as `enco_sdk`. It defines a
 `bindings` module beside the call, whose `exports` hold the `Guest` traits to implement; the
@@ -49,8 +51,9 @@ WIT is read from `../../sdk/wit`.
 pub fn input_schema<T: schemars::JsonSchema>() -> serde_json::Value
 ```
 
-The canonical argument schema of `T`; a `types::ToolSpec` takes it as JSON text.
+The canonical schema of `T`, used by tool arguments and composer options.
 
+Return it as JSON text from a tool's `types::ToolSpec` or a composer's `options-schema`.
 Field docs become the parameter descriptions the model reads. Every struct in `T` needs
 `#[serde(deny_unknown_fields)]`, because the host accepts only closed objects. Maps, sets and
 recursive types fall outside the subset the host accepts, so a plugin that uses them fails to
@@ -69,6 +72,28 @@ retryable.
 
 The host has already checked `input` against the tool's declared schema, so this fails only on
 rules the type enforces itself, such as a custom `Deserialize`.
+
+## fn `parse_options`
+
+`src/lib.rs`
+
+```rust
+pub fn parse_options<T: serde::de::DeserializeOwned>(input: &str) -> Result<T, types::Failure>
+```
+
+Parse normalized composer options into the type that generated their schema.
+
+The host has already checked the options; custom deserialization failures are `compose.failed`.
+
+## fn `source_hash`
+
+`src/lib.rs`
+
+```rust
+pub fn source_hash(text: &str) -> String
+```
+
+The lowercase BLAKE3 digest of source text before the composer formats it.
 
 # module `enco_sdk::bindings`
 
@@ -130,6 +155,7 @@ Implements:
 ```rust
 impl Clone for Completion
 impl Debug for Completion
+impl PartialEq for Completion
 ```
 
 ## struct `protocol::Request`
@@ -157,6 +183,7 @@ Implements:
 ```rust
 impl Clone for Request
 impl Debug for Request
+impl PartialEq for Request
 ```
 
 ## enum `protocol::StopReason`
@@ -210,6 +237,7 @@ Implements:
 impl Clone for Usage
 impl Copy for Usage
 impl Debug for Usage
+impl PartialEq for Usage
 ```
 
 ## fn `protocol::apply_options`
@@ -382,6 +410,7 @@ impl Clone for HttpFailure
 impl Debug for HttpFailure
 impl Display for HttpFailure
 impl Error for HttpFailure
+impl PartialEq for HttpFailure
 ```
 
 ## struct `host::HttpRequest`
@@ -411,6 +440,7 @@ Implements:
 ```rust
 impl Clone for HttpRequest
 impl Debug for HttpRequest
+impl PartialEq for HttpRequest
 ```
 
 ## struct `host::HttpResponse`
@@ -436,6 +466,7 @@ Implements:
 ```rust
 impl Clone for HttpResponse
 impl Debug for HttpResponse
+impl PartialEq for HttpResponse
 ```
 
 ## enum `host::LogLevel`
@@ -583,6 +614,7 @@ Implements:
 ```rust
 impl Clone for Extension
 impl Debug for Extension
+impl PartialEq for Extension
 ```
 
 ## struct `types::Failure`
@@ -610,6 +642,7 @@ impl Clone for Failure
 impl Debug for Failure
 impl Display for Failure
 impl Error for Failure
+impl PartialEq for Failure
 ```
 
 ## struct `types::Image`
@@ -641,6 +674,7 @@ Implements:
 ```rust
 impl Clone for Image
 impl Debug for Image
+impl PartialEq for Image
 ```
 
 ## enum `types::ImageFormat`
@@ -698,6 +732,7 @@ Implements:
 ```rust
 impl Clone for Message
 impl Debug for Message
+impl PartialEq for Message
 ```
 
 ## enum `types::Outcome`
@@ -724,6 +759,7 @@ Implements:
 ```rust
 impl Clone for Outcome
 impl Debug for Outcome
+impl PartialEq for Outcome
 ```
 
 ## enum `types::Part`
@@ -753,6 +789,7 @@ Implements:
 ```rust
 impl Clone for Part
 impl Debug for Part
+impl PartialEq for Part
 ```
 
 ## enum `types::Role`
@@ -805,6 +842,7 @@ Implements:
 ```rust
 impl Clone for Settings
 impl Debug for Settings
+impl PartialEq for Settings
 ```
 
 ## struct `types::ToolCall`
@@ -830,6 +868,7 @@ Implements:
 ```rust
 impl Clone for ToolCall
 impl Debug for ToolCall
+impl PartialEq for ToolCall
 ```
 
 ## struct `types::ToolResult`
@@ -855,6 +894,7 @@ Implements:
 ```rust
 impl Clone for ToolResult
 impl Debug for ToolResult
+impl PartialEq for ToolResult
 ```
 
 ## struct `types::ToolSpec`
@@ -898,6 +938,7 @@ Implements:
 ```rust
 impl Clone for ToolSpec
 impl Debug for ToolSpec
+impl PartialEq for ToolSpec
 ```
 
 ## type `types::Json`
@@ -1053,6 +1094,7 @@ Implements:
 ```rust
 impl Clone for Credential
 impl Debug for Credential
+impl PartialEq for Credential
 ```
 
 ## struct `bindings::exports::enco::plugin::lifecycle::Description`
@@ -1078,6 +1120,7 @@ Implements:
 ```rust
 impl Clone for Description
 impl Debug for Description
+impl PartialEq for Description
 ```
 
 ## trait `bindings::exports::enco::plugin::lifecycle::Guest`
@@ -1097,7 +1140,7 @@ fn describe(config: Json) -> ::core::result::Result<Description, Failure>
 Describe the component or reject its configuration.
 
 An empty object must be accepted and provide the plugin's minimum capabilities.
-Declarations are fixed with the generation.
+Declarations are fixed with the generation, so this runs without network access.
 
 ### `bindings::exports::enco::plugin::lifecycle::Guest::probe`
 

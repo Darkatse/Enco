@@ -126,7 +126,6 @@ fn insert_generation(connection: &Connection, record: &GenerationRecord) -> Resu
     let (origin, registration, based_on) = match record.origin {
         Origin::Factory => ("factory", None, None),
         Origin::Code { registration } => ("code", Some(registration), None),
-        Origin::Artifact { registration } => ("artifact", Some(registration), None),
         Origin::Settings {
             registration,
             based_on,

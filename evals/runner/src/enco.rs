@@ -1,7 +1,7 @@
 pub(crate) mod output;
 
 use crate::{
-    config::{Deploy, Variant},
+    config::Variant,
     home::Home,
     limits::{CLI_TIMEOUT, SHUTDOWN_GRACE, STATUS_INTERVAL},
 };
@@ -152,17 +152,6 @@ impl Enco {
                 args.first().copied().unwrap_or("")
             )
         })
-    }
-
-    pub(crate) async fn deploy(&self, deploy: &Deploy) -> Result<()> {
-        let artifact = deploy
-            .artifact
-            .to_str()
-            .context("artifact path is not UTF-8")?;
-        self.command(&["plugin", "deploy", &deploy.plugin, artifact, "--json"])
-            .await
-            .with_context(|| format!("deploy {}", deploy.plugin))?;
-        Ok(())
     }
 
     pub(crate) async fn send(&self, session: &str, text: &str, deadline: Instant) -> Result<()> {

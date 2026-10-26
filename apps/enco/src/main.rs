@@ -115,16 +115,7 @@ enum Action {
 
 #[derive(Subcommand)]
 enum PluginAction {
-    /// Register a component file without changing source intent.
-    Deploy {
-        #[arg(long)]
-        json: bool,
-        name: enco_core::PluginName,
-        path: PathBuf,
-        #[arg(long)]
-        reason: Option<Reason>,
-    },
-    /// Create a standalone plugin directory for the next apply.
+    /// Create a plugin directory for the next apply: a tool template, or a factory plugin's source.
     Scaffold { name: enco_core::PluginName },
     /// Rename registered source while preserving identity and unregistered edits.
     Rename {
@@ -180,17 +171,6 @@ async fn main() -> Result<()> {
         },
         Action::Rollback => Command::Rollback {},
         Action::Plugin { command } => match command {
-            PluginAction::Deploy {
-                name,
-                path,
-                reason,
-                json,
-            } => Command::PluginDeploy {
-                output: Output::for_json(json),
-                name,
-                path: std::path::absolute(path)?,
-                reason,
-            },
             PluginAction::Scaffold { name } => Command::PluginScaffold { name },
             PluginAction::Rename {
                 name,
@@ -357,7 +337,6 @@ impl Command {
             | Self::Apply { output, .. }
             | Self::History { output, .. }
             | Self::Rewind { output, .. }
-            | Self::PluginDeploy { output, .. }
             | Self::PluginRename { output, .. } => *output,
             Self::Send { .. }
             | Self::Subscribe { .. }

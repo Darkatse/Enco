@@ -970,6 +970,7 @@ dependencies = [
  "tracing",
  "triviumdb",
  "ulid",
+ "zstd",
 ]
 
 [[package]]
@@ -1005,6 +1006,7 @@ dependencies = [
  "async-trait",
  "enco-core",
  "enco-kernel",
+ "rand",
  "reqwest",
  "serde_json",
  "thiserror 2.0.21",

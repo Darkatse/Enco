@@ -10,6 +10,7 @@ use crate::{
 };
 use enco_core::*;
 use selection::{Choice, Selection};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 impl SessionActor {
@@ -42,7 +43,7 @@ impl SessionActor {
             round,
             safe_mode,
         });
-        self.commit(prefix).await?;
+        self.commit(prefix, None).await?;
         let end = match self.execute_round(round, &view, mode, token).await {
             Ok(end) => end,
             Err(RoundError::Cancelled) => RoundEnd::Cancelled,
@@ -53,10 +54,13 @@ impl SessionActor {
             },
             Err(RoundError::Stopped(error)) => return Err(error),
         };
-        self.commit(vec![EntryBody::RoundEnded {
-            round,
-            end: end.clone(),
-        }])
+        self.commit(
+            vec![EntryBody::RoundEnded {
+                round,
+                end: end.clone(),
+            }],
+            None,
+        )
         .await?;
         Ok((end, safe_mode))
     }
@@ -82,22 +86,47 @@ impl SessionActor {
         let safe_mode = mode.is_some();
         let mut selection = self.select(profile, safe_mode);
         let reply = selection.reply_target()?;
-        // Context sources run once; a later composition changes only its targets and Transcript.
-        let mut input = self
-            .compose_input(
-                &snapshot,
-                settings.timezone,
-                mode,
-                reply,
-                selection.compaction_budget(),
-                token,
-            )
-            .await?;
+        let now = self.deps.clock.now();
+        let context::Gathered {
+            instructions,
+            memories,
+            omitted,
+            previous_plan,
+            transcript,
+        } = self.gather(&snapshot, safe_mode, token).await?;
+        let mut input = ComposeInput {
+            round,
+            now,
+            home: self.deps.home.clone(),
+            timezone: settings.timezone,
+            session: self.session.clone(),
+            transcript,
+            previous_plan,
+            instructions,
+            memories,
+            omitted,
+            tools: snapshot
+                .tools
+                .iter()
+                .filter(|tool| !safe_mode || snapshot.lifeline.contains(&tool.id))
+                .map(|tool| (tool.id.clone(), tool.spec.clone()))
+                .collect(),
+            lifeline: if profile.requires_lifeline {
+                snapshot.lifeline.clone()
+            } else {
+                Vec::new()
+            },
+            unavailable: snapshot.unavailable.clone(),
+            safe_mode: mode,
+            reply,
+            compaction: selection.compaction_budget(),
+            compactions_left: limits::MAX_COMPACTIONS_PER_ROUND,
+        };
         loop {
-            let (plan, kind) = compose(&snapshot, &input, profile.requires_lifeline, &selection)?;
+            let (plan, kind, composer) = self.compose(profile, &input, &selection, token).await?;
             let choice = selection.choose(kind.purpose())?;
             let planned = self
-                .freeze(&snapshot, plan, kind, &input.transcript, &selection, choice)
+                .freeze(plan, kind, composer, &input.transcript, &selection, choice)
                 .await?;
             let endpoint = &choice.endpoint.endpoint;
             let completion = match self
@@ -114,12 +143,12 @@ impl SessionActor {
             };
             if let AttemptKind::Compaction(_) = planned.kind {
                 input.compactions_left -= 1;
-                input.transcript = crate::transcript::project(&self.entries);
+                input.transcript = self.located_transcript();
                 selection = self.retarget(profile, safe_mode, &mut input)?;
                 continue;
             }
             let calls: Vec<_> = completion.message.tool_calls().collect();
-            self.dispatch(round, &snapshot, &planned.plan, &calls, token)
+            self.dispatch(round, &snapshot, planned.plan.plan(), &calls, token)
                 .await?;
             cancelled(token)?;
             return Ok(if completion.message.tool_calls().next().is_some() {
@@ -146,10 +175,10 @@ impl SessionActor {
     /// Resolve the request for the chosen code and record the plan it was resolved from.
     async fn freeze(
         &self,
-        snapshot: &Snapshot,
         plan: ContextPlan,
         kind: AttemptKind,
-        transcript: &Transcript,
+        composer: GenerationId,
+        transcript: &Transcript<LocatedImage>,
         selection: &Selection<'_>,
         choice: &Choice<'_>,
     ) -> Result<PlannedAttempt, RoundError> {
@@ -159,68 +188,85 @@ impl SessionActor {
         let request = crate::image::resolve(request, self.deps.store.as_ref())
             .await
             .map_err(|error| failed(code::CONTEXT_FAILED, format!("image content: {error}")))?;
-        let bytes = serde_json::to_vec(&plan)
-            .map_err(|error| failed(code::PLAN_INVALID, error.to_string()))?;
-        let hash = self.deps.store.put_blob(&bytes).await?;
         Ok(PlannedAttempt {
             kind,
-            composer: snapshot.composer.code(),
-            plan,
-            hash,
+            composer,
+            plan: Arc::new(PlanWrite::new(plan)?),
             request,
         })
     }
 }
 
-/// Ask the composer for a plan and validate it; the plan's kind decides the purpose it serves.
-fn compose(
-    snapshot: &Snapshot,
-    input: &ComposeInput,
-    requires_lifeline: bool,
-    selection: &Selection<'_>,
-) -> Result<(ContextPlan, AttemptKind), RoundError> {
-    let composition = snapshot
-        .composer
-        .compose(input)
-        .map_err(|error| match error {
-            // The kernel's own record says why compaction is unusable.
-            ComposeError::CompactionUnavailable => {
-                match selection.choose(AttemptPurpose::Compaction) {
-                    Err(unusable) => unusable,
-                    Ok(_) => failed(code::COMPOSE_FAILED, error.to_string()),
+impl SessionActor {
+    /// Bind, invoke and check one composition before recording a model attempt.
+    async fn compose(
+        &self,
+        profile: &Profile,
+        input: &ComposeInput,
+        selection: &Selection<'_>,
+        token: &CancellationToken,
+    ) -> Result<(ContextPlan, AttemptKind, GenerationId), RoundError> {
+        let view = self.deps.registry.view();
+        let bound = view
+            .exports
+            .composer(&profile.composer, input.safe_mode.is_some())
+            .map_err(RoundError::Failed)?;
+        let composed = tokio::select! {
+            biased;
+            _ = token.cancelled() => return Err(RoundError::Cancelled),
+            result = bound.export.adapter.compose(&bound.options, input) => result,
+        };
+        let checked = composed.and_then(|composition| bind_composition(composition, input));
+        let verdict = match &checked {
+            Ok(_) => Verdict::Ok,
+            Err(failure) => Verdict::Failed(failure.clone()),
+        };
+        self.deps
+            .registry
+            .report(bound.export.generation, verdict, Some(self.session.id))
+            .await?;
+        checked
+            .map(|(plan, kind)| (plan, kind, bound.export.generation))
+            .map_err(|mut failure| {
+                if failure.code == code::CONTEXT_OVERFLOW
+                    && input.compaction.is_none()
+                    && let Err(RoundError::Failed(reason)) =
+                        selection.choose(AttemptPurpose::Compaction)
+                {
+                    failure
+                        .message
+                        .push_str(&format!("; compaction unavailable: {}", reason.message));
                 }
-            }
-            ComposeError::ContextOverflow { .. } => {
-                failed(code::CONTEXT_OVERFLOW, error.to_string())
-            }
-            ComposeError::Invalid(_) => failed(code::COMPOSE_FAILED, error.to_string()),
-        })?;
+                RoundError::Failed(failure)
+            })
+    }
+}
+
+fn bind_composition(
+    composition: Composition,
+    input: &ComposeInput,
+) -> Result<(ContextPlan, AttemptKind), Failure> {
+    let invalid = |message: String| Failure {
+        code: code::PLUGIN_CONTRACT.into(),
+        message,
+        retryable: false,
+    };
     let (plan, kind) = match composition {
         Composition::Plan(plan) => (plan, AttemptKind::Reply),
         Composition::Compact { upto, plan } => {
-            if input.compactions_left == 0 {
-                return Err(failed(
-                    code::COMPOSE_FAILED,
-                    "too many compactions in one Round",
+            if input.compactions_left == 0 || input.compaction.is_none() {
+                return Err(invalid(
+                    "compaction is not available for this composition".into(),
                 ));
             }
             if !input.transcript.round_ends.contains(&upto) {
-                return Err(failed(
-                    code::PLAN_INVALID,
-                    "compaction must end at a complete Round",
-                ));
+                return Err(invalid("compaction must end at a complete Round".into()));
             }
             (plan, AttemptKind::Compaction(upto))
         }
     };
-    crate::plan::validate(
-        &plan,
-        input,
-        kind.purpose(),
-        &snapshot.lifeline,
-        requires_lifeline,
-    )
-    .map_err(|error| failed(code::PLAN_INVALID, error.to_string()))?;
+    let plan = crate::plan::bind(plan, input, kind.purpose())
+        .map_err(|error| invalid(error.to_string()))?;
     Ok((plan, kind))
 }
 

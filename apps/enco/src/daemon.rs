@@ -363,31 +363,6 @@ async fn process(
                 .await
                 .map_err(KernelError::from)?
         ),
-        Command::PluginDeploy {
-            name,
-            path,
-            reason,
-            output,
-        } => {
-            let bytes = tokio::fs::read(&path).await.map_err(|error| CommandError {
-                code: "bad_request",
-                message: format!("{}: {error}", path.display()),
-            })?;
-            let registered = application
-                .development
-                .deploy(
-                    kernel.registry(),
-                    name,
-                    bytes,
-                    Initiator::Owner { reason },
-                    stop,
-                )
-                .await
-                .map_err(development_error)?;
-            render(output, &registered, || {
-                enco_host::development::registration_document(&registered)
-            })
-        }
         Command::PluginScaffold { name } => {
             json!({ "files": application.development.scaffold(kernel.registry(), &name).await.map_err(development_error)? })
         }

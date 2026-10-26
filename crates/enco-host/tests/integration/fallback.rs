@@ -71,16 +71,14 @@ fn candidates() -> Value {
     document
 }
 
-/// A reply window that a read or two of the history outgrows.
+/// Give the selected endpoint a distinct output budget.
 fn narrow(endpoint: &mut Value, window_tokens: u32) {
     endpoint["window_tokens"] = window_tokens.into();
     endpoint["max_output_tokens"] = 256.into();
 }
 
-fn write_history(root: &Path) -> String {
-    let text = "some detailed history ".repeat(450);
-    std::fs::write(root.join("workspace/history.txt"), &text).unwrap();
-    text
+fn write_history(root: &Path) {
+    std::fs::write(root.join("workspace/history.txt"), "scripted history").unwrap();
 }
 
 /// Replies that each read the long history once.
@@ -196,17 +194,6 @@ async fn exhausted_combinations_survive_unrelated_registration_and_reset_with_th
             30
         );
         assert_eq!(primary.requests.lock().unwrap().len(), 1); // The alias has the same combination.
-        let prompt = backup.requests.lock().unwrap()[0].messages[0].joined_text();
-        let failure = if empty {
-            "no text or tool calls"
-        } else {
-            "402"
-        };
-        assert!(
-            prompt.contains("primary-chat")
-                && prompt.contains("primary-alias")
-                && prompt.contains(failure)
-        );
         if empty {
             assert!(
                 log.iter()
@@ -297,11 +284,6 @@ async fn automatic_safe_mode_tracks_repair_and_starts_each_run_afresh() {
             .unwrap();
         assert!(failed.contains(&broken) && !failed.contains(&original));
         assert!(failed.windows(2).all(|ids| ids[0] < ids[1]));
-        assert!(
-            factory.requests.lock().unwrap()[0].messages[0]
-                .joined_text()
-                .contains("402")
-        );
         let next = send(&kernel, "new work").await;
         assert_eq!(
             modes(&next),
@@ -442,7 +424,15 @@ async fn reply_exhaustion_leaves_the_same_service_available_for_compaction() {
         narrow(&mut document["endpoint"][endpoint], 6000);
     }
     document["endpoint"]["compaction"]["model"] = "primary".into();
-    let (kernel, _) = kernel_configured(dir.path(), provider, document, vec![], |_| {}).await;
+    let (kernel, _) = kernel_configured_composer(
+        dir.path(),
+        provider,
+        document,
+        vec![],
+        Arc::new(HistoryComposer),
+        |_| {},
+    )
+    .await;
     write_history(dir.path());
     let log = send(&kernel, "read and summarize").await;
     assert!(matches!(
@@ -466,12 +456,6 @@ async fn reply_exhaustion_leaves_the_same_service_available_for_compaction() {
             1
         );
         assert!(requests.iter().any(|request| request.tools.is_empty()));
-        assert!(
-            requests
-                .iter()
-                .filter(|request| request.tools.is_empty())
-                .all(|request| !request.messages[0].joined_text().contains("402"))
-        );
     }
     kernel.shutdown().await.unwrap();
 }
@@ -509,7 +493,7 @@ async fn applying_calls_every_candidate_once_and_a_failing_backup_rejects_it() {
     let before = registry.view().config.generation;
     let result = submit(&registry, configuration_request(candidates())).await;
     assert!(matches!(result, Err(RegistryError::Rejected(causes))
-        if matches!(causes.as_slice(), [Cause::Use { endpoint, failure, .. }]
+        if matches!(causes.as_slice(), [Cause::Use { target: UseRef::Endpoint { endpoint }, failure, .. }]
             if endpoint == "backup-chat" && *failure == unavailable(false))));
     assert_eq!(registry.view().config.generation, before);
     // The alias shares the primary's call parameters, so the two make one call.
@@ -549,11 +533,13 @@ struct FailingSecondContext(std::sync::atomic::AtomicUsize);
 
 #[async_trait]
 impl ContextSource for FailingSecondContext {
-    async fn contribute(&self, _: &ContextQuery) -> Result<Contribution, ContextError> {
+    type Supply = OfferedMemories;
+
+    async fn contribute(&self, _: &ContextQuery) -> Result<OfferedMemories, ContextError> {
         if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
             Err(ContextError("authority unavailable".into()))
         } else {
-            Ok(Contribution::default())
+            Ok(OfferedMemories::default())
         }
     }
 }
@@ -572,7 +558,7 @@ async fn safe_mode_keeps_factory_combinations_exhausted_and_context_is_sampled_o
     ])));
     let context = Arc::new(FailingSecondContext(std::sync::atomic::AtomicUsize::new(0)));
     let (kernel, _) = kernel_configured(dir.path(), provider, candidates(), vec![], |deps| {
-        deps.context.push(context.clone())
+        deps.memories = context.clone()
     })
     .await;
     let log = send(&kernel, "continue despite failures").await;
@@ -607,7 +593,15 @@ async fn an_empty_or_cut_off_summary_falls_back_to_the_next_compaction_budget() 
         document["endpoint"]["backup"]["window_tokens"] = 4000.into();
         document["endpoint"]["backup"]["max_output_tokens"] = 256.into();
         document["profile"]["default"]["compaction"] = json!(["compaction", "backup"]);
-        let (kernel, _) = kernel_configured(dir.path(), provider, document, vec![], |_| {}).await;
+        let (kernel, _) = kernel_configured_composer(
+            dir.path(),
+            provider,
+            document,
+            vec![],
+            Arc::new(HistoryComposer),
+            |_| {},
+        )
+        .await;
         write_history(dir.path());
         let log = send(&kernel, "read and summarize").await;
         assert!(matches!(
@@ -641,79 +635,8 @@ async fn an_empty_or_cut_off_summary_falls_back_to_the_next_compaction_budget() 
     }
 }
 
-struct ObservedComposer {
-    inner: Arc<dyn Composer>,
-    inputs: Arc<Mutex<Vec<ComposeInput>>>,
-}
-impl Composer for ObservedComposer {
-    fn code(&self) -> CodeRef {
-        self.inner.code()
-    }
-    fn compose(&self, input: &ComposeInput) -> Result<Composition, ComposeError> {
-        self.inputs.lock().unwrap().push(input.clone());
-        self.inner.compose(input)
-    }
-}
-
-#[expect(
-    clippy::panic,
-    reason = "calibration fails the test if the composer does not report its needed size"
-)]
-async fn measured_reply_window(failure: &Failure) -> u32 {
-    let root = tempfile::tempdir().unwrap();
-    let inputs = Arc::new(Mutex::new(Vec::new()));
-    let provider = ScriptedProvider::new(reads(2).chain([reply("read")]).collect());
-    let mut document = configuration();
-    document["endpoint"]["reply"]["max_output_tokens"] = 256.into();
-    let mut composer = None;
-    let (kernel, _) = kernel_configured(root.path(), provider, document, vec![], |deps| {
-        composer = Some(deps.composer.clone());
-        deps.composer = Arc::new(ObservedComposer {
-            inner: deps.composer.clone(),
-            inputs: inputs.clone(),
-        });
-    })
-    .await;
-    let composer = composer.unwrap();
-    let history = write_history(root.path());
-    send(&kernel, "read the history twice").await;
-    kernel.shutdown().await.unwrap();
-    let mut costs = BTreeMap::new();
-    for mut input in inputs.lock().unwrap().drain(..) {
-        let reads = input.transcript.items.iter().flat_map(|item| &item.message.parts)
-            .filter(|part| matches!(part, Part::ToolResult(result) if result.content.ends_with(&history))).count();
-        // Ask the real composer for its needed size, with compaction disabled for this probe.
-        input.reply.budget.context_tokens = std::num::NonZeroU32::MIN;
-        input.compactions_left = 0;
-        for safe in [false, true] {
-            if safe {
-                input.safe_mode = Some(SafeMode::Failed(failure.clone()));
-                input
-                    .tools
-                    .retain(|(_, tool)| enco_host::LIFELINE.contains(&tool.name.as_str()));
-            }
-            let Err(ComposeError::ContextOverflow { needed, .. }) = composer.compose(&input) else {
-                panic!("calibration must report the complete request size");
-            };
-            costs.insert((reads, safe), needed);
-        }
-    }
-    // One read must fit normally; two must overflow even with the smaller lifeline catalog.
-    let (one, two) = (
-        costs[&(1, false)],
-        costs[&(2, false)].min(costs[&(2, true)]),
-    );
-    assert!(
-        one < two,
-        "history must outgrow both tool catalogs: {costs:?}"
-    );
-    let window = one + (two - one) / 2;
-    assert!(one < window && window < two);
-    window
-}
-
 #[tokio::test]
-async fn without_a_compaction_model_only_a_reply_that_fits_proceeds() {
+async fn exhausted_compaction_keeps_its_failure_when_the_composer_needs_space() {
     let dir = tempfile::tempdir().unwrap();
     let summary_down = Failure {
         code: "provider.overloaded".into(),
@@ -731,12 +654,17 @@ async fn without_a_compaction_model_only_a_reply_that_fits_proceeds() {
         ),
     ])));
     let mut document = configuration();
-    narrow(
-        &mut document["endpoint"]["reply"],
-        measured_reply_window(&summary_down).await,
-    );
+    narrow(&mut document["endpoint"]["reply"], 6000);
     document["endpoint"]["compaction"]["model"] = "summary".into();
-    let (kernel, _) = kernel_configured(dir.path(), provider, document, vec![], |_| {}).await;
+    let (kernel, _) = kernel_configured_composer(
+        dir.path(),
+        provider,
+        document,
+        vec![],
+        Arc::new(HistoryComposer),
+        |_| {},
+    )
+    .await;
     write_history(dir.path());
     let log = send(&kernel, "read the history twice").await;
     // Neither the third Round nor its safe-mode successor makes a request.
@@ -749,15 +677,8 @@ async fn without_a_compaction_model_only_a_reply_that_fits_proceeds() {
             vec![],
         ]
     );
-    for entry in &log {
-        if let EntryBody::RoundEnded {
-            end: RoundEnd::Failed { failure, .. },
-            ..
-        } = &entry.body
-        {
-            assert_eq!(failure, &summary_down);
-        }
-    }
-    assert_eq!(run_failure(&log), Some(&summary_down));
+    let failure = run_failure(&log).unwrap();
+    assert_eq!(failure.code, code::CONTEXT_OVERFLOW);
+    assert!(failure.message.contains(&summary_down.message));
     kernel.shutdown().await.unwrap();
 }

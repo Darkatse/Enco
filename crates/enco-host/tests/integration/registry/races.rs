@@ -1,5 +1,5 @@
 //! Which change wins when another commit lands while a generation is still loading.
-use super::{active, deploy_artifact, fault, loaded, open, promote};
+use super::{active, fault, loaded, open, promote, register_source};
 use crate::support::*;
 use async_trait::async_trait;
 use enco_core::*;
@@ -55,20 +55,20 @@ async fn registration_cannot_overwrite_a_rollback_committed_during_loading() {
         resume: Notify::new(),
     });
     let registry = open(&store, runtime.clone()).await;
-    let one = deploy_artifact(&registry, "fixture", b"one").await;
+    let one = register_source(&registry, "fixture", b"one").await;
     promote(&registry, one.id).await;
-    let two = deploy_artifact(&registry, "fixture", b"two").await;
+    let two = register_source(&registry, "fixture", b"two").await;
     promote(&registry, two.id).await;
     *runtime.pause.lock().unwrap() = Some(ContentHash::of(b"three"));
-    let deploy = submit(&registry, artifact_request("fixture", b"three".to_vec()));
+    let registering = submit(&registry, source_request("fixture", b"three"));
     let rollback = async {
         runtime.entered.notified().await;
         registry.rollback().await.unwrap();
         runtime.resume.notify_one();
     };
-    let (result, ()) = tokio::join!(deploy, rollback);
+    let (result, ()) = tokio::join!(registering, rollback);
     assert!(matches!(result, Err(RegistryError::Conflict(_))));
-    assert_eq!(store.registry().await.unwrap().generations.len(), 3);
+    assert_eq!(store.registry().await.unwrap().generations.len(), 4);
     assert_eq!(active(&registry).await.id, one.id);
 }
 
@@ -81,8 +81,8 @@ async fn a_late_failure_after_replacement_does_not_roll_back_or_publish_a_notice
         runtime.insert(bytes, loaded(ScriptedProvider::new(vec![])));
     }
     let registry = open(&store, runtime).await;
-    let old = deploy_artifact(&registry, "fixture", b"old").await;
-    let new = deploy_artifact(&registry, "fixture", b"new").await;
+    let old = register_source(&registry, "fixture", b"old").await;
+    let new = register_source(&registry, "fixture", b"new").await;
     let session = store.ensure_session("notice", Utc::now()).await.unwrap();
     registry
         .report(
@@ -118,7 +118,7 @@ async fn registration_discards_preparation_when_its_plugin_or_configuration_chan
             resume: Notify::new(),
         });
         let registry = open(&store, runtime.clone()).await;
-        let deploy = submit(&registry, artifact_request("fixture", b"late".to_vec()));
+        let registering = submit(&registry, source_request("fixture", b"late"));
         let change = async {
             runtime.entered.notified().await;
             if change_config {
@@ -128,11 +128,11 @@ async fn registration_discards_preparation_when_its_plugin_or_configuration_chan
                     .await
                     .unwrap();
             } else {
-                deploy_artifact(&registry, "fixture", b"winner").await;
+                register_source(&registry, "fixture", b"winner").await;
             }
             runtime.resume.notify_one();
         };
-        let (result, ()) = tokio::join!(deploy, change);
+        let (result, ()) = tokio::join!(registering, change);
         assert!(matches!(result, Err(RegistryError::Conflict(_))));
         assert!(
             store
@@ -168,9 +168,9 @@ async fn rollback_cannot_overwrite_a_registration_committed_during_loading() {
         resume: Notify::new(),
     });
     let registry = open(&store, runtime.clone()).await;
-    let one = deploy_artifact(&registry, "fixture", b"one").await;
+    let one = register_source(&registry, "fixture", b"one").await;
     promote(&registry, one.id).await;
-    let two = deploy_artifact(&registry, "fixture", b"two").await;
+    let two = register_source(&registry, "fixture", b"two").await;
     promote(&registry, two.id).await;
     drop(registry);
     let registry = reopen_without_adapter(&store, &runtime, one.artifact).await;
@@ -180,13 +180,13 @@ async fn rollback_cannot_overwrite_a_registration_committed_during_loading() {
         async move { registry.rollback().await }
     });
     runtime.entered.notified().await;
-    let three = deploy_artifact(&registry, "fixture", b"three").await;
+    let three = register_source(&registry, "fixture", b"three").await;
     runtime.resume.notify_one();
     assert!(matches!(
         rollback.await.unwrap(),
         Err(RegistryError::Conflict(_))
     ));
-    assert_eq!(store.registry().await.unwrap().generations.len(), 4);
+    assert_eq!(store.registry().await.unwrap().generations.len(), 5);
     assert_eq!(active(&registry).await.id, three.id);
     registry.rollback().await.unwrap();
     assert_eq!(active(&registry).await.id, two.id);
@@ -209,9 +209,9 @@ async fn automatic_rollback_discards_preparation_after_registration_or_promotion
             resume: Notify::new(),
         });
         let registry = open(&store, runtime.clone()).await;
-        let healthy = deploy_artifact(&registry, "fixture", b"healthy").await;
+        let healthy = register_source(&registry, "fixture", b"healthy").await;
         promote(&registry, healthy.id).await;
-        let trial = deploy_artifact(&registry, "fixture", b"trial").await;
+        let trial = register_source(&registry, "fixture", b"trial").await;
         drop(registry);
         let registry = reopen_without_adapter(&store, &runtime, healthy.artifact).await;
         *runtime.pause.lock().unwrap() = Some(healthy.artifact);
@@ -233,7 +233,7 @@ async fn automatic_rollback_discards_preparation_after_registration_or_promotion
             promote(&registry, trial.id).await;
             trial.id
         } else {
-            deploy_artifact(&registry, "fixture", b"trial").await.id
+            register_source(&registry, "fixture", b"trial").await.id
         };
         runtime.resume.notify_one();
         report.await.unwrap().unwrap();

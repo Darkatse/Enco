@@ -97,7 +97,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | Space | 主人全部节点的集合；控制平面（成员、Binding、期望状态）由共识维护 |
 | Binding | `key → (node, epoch)`，单写者资源的所有权：Session 是粘滞所有权，渠道与定时是租约 |
 
-其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief；ContextPlan、Composer、Candidate、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store；外部、Mapper（映射器）、定本。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
+其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief；ContextPlan、Composer、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store；外部、Mapper（映射器）、定本。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
 
 扩展只有两种形态：
 
@@ -149,7 +149,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | 注册表、内核的配置表与 profile | `crates/enco-kernel/src/` 的 `registry/`、`settings`、`profile` |
 | 内核与外界的边界（端口）、上限常量 | `crates/enco-kernel/src/ports/`、各 crate 的 `limits.rs` |
 | SQLite、blob、制品库 | `crates/enco-host/src/store/`，模式在 `schema.sql` |
-| 出厂 composer、主人的常驻说明、原生工具 | `crates/enco-host/src/` 的 `composer`、`context`、`tools/` |
+| 主人的常驻说明、原生工具 | `crates/enco-host/src/` 的 `context`、`tools/` |
 | 记忆、渠道与 Telegram | `crates/enco-host/src/` 的 `memory/`、`channel/`、`telegram/` |
 | 插件运行时、宿主导入、凭证 | `crates/enco-wasm` |
 | 组合根、守护进程、本地协议与 CLI | `apps/enco/src` |
@@ -157,7 +157,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | 由 rustdoc JSON 渲染的手册与文档规则 | `crates/enco-manual`，仓库中经 `cargo xtask docs` 生成 |
 | 完整状态、需要关注的情况与下一步 | `crates/enco-host/src/status/`，文档渲染在 `development/render/` |
 | 插件契约 | `sdk/wit/plugin.wit`，生成的 `sdk/wit/CONTRACT.md` |
-| 出厂插件：Chat Completions、Gemini 原生协议、结构化决策与网页 | `plugins/` |
+| 出厂插件：composer、Chat Completions、Gemini 原生协议、结构化决策与网页 | `plugins/` |
 | 评测题与黑盒运行器 | `evals/` |
 | 门禁：`cargo xtask check` | `xtask/` |
 

@@ -176,9 +176,9 @@ async fn retained_files_are_bounded_and_a_pinned_adapter_outlives_its_file() {
             std::fs::read_dir(root.path().join("artifacts"))
                 .unwrap()
                 .count()
-                <= 2
+                <= 3
         );
-        assert_eq!(store.registry().await.unwrap().generations.len(), index + 3);
+        assert_eq!(store.registry().await.unwrap().generations.len(), index + 4);
     }
     assert!(matches!(
         store.artifact(&first.artifact).await,
@@ -248,7 +248,7 @@ async fn rejected_durable_registration_does_not_leave_an_unreferenced_artifact()
         std::fs::read_dir(root.path().join("artifacts"))
             .unwrap()
             .count(),
-        2
+        3
     );
 }
 

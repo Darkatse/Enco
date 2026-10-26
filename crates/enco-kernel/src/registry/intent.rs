@@ -166,7 +166,7 @@ pub struct RegisteredPlugin {
     pub id: PluginId,
     /// Registration that supplied this name; absent for a newly supplied factory name.
     pub named_by: Option<RegistrationId>,
-    /// Last accepted code intent; direct artifacts do not introduce source intent.
+    /// Last accepted code intent; absent for a factory name that has never registered one.
     pub code: Option<RegisteredSource>,
     /// Generation selected by the latest accepted activation, or this host's unregistered factory code.
     pub activation: Activation,
@@ -207,8 +207,6 @@ pub enum CodeSource {
         /// The directory's content, as stored when it was registered.
         source: ContentHash,
     },
-    /// A directly supplied component.
-    Artifact,
 }
 
 impl RegisteredPlugin {

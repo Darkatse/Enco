@@ -38,9 +38,10 @@ pub(super) fn check_owners(owners: &[TableOwner]) -> Result<(), RegistryError> {
 /// Evaluate facts; each caller decides whether invalid host tables prevent its operation.
 pub(super) fn declare(
     document: &serde_json::Value,
-    owners: &[TableOwner],
+    deps: &RegistryDeps,
 ) -> Result<Declaration, SettingsError> {
-    let kernel = KernelSettings::from_document(document)?;
+    let owners = &deps.owners;
+    let kernel = KernelSettings::from_document(document, &deps.composer)?;
     let tables = document
         .as_object()
         .ok_or_else(|| SettingsError::new("config", "expected a document of named tables"))?;
@@ -133,9 +134,9 @@ pub(super) fn changed_sections(
 /// Intentional registration accepts only content the current host fully interprets.
 pub(super) fn declare_valid(
     document: &serde_json::Value,
-    owners: &[TableOwner],
+    deps: &RegistryDeps,
 ) -> Result<Declaration, RegistryError> {
-    let declaration = declare(document, owners).map_err(|error| rejected(Cause::Table(error)))?;
+    let declaration = declare(document, deps).map_err(|error| rejected(Cause::Table(error)))?;
     if declaration.invalid.is_empty() {
         Ok(declaration)
     } else {

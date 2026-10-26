@@ -48,11 +48,6 @@ pub enum PluginChangeKind {
         /// Selected generation and its current outcome.
         generation: Box<GenerationRecord>,
     },
-    /// A component file was accepted independently of source.
-    Artifact {
-        /// Selected generation and its current outcome.
-        generation: Box<GenerationRecord>,
-    },
 }
 
 impl UnitChange {
@@ -71,8 +66,7 @@ impl PluginChangeKind {
         match self {
             Self::Code { generation }
             | Self::Factory { generation }
-            | Self::Settings { generation }
-            | Self::Artifact { generation } => Some(generation),
+            | Self::Settings { generation } => Some(generation),
             Self::Created | Self::Renamed { .. } | Self::Removed => None,
         }
     }
@@ -322,7 +316,6 @@ impl State {
                 (Some(CodeIntent::Directory { .. }), _) => PluginChangeKind::Code { generation },
                 (Some(CodeIntent::Factory), _) => PluginChangeKind::Factory { generation },
                 (None, Origin::Settings { .. }) => PluginChangeKind::Settings { generation },
-                (None, Origin::Artifact { .. }) => PluginChangeKind::Artifact { generation },
                 (None, Origin::Code { .. } | Origin::Factory) => {
                     return Err(RegistryError::Intent(format!(
                         "registration {} selects code generation {} without code intent",

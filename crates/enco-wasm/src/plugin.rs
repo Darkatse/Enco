@@ -7,10 +7,11 @@ use crate::{
         BasePre, CompletionPluginPre, DecisionPluginPre, EmbeddingPluginPre, enco::plugin::types,
         lifecycle,
     },
+    call_world::CallWorld,
     convert,
     credentials::{self, Placement},
     engine::WasmEngine,
-    host_imports::{HostState, Network},
+    host_imports::HostState,
     limits,
 };
 use async_trait::async_trait;
@@ -20,7 +21,6 @@ use enco_kernel::{
 };
 use std::sync::Arc;
 use wasmtime::{Store, StoreLimitsBuilder, component::ResourceTable};
-use wasmtime_wasi::WasiCtx;
 
 /// Compiled exports with no captured endpoint or credential value.
 pub(super) struct WasmPlugin {
@@ -39,14 +39,15 @@ impl WasmPlugin {
     /// Every logical call owns a fresh Store and shares the same limits and failure boundary.
     pub(super) async fn invoke<T>(
         &self,
-        network: Network,
+        world: CallWorld,
         cancel: tokio_util::sync::CancellationToken,
         call: impl AsyncFnOnce(Store<HostState>) -> wasmtime::Result<Result<T, types::Failure>>,
     ) -> Result<T, Failure> {
+        let (network, config, wasi) = world.configure(&self.settings.config)?;
         let state = HostState {
             network,
-            config: self.settings.config.to_string(),
-            wasi: WasiCtx::builder().inherit_stderr().build(),
+            config,
+            wasi,
             table: ResourceTable::new(),
             http: self.http.clone(),
             name: self.name.clone(),
@@ -83,7 +84,7 @@ impl WasmPlugin {
     ) -> Result<lifecycle::Description, Failure> {
         let config = config.to_string();
         self.invoke(
-            Network::open(Vec::new()),
+            CallWorld::Declaration,
             Default::default(),
             async |mut store| {
                 let plugin = self.lifecycle.instantiate_async(&mut store).await?;
@@ -116,7 +117,7 @@ fn trap(message: impl Into<String>) -> Failure {
 #[async_trait]
 impl Lifecycle for WasmPlugin {
     async fn probe(&self) -> Result<(), Failure> {
-        self.invoke(Network::Closed, Default::default(), async |mut store| {
+        self.invoke(CallWorld::Probe, Default::default(), async |mut store| {
             let plugin = self.lifecycle.instantiate_async(&mut store).await?;
             store
                 .run_concurrent(async move |accessor| {
@@ -144,7 +145,7 @@ impl Provider for WasmPlugin {
         let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
         let result = self
             .invoke(
-                Network::open(credentials),
+                CallWorld::Regular(credentials),
                 Default::default(),
                 async move |mut store| {
                     let plugin = pre.instantiate_async(&mut store).await?;
@@ -179,7 +180,7 @@ impl Embedding for WasmPlugin {
         let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
         let vectors = self
             .invoke(
-                Network::open(credentials),
+                CallWorld::Regular(credentials),
                 Default::default(),
                 async move |mut store| {
                     let plugin = pre.instantiate_async(&mut store).await?;
@@ -215,7 +216,7 @@ impl Decision for WasmPlugin {
         let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
         let answers = self
             .invoke(
-                Network::open(credentials),
+                CallWorld::Regular(credentials),
                 Default::default(),
                 async move |mut store| {
                     let plugin = pre.instantiate_async(&mut store).await?;

@@ -5,7 +5,7 @@
 //! navigation manuals that builds stored. One writer rewrites it at startup and after every view
 //! the registry publishes, removing anything else in the directory, so a deleted or edited manual
 //! comes back as it was.
-use super::{DevelopmentError, navigation, readme, render, tree::FileTree};
+use super::{DevelopmentError, SCAFFOLD, navigation, readme, render, tree::FileTree};
 use crate::SqliteStore;
 use enco_kernel::{Active, CodeSource, Registry};
 use std::{
@@ -73,7 +73,7 @@ impl Manual {
                 CodeSource::Directory { source, .. } => {
                     navigation::stored(&self.store, source).await?
                 }
-                CodeSource::Factory | CodeSource::Artifact => None,
+                CodeSource::Factory => None,
             };
             files.push((
                 format!("{directory}/README.md"),
@@ -202,11 +202,8 @@ fn plugin(active: &Active<'_>, navigation: bool) -> Result<String, DevelopmentEr
         ),
         CodeSource::Factory => format!(
             "Generation {generation}, shipped with the host. Its source is not in the home, so it \
-             has no navigation manual."
-        ),
-        CodeSource::Artifact => format!(
-            "Generation {generation}, a component deployed directly. It was not built from a \
-             source, so it has no navigation manual."
+             has no navigation manual; `{SCAFFOLD}` with this plugin's name writes the source \
+             to change it."
         ),
     };
     let body = match active.loaded {

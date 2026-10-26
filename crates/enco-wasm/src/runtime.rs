@@ -4,8 +4,8 @@
 //! compatible version; any other import, `completion` included, is rejected at load.
 use crate::{
     bindings::{
-        BasePre, CONTRACT_VERSION, CompletionPluginPre, DecisionPluginPre, EmbeddingPluginPre,
-        ToolPluginPre, enco::plugin::host,
+        BasePre, CONTRACT_VERSION, CompletionPluginPre, ComposerPluginPre, DecisionPluginPre,
+        EmbeddingPluginPre, ToolPluginPre, enco::plugin::host,
     },
     credentials,
     engine::WasmEngine,
@@ -115,16 +115,26 @@ impl Runtime for WasmRuntime {
             .then(|| DecisionPluginPre::new(pre.clone()))
             .transpose()
             .map_err(load_error)?;
+        let composer = exports("composer")
+            .then(|| ComposerPluginPre::new(pre.clone()))
+            .transpose()
+            .map_err(load_error)?;
         let tools = exports("tools")
             .then(|| ToolPluginPre::new(pre))
             .transpose()
             .map_err(load_error)?;
-        if completion.is_none() && embedding.is_none() && decision.is_none() && tools.is_none() {
+        if completion.is_none()
+            && embedding.is_none()
+            && decision.is_none()
+            && tools.is_none()
+            && composer.is_none()
+        {
             return Err(LoadError::Component(
-                "component exports none of completion, embedding, decision or tools".into(),
+                "component exports none of completion, embedding, decision, composer or tools"
+                    .into(),
             ));
         }
-        let mut plugin = WasmPlugin {
+        let plugin = WasmPlugin {
             lifecycle,
             completion,
             embedding,
@@ -135,54 +145,72 @@ impl Runtime for WasmRuntime {
             settings: settings.clone(),
             placements: Vec::new(),
         };
-        let description = plugin
-            .describe(&settings.config)
-            .await
-            .map_err(describe_error)?;
-        let config_schema = serde_json::from_str(&description.config_schema)
-            .map_err(|e| LoadError::Component(format!("configuration schema is not JSON: {e}")))?;
-        plugin.placements = credentials::placements(&description.credentials)?;
-        let unavailable = credentials::resolve(&plugin.placements, settings, None).err();
-        let plugin = Arc::new(plugin);
-        let tools = match tools {
-            Some(pre) => Some(
-                crate::tools::load(plugin.clone(), pre)
-                    .await
-                    .map_err(LoadError::Plugin)?,
-            ),
-            None => None,
-        };
-        Ok(Loaded {
-            summary: description.summary,
-            config_schema,
-            credentials: description
-                .credentials
-                .into_iter()
-                .map(|credential| Credential {
-                    name: credential.name,
-                    origin: credential.origin,
-                    required: credential.required,
-                    header: credential.header,
-                    prefix: credential.prefix,
-                })
-                .collect(),
-            unavailable,
-            tools,
-            lifecycle: plugin.clone(),
-            completion: plugin
-                .completion
-                .is_some()
-                .then(|| plugin.clone() as Arc<dyn Provider>),
-            embedding: plugin
-                .embedding
-                .is_some()
-                .then(|| plugin.clone() as Arc<dyn Embedding>),
-            decision: plugin
-                .decision
-                .is_some()
-                .then(|| plugin.clone() as Arc<dyn Decision>),
-        })
+        describe(plugin, tools, composer).await
     }
+}
+
+/// Evaluate declarations once against the generation's accepted configuration.
+async fn describe(
+    mut plugin: WasmPlugin,
+    tools: Option<ToolPluginPre<HostState>>,
+    composer: Option<ComposerPluginPre<HostState>>,
+) -> Result<Loaded, LoadError> {
+    let description = plugin
+        .describe(&plugin.settings.config)
+        .await
+        .map_err(describe_error)?;
+    let config_schema = serde_json::from_str(&description.config_schema)
+        .map_err(|e| LoadError::Component(format!("configuration schema is not JSON: {e}")))?;
+    plugin.placements = credentials::placements(&description.credentials)?;
+    let unavailable = credentials::resolve(&plugin.placements, &plugin.settings, None).err();
+    let plugin = Arc::new(plugin);
+    let tools = match tools {
+        Some(pre) => Some(
+            crate::tools::load(plugin.clone(), pre)
+                .await
+                .map_err(LoadError::Plugin)?,
+        ),
+        None => None,
+    };
+    let composer = match composer {
+        Some(pre) => Some(
+            crate::composer::load(plugin.clone(), pre)
+                .await
+                .map_err(LoadError::Plugin)?,
+        ),
+        None => None,
+    };
+    Ok(Loaded {
+        summary: description.summary,
+        config_schema,
+        credentials: description
+            .credentials
+            .into_iter()
+            .map(|credential| Credential {
+                name: credential.name,
+                origin: credential.origin,
+                required: credential.required,
+                header: credential.header,
+                prefix: credential.prefix,
+            })
+            .collect(),
+        unavailable,
+        tools,
+        composer,
+        lifecycle: plugin.clone(),
+        completion: plugin
+            .completion
+            .is_some()
+            .then(|| plugin.clone() as Arc<dyn Provider>),
+        embedding: plugin
+            .embedding
+            .is_some()
+            .then(|| plugin.clone() as Arc<dyn Embedding>),
+        decision: plugin
+            .decision
+            .is_some()
+            .then(|| plugin.clone() as Arc<dyn Decision>),
+    })
 }
 
 /// A component that rejects its configuration reports `config.invalid` from `describe`.

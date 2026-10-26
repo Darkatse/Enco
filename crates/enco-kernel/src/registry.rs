@@ -20,13 +20,13 @@ mod status;
 mod wiring;
 
 use crate::{
-    Clock, Credential, Decision, Embedding, Endpoint, KernelSettings, LoadError, Loaded, Provider,
-    Runtime, SettingsError, Store, StoreError,
+    Clock, Composer, ComposerOptions, ComposerSettings, Credential, Decision, Embedding, Endpoint,
+    KernelSettings, LoadError, Loaded, Provider, Runtime, SettingsError, Store, StoreError,
 };
 use admission::users;
 pub use configuration::{PLUGIN_SETTINGS_TABLE, plugin_settings};
 use enco_core::*;
-pub use exports::{Active, Export, Exports};
+pub use exports::{Active, BoundComposer, Export, Exports};
 pub use intent::{
     Activation, CodeProvenance, CodeSource, FactoryStatus, RegisteredIntent, RegisteredPlugin,
     RegisteredSource, RegistrationBase, RewindScope, RewindSelection, ScopeError,
@@ -50,6 +50,8 @@ pub struct RegistryDeps {
     pub runtime: Arc<dyn Runtime>,
     /// Host-reserved identities and embedded bytes.
     pub factory: Vec<FactoryPlugin>,
+    /// The factory plugin that composes for profiles naming no composer, and in safe mode.
+    pub composer: PluginName,
     /// Host-owned tables and their declaration functions.
     pub owners: Vec<TableOwner>,
     /// Names from the native tool declarations assembled by the composition root.
@@ -73,7 +75,7 @@ pub struct FactoryPlugin {
 pub struct TableOwner {
     /// Top-level tables exclusively owned by this component.
     pub tables: &'static [ConfigTable],
-    /// Parse the owned tables and project their endpoint requirements.
+    /// Parse the owned tables and project their configured invocations.
     pub declare: fn(&serde_json::Value, &KernelSettings) -> Result<Vec<Use>, SettingsError>,
 }
 
@@ -95,15 +97,57 @@ impl ConfigTable {
     }
 }
 
-/// One configured user's endpoint and requirements.
+/// One configured caller and the invocation it requires.
 #[derive(Clone)]
 pub struct Use {
-    /// Human-readable user, such as `profile default.reply`.
+    /// Human-readable caller, such as `profile default.reply`.
     pub user: String,
-    /// Resolved service and invocation parameters.
-    pub endpoint: Endpoint,
-    /// Required interface and behavior.
-    pub need: Need,
+    /// The invocation this caller configures.
+    pub target: UseTarget,
+}
+
+/// The configured invocation, preserving the facts its actual interface consumes.
+#[derive(Clone)]
+pub enum UseTarget {
+    /// A model service and the behavior its consumer requires.
+    Endpoint {
+        /// Named service and its invocation parameters.
+        endpoint: Endpoint,
+        /// Required model interface and behavior.
+        need: Need,
+    },
+    /// A profile's pure composer invocation.
+    Composer {
+        /// Profile owning these options, used to attribute repair.
+        profile: String,
+        /// Plugin and invocation options.
+        settings: ComposerSettings,
+    },
+}
+
+/// The configuration entry a use names, without copying its invocation parameters.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UseRef {
+    /// A named model service.
+    Endpoint {
+        /// Name in the endpoint table.
+        endpoint: String,
+    },
+    /// A profile's composer selection and options.
+    Composer {
+        /// Name in the profile table.
+        profile: String,
+    },
+}
+
+impl std::fmt::Display for UseRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Endpoint { endpoint } => write!(f, "endpoint {endpoint}"),
+            Self::Composer { .. } => f.write_str("composer"),
+        }
+    }
 }
 
 /// A use's interface and behavior requirements, shared by wiring checks and real probes.
@@ -147,7 +191,7 @@ pub struct ActiveConfig {
     pub document: serde_json::Value,
     /// Parsed kernel-owned tables.
     pub kernel: KernelSettings,
-    /// Endpoint users declared by the kernel and the host owners.
+    /// Configured uses declared by the kernel and the host owners.
     uses: Vec<Use>,
     /// Tables the current host cannot interpret; empty after any intentional registration.
     invalid: Vec<SettingsError>,
@@ -180,7 +224,7 @@ pub struct Registry {
 
 /// One completed invocation's verdict, before caller-specific result handling.
 pub enum Verdict {
-    /// A valid plugin result, regardless of the caller's subsequent policy checks.
+    /// The result passed its interface contract checks, including composer plan binding.
     Ok,
     /// A failed invocation; only attributable plugin faults affect health.
     Failed(Failure),
@@ -269,7 +313,12 @@ impl Registry {
         configuration::check_owners(&deps.owners).map_err(&registry_error)?;
         let (state, config) = startup::open(&deps, bootstrap, &registry_error).await?;
         let admission = admission::evaluate(state.contents(), &deps.host_tool_names);
-        let (views, _) = watch::channel(Arc::new(state.view(config, admission, &deps.factory)));
+        let (views, _) = watch::channel(Arc::new(state.view(
+            config,
+            admission,
+            &deps.factory,
+            &deps.composer,
+        )));
         Ok(Arc::new(Self {
             deps,
             state: Mutex::new(state),
@@ -301,8 +350,12 @@ impl Registry {
         let config = config.unwrap_or_else(|| self.view().config.clone());
         let admission = admission
             .unwrap_or_else(|| admission::evaluate(state.contents(), &self.deps.host_tool_names));
-        self.views
-            .send_replace(Arc::new(state.view(config, admission, &self.deps.factory)));
+        self.views.send_replace(Arc::new(state.view(
+            config,
+            admission,
+            &self.deps.factory,
+            &self.deps.composer,
+        )));
     }
 }
 

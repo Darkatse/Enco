@@ -146,8 +146,6 @@ pub enum OwnerAction {
     Restart,
     /// Turn safe mode off with `enco safe-mode off`.
     DisableSafeMode,
-    /// Deploy the component file again with `enco plugin deploy`.
-    RetryDeployment,
     /// Repair the host's factory code for a plugin; only a host update changes it.
     FactoryCode {
         /// Plugin whose factory code is at fault.
@@ -333,11 +331,14 @@ pub(crate) fn repair(part: &IntentPart) -> Repair {
                 name: name.clone(),
             })])
         }
-        IntentPart::Use { endpoint, .. } => {
-            Repair::then_retry(vec![Step::Fix(FixTarget::Endpoint {
+        IntentPart::Use { target, .. } => Repair::then_retry(vec![Step::Fix(match target {
+            enco_kernel::UseRef::Endpoint { endpoint } => FixTarget::Endpoint {
                 name: endpoint.clone(),
-            })])
-        }
+            },
+            enco_kernel::UseRef::Composer { profile } => FixTarget::Table {
+                name: format!("{}.{profile}", enco_kernel::PROFILE_TABLE.name()),
+            },
+        })]),
         IntentPart::Table { table } => Repair::then_retry(vec![Step::Fix(FixTarget::Table {
             name: table.clone(),
         })]),

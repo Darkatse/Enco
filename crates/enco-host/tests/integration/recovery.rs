@@ -86,7 +86,9 @@ struct GatedContext {
 
 #[async_trait]
 impl ContextSource for GatedContext {
-    async fn contribute(&self, query: &ContextQuery) -> Result<Contribution, ContextError> {
+    type Supply = OfferedMemories;
+
+    async fn contribute(&self, query: &ContextQuery) -> Result<OfferedMemories, ContextError> {
         self.entered.notify_one();
         query.cancel.cancelled().await;
         self.finished.store(true, Ordering::SeqCst);
@@ -247,7 +249,7 @@ async fn cancellation_reaches_context_and_shutdown_waits_for_tool_settlement() {
     });
     let provider = ScriptedProvider::new(vec![]);
     let (kernel, _) = kernel_with(dir.path(), provider.clone(), Tz::UTC, |deps| {
-        deps.context = vec![source.clone()]
+        deps.memories = source.clone()
     })
     .await;
     let session = kernel.open_session("main").await.unwrap();
@@ -422,7 +424,7 @@ async fn assert_lifeline_plan(store: &enco_host::SqliteStore, log: &[Entry]) {
             _ => None,
         })
         .unwrap();
-    let plan: ContextPlan = serde_json::from_slice(&store.get_blob(&hash).await.unwrap()).unwrap();
+    let plan = store.plan(&hash).await.unwrap();
     let mut tools: Vec<_> = plan
         .tools
         .iter()
@@ -434,11 +436,34 @@ async fn assert_lifeline_plan(store: &enco_host::SqliteStore, log: &[Entry]) {
     assert_eq!(tools, expected);
 }
 
+struct ObservedContext(std::sync::Mutex<Vec<Option<String>>>);
+
+#[async_trait]
+impl Composer for ObservedContext {
+    async fn compose(
+        &self,
+        _: &ComposerOptions,
+        input: &ComposeInput,
+    ) -> Result<Composition, Failure> {
+        self.0.lock().unwrap().push(input.instructions.clone());
+        Ok(Composition::Plan(reply_plan(input)))
+    }
+}
+
 #[tokio::test]
 async fn normal_mode_resumes_with_the_repaired_context() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![reply("safe"), reply("normal")]);
-    let (kernel, _) = kernel(dir.path(), provider.clone()).await;
+    let contexts = Arc::new(ObservedContext(std::sync::Mutex::new(vec![])));
+    let (kernel, _) = kernel_configured_composer(
+        dir.path(),
+        provider.clone(),
+        configuration(),
+        vec![],
+        contexts.clone(),
+        |_| {},
+    )
+    .await;
     std::fs::write(dir.path().join("AGENTS.md"), [0xff]).unwrap();
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
@@ -455,10 +480,9 @@ async fn normal_mode_resumes_with_the_repaired_context() {
         .await
         .unwrap();
     finish(&mut rx).await;
-    assert!(
-        provider.requests.lock().unwrap().last().unwrap().messages[0]
-            .joined_text()
-            .contains("Call the owner River.")
+    assert_eq!(
+        contexts.0.lock().unwrap().last(),
+        Some(&Some("Call the owner River.".into()))
     );
     kernel.shutdown().await.unwrap();
 }

@@ -15,7 +15,9 @@ use std::{
 };
 use tokio::sync::broadcast;
 
+mod composer;
 mod development;
+pub use composer::*;
 pub use development::*;
 
 /// A plugin whose admission probe has a fixed result.
@@ -86,9 +88,22 @@ impl Embedding for ScriptedProvider {
 pub const FACTORY_BYTES: &[u8] = b"scripted-factory";
 pub const FIXTURE_ID: &str = "01M3X4HYHSE2M3523YK35VX60W";
 
-#[derive(Default)]
 pub struct ScriptedRuntime {
     exports: Mutex<HashMap<ContentHash, Loaded>>,
+}
+
+impl Default for ScriptedRuntime {
+    fn default() -> Self {
+        Self {
+            exports: Mutex::new(
+                [(
+                    ContentHash::of(COMPOSER_BYTES),
+                    composer_loaded(Arc::new(TestComposer)),
+                )]
+                .into(),
+            ),
+        }
+    }
 }
 
 impl ScriptedRuntime {
@@ -142,7 +157,7 @@ pub fn configuration() -> serde_json::Value {
 }
 
 pub fn fixture_endpoint(plugin: &str) -> Endpoint {
-    let mut endpoint = KernelSettings::from_document(&configuration())
+    let mut endpoint = KernelSettings::from_document(&configuration(), &COMPOSER.parse().unwrap())
         .unwrap()
         .profiles["default"]
         .reply
@@ -162,6 +177,7 @@ pub fn fixture(completion: Arc<dyn Provider>, embedding: Arc<dyn Embedding>) -> 
         credentials: Vec::new(),
         unavailable: None,
         tools: None,
+        composer: None,
         completion: Some(completion),
         embedding: Some(embedding),
         decision: None,
@@ -184,11 +200,19 @@ pub fn registry_deps(
             .collect(),
         store,
         runtime,
-        factory: vec![FactoryPlugin {
-            name: "fixture".parse().unwrap(),
-            id: FIXTURE_ID.parse().unwrap(),
-            artifact: factory.to_vec(),
-        }],
+        factory: vec![
+            FactoryPlugin {
+                name: "fixture".parse().unwrap(),
+                id: FIXTURE_ID.parse().unwrap(),
+                artifact: factory.to_vec(),
+            },
+            FactoryPlugin {
+                name: COMPOSER.parse().unwrap(),
+                id: COMPOSER_ID.parse().unwrap(),
+                artifact: COMPOSER_BYTES.to_vec(),
+            },
+        ],
+        composer: COMPOSER.parse().unwrap(),
         owners: TABLE_OWNERS.into(),
         clock: Arc::new(SystemClock),
     }
@@ -239,15 +263,14 @@ pub fn kernel_deps(
 ) -> KernelDeps {
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let instructions = root.join("AGENTS.md");
-    let mut context: Vec<Arc<dyn ContextSource>> = vec![Arc::new(InstructionsContextSource::new(
-        instructions.clone(),
-    ))];
     let mut tools = native_tools(workspace.clone()).unwrap();
-    if let Some(memories) = memories {
-        context.push(Arc::new(MemoryContextSource::new(memories.clone())));
-        tools.extend(memory_tools(memories).unwrap());
-    }
+    let offered: Arc<dyn ContextSource<Supply = OfferedMemories>> = match memories {
+        Some(memories) => {
+            tools.extend(memory_tools(memories.clone()).unwrap());
+            Arc::new(MemoryContextSource::new(memories))
+        }
+        None => Arc::new(NoMemories),
+    };
     if let Some(development) = development {
         tools.extend(development_tools(development, registry.clone()).unwrap());
     }
@@ -255,15 +278,24 @@ pub fn kernel_deps(
     KernelDeps {
         store,
         registry,
-        composer: Arc::new(FactoryComposer::new(
-            root.to_owned(),
-            workspace,
-            instructions,
-        )),
-        context,
+        home: root.to_owned(),
+        instructions: Arc::new(InstructionsContextSource::new(root.join("AGENTS.md"))),
+        memories: offered,
         tools,
         lifeline: LIFELINE.map(String::from).into(),
         clock: Arc::new(SystemClock),
+    }
+}
+
+/// A kernel without memories still asks for them each Round, and gets none.
+struct NoMemories;
+
+#[async_trait::async_trait]
+impl ContextSource for NoMemories {
+    type Supply = OfferedMemories;
+
+    async fn contribute(&self, _: &ContextQuery) -> Result<OfferedMemories, ContextError> {
+        Ok(OfferedMemories::default())
     }
 }
 
@@ -325,8 +357,27 @@ pub async fn kernel_configured(
     tools: Vec<Arc<dyn Tool>>,
     configure: impl FnOnce(&mut KernelDeps),
 ) -> (Kernel, Arc<SqliteStore>) {
-    // Without memory nothing recalls; the export only satisfies memory's declared use.
+    kernel_configured_composer(
+        root,
+        provider,
+        document,
+        tools,
+        Arc::new(TestComposer),
+        configure,
+    )
+    .await
+}
+
+pub async fn kernel_configured_composer(
+    root: &Path,
+    provider: Arc<dyn Provider>,
+    document: serde_json::Value,
+    tools: Vec<Arc<dyn Tool>>,
+    composer: Arc<dyn Composer>,
+    configure: impl FnOnce(&mut KernelDeps),
+) -> (Kernel, Arc<SqliteStore>) {
     let runtime = factory_runtime(fixture(provider, ScriptedProvider::new(vec![])));
+    runtime.insert(COMPOSER_BYTES, composer_loaded(composer));
     let extra = tools.iter().map(|tool| tool.spec()).collect();
     let (development, registry, store) = scripted_home(root, runtime, document, extra).await;
     let mut deps = kernel_deps(root, store.clone(), registry, None, Some(development));
@@ -449,15 +500,6 @@ pub fn configuration_request(document: serde_json::Value) -> RegistrationRequest
         configuration: Some(configuration_source(document)),
         base: None,
         plugins: Default::default(),
-    }
-}
-
-pub fn artifact_request(name: &str, bytes: Vec<u8>) -> RegistrationRequest {
-    RegistrationRequest {
-        initiator: Initiator::Owner { reason: None },
-        plugins: [(name.parse().unwrap(), PluginChange::Artifact(bytes))].into(),
-        base: None,
-        configuration: None,
     }
 }
 

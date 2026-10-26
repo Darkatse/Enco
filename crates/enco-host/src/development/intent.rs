@@ -35,7 +35,6 @@ pub(super) enum Change {
         tree: FileTree,
     },
     Factory,
-    Artifact(Vec<u8>),
     Remove,
     Rename(PluginName),
 }

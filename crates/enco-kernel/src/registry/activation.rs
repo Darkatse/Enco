@@ -197,7 +197,7 @@ impl Registry {
                     .config_generations
                     .get(&id)
                     .ok_or(RegistryError::UnknownGeneration(id))?;
-                configuration::declare(&record.document, &self.deps.owners)
+                configuration::declare(&record.document, &self.deps)
                     .map(|declaration| declaration.into_active(record))
                     .map_err(RegistryError::Config)
             })

@@ -5,6 +5,7 @@ mod blob;
 mod commit;
 mod connections;
 mod content;
+mod plans;
 mod registry;
 mod rows;
 mod schedules;
@@ -22,9 +23,9 @@ use std::{
 
 /// The store's format version, written as `PRAGMA user_version` and required when opening.
 ///
-/// It covers SQLite and its referenced plans. Until P4, persistent format changes require a new
-/// database; opening never migrates or deletes the old one.
-const SCHEMA_VERSION: u32 = 12;
+/// It covers the SQLite schema, plan records included. Until P4, persistent format changes
+/// require a new database; opening never migrates or deletes the old one.
+const SCHEMA_VERSION: u32 = 13;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -97,8 +98,8 @@ fn encode(value: &impl serde::Serialize) -> Result<String, StoreError> {
 }
 
 fn open(path: &Path) -> Result<(Connection, NodeId), StoreError> {
-    let mut connection = crate::sqlite::open(path).map_err(backend)?;
-    match crate::sqlite::schema_version(&connection).map_err(backend)? {
+    let (mut connection, version) = crate::sqlite::open(path).map_err(backend)?;
+    match version {
         None => {
             let tx = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -207,9 +208,23 @@ impl Store for SqliteStore {
     }
 
     async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreError> {
+        let plan = match &commit.plan {
+            Some(plan) => self.prepare_plan(session, plan.clone()).await?,
+            None => None,
+        };
         let node = self.node;
-        self.run(move |connection| commit::commit(connection, node, session, commit))
+        self.run(move |connection| commit::commit(connection, node, session, commit, plan))
             .await
+    }
+
+    async fn plan(&self, hash: &ContentHash) -> Result<ContextPlan, StoreError> {
+        let hash = *hash;
+        let encoded = self
+            .run(move |connection| plans::read(connection, hash))
+            .await?;
+        tokio::task::spawn_blocking(move || plans::restore(encoded))
+            .await
+            .map_err(backend)?
     }
 
     async fn accept(

@@ -43,7 +43,7 @@ async fn restore(deps: &RegistryDeps) -> Result<(State, Option<ActiveConfig>), R
         .active_config
         .map(|id| {
             let record = &state.history.config_generations[&id];
-            configuration::declare(&record.document, &deps.owners)
+            configuration::declare(&record.document, deps)
                 .map(|declaration| declaration.into_active(record))
                 .map_err(RegistryError::Config)
         })

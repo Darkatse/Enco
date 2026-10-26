@@ -9,6 +9,7 @@ enco-core = { workspace = true }
 enco-kernel = { workspace = true }
 wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 tokio-util = { workspace = true }

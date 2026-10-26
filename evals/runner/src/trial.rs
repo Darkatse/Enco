@@ -1,5 +1,5 @@
 use crate::{
-    config::{Config, Deploy, Model},
+    config::{Config, Model},
     enco::{Binary, Enco},
     grade::Grading,
     home::Home,
@@ -10,6 +10,7 @@ use crate::{
     result::{self, Execution, Facts, Trial},
     server::{Servers, reply},
     snapshot::{self, Snapshot},
+    source::PreparedSource,
     task::Task,
 };
 use anyhow::Result;
@@ -39,7 +40,7 @@ pub(crate) struct TrialDeps {
 pub(crate) struct Variant {
     pub(crate) name: String,
     pub(crate) binary: Binary,
-    pub(crate) deploy: Vec<Deploy>,
+    pub(crate) source: Vec<PreparedSource>,
     pub(crate) plugin: toml::Table,
     pub(crate) variables: BTreeMap<String, OsString>,
 }
@@ -75,7 +76,6 @@ pub(crate) async fn run(
     let executed = match prepared {
         Ok(log) => {
             execute(
-                variant,
                 task,
                 &home,
                 log,
@@ -85,17 +85,17 @@ pub(crate) async fn run(
             )
             .await
         }
-        Err(error) => Ok((
+        Err(error) => (
             Execution::InstrumentError {
                 reason: format!("prepare: {error:#}"),
             },
             Snapshot::default(),
-        )),
+        ),
     };
-    // All paths close the owned resources before returning a trial or a deployment error.
+    // Close the owned resources before returning a trial or a runner error.
     let cleanup = services.finish(&snapshot_dir).await;
     let archive = home.archive(&directory.join("home")).await;
-    let (mut execution, snapshot) = executed?;
+    let (mut execution, snapshot) = executed;
     let violations = match cleanup {
         Ok(count) => count,
         Err(error) => {
@@ -172,27 +172,20 @@ async fn prepare(
         .await)
 }
 
-/// Only a failed variant deployment returns an error; it aborts the run.
 async fn execute(
-    variant: &Variant,
     task: &Task,
     home: &Home,
     log: std::fs::File,
     directory: &Path,
     deadline: Instant,
     forbidden: &[&Path],
-) -> Result<(Execution, Snapshot)> {
+) -> (Execution, Snapshot) {
     let mut enco = match Enco::start(home, log) {
         Ok(enco) => enco,
-        Err(error) => return Ok((Execution::failed(error), Snapshot::default())),
+        Err(error) => return (Execution::failed(error), Snapshot::default()),
     };
     let driven = match enco.ready(deadline).await {
-        Ok(()) => {
-            for deploy in &variant.deploy {
-                enco.deploy(deploy).await?;
-            }
-            inputs(&enco, task, deadline).await
-        }
+        Ok(()) => inputs(&enco, task, deadline).await,
         Err(error) => Err(error),
     };
     let mut execution = match driven {
@@ -217,7 +210,7 @@ async fn execute(
     if let Err(error) = stopped {
         execution.mark_instrument_error(error);
     }
-    Ok((execution, snapshot))
+    (execution, snapshot)
 }
 
 async fn inputs(enco: &Enco, task: &Task, deadline: Instant) -> Result<()> {

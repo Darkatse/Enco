@@ -13,6 +13,14 @@ pub struct Export<T: ?Sized> {
     pub adapter: Arc<T>,
 }
 
+/// A composer generation paired with options accepted by that generation's schema.
+pub struct BoundComposer {
+    /// Exact code selected for this composition.
+    pub export: Export<dyn Composer>,
+    /// Normalized invocation options.
+    pub options: ComposerOptions,
+}
+
 struct LoadedGeneration {
     plugin: PluginId,
     generation: GenerationId,
@@ -36,6 +44,8 @@ pub struct Active<'a> {
 pub struct Exports {
     plugins: BTreeMap<PluginName, Routes>,
     generations: BTreeMap<GenerationId, GenerationRecord>,
+    /// The factory plugin that composes in safe mode.
+    composer: PluginName,
 }
 
 struct Routes {
@@ -106,7 +116,7 @@ impl Exports {
     pub(super) fn check_use(&self, usage: &Use) -> Result<(), Vec<Cause>> {
         admission::serve(
             usage,
-            self.loaded(&usage.endpoint.plugin)
+            self.loaded(usage.plugin())
                 .map(|selected| selected.map(|(_, loaded)| loaded)),
         )
     }
@@ -140,6 +150,43 @@ impl Exports {
     pub fn decision(&self, endpoint: &Endpoint) -> Result<Export<dyn Decision>, Failure> {
         self.export(endpoint, false, "decision", |loaded| {
             loaded.decision.clone()
+        })
+    }
+
+    /// Select the current composer and normalize its profile options in one binding step.
+    ///
+    /// Safe mode always uses the factory generation of the host's composer with empty options.
+    pub fn composer(
+        &self,
+        settings: &ComposerSettings,
+        safe_mode: bool,
+    ) -> Result<BoundComposer, Failure> {
+        let empty = ComposerOptions::new();
+        let (name, options) = if safe_mode {
+            (&self.composer, &empty)
+        } else {
+            (&settings.plugin, &settings.options)
+        };
+        let (selected, loaded) = match self.selected(name, safe_mode) {
+            Some(Ok(selected)) => selected,
+            Some(Err(causes)) => return Err(unavailable_failure(causes)),
+            None => return Err(not_running(name)),
+        };
+        let (adapter, options) =
+            wiring::bind_composer(loaded, options).map_err(|mut failure| {
+                failure.message = format!(
+                    "composer {name}, generation {}: {}",
+                    selected.generation, failure.message
+                );
+                failure
+            })?;
+        Ok(BoundComposer {
+            export: Export {
+                plugin: selected.plugin,
+                generation: selected.generation,
+                adapter,
+            },
+            options,
         })
     }
 
@@ -214,7 +261,12 @@ fn not_running(plugin: &PluginName) -> Failure {
 
 impl State {
     /// Bind one already computed admission result to the identities assigned by the commit.
-    pub fn exports(&self, admission: Admission, factory: &[FactoryPlugin]) -> Exports {
+    pub fn exports(
+        &self,
+        admission: Admission,
+        factory: &[FactoryPlugin],
+        composer: &PluginName,
+    ) -> Exports {
         let mut plugins = BTreeMap::new();
         let mut names = self.running_names();
         names.extend(
@@ -252,6 +304,7 @@ impl State {
         Exports {
             plugins,
             generations: self.history.generations.clone(),
+            composer: composer.clone(),
         }
     }
 }

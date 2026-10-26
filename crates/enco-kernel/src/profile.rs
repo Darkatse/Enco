@@ -1,4 +1,6 @@
 use crate::{Budget, Endpoint};
+use enco_core::PluginName;
+use serde_json::{Map, Value};
 
 /// A profile's endpoint with the context limits required by completion.
 #[derive(Clone)]
@@ -14,6 +16,8 @@ pub struct CompletionEndpoint {
 /// Session policy sampled once at the start of a Round.
 #[derive(Clone)]
 pub struct Profile {
+    /// Plugin and typed invocation options used to compose this Session's requests.
+    pub composer: ComposerSettings,
     /// Ordered candidates for ordinary replies.
     pub reply: Endpoints,
     /// Ordered candidates for summarizing history.
@@ -49,3 +53,17 @@ impl Endpoints {
         std::iter::once(&self.first).chain(&self.rest)
     }
 }
+
+/// A profile's selected composer and its invocation options.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComposerSettings {
+    /// Registered name of the plugin exporting composition.
+    pub plugin: PluginName,
+    /// Options checked against the generation selected for each composition.
+    #[serde(default)]
+    pub options: ComposerOptions,
+}
+
+/// A profile's composer options: a JSON object whose shape the composer's schema declares.
+pub type ComposerOptions = Map<String, Value>;

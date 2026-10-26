@@ -30,111 +30,6 @@ impl TestClock {
     }
 }
 
-#[tokio::test]
-async fn requests_keep_a_stable_prefix_and_date_inputs_across_dst() {
-    let dir = tempfile::tempdir().unwrap();
-    let first = DateTime::parse_from_rfc3339("2026-11-01T00:00:00-04:00").unwrap();
-    let clock = Arc::new(TestClock(Mutex::new(first.to_utc())));
-    let provider = ScriptedProvider::new(vec![
-        reply("first"),
-        Err(Failure {
-            code: "provider.bad_request".into(),
-            message: "request rejected".into(),
-            retryable: false,
-        }),
-        reply("recovered"),
-        reply("later"),
-        reply("new offset"),
-    ]);
-    let (kernel, _) = kernel_with(
-        dir.path(),
-        provider.clone(),
-        Tz::America__New_York,
-        |deps| {
-            deps.clock = clock.clone();
-        },
-    )
-    .await;
-    let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
-    // (clock at submission, whether history contains a failed Run, expected local arrival times)
-    let cases: [(&str, bool, &[&str]); 5] = [
-        ("2026-11-01T00:00:00-04:00", false, &["2026-11-01 00:00"]),
-        ("2026-11-01T00:59:00-04:00", false, &["2026-11-01 00:00"]),
-        (
-            "2026-11-01T01:01:00-04:00",
-            true,
-            &["2026-11-01 00:00", "2026-11-01 01:01"],
-        ),
-        // The repeated hour starts a new marker although the local hour is unchanged.
-        (
-            "2026-11-01T01:20:00-05:00",
-            true,
-            &["2026-11-01 00:00", "2026-11-01 01:01", "2026-11-01 01:20"],
-        ),
-        (
-            "2026-11-01T03:00:00-05:00",
-            true,
-            &[
-                "2026-11-01 00:00",
-                "2026-11-01 01:01",
-                "2026-11-01 01:20",
-                "2026-11-01 03:00",
-            ],
-        ),
-    ];
-    let mut previous_offset = None;
-    for (at, has_failure, expected_times) in cases {
-        let now = DateTime::parse_from_rfc3339(at).unwrap();
-        *clock.0.lock().unwrap() = now.to_utc();
-        let inputs = ["time", "also"].map(|text| Event {
-            id: EventId::new(),
-            session: session.id,
-            source: EventSource::Cli,
-            body: EventBody::UserMessage {
-                images: Vec::new(),
-                unviewable: Vec::new(),
-                text: text.into(),
-            },
-            received_at: now.to_utc(),
-        });
-        kernel.accept(&inputs, None).await.unwrap();
-        finish(&mut rx).await;
-        let requests = provider.requests.lock().unwrap();
-        let request = requests.last().unwrap();
-        assert_eq!(request.messages.last().unwrap().joined_text(), "also");
-        let actual: Vec<_> = request
-            .messages
-            .iter()
-            .filter(|m| m.role == Role::User)
-            .map(Message::joined_text)
-            .filter(|text| text.contains("2026-11-01 "))
-            .collect();
-        assert_eq!(actual.len(), expected_times.len());
-        for (note, expected) in actual.iter().zip(expected_times) {
-            assert!(note.contains(expected));
-        }
-        // The whole recorded request stays a prefix until the offset changes the head.
-        if previous_offset == Some(*now.offset()) {
-            let previous = &requests[requests.len() - 2];
-            assert!(request.messages.starts_with(&previous.messages));
-        }
-        previous_offset = Some(*now.offset());
-        let failures: Vec<_> = request
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.joined_text().contains("request rejected"))
-            .collect();
-        assert_eq!(failures.len(), usize::from(has_failure));
-        if let Some((index, message)) = failures.first() {
-            assert!(message.joined_text().contains("provider.bad_request"));
-            assert_eq!(request.messages[index + 1].joined_text(), "time");
-        }
-    }
-    kernel.shutdown().await.unwrap();
-}
-
 #[tokio::test(start_paused = true)]
 async fn a_one_shot_reminder_in_the_past_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
@@ -256,158 +151,71 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
     );
 }
 
-/// Local arrival time of every input in the compaction scenario.
-const ARRIVAL: &str = "2026-09-29 09:00";
-
-fn compaction_provider() -> Arc<ScriptedProvider> {
-    let provider = ScriptedProvider::new(
-        (0..30)
-            .map(|_| reply("Concise summary or reply."))
-            .collect(),
-    );
-    provider.steps.lock().unwrap().push_front(Err(Failure {
-        code: "provider.bad_request".into(),
-        message: "request rejected".into(),
-        retryable: false,
-    }));
-    provider
-}
-
-/// A New York node at a fixed instant whose compaction window holds only part of the history.
-async fn small_windows(root: &Path, provider: Arc<ScriptedProvider>) -> (Kernel, Arc<Memories>) {
-    let clock = Arc::new(TestClock(Mutex::new(
-        DateTime::parse_from_rfc3339("2026-09-29T09:00:00-04:00")
-            .unwrap()
-            .to_utc(),
-    )));
-    let mut document = configuration();
-    document["owner"]["timezone"] = serde_json::json!(Tz::America__New_York);
-    document["endpoint"]["reply"]["window_tokens"] = 6600.into();
-    document["endpoint"]["reply"]["max_output_tokens"] = 256.into();
-    document["endpoint"]["compaction"]["window_tokens"] = 2500.into();
-    document["endpoint"]["compaction"]["max_output_tokens"] = 512.into();
-    kernel_with_memory(root, provider, document, |deps| deps.clock = clock).await
-}
-
-/// Pins a memory, then outgrows the compaction window with history that begins with a failed
-/// Run; returns the Session and how each Run ended.
-async fn outgrow_the_window(kernel: &Kernel, memories: &Memories) -> (SessionId, Vec<EntryBody>) {
-    memories.save("Owner is River".into(), true).await.unwrap();
+#[tokio::test]
+async fn compacted_requests_are_recorded_and_the_summary_survives_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![
+        calls(vec![call("fs_list", r#"{"path":"."}"#)]),
+        reply("scripted summary"),
+        reply("finished"),
+    ]);
+    let (kernel, _) = kernel_configured_composer(
+        dir.path(),
+        provider.clone(),
+        configuration(),
+        vec![],
+        Arc::new(HistoryComposer),
+        |_| {},
+    )
+    .await;
     let session = kernel.open_session("main").await.unwrap().id;
     let mut rx = kernel.subscribe(session).unwrap();
-    let history = (0..6).map(|n| format!("History {n}: {}", "some detailed history ".repeat(150)));
-    let mut ends = vec![];
-    for text in std::iter::once("History before failure".to_owned()).chain(history) {
-        kernel
-            .submit(session, EventId::new(), text, Vec::new())
-            .await
-            .unwrap();
-        ends.push(finish(&mut rx).await.pop().unwrap().body);
-    }
-    (session, ends)
-}
-
-#[tokio::test]
-async fn compaction_requests_carry_arrival_times_and_failures_but_not_pinned_memory() {
-    let dir = tempfile::tempdir().unwrap();
-    let provider = compaction_provider();
-    let (kernel, memories) = small_windows(dir.path(), provider.clone()).await;
-    let (session, ends) = outgrow_the_window(&kernel, &memories).await;
-    assert!(matches!(
-        ends[0],
-        EntryBody::RunEnded {
-            end: RunEnd::Failed { .. },
-            ..
-        }
-    ));
-    for end in &ends[1..] {
-        assert!(matches!(
-            end,
-            EntryBody::RunEnded {
-                end: RunEnd::Completed,
-                ..
-            }
-        ));
-    }
-    let log = kernel.log(session, None).await.unwrap();
+    kernel
+        .submit(session, EventId::new(), "initial request".into(), vec![])
+        .await
+        .unwrap();
+    let entries = finish(&mut rx).await;
     let requests = provider.requests.lock().unwrap().clone();
-    let attempts: Vec<_> = log
+    let attempts: Vec<_> = entries
         .iter()
         .filter_map(|entry| match entry.body {
             EntryBody::AttemptStarted { attempt, .. } => Some(attempt),
             _ => None,
         })
         .collect();
-    assert_eq!(attempts.len(), requests.len());
-    let mut summarized_outcome = false;
+    assert_eq!(attempts.len(), 3);
     for (attempt, request) in attempts.into_iter().zip(requests) {
-        let inspection = kernel.inspect(session, Some(attempt)).await.unwrap();
+        let inspected = kernel.inspect(session, Some(attempt)).await.unwrap();
         assert_eq!(
-            serde_json::to_value(&inspection.request).unwrap(),
-            serde_json::to_value(&request).unwrap()
+            serde_json::to_value(inspected.request).unwrap(),
+            serde_json::to_value(request).unwrap()
         );
-        if inspection.purpose == AttemptPurpose::Compaction {
-            let text = request.messages[1].joined_text();
-            assert!(text.contains(ARRIVAL), "{text}");
-            assert!(!text.contains("Owner is River"));
-            summarized_outcome |=
-                text.contains("provider.bad_request") && text.contains("request rejected");
-        }
     }
-    assert!(summarized_outcome);
-    kernel.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn after_restart_requests_start_from_the_summary_and_pinned_memory() {
-    let dir = tempfile::tempdir().unwrap();
-    let provider = compaction_provider();
-    let (kernel, memories) = small_windows(dir.path(), provider.clone()).await;
-    let (session, _) = outgrow_the_window(&kernel, &memories).await;
-    let summary = kernel
-        .log(session, None)
-        .await
-        .unwrap()
-        .iter()
-        .rev()
-        .find_map(|e| match &e.body {
-            EntryBody::Compacted { summary, .. } => Some(summary.clone()),
-            _ => None,
-        })
-        .expect("history did not compact");
+    assert!(entries.iter().any(|entry| matches!(&entry.body,
+        EntryBody::Compacted { summary, .. } if summary == "scripted summary")));
     kernel.shutdown().await.unwrap();
     drop(kernel);
-    drop(memories);
-    let (kernel, _memories) = small_windows(dir.path(), provider.clone()).await;
+    let provider = ScriptedProvider::new(vec![reply("continued")]);
+    let (kernel, _) = support::kernel(dir.path(), provider.clone()).await;
     let mut rx = kernel.subscribe(session).unwrap();
     kernel
-        .submit(
-            session,
-            EventId::new(),
-            "What do you remember?".into(),
-            Vec::new(),
-        )
+        .submit(session, EventId::new(), "continue".into(), vec![])
         .await
         .unwrap();
-    let entries = finish(&mut rx).await;
-    assert!(matches!(
-        entries.last().unwrap().body,
-        EntryBody::RunEnded {
-            end: RunEnd::Completed,
-            ..
-        }
-    ));
-    let request = provider.requests.lock().unwrap().last().unwrap().clone();
+    finish(&mut rx).await;
+    let request = provider.requests.lock().unwrap()[0].clone();
     assert!(
         request
             .messages
-            .first()
-            .unwrap()
-            .joined_text()
-            .contains("Owner is River")
+            .iter()
+            .any(|message| message.joined_text() == "scripted summary")
     );
-    assert!(request.messages[0].joined_text().contains(&summary));
-    assert!(request.messages[1].joined_text().contains(ARRIVAL));
+    assert!(
+        !request
+            .messages
+            .iter()
+            .any(|message| message.joined_text() == "initial request")
+    );
     kernel.shutdown().await.unwrap();
 }
 
@@ -497,7 +305,7 @@ async fn recurring_schedules_resume_from_their_last_delivery_after_restart() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn owner_zone_changes_renarrate_times_and_move_only_floating_schedules() {
+async fn owner_zone_changes_move_only_floating_schedules() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(TestClock(Mutex::new(utc("2026-03-06T13:01:00Z"))));
     let provider = ScriptedProvider::new((0..3).map(|_| reply("reminded")).collect());
@@ -533,24 +341,6 @@ async fn owner_zone_changes_renarrate_times_and_move_only_floating_schedules() {
             .unwrap()
             .request,
         inspection.request
-    );
-    let current = kernel.inspect(session, None).await.unwrap().request;
-    assert!(
-        current.messages[0]
-            .joined_text()
-            .contains("America/Los_Angeles")
-    );
-    // Arrival and planned times are both narrated again in the new zone.
-    let rendered: Vec<_> = current.messages.iter().map(Message::joined_text).collect();
-    assert!(
-        rendered
-            .iter()
-            .any(|text| text.contains("2026-03-07 05:00"))
-    );
-    assert!(
-        !rendered
-            .iter()
-            .any(|text| text.contains("2026-03-07 08:00"))
     );
     let active = kernel.schedules().list(None).await.unwrap();
     let following = active
@@ -675,66 +465,4 @@ async fn stopped_scheduler_reports_the_schedule_that_failed() {
     assert!(stopped.contains(&schedule.id.to_string()));
     assert!(matches!(failure, ScheduleError::Stopped(Some(reason)) if reason == stopped));
     kernel.shutdown().await.unwrap();
-}
-
-#[test]
-fn a_compaction_only_round_after_a_summary_cannot_produce_an_empty_summary_request() {
-    let now = Utc::now();
-    let pos = |seq| LogPos {
-        epoch: Epoch(1),
-        seq: Seq(seq),
-    };
-    let mut input = ComposeInput {
-        image_paths: Default::default(),
-        now,
-        timezone: Tz::UTC,
-        session: SessionRecord {
-            id: SessionId::new(),
-            name: "main".into(),
-            created_at: now,
-            binding: Binding {
-                node: NodeId::new(),
-                epoch: Epoch(1),
-            },
-            profile: "default".into(),
-        },
-        transcript: Transcript {
-            summary: Some("Earlier conversation".into()),
-            items: vec![TranscriptItem {
-                pos: pos(10),
-                message: Message::text(Role::User, "x".repeat(20_000)),
-                generation: None,
-                event: None,
-            }],
-            round_ends: vec![pos(5)],
-            run_ends: vec![],
-        },
-        previous_plan: None,
-        context: Contribution::default(),
-        unavailable: vec![],
-        tools: vec![],
-        safe_mode: None,
-        reply: ReplyTarget {
-            accepts: Default::default(),
-            budget: Budget {
-                context_tokens: 5000.try_into().unwrap(),
-                max_output_tokens: 512.try_into().unwrap(),
-            },
-            skipped: vec![],
-        },
-        compaction: Some(Budget {
-            context_tokens: 30000.try_into().unwrap(),
-            max_output_tokens: 512.try_into().unwrap(),
-        }),
-        compactions_left: 2,
-    };
-    let composer = FactoryComposer::new(".".into(), "workspace".into(), "AGENTS.md".into());
-    assert!(matches!(
-        composer.compose(&input),
-        Err(ComposeError::ContextOverflow { .. })
-    ));
-    input.transcript.round_ends.push(pos(20));
-    assert!(
-        matches!(composer.compose(&input), Ok(Composition::Compact { upto, .. }) if upto == pos(20))
-    );
 }

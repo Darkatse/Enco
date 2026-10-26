@@ -59,6 +59,18 @@ mod tools {
     });
 }
 
+mod composer {
+    wasmtime::component::bindgen!({
+        path: "../../sdk/wit",
+        world: "composer-plugin",
+        exports: { default: async },
+        with: {
+            "enco:plugin/types": super::completion::enco::plugin::types,
+            "enco:plugin/host": super::completion::enco::plugin::host,
+        },
+    });
+}
+
 /// Package version of `sdk/wit/plugin.wit`; change it together with the WIT.
 pub(crate) const CONTRACT_VERSION: &str = "0.6.0";
 
@@ -68,3 +80,5 @@ pub(crate) use completion::{CompletionPluginPre, enco, exports};
 pub(crate) use decision::{DecisionPluginPre, exports::enco::plugin::decision as decisions};
 pub(crate) use embedding::EmbeddingPluginPre;
 pub(crate) use tools::ToolPluginPre;
+
+pub(crate) use composer::{ComposerPluginPre, exports::enco::plugin::composer as composers};

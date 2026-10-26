@@ -190,7 +190,7 @@ impl Model {
 pub(crate) struct Variant {
     pub(crate) enco: Option<PathBuf>,
     #[serde(default)]
-    pub(crate) deploy: Vec<Deploy>,
+    pub(crate) source: Vec<Source>,
     #[serde(default = "default_plugins")]
     pub(crate) plugin: toml::Table,
     /// The variables named by `plugin.*.secrets`.
@@ -202,7 +202,7 @@ impl Default for Variant {
     fn default() -> Self {
         Self {
             enco: None,
-            deploy: Vec::new(),
+            source: Vec::new(),
             plugin: default_plugins(),
             variables: BTreeMap::new(),
         }
@@ -237,11 +237,24 @@ pub(crate) fn default_plugins() -> toml::Table {
     toml::Table::from_iter([("web".to_owned(), web)])
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Deploy {
+pub(crate) struct Source {
+    #[serde(deserialize_with = "directory_name")]
     pub(crate) plugin: String,
-    pub(crate) artifact: PathBuf,
+    pub(crate) directory: PathBuf,
+}
+
+/// The runner replaces `plugins/<plugin>` in each trial home, so the name must stay inside it; whether
+/// it is a valid plugin name is the host's to decide.
+fn directory_name<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let name = String::deserialize(deserializer)?;
+    if Path::new(&name).file_name() != Some(std::ffi::OsStr::new(&name)) {
+        return Err(serde::de::Error::custom(
+            "source plugin must be a single directory name under plugins/",
+        ));
+    }
+    Ok(name)
 }
 
 impl Variant {
@@ -270,10 +283,16 @@ impl Variant {
         let mut variant: Self = toml::from_str(&source).context("parse variant")?;
         let parent = path.parent().context("variant has no parent directory")?;
         variant.enco = variant.enco.map(|path| parent.join(path));
-        for deploy in &mut variant.deploy {
-            deploy.artifact = tokio::fs::canonicalize(parent.join(&deploy.artifact))
+        let mut names = BTreeSet::new();
+        for source in &mut variant.source {
+            ensure!(
+                names.insert(source.plugin.clone()),
+                "source plugin {} is listed twice",
+                source.plugin
+            );
+            source.directory = tokio::fs::canonicalize(parent.join(&source.directory))
                 .await
-                .with_context(|| format!("artifact for {}", deploy.plugin))?;
+                .with_context(|| format!("source directory for {}", source.plugin))?;
         }
         Ok(variant)
     }
@@ -293,4 +312,21 @@ fn pass(variables: &mut BTreeMap<String, OsString>, name: &str) -> Result<()> {
         .with_context(|| format!("environment variable {name} is not set"))?;
     variables.insert(name.to_owned(), value);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_plugins_stay_inside_the_plugins_directory() {
+        let parse = |plugin: &str| {
+            toml::from_str::<Source>(&format!("plugin = {plugin:?}\ndirectory = \"src\""))
+                .map(|source| source.plugin)
+        };
+        assert_eq!(parse("composer").unwrap(), "composer");
+        for outside in ["", ".", "..", "../home", "a/b", "/tmp/x", "x/"] {
+            assert!(parse(outside).is_err(), "{outside:?} leaves plugins/");
+        }
+    }
 }

@@ -11,8 +11,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) const FORMAT: u32 = 2;
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Report {
+    #[serde(deserialize_with = "report_format")]
     pub(crate) format: u32,
     pub(crate) runner: String,
     pub(crate) started_at: DateTime<Utc>,
@@ -31,15 +34,25 @@ pub(crate) struct Report {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct VariantRecord {
     pub(crate) enco: Binary,
-    pub(crate) deploy: Vec<DeployRecord>,
+    pub(crate) source: Vec<SourceRecord>,
     pub(crate) plugin: toml::Table,
 }
 
-#[derive(Serialize, Deserialize)]
-pub(crate) struct DeployRecord {
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct SourceRecord {
     pub(crate) plugin: String,
-    pub(crate) artifact: PathBuf,
+    pub(crate) directory: PathBuf,
     pub(crate) hash: String,
+}
+
+fn report_format<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    let format = u32::deserialize(deserializer)?;
+    if format != FORMAT {
+        return Err(serde::de::Error::custom(format!(
+            "report format {format} is not supported; expected {FORMAT}"
+        )));
+    }
+    Ok(format)
 }
 
 #[derive(Serialize, Deserialize)]

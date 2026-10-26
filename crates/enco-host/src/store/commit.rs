@@ -1,5 +1,5 @@
 //! Appending a Session's Log facts and consuming the input they answer, in one transaction.
-use super::{backend, encode, rows};
+use super::{backend, encode, plans::EncodedWrite, rows};
 use crate::sqlite::timestamp;
 use enco_core::*;
 use enco_kernel::{Commit, StoreError};
@@ -10,8 +10,14 @@ pub(super) fn commit(
     node: NodeId,
     session: SessionId,
     commit: Commit,
+    plan: Option<EncodedWrite>,
 ) -> Result<(), StoreError> {
     let first = commit.entries.first().ok_or(StoreError::EmptyCommit)?;
+    let bodies = commit
+        .entries
+        .iter()
+        .map(|entry| encode(&entry.body))
+        .collect::<Result<Vec<_>, _>>()?;
     // Ownership, append positions and Inbox consumption are checked in the same transaction.
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -59,7 +65,11 @@ pub(super) fn commit(
     }
     consume_events(&tx, session, &commit)?;
 
-    for entry in &commit.entries {
+    if let Some(plan) = plan {
+        plan.insert(&tx)?;
+    }
+
+    for (entry, body) in commit.entries.iter().zip(bodies) {
         tx.execute(
             "INSERT INTO log(session_id,epoch,seq,at,body) VALUES (?,?,?,?,?)",
             params![
@@ -67,7 +77,7 @@ pub(super) fn commit(
                 super::signed(entry.pos.epoch.0)?,
                 super::signed(entry.pos.seq.0)?,
                 timestamp(entry.at),
-                encode(&entry.body)?
+                body
             ],
         )
         .map_err(backend)?;

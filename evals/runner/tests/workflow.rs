@@ -223,16 +223,9 @@ async fn evidence_is_isolated_and_regrading_uses_the_saved_trial() {
         ),
     );
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let artifact = evaluation
-        .enco
-        .parent()
-        .unwrap()
-        .join("../factory/openai-compatible.wasm");
     write(
         &evaluation.root.join("variant.toml"),
-        &format!(
-            "enco = {wrapper:?}\n[[deploy]]\nplugin = \"openai-compatible\"\nartifact = {artifact:?}\n"
-        ),
+        &format!("enco = {wrapper:?}\n"),
     );
     let (directory, report) = evaluation.run().await;
     let trial = &report["trials"][0];
@@ -261,10 +254,6 @@ async fn evidence_is_isolated_and_regrading_uses_the_saved_trial() {
     let plugins = read(&trial_dir.join("snapshot/status.json"))["plugins"].clone();
     let active = &plugins["openai-compatible"]["running"]["running"]["activation"]["generation"];
     assert_eq!(trial["generations"]["openai-compatible"], active["id"]);
-    assert_eq!(
-        report["variants"]["base"]["deploy"][0]["hash"],
-        active["artifact"]
-    );
     let before = evaluation.judge.received_requests().await.unwrap().len();
     let output = evaluation
         .command(&["regrade", directory.to_str().unwrap()], false)
@@ -291,6 +280,17 @@ async fn evidence_is_isolated_and_regrading_uses_the_saved_trial() {
         read(&directory.join("result.json"))["trials"][0]["criteria"]["reply"]["result"],
         "fail"
     );
+    let report_path = directory.join("result.json");
+    let current = std::fs::read(&report_path).unwrap();
+    let mut outdated: Value = serde_json::from_slice(&current).unwrap();
+    outdated["format"] = 1.into();
+    std::fs::write(&report_path, serde_json::to_vec(&outdated).unwrap()).unwrap();
+    let rejected = evaluation
+        .command(&["regrade", directory.to_str().unwrap()], false)
+        .await;
+    assert_eq!(rejected.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("report format 1"));
+    std::fs::write(report_path, current).unwrap();
     write(
         &evaluation.root.join("evals/tasks/mail/hidden/calls.json"),
         "{}",
@@ -434,9 +434,7 @@ async fn unreachable_providers_remain_execution_failures() {
 async fn source_fixture_is_registered_offline_before_serving() {
     use std::os::unix::fs::PermissionsExt;
     let evaluation = Evaluation::new().await;
-    let fixture = evaluation
-        .root
-        .join("evals/tasks/mail/home/plugins/fixture");
+    let fixture = evaluation.root.join("candidate");
     copy(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/test-fixture"),
         &fixture,
@@ -449,13 +447,18 @@ async fn source_fixture_is_registered_offline_before_serving() {
     let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/plugin-tests/evaluation");
     std::fs::create_dir_all(&target).unwrap();
     let target = target.canonicalize().unwrap();
+    let docs =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/plugin-tests/evaluation-doc");
+    std::fs::create_dir_all(&docs).unwrap();
+    let docs = docs.canonicalize().unwrap();
     let binary = evaluation.enco.to_str().unwrap().replace('\'', "'\\''");
     let target = target.to_str().unwrap().replace('\'', "'\\''");
+    let docs = docs.to_str().unwrap().replace('\'', "'\\''");
     let wrapper = evaluation.root.join("source-enco");
     write(
         &wrapper,
         &format!(
-            "#!/bin/sh\nif [ \"$1\" = init ]; then\n  '{binary}' \"$@\" || exit\n  ln -s '{target}' \"$ENCO_HOME/.data/target\"\nelse\n  exec '{binary}' \"$@\"\nfi\n"
+            "#!/bin/sh\nif [ \"$1\" = init ]; then\n  '{binary}' \"$@\" || exit\n  ln -s '{target}' \"$ENCO_HOME/.data/target\"\n  ln -s '{docs}' \"$ENCO_HOME/.data/target-doc\"\nelse\n  exec '{binary}' \"$@\"\nfi\n"
         ),
     );
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -468,7 +471,7 @@ async fn source_fixture_is_registered_offline_before_serving() {
     );
     write(
         &evaluation.root.join("variant.toml"),
-        &format!("enco = {wrapper:?}\n"),
+        &format!("enco = {wrapper:?}\n[[source]]\nplugin = \"fixture\"\ndirectory = {fixture:?}\n"),
     );
     Mock::given(path("/chat/completions"))
         .respond_with(call_once("fixture_echo", json!({ "text": "ping" })))
@@ -489,6 +492,14 @@ async fn source_fixture_is_registered_offline_before_serving() {
         status["configuration"]["running"]["registration"]
     );
     assert!(trial.join("home/.enco/plugins/fixture/README.md").is_file());
+    assert_eq!(
+        std::fs::read(trial.join("home/.enco/plugins/fixture/src/lib.rs")).unwrap(),
+        std::fs::read(fixture.join("src/lib.rs")).unwrap()
+    );
+    assert_eq!(
+        report["variants"]["base"]["source"][0]["directory"],
+        fixture.canonicalize().unwrap().to_str().unwrap()
+    );
     // The snapshot attributes the call to the generation that ran it, which the complete
     // history shows the first registration selecting.
     let calls = read(&trial.join("snapshot/tool-calls.json"));

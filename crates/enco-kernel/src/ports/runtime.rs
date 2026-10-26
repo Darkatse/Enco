@@ -1,4 +1,4 @@
-use crate::{CallContext, Decision, Embedding, Provider};
+use crate::{CallContext, Composer, Decision, Embedding, Provider};
 use async_trait::async_trait;
 use enco_core::{Failure, Outcome, PluginSettings, ToolSpec};
 use std::sync::Arc;
@@ -23,6 +23,8 @@ pub struct Loaded {
     pub unavailable: Option<Failure>,
     /// Self-check required before a deployment is admitted.
     pub lifecycle: Arc<dyn Lifecycle>,
+    /// Context policy and its profile options, fixed with the loaded generation.
+    pub composer: Option<LoadedComposer>,
     /// Completion interface when supplied by the component.
     pub completion: Option<Arc<dyn Provider>>,
     /// Embedding interface when supplied by the component.
@@ -31,6 +33,15 @@ pub struct Loaded {
     pub decision: Option<Arc<dyn Decision>>,
     /// Declared tool definitions and their common invocation interface.
     pub tools: Option<LoadedTools>,
+}
+
+/// A composer's option declaration and invocation, loaded from the same content.
+#[derive(Clone)]
+pub struct LoadedComposer {
+    /// Profile options accepted by this generation.
+    pub schema: enco_core::InputSchema,
+    /// Writes requests from the host's fixed facts.
+    pub adapter: Arc<dyn Composer>,
 }
 
 /// Tool declarations are evaluated once with the generation's accepted configuration.

@@ -17,8 +17,6 @@ use std::path::PathBuf;
 pub enum Operation {
     /// Registering the home as it is now, after building the plugins whose source changed.
     Apply,
-    /// Registering a component supplied directly, outside the home.
-    Deploy,
     /// Restoring registered behavior as Enco starts, and registering a new home the first time.
     Startup,
     /// Renaming a plugin together with its directory.
@@ -102,7 +100,7 @@ pub enum EntryProblem {
 #[derive(Debug, thiserror::Error)]
 pub enum BuildFailure {
     /// A Cargo command failed.
-    #[error("cargo {stage} failed\n{}\nFull log: {}", .diagnostics.join("\n"), .log.display())]
+    #[error("cargo {stage} failed\n{}\nFull log: {}\nLogs are retained until the build directory is cleaned", .diagnostics.join("\n"), .log.display())]
     Cargo {
         /// The command: `clippy`, `build` or `doc`.
         stage: &'static str,
@@ -112,7 +110,7 @@ pub enum BuildFailure {
         log: PathBuf,
     },
     /// Cargo succeeded but produced no Wasm component for the plugin; the path is the stored log.
-    #[error("Cargo produced no cdylib Wasm artifact\nFull log: {}", .0.display())]
+    #[error("Cargo produced no cdylib Wasm artifact\nFull log: {}\nLogs are retained until the build directory is cleaned", .0.display())]
     NoArtifact(PathBuf),
     /// The component does not load with an empty configuration, which every plugin must accept.
     #[error("empty configuration is invalid: {0}")]

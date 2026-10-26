@@ -3,7 +3,7 @@ use super::Memories;
 use crate::limits::MEMORY_RECALL_DEFAULT;
 use async_trait::async_trait;
 use enco_core::*;
-use enco_kernel::{ContextError, ContextQuery, ContextSource};
+use enco_kernel::{ContextError, ContextQuery, ContextSource, OfferedMemories};
 use std::{collections::HashSet, sync::Arc};
 /// Offers the pinned memories, and the memories recalled for a new message, to each Round.
 pub struct MemoryContextSource {
@@ -19,7 +19,9 @@ impl MemoryContextSource {
 
 #[async_trait]
 impl ContextSource for MemoryContextSource {
-    async fn contribute(&self, query: &ContextQuery) -> Result<Contribution, ContextError> {
+    type Supply = OfferedMemories;
+
+    async fn contribute(&self, query: &ContextQuery) -> Result<OfferedMemories, ContextError> {
         let mut rows = self
             .memories
             .pinned()
@@ -62,18 +64,9 @@ impl ContextSource for MemoryContextSource {
             }
         }
         let mut seen = HashSet::new();
-        let candidates = rows
-            .into_iter()
-            .filter(|row| seen.insert(row.id))
-            .map(|row| Candidate {
-                id: format!("memory:{}", row.id),
-                kind: CandidateKind::Memory,
-                text: row.text,
-                standing: row.pinned,
-            })
-            .collect();
-        Ok(Contribution {
-            candidates,
+        rows.retain(|row| seen.insert(row.id));
+        Ok(OfferedMemories {
+            memories: rows,
             omitted,
         })
     }

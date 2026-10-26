@@ -46,8 +46,8 @@ pub struct RewindArguments {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScaffoldArguments {
-    /// The new plugin's name.
-    #[schemars(description = format!("The new plugin's name: {}.", PluginName::RULE))]
+    /// The new plugin's name, or the name of a factory plugin whose source to take.
+    #[schemars(description = format!("The new plugin's name, or a factory plugin's name to take its source: {}.", PluginName::RULE))]
     pub name: PluginName,
 }
 

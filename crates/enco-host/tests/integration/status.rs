@@ -24,7 +24,7 @@ impl Node {
     async fn start(root: &Path) -> Self {
         let provider = ScriptedProvider::new(vec![]);
         let runtime = factory_runtime(fixture(provider.clone(), provider.clone()));
-        for bytes in [b"one".as_slice(), b"two"] {
+        for bytes in [b"one".as_slice(), b"two", b"three"] {
             runtime.insert(bytes, fixture(provider.clone(), provider.clone()));
         }
         let (development, registry, store) =
@@ -171,18 +171,7 @@ async fn runtime_attention_uses_the_selected_generation_and_keeps_running_source
         diverged["next"]["first"][0]["arguments"],
         json!({"registration":first.registration.id,"paths":["plugins/alpha"]})
     );
-    // A new deployment can fail while the running source still has the original provenance.
-    let broken = node
-        .development
-        .deploy(
-            &node.registry,
-            "alpha".parse().unwrap(),
-            b"two".to_vec(),
-            Initiator::Owner { reason: None },
-            &CancellationToken::new(),
-        )
-        .await
-        .unwrap();
+    let broken = node.source(root.path(), "alpha", b"three").await;
     let failure = Failure {
         code: code::PLUGIN_TRAP.into(),
         message: "fixture trap".into(),
@@ -537,23 +526,21 @@ async fn registered_code_provenance_follows_the_selected_generation_through_sett
             .code
     };
     assert!(provenance(node.status(root.path()).await).source == CodeSource::Factory);
-    let deployed = CodeProvenance {
-        generation: node
-            .development
-            .deploy(
-                &node.registry,
-                "fixture".parse().unwrap(),
-                b"one".to_vec(),
-                Initiator::Owner { reason: None },
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap()
-            .generations[0]
-            .id,
-        source: CodeSource::Artifact,
+    let source = node.source(root.path(), "fixture", b"one").await;
+    let generation = &source.generations[0];
+    let CodeIntent::Directory { source: content } =
+        source.registration.code[&generation.plugin].intent.unwrap()
+    else {
+        panic!("source registration must record its directory");
     };
-    assert!(provenance(node.status(root.path()).await) == deployed);
+    let registered_code = CodeProvenance {
+        generation: generation.id,
+        source: CodeSource::Directory {
+            registration: source.registration.id,
+            source: content,
+        },
+    };
+    assert!(provenance(node.status(root.path()).await) == registered_code);
     let mut document = configuration();
     document["plugin"]["fixture"]["config"] = json!({"label": "new settings"});
     std::fs::write(
@@ -571,51 +558,7 @@ async fn registered_code_provenance_follows_the_selected_generation_through_sett
         .plugin
         .activation;
     assert_eq!(registered.generation.id, settings);
-    assert!(registered.code == deployed);
-    node.kernel.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn running_source_already_registered_is_not_offered_as_a_repair() {
-    let root = tempfile::tempdir().unwrap();
-    let node = Node::start(root.path()).await;
-    let source = node.source(root.path(), "alpha", b"one").await;
-    for _ in 0..TRIAL_CALLS {
-        node.registry
-            .report(source.generations[0].id, Verdict::Ok, None)
-            .await
-            .unwrap();
-    }
-    let deployed = node
-        .development
-        .deploy(
-            &node.registry,
-            "alpha".parse().unwrap(),
-            b"two".to_vec(),
-            Initiator::Owner { reason: None },
-            &CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-    node.registry
-        .report(
-            deployed.generations[0].id,
-            Verdict::Failed(Failure {
-                code: code::PLUGIN_TRAP.into(),
-                message: "component trap".into(),
-                retryable: false,
-            }),
-            None,
-        )
-        .await
-        .unwrap();
-    let status = node.status(root.path()).await;
-    assert!(
-        attention(&status, "rolled_back")["next"]
-            .get("alternative")
-            .is_none()
-    );
-    assert!(node.apply().await.registered.is_none());
+    assert!(registered.code == registered_code);
     node.kernel.shutdown().await.unwrap();
 }
 

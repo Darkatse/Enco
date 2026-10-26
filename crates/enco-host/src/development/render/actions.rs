@@ -72,7 +72,10 @@ impl Applied {
                     path(&IntentPath::Plugin(build.name.clone()))
                 ));
                 if let Some(log) = &build.log {
-                    out.push_str(&format!(" Full log: {}", location(log)));
+                    out.push_str(&format!(
+                        " Full log: {} (retained until the build directory is cleaned).",
+                        location(log)
+                    ));
                 }
                 out.push('\n');
                 for diagnostic in &build.diagnostics {
@@ -218,12 +221,6 @@ fn plugin_change(change: &PluginChangeKind, created: bool, failures: bool) -> St
         }
         .into(),
         PluginChangeKind::Settings { .. } => "new settings".into(),
-        PluginChangeKind::Artifact { .. } => if created {
-            "created from a component file"
-        } else {
-            "component file"
-        }
-        .into(),
     };
     if let Some(generation) = change.generation() {
         detail.push_str(&format!(

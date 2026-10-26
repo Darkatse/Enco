@@ -12,7 +12,6 @@ impl Operation {
     fn retry(&self) -> Option<Step> {
         match self {
             Self::Apply => Some(CallStep::Register.into()),
-            Self::Deploy => Some(Step::AskOwner(OwnerAction::RetryDeployment)),
             Self::Startup => Some(Step::AskOwner(OwnerAction::Restart)),
             Self::Rename { name, to } => Some(
                 CallStep::Rename {

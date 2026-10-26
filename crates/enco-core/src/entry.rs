@@ -39,7 +39,7 @@ pub enum EntryBody {
         /// Whether this Round uses only the lifeline.
         safe_mode: bool,
     },
-    /// Committed before calling the Provider; `plan` addresses the serialized ContextPlan blob.
+    /// Committed before calling the Provider; `plan` addresses the recorded ContextPlan.
     AttemptStarted {
         /// Round containing this fact.
         round: RoundId,
@@ -49,8 +49,8 @@ pub enum EntryBody {
         purpose: AttemptPurpose,
         /// Address of the frozen ContextPlan.
         plan: ContentHash,
-        /// Code which constructed the frozen plan.
-        composer: CodeRef,
+        /// Composer generation which constructed the frozen plan.
+        composer: GenerationId,
         /// Provider generation used by this Attempt.
         provider: GenerationId,
         /// Exact per-call parameters; credentials are never recorded.

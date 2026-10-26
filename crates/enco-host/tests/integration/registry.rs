@@ -3,6 +3,7 @@ use crate::support;
 
 mod admission;
 mod callers;
+mod composer;
 mod opening;
 mod races;
 mod registrations;
@@ -51,8 +52,8 @@ async fn active(registry: &Registry) -> GenerationRecord {
         .clone()
 }
 
-async fn deploy_artifact(registry: &Registry, name: &str, bytes: &[u8]) -> GenerationRecord {
-    submit(registry, artifact_request(name, bytes.to_vec()))
+async fn register_source(registry: &Registry, name: &str, bytes: &[u8]) -> GenerationRecord {
+    submit(registry, source_request(name, bytes))
         .await
         .unwrap()
         .generations

@@ -23,8 +23,14 @@ pub async fn open_home(
         development::Development::initialize(root).await.unwrap();
     }
     let manual = development::Manual::new(root, &[], Vec::new(), store.clone()).unwrap();
-    let development =
-        development::Development::new(root.into(), sdk(), manual, store, deps.runtime.clone());
+    let development = development::Development::new(
+        root.into(),
+        sdk(),
+        development::FactorySources::default(),
+        manual,
+        store,
+        deps.runtime.clone(),
+    );
     deps.host_tool_names.extend(
         development_tool_specs()
             .unwrap()

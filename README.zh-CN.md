@@ -109,9 +109,11 @@ cargo run -p enco -- serve     # 启动服务
 cargo run -p enco -- chat      # 在另一个终端中
 ```
 
-`enco init` 创建插件目录，并把宿主自带的 SDK 写到 `sdk/`。插件源码放在 `plugins/<名字>/` 下，也可以用 `enco plugin scaffold <名字>` 创建工具插件。每个插件是独立的 Cargo 工作区，以 `../../sdk` 为路径依赖；目录自己的 `.gitignore` 决定哪些文件计入源码，不需要 Git。
+`enco init` 创建插件目录，并把宿主自带的 SDK 写到 `sdk/`。插件源码放在 `plugins/<名字>/` 下，也可以用 `enco plugin scaffold <名字>` 创建工具插件。`composer` 这样的出厂插件运行宿主自带的代码，并随宿主升级；`enco plugin scaffold composer` 会写出它随宿主分发的源码，下一次 apply 起这个目录就取代出厂代码，删掉目录再 apply 即回到出厂代码。每个插件是独立的 Cargo 工作区，以 `../../sdk` 为路径依赖；目录自己的 `.gitignore` 决定哪些文件计入源码，不需要 Git。
 
-改好源码与 `config.toml` 后，执行 `enco apply --reason "说明修改意图"`，一起构建并登记发生变化的意图。主人可以省略理由，Agent 的 `self_apply` 必须填写。`enco status` 与 `self_status` 按单元并排展示运行中、已登记与 home 的事实；脚本使用 `enco status --json`。`enco rollback` 以一次登记为单位机械回退仍在生效的部分，不需要 Cargo 或模型调用。重启恢复已登记的状态。数据库模式版本 10 需要新库。
+改好源码与 `config.toml` 后，执行 `enco apply --reason "说明修改意图"`，一起构建并登记发生变化的意图。主人可以省略理由，Agent 的 `self_apply` 必须填写。`enco status` 与 `self_status` 按单元并排展示运行中、已登记与 home 的事实；脚本使用 `enco status --json`。`enco rollback` 以一次登记为单位机械回退仍在生效的部分，不需要 Cargo 或模型调用。重启恢复已登记的状态。数据库模式版本 13 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
+
+每个 profile 可以写 `composer = { plugin = "<名字>", options = {} }`；不写时使用出厂 composer 与空选项。composer 声明自己的选项 schema，登记时据此校验每个 profile。它接收已记录的历史、常驻说明与召回的记忆，没有文件或网络访问权。安全模式使用二进制内嵌的出厂 composer 与空选项。
 
 已接纳的源码与配置存在 Enco 自己的内容库中。`enco history` 列出登记，`enco history --to <登记编号>` 查看一次修改，`enco history --to home` 查看未登记的修改。撤销文件意图时，用 `enco rewind <登记编号> [config.toml | plugins/<名字> ...]` 倒带，核对文件后再 apply。不写路径时，只选择那次登记之后变过的单元，并拒绝覆盖未登记的修改；显式路径表示允许覆盖这些单元。被忽略的文件保留，目录中还有这些文件时拒绝删除目录。插件名字保持现在的名字。Agent 经 `self_history` 与 `self_rewind` 使用同一入口。
 

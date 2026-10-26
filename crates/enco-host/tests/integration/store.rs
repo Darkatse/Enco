@@ -8,6 +8,7 @@ use enco_core::*;
 use enco_host::SqliteStore;
 use enco_kernel::{Accepted, Commit, ConnectionWrite, Store, StoreError};
 use std::path::Path;
+mod plans;
 
 /// A store holding the `main` Session, with a user message for it that is not yet accepted.
 async fn main_session(root: &Path) -> (SqliteStore, Event) {
@@ -117,7 +118,13 @@ async fn commits_must_continue_the_log_within_the_current_epoch() {
     bad.pos.seq = Seq(2);
     assert!(matches!(
         store
-            .commit(event.session, Commit { entries: vec![bad] })
+            .commit(
+                event.session,
+                Commit {
+                    entries: vec![bad],
+                    plan: None
+                }
+            )
             .await,
         Err(StoreError::OutOfOrder { .. })
     ));
@@ -125,7 +132,13 @@ async fn commits_must_continue_the_log_within_the_current_epoch() {
     bad.pos.epoch = Epoch(2);
     assert!(matches!(
         store
-            .commit(event.session, Commit { entries: vec![bad] })
+            .commit(
+                event.session,
+                Commit {
+                    entries: vec![bad],
+                    plan: None
+                }
+            )
             .await,
         Err(StoreError::Fenced { .. })
     ));
@@ -161,6 +174,7 @@ async fn a_commit_consuming_an_unaccepted_event_writes_nothing() {
                 event.session,
                 Commit {
                     entries: vec![entry, second],
+                    plan: None,
                 }
             )
             .await
@@ -184,6 +198,7 @@ async fn committed_entries_consume_their_events_and_survive_reopening() {
             event.session,
             Commit {
                 entries: vec![entry.clone()],
+                plan: None,
             },
         )
         .await
@@ -273,6 +288,7 @@ async fn schedule_cursor_and_inbox_delivery_commit_together() {
             session.id,
             Commit {
                 entries: vec![consumed(&event)],
+                plan: None,
             },
         )
         .await

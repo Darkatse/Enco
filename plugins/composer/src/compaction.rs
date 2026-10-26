@@ -1,11 +1,10 @@
 //! Planning a compaction: how much history to summarize, and the request that summarizes it.
-use super::estimate_tokens;
-use crate::limits::*;
-use enco_core::*;
-use enco_kernel::*;
+use crate::composer::*;
+use crate::{estimate_tokens, key, limits::*};
+use enco_sdk::types::Role;
 use std::collections::HashMap;
 
-const COMPACTION_PROMPT: &str = include_str!("../prompts/compaction.md");
+const COMPACTION_PROMPT: &str = include_str!("prompts/compaction.md");
 const COMPACTION_FOOTER: &str = "\nWrite the summary now.";
 
 /// The history as the summarizer reads it.
@@ -26,7 +25,7 @@ impl Compaction {
     pub(super) fn new(
         input: &ComposeInput,
         history: &[(&TranscriptItem, String)],
-        budget: Budget,
+        budget: &Budget,
     ) -> Self {
         let mut header = String::new();
         if let Some(summary) = &input.transcript.summary {
@@ -44,22 +43,25 @@ impl Compaction {
                 }
                 for part in &item.message.parts {
                     match part {
-                        Part::Text { text } => {
+                        Part::Text(text) => {
                             let speaker = match item.event.as_ref().map(|event| &event.body) {
-                                Some(EventBody::UserMessage { .. }) => "Owner",
-                                Some(EventBody::Reminder { .. }) => "Reminder",
-                                Some(EventBody::GenerationRolledBack { .. }) => "Notice",
+                                Some(EventBody::UserMessage(_)) => "Owner",
+                                Some(EventBody::Reminder(_)) => "Reminder",
+                                Some(EventBody::GenerationRolledBack(_)) => "Notice",
                                 None => "You",
                             };
                             chunk.push_str(&format!("{speaker}: {text}\n"));
                         }
                         Part::ToolCall(call) => {
-                            names.insert(call.id, call.name.as_str());
+                            names.insert(call.id.as_str(), call.name.as_str());
                             let arguments = clip(&call.arguments);
                             chunk.push_str(&format!("You called {} with {arguments}\n", call.name));
                         }
                         Part::ToolResult(result) => {
-                            let name = names.get(&result.call).copied().unwrap_or("tool");
+                            let name = names
+                                .get(result.call_id.as_str())
+                                .copied()
+                                .unwrap_or("tool");
                             chunk.push_str(&format!(
                                 "Result of {name}: {}\n",
                                 clip(&result.content)
@@ -71,14 +73,14 @@ impl Compaction {
                 (item.pos, chunk)
             })
             .collect();
-        let max_output_tokens = budget.max_output_tokens.get();
+        let max_output_tokens = budget.max_output_tokens;
         // Estimating parts separately never undercounts their concatenation.
         let overhead = estimate_tokens(COMPACTION_PROMPT)
             .saturating_add(estimate_tokens(&header))
             .saturating_add(estimate_tokens(COMPACTION_FOOTER))
             .saturating_add(max_output_tokens);
         Self {
-            window: budget.context_tokens.get(),
+            window: budget.context_tokens,
             header,
             chunks,
             max_output_tokens,
@@ -98,7 +100,7 @@ impl Compaction {
         history_tokens: u32,
         keep: u32,
     ) -> Option<LogPos> {
-        let first = self.chunks.first()?.0;
+        let first = key(&self.chunks.first()?.0);
         let window = self.window;
         let mut tail = history_tokens;
         let mut needed = self.overhead;
@@ -111,19 +113,18 @@ impl Compaction {
             .transcript
             .round_ends
             .iter()
-            .copied()
-            .filter(|end| *end >= first)
+            .filter(|end| key(end) >= first)
         {
-            while let Some((_, size)) = sizes.next_if(|(pos, _)| *pos <= end) {
+            while let Some((_, size)) = sizes.next_if(|(pos, _)| key(pos) <= key(end)) {
                 tail -= size;
             }
-            while let Some((_, chunk)) = chunks.next_if(|(pos, _)| *pos <= end) {
+            while let Some((_, chunk)) = chunks.next_if(|(pos, _)| key(pos) <= key(end)) {
                 needed = needed.saturating_add(estimate_tokens(chunk));
             }
             if needed > window {
                 break;
             }
-            fitting = Some(end);
+            fitting = Some(*end);
             if tail <= keep {
                 break;
             }
@@ -131,22 +132,20 @@ impl Compaction {
         fitting
     }
 
-    pub(super) fn plan(&self, upto: LogPos) -> ContextPlan {
+    pub(super) fn plan(&self, upto: &LogPos) -> Plan {
         let mut text = self.header.clone();
-        for (_, chunk) in self.chunks.iter().take_while(|(pos, _)| *pos <= upto) {
+        for (_, chunk) in self
+            .chunks
+            .iter()
+            .take_while(|(pos, _)| key(pos) <= key(upto))
+        {
             text.push_str(chunk);
         }
         text.push_str(COMPACTION_FOOTER);
-        ContextPlan {
+        Plan {
             items: vec![
-                PlanItem::Message {
-                    message: Message::text(Role::System, COMPACTION_PROMPT),
-                    sources: vec![],
-                },
-                PlanItem::Message {
-                    message: Message::text(Role::User, text),
-                    sources: vec![],
-                },
+                crate::inline(Role::System, COMPACTION_PROMPT),
+                crate::inline(Role::User, text),
             ],
             tools: vec![],
             max_output_tokens: Some(self.max_output_tokens),

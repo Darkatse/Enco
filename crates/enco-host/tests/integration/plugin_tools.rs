@@ -35,6 +35,9 @@ struct ConfiguredRuntime {
 #[async_trait]
 impl Runtime for ConfiguredRuntime {
     async fn load(&self, bytes: &[u8], settings: &PluginSettings) -> Result<Loaded, LoadError> {
+        if bytes == COMPOSER_BYTES {
+            return Ok(composer_loaded(Arc::new(TestComposer)));
+        }
         let label = settings.config["label"]
             .as_str()
             .unwrap_or("factory")
@@ -270,19 +273,18 @@ async fn failed_bound_code_stops_later_calls_until_the_next_round() {
     let (development, registry, store) =
         scripted_home(root.path(), runtime, configuration(), vec![]).await;
     let factory = plugin_generation(&registry);
-    let broken = development
-        .deploy(
-            &registry,
-            "fixture".parse().unwrap(),
-            b"trap".to_vec(),
-            Initiator::Owner { reason: None },
-            &CancellationToken::new(),
-        )
-        .await
-        .unwrap()
-        .generations
-        .remove(0)
-        .id;
+    let broken = source_fixture(
+        root.path(),
+        &store,
+        &development,
+        &registry,
+        "fixture",
+        b"trap",
+    )
+    .await
+    .generations
+    .remove(0)
+    .id;
     let kernel = Kernel::start(kernel_deps(
         root.path(),
         store,
@@ -494,13 +496,7 @@ async fn registrations_and_configuration_reject_native_and_plugin_tool_name_conf
         [host("fixture", "fs_read")]
     );
     assert_eq!(
-        tool_conflicts(
-            submit(
-                &registry,
-                artifact_request("native-copy", b"native".to_vec())
-            )
-            .await
-        ),
+        tool_conflicts(submit(&registry, source_request("native-copy", b"native")).await),
         [host("native-copy", "fs_read")]
     );
     assert_eq!(
@@ -511,7 +507,7 @@ async fn registrations_and_configuration_reject_native_and_plugin_tool_name_conf
         store.registry().await.unwrap().config_generations,
         before.config_generations
     );
-    submit(&registry, artifact_request("other", b"other".to_vec()))
+    submit(&registry, source_request("other", b"other"))
         .await
         .unwrap();
     document["plugin"]["fixture"]["config"]["tool"] = "other_read".into();
@@ -524,8 +520,7 @@ async fn registrations_and_configuration_reject_native_and_plugin_tool_name_conf
         )]
     );
     let exporters: [PluginName; 2] = ["other".parse().unwrap(), "third".parse().unwrap()];
-    let conflicts =
-        tool_conflicts(submit(&registry, artifact_request("third", b"other".to_vec())).await);
+    let conflicts = tool_conflicts(submit(&registry, source_request("third", b"other")).await);
     assert!(!conflicts.is_empty());
     for (plugin, tool, with) in conflicts {
         assert_eq!(tool, "other_read");
@@ -579,26 +574,18 @@ async fn mechanical_rollback_excludes_both_conflicts_and_keeps_native_tools_runn
     }
     let (development, registry, store) =
         scripted_home(root.path(), runtime.clone(), configuration(), vec![]).await;
-    let deploy = async |name: &str, bytes: &[u8]| {
-        development
-            .deploy(
-                &registry,
-                name.parse().unwrap(),
-                bytes.to_vec(),
-                Initiator::Owner { reason: None },
-                &CancellationToken::new(),
-            )
+    let register = async |name: &str, bytes: &[u8]| {
+        source_fixture(root.path(), &store, &development, &registry, name, bytes)
             .await
-            .unwrap()
             .generations
             .remove(0)
     };
-    let first = deploy("first", b"shared").await;
+    let first = register("first", b"shared").await;
     for _ in 0..TRIAL_CALLS {
         registry.report(first.id, Verdict::Ok, None).await.unwrap();
     }
-    let renamed = deploy("first", b"renamed").await;
-    let second = deploy("second", b"shared").await;
+    let renamed = register("first", b"renamed").await;
+    let second = register("second", b"shared").await;
     registry
         .report(renamed.id, Verdict::Failed(fault()), None)
         .await

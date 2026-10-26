@@ -43,10 +43,9 @@ fn left_behind(operation: &Operation, error: &DevelopmentError) -> String {
         {
             format!("Stopped before finishing. {}", completed(written))
         }
-        (
-            Operation::Apply | Operation::Deploy | Operation::Startup | Operation::Rename { .. },
-            _,
-        ) => "Not registered.".into(),
+        (Operation::Apply | Operation::Startup | Operation::Rename { .. }, _) => {
+            "Not registered.".into()
+        }
         (Operation::Rewind(_) | Operation::Scaffold, _) => "Nothing was written.".into(),
         (Operation::History | Operation::Status, _) => String::new(),
     }
@@ -124,14 +123,14 @@ fn build(target: &IntentPath, failure: &BuildFailure) -> String {
             diagnostics,
             log,
         } => format!(
-            "{}: {} failed.\n{}\nFull log: {}",
+            "{}: {} failed.\n{}\nFull log: {}\nLogs are retained until the build directory is cleaned.",
             path(target),
             code(&format!("cargo {stage}")),
             diagnostics.join("\n"),
             location(log)
         ),
         BuildFailure::NoArtifact(log) => format!(
-            "{}: Cargo produced no component. Full log: {}",
+            "{}: Cargo produced no component. Full log: {}\nLogs are retained until the build directory is cleaned.",
             path(target),
             location(log)
         ),

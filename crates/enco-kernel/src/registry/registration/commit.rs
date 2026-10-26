@@ -51,7 +51,7 @@ pub(in crate::registry) async fn accept(
             || prepared.plan.previous_uses.iter(),
             |config| config.uses.iter(),
         )
-        .filter(|usage| names.contains(&usage.endpoint.plugin))
+        .filter(|usage| names.contains(usage.plugin()))
         .map(|usage| usage.user.clone())
         .collect();
     let result = Registered {
@@ -187,7 +187,7 @@ impl Numbered {
                     generation: *generation,
                     registration: Some(registration),
                 });
-                self.loaded.insert(*generation, loaded.clone());
+                self.loaded.insert(*generation, loaded.as_ref().clone());
             }
             Action::Remove => {
                 plugin.rollback_target = next_rollback(&state.history, plugin);

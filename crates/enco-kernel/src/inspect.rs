@@ -8,8 +8,8 @@ pub struct Inspection {
     pub attempt: AttemptId,
     /// Reply or compaction.
     pub purpose: AttemptPurpose,
-    /// Code which produced the frozen plan.
-    pub composer: CodeRef,
+    /// Composer generation which produced the frozen plan.
+    pub composer: GenerationId,
     /// Provider generation to which the recorded request was bound.
     pub provider: GenerationId,
     /// Recorded invocation parameters, excluding the credential itself.
@@ -54,9 +54,7 @@ impl Kernel {
             attempt: *attempt,
             reason,
         };
-        let bytes = self.deps.store.get_blob(hash).await?;
-        let plan: ContextPlan =
-            serde_json::from_slice(&bytes).map_err(|error| invalid(error.to_string()))?;
+        let plan = self.deps.store.plan(hash).await?;
         let view = self.deps.registry.view();
         let exports = &view.exports;
         let target = exports
@@ -81,7 +79,7 @@ impl Kernel {
         Ok(Inspection {
             attempt: *attempt,
             purpose: *purpose,
-            composer: composer.clone(),
+            composer: *composer,
             provider: *provider,
             settings: settings.clone(),
             request,

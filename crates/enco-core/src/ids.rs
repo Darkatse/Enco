@@ -69,6 +69,13 @@ id!(
     "Persistent identity assigned when a plugin name is registered."
 );
 
+impl RoundId {
+    /// The full Round identity used to seed deterministic composition randomness.
+    pub fn as_u128(self) -> u128 {
+        self.0.into()
+    }
+}
+
 /// Registry-global generation number, ordered by commit rather than time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]

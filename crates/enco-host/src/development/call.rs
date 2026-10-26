@@ -20,7 +20,7 @@ pub const HISTORY: &str = "self_history";
 pub const REWIND: &str = "self_rewind";
 /// Name of the tool that renames a plugin together with its directory.
 pub const RENAME: &str = "plugin_rename";
-/// Name of the tool that creates a tool plugin in the home.
+/// Name of the tool that creates a plugin directory in the home.
 pub const SCAFFOLD: &str = "plugin_scaffold";
 /// Name of the tool that shows Enco's state and what needs attention.
 pub const STATUS: &str = "self_status";
@@ -167,7 +167,7 @@ Plugins keep their current names; undo a rename with {RENAME}. A plugin deleted 
             Self::Scaffold => ToolSpec::of::<ScaffoldArguments>(
                 name,
                 format!(
-                    r#"Create a new tool plugin in plugins/<name> with source, Cargo files, ignore rules and a README. Nothing is registered: edit src/lib.rs, then call {APPLY}."#
+                    r#"Create plugins/<name> for a new tool plugin, with source, Cargo files, ignore rules and a README; for a factory plugin that runs the host's code, such as composer, write the source the host ships instead. Nothing is registered: edit the source, then call {APPLY}. From then on the directory replaces the factory code until it is deleted and applied again."#
                 ),
                 Effect::SideEffect,
             ),

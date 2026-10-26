@@ -25,12 +25,12 @@ pub enum IntentPart {
         /// The referenced name.
         name: PluginName,
     },
-    /// A configured endpoint as one user needs it.
+    /// A configured invocation as one caller needs it.
     Use {
         /// Configured consumer, such as `profile default.reply`.
         user: String,
-        /// Endpoint named by that consumer.
-        endpoint: String,
+        /// Configuration entry named by that consumer.
+        target: UseRef,
     },
     /// A top-level configuration table, including a name for named entries.
     Table {
@@ -58,7 +58,7 @@ pub enum IntentPart {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "referrer", rename_all = "snake_case")]
 pub enum Referrer {
-    /// A configured user, through an endpoint naming the plugin.
+    /// A configured caller naming the plugin.
     User {
         /// The user, such as `profile default.reply`.
         user: String,
@@ -127,33 +127,33 @@ pub enum Cause {
         /// The host or the other plugins exporting it.
         with: ToolOwner,
     },
-    /// A configured endpoint names a plugin that does not run.
-    #[error("{user} (endpoint {endpoint}): no plugin named {plugin} runs")]
+    /// A configured invocation names a plugin that does not run.
+    #[error("{user} ({target}): no plugin named {plugin} runs")]
     UnknownPlugin {
         /// Configured consumer.
         user: String,
-        /// Endpoint named by that consumer.
-        endpoint: String,
-        /// Plugin named by the endpoint.
+        /// Configuration entry named by that consumer.
+        target: UseRef,
+        /// Plugin named by the invocation.
         plugin: PluginName,
     },
-    /// A configured endpoint names a plugin that runs but cannot serve calls.
-    #[error("{user} (endpoint {endpoint}): plugin {plugin} cannot run")]
+    /// A configured invocation names a plugin that runs but cannot serve calls.
+    #[error("{user} ({target}): plugin {plugin} cannot run")]
     PluginUnavailable {
         /// Configured consumer.
         user: String,
-        /// Endpoint named by that consumer.
-        endpoint: String,
-        /// Plugin named by the endpoint.
+        /// Configuration entry named by that consumer.
+        target: UseRef,
+        /// Plugin named by the invocation.
         plugin: PluginName,
     },
-    /// A configured user's endpoint cannot be served.
-    #[error("{user} (endpoint {endpoint}): {}: {}", failure.code, failure.message)]
+    /// A configured invocation cannot be served.
+    #[error("{user} ({target}): {}: {}", failure.code, failure.message)]
     Use {
         /// Configured consumer.
         user: String,
-        /// Endpoint named by that consumer.
-        endpoint: String,
+        /// Configuration entry named by that consumer.
+        target: UseRef,
         /// Interface check or real call failure.
         failure: Failure,
     },
@@ -220,10 +220,10 @@ impl Cause {
             Self::Environment { plugin, .. } => IntentPart::Environment {
                 plugin: plugin.clone(),
             },
-            Self::UnknownPlugin { user, endpoint, .. } | Self::Use { user, endpoint, .. } => {
+            Self::UnknownPlugin { user, target, .. } | Self::Use { user, target, .. } => {
                 IntentPart::Use {
                     user: user.clone(),
-                    endpoint: endpoint.clone(),
+                    target: target.clone(),
                 }
             }
             Self::Table(error) => IntentPart::Table {

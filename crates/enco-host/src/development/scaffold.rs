@@ -1,14 +1,45 @@
-//! Creating a tool plugin in the home from the template; nothing is registered.
+//! Creating a plugin directory in the home, from a factory plugin's shipped source or from the
+//! tool template; nothing is registered.
 use super::{
     Development, DevelopmentError, Failed, Operation,
     tree::{Directory, FileTree, Ownership},
 };
-use enco_core::{IntentPath, PluginName};
-use enco_kernel::Registry;
-use std::path::PathBuf;
+use enco_core::{CodeIntent, IntentPath, PluginName};
+use enco_kernel::{RegisteredSource, Registry};
+use std::{collections::BTreeMap, path::PathBuf};
+
+/// One factory plugin's shipped files, as paths relative to its directory and their bytes.
+pub type FactoryFiles = [(&'static str, &'static [u8])];
+
+/// The source of each factory plugin, as the host ships it.
+#[derive(Default)]
+pub struct FactorySources(BTreeMap<PluginName, FileTree>);
+
+impl FactorySources {
+    /// Read the embedded sources, keyed by the factory plugin's name.
+    pub fn new(sources: &[(&str, &FactoryFiles)]) -> Result<Self, DevelopmentError> {
+        sources
+            .iter()
+            .map(|(name, files)| {
+                let name = name
+                    .parse()
+                    .map_err(|error| DevelopmentError::Host(format!("factory source: {error}")))?;
+                let tree = FileTree::from_files(
+                    files.iter().map(|(path, bytes)| (*path, bytes.to_vec())),
+                )?;
+                Ok((name, tree))
+            })
+            .collect::<Result<_, DevelopmentError>>()
+            .map(Self)
+    }
+}
 
 impl Development {
-    /// Write a standalone tool plugin without registering an identity or changing running code.
+    /// Write a plugin directory without registering an identity or changing running code.
+    ///
+    /// A factory plugin that follows the host starts from its shipped source: from the next
+    /// registration it is ordinary source and no longer follows. Any other free name starts from
+    /// the tool template.
     pub async fn scaffold(
         &self,
         registry: &Registry,
@@ -25,25 +56,35 @@ impl Development {
         registry: &Registry,
         name: &PluginName,
     ) -> Result<Vec<PathBuf>, DevelopmentError> {
-        if registry
-            .registered_intent(None)
-            .await?
-            .plugins
-            .contains_key(name)
-        {
-            return Err(DevelopmentError::NameTaken { name: name.clone() });
-        }
+        let registered = registry.registered_intent(None).await?.plugins.remove(name);
+        let follows = registered.as_ref().is_none_or(|plugin| {
+            !matches!(
+                plugin.code,
+                Some(RegisteredSource {
+                    intent: CodeIntent::Directory { .. },
+                    ..
+                })
+            )
+        });
+        let tree = match self.factory.0.get(name) {
+            Some(source) if follows => source.clone(),
+            _ if registered.is_some() => {
+                return Err(DevelopmentError::NameTaken { name: name.clone() });
+            }
+            _ => self.template(name)?,
+        };
         let root = IntentPath::Plugin(name.clone()).locate(&self.home);
         let directory = Directory::read(&root, Ownership::Source).await?;
         if directory.exists() {
             return Err(DevelopmentError::DirectoryExists { name: name.clone() });
         }
-        let plan = directory
-            .plan_write(self.template(name)?)
-            .map_err(|conflicts| DevelopmentError::WriteConflicts {
-                path: root,
-                conflicts,
-            })?;
+        let plan =
+            directory
+                .plan_write(tree)
+                .map_err(|conflicts| DevelopmentError::WriteConflicts {
+                    path: root,
+                    conflicts,
+                })?;
         let mut written = Vec::new();
         match plan.execute(&mut written).await {
             Ok(()) => Ok(written),

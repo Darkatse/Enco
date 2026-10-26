@@ -10,9 +10,9 @@ use crate::{
     judge,
     render::Renderer,
     result::{
-        DeployRecord, Execution, Facts, JudgeRecord, Report, TaskRecord, Trial, TrialOutcome,
-        VariantRecord,
+        Execution, Facts, JudgeRecord, Report, TaskRecord, Trial, TrialOutcome, VariantRecord,
     },
+    source::PreparedSource,
     stats,
     task::{self, Task},
     trial::{self, TrialDeps},
@@ -61,11 +61,22 @@ pub(crate) async fn evaluate(
     for (name, path) in variants {
         let variant = Variant::read(path.as_deref()).await?;
         let binary = Binary::resolve(&variant).await?;
-        identities.insert(name.to_owned(), identity(&binary, &variant).await?);
+        let mut source = Vec::new();
+        for input in variant.source {
+            source.push(PreparedSource::read(input).await?);
+        }
+        identities.insert(
+            name.to_owned(),
+            VariantRecord {
+                enco: binary.clone(),
+                source: source.iter().map(|source| source.record.clone()).collect(),
+                plugin: variant.plugin.clone(),
+            },
+        );
         prepared.push(Arc::new(trial::Variant {
             name: name.into(),
             binary,
-            deploy: variant.deploy,
+            source,
             plugin: variant.plugin,
             variables: variant.variables,
         }));
@@ -100,7 +111,7 @@ pub(crate) async fn evaluate(
     let mut trials = run_trials(&deps, tasks, &prepared, options.k, options.jobs.get()).await?;
     trials.sort_by(|a, b| (&a.task, &a.index, &a.variant).cmp(&(&b.task, &b.index, &b.variant)));
     let mut report = Report {
-        format: 1,
+        format: crate::result::FORMAT,
         runner: env!("CARGO_PKG_VERSION").into(),
         started_at,
         finished_at: Utc::now(),
@@ -174,23 +185,6 @@ async fn run_trials(
         Some(error) => Err(error),
         None => Ok(trials),
     }
-}
-
-async fn identity(binary: &Binary, variant: &Variant) -> Result<VariantRecord> {
-    let mut deploy = Vec::new();
-    for item in &variant.deploy {
-        let bytes = tokio::fs::read(&item.artifact).await?;
-        deploy.push(DeployRecord {
-            plugin: item.plugin.clone(),
-            artifact: item.artifact.clone(),
-            hash: blake3::hash(&bytes).to_hex().to_string(),
-        });
-    }
-    Ok(VariantRecord {
-        enco: binary.clone(),
-        deploy,
-        plugin: variant.plugin.clone(),
-    })
 }
 
 pub(crate) async fn regrade(repository: &Path, directory: &Path, fresh_judge: bool) -> Result<()> {

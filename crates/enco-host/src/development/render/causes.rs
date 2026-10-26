@@ -3,6 +3,7 @@ use super::code;
 use enco_core::Failure;
 use enco_kernel::{
     Cause, ENDPOINT_TABLE, LoadError, PLUGIN_SETTINGS_TABLE, PROFILE_TABLE, Referrer, ToolOwner,
+    UseRef,
 };
 
 pub(in crate::development) fn causes(causes: &[Cause]) -> String {
@@ -11,7 +12,12 @@ pub(in crate::development) fn causes(causes: &[Cause]) -> String {
 
 fn cause(cause: &Cause) -> String {
     let settings = |plugin: &str| code(&format!("[{}.{plugin}]", PLUGIN_SETTINGS_TABLE.name()));
-    let endpoint = |name: &str| code(&format!("[{}.{name}]", ENDPOINT_TABLE.name()));
+    let target = |reference: &UseRef| match reference {
+        UseRef::Endpoint { endpoint } => code(&format!("[{}.{endpoint}]", ENDPOINT_TABLE.name())),
+        UseRef::Composer { profile } => {
+            code(&format!("[{}.{profile}].composer", PROFILE_TABLE.name()))
+        }
+    };
     match cause {
         Cause::Load { plugin, error, .. } => load(plugin, error),
         Cause::Probe {
@@ -44,32 +50,32 @@ fn cause(cause: &Cause) -> String {
         },
         Cause::UnknownPlugin {
             user,
-            endpoint: name,
+            target: reference,
             plugin,
         } => format!(
             "{} uses {}, which names {}, but no plugin runs under that name",
             code(user),
-            endpoint(name),
+            target(reference),
             code(plugin)
         ),
         Cause::PluginUnavailable {
             user,
-            endpoint: name,
+            target: reference,
             plugin,
         } => format!(
             "{} uses {}, whose plugin {} cannot run",
             code(user),
-            endpoint(name),
+            target(reference),
             code(plugin)
         ),
         Cause::Use {
             user,
-            endpoint: name,
+            target: reference,
             failure,
         } => format!(
             "{} cannot use {}: {}",
             code(user),
-            endpoint(name),
+            target(reference),
             recorded(failure)
         ),
         Cause::Table(error) => {

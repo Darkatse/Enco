@@ -1,4 +1,4 @@
-//! One preparation and commit path for source, configuration, factory code and direct artifacts.
+//! One preparation and commit path for source, configuration and factory code.
 use super::*;
 use crate::{RegistrationWrite, RegistryState};
 mod commit;
@@ -76,6 +76,9 @@ impl Registry {
         let mut checked: Vec<Use> = Vec::new();
         let view = self.view();
         for usage in &prepared.plan.declaration.uses {
+            let UseTarget::Endpoint { endpoint, need } = &usage.target else {
+                continue;
+            };
             if prepared
                 .plan
                 .previous_uses
@@ -85,15 +88,15 @@ impl Registry {
             {
                 continue;
             }
-            let (loaded, generation) = match prepared.loaded_for(&usage.endpoint.plugin) {
+            let (loaded, generation) = match prepared.loaded_for(&endpoint.plugin) {
                 Some(loaded) => (loaded, None),
-                None => match view.exports.loaded(&usage.endpoint.plugin) {
+                None => match view.exports.loaded(&endpoint.plugin) {
                     Some(Ok((generation, loaded))) => (loaded, Some(generation)),
                     Some(Err(_)) => return Err(rejected(admission::plugin_unavailable(usage))),
                     None => return Err(rejected(admission::unknown_plugin(usage))),
                 },
             };
-            let outcome = match probe::call(loaded, usage).await {
+            let outcome = match probe::call(loaded, endpoint, need).await {
                 Ok(result) => {
                     if let Some(generation) = generation {
                         self.report(generation, result.verdict, None).await?;
@@ -105,13 +108,13 @@ impl Registry {
             outcome.map_err(|failure| {
                 rejected(Cause::Use {
                     user: usage.user.clone(),
-                    endpoint: usage.endpoint.name.clone(),
+                    target: usage.reference(),
                     failure,
                 })
             })?;
             prepared.probes.push(Probe {
                 user: usage.user.clone(),
-                endpoint: usage.endpoint.name.clone(),
+                endpoint: endpoint.name.clone(),
             });
             checked.push(usage.clone());
         }

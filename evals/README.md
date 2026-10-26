@@ -55,9 +55,9 @@ path = "/usr/local/bin:/usr/bin:/bin"  # 被测守护进程 PATH 中 bin/ 之后
 ```toml
 enco = "target/release/enco"     # 可选；默认 PATH 中的 enco
 
-[[deploy]]                       # 可选：在每个被测 home 中登记的制品
-plugin = "openai-compatible"
-artifact = "plugin.wasm"
+[[source]]                       # 可选：在每个被测 home 中构建并登记的源码
+plugin = "composer"
+directory = "../../plugins/composer"
 
 [plugin.web.config]                # 可选；省略 plugin 时默认使用这一节与下面两节
 search = ["exa", "tinyfish"]
@@ -72,9 +72,11 @@ exa = "EXA_API_KEY"
 tinyfish = "TINYFISH_API_KEY"
 ```
 
-省略 `--variant` 时，变体是 PATH 中的 `enco`，运行的是出厂制品与上述 web 设置，与主人平时的配置相同。这两个密钥只会发往题目的 mock，任意非空值都可以。变体的身份包含二进制与各制品的 blake3 哈希以及 `plugin` 设置，写进 `result.json`。登记失败说明变体本身有问题，整次运行停止，退出码为 2。
+省略 `--variant` 时，变体是 PATH 中的 `enco`，运行的是出厂制品与上述 web 设置，与主人平时的配置相同。这两个密钥只会发往题目的 mock，任意非空值都可以。变体的身份包含二进制的 blake3 哈希、各插件源码目录的内容哈希以及 `plugin` 设置，写进 `result.json`。
 
-变体的 `plugin` 整节写入被测配置，`secrets` 指名的变量与模型的 `api_key_env` 一样必须存在，并进入环境变量白名单；比较尚不支持插件设置的旧版二进制时，在它的变体中显式写空的 `[plugin]`，运行器便不向被测配置添加这一节。两个变体各自使用有效的配置，不按二进制版本推断设置。
+源码在整次评测开始前只读一次，遵循目录自己的 `.gitignore`，不读取 Git 的配置。内容哈希只是运行器给变体的身份：文件路径按字节序映射到文件内容的 blake3 哈希，再对这份紧凑 JSON 清单取 blake3。`plugin` 必须是 `plugins/` 下的单个目录名，名字是否合法由 Enco 在登记时判断。每次试跑把这份已读取的源码原样写入 `home/plugins/<plugin>`，替换题目中同名的源码目录；Rust 中的 `{{…}}` 不作占位符替换。首次启动把源码与配置一起构建、登记，所以试跑测到的就是以后经同一路径登记的源码。源码目录读不出来时整次运行停止，退出码为 2；构建或登记失败是变体的试验失败。
+
+变体的 `plugin` 整节写入被测配置，`secrets` 指名的变量与模型的 `api_key_env` 一样必须存在，并进入环境变量白名单；显式写空的 `[plugin]` 时不添加插件设置。两个变体各自使用有效的配置，不按二进制版本推断设置。
 
 ## 评测对进化的意义
 
@@ -143,11 +145,11 @@ trials/<题>/<变体>/<i>/
 
 ## 结果
 
-`result.json` 是 Agent 读取的接口，字段只增不改，`format` 是版本号：
+`result.json` 是 Agent 读取的接口，`format` 是版本号；当前为 2，重评分只读取当前格式：
 
 ```json
 {
-  "format": 1,
+  "format": 2,
   "runner": "<crate 版本>",
   "started_at": "<RFC 3339>", "finished_at": "<RFC 3339>",
   "k": 5,
@@ -156,7 +158,7 @@ trials/<题>/<变体>/<i>/
   "judge": { "base_url": "…", "model": "…", "api_key_env": "…", "temperature": 0, "prompt": "<blake3>" },
   "variants": {
     "base": { "enco": { "path": "…", "hash": "<blake3>", "version": "…" },
-              "deploy": [ { "plugin": "…", "artifact": "…", "hash": "<blake3>" } ],
+              "source": [ { "plugin": "…", "directory": "…", "hash": "<blake3>" } ],
               "plugin": { "web": { "config": { "urls": { "jina": "http://r.jina.ai" } } } } }
   },
   "trials": [ {

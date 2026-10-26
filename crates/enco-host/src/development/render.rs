@@ -182,7 +182,6 @@ fn ask(action: &OwnerAction) -> String {
             "ask the owner to turn safe mode off with {}",
             code("enco safe-mode off")
         ),
-        OwnerAction::RetryDeployment => "ask the owner to deploy the component again".into(),
         OwnerAction::FactoryCode { name } => format!(
             "ask the owner to repair the host's factory code for {}",
             code(name)

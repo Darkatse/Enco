@@ -24,6 +24,7 @@ blake3 = "1.8.7"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
 chrono-tz = { version = "0.10.4", features = ["serde"] }
 ulid = "3.0.0"
+ignore = "0.4.33"
 
 [dev-dependencies]
 wiremock = "0.6.5"

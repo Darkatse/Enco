@@ -34,28 +34,86 @@ impl Endpoint {
     }
 }
 
+/// Check and normalize one composer use against the generation that will execute it.
+pub(super) fn bind_composer(
+    loaded: &Loaded,
+    options: &ComposerOptions,
+) -> Result<(Arc<dyn Composer>, ComposerOptions), Failure> {
+    let unavailable = |message: String| Failure {
+        code: code::PLUGIN_UNAVAILABLE.into(),
+        message,
+        retryable: false,
+    };
+    let composer = loaded
+        .composer
+        .as_ref()
+        .ok_or_else(|| unavailable("requires composer".into()))?;
+    let options = composer
+        .schema
+        .accept(options.clone())
+        .map_err(|error| unavailable(format!("composer options: {error}")))?;
+    Ok((composer.adapter.clone(), options))
+}
+
 impl Use {
+    pub(super) fn plugin(&self) -> &PluginName {
+        match &self.target {
+            UseTarget::Endpoint { endpoint, .. } => &endpoint.plugin,
+            UseTarget::Composer { settings, .. } => &settings.plugin,
+        }
+    }
+
+    pub(super) fn reference(&self) -> UseRef {
+        match &self.target {
+            UseTarget::Endpoint { endpoint, .. } => UseRef::Endpoint {
+                endpoint: endpoint.name.clone(),
+            },
+            UseTarget::Composer { profile, .. } => UseRef::Composer {
+                profile: profile.clone(),
+            },
+        }
+    }
+
     /// Availability belongs to this use, not to the generation serving it.
     pub(super) fn check(&self, loaded: &Loaded) -> Result<(), Failure> {
-        match self.need {
-            Need::Completion { .. } => self
-                .endpoint
-                .export(loaded, loaded.completion.as_ref(), "completion")
-                .map(|_| ()),
-            Need::Embedding { .. } => self
-                .endpoint
-                .export(loaded, loaded.embedding.as_ref(), "embedding")
-                .map(|_| ()),
-            Need::Decision => self
-                .endpoint
-                .export(loaded, loaded.decision.as_ref(), "decision")
-                .map(|_| ()),
+        match &self.target {
+            UseTarget::Endpoint { endpoint, need } => match need {
+                Need::Completion { .. } => endpoint
+                    .export(loaded, loaded.completion.as_ref(), "completion")
+                    .map(|_| ()),
+                Need::Embedding { .. } => endpoint
+                    .export(loaded, loaded.embedding.as_ref(), "embedding")
+                    .map(|_| ()),
+                Need::Decision => endpoint
+                    .export(loaded, loaded.decision.as_ref(), "decision")
+                    .map(|_| ()),
+            },
+            UseTarget::Composer { settings, .. } => {
+                bind_composer(loaded, &settings.options).map(|_| ())
+            }
         }
     }
 
     pub(super) fn same_call(&self, other: &Self) -> bool {
-        self.endpoint.plugin == other.endpoint.plugin
-            && self.endpoint.settings == other.endpoint.settings
-            && self.need == other.need
+        match (&self.target, &other.target) {
+            (
+                UseTarget::Endpoint { endpoint, need },
+                UseTarget::Endpoint {
+                    endpoint: other,
+                    need: other_need,
+                },
+            ) => {
+                endpoint.plugin == other.plugin
+                    && endpoint.settings == other.settings
+                    && need == other_need
+            }
+            (
+                UseTarget::Composer { settings, .. },
+                UseTarget::Composer {
+                    settings: other, ..
+                },
+            ) => settings == other,
+            _ => false,
+        }
     }
 }

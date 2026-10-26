@@ -28,6 +28,7 @@ async fn admission_keeps_configured_exports_connected() {
             credentials: Vec::new(),
             unavailable: None,
             tools: None,
+            composer: None,
             completion: Some(provider),
             embedding: None,
             decision: None,
@@ -47,12 +48,12 @@ async fn admission_keeps_configured_exports_connected() {
         (b"no-credential", "memory.embedding", "embed"),
         (b"required", "profile default.reply", "reply"),
     ] {
-        let result = submit(&registry, artifact_request("fixture", bytes.to_vec())).await;
+        let result = submit(&registry, source_request("fixture", bytes)).await;
         let Err(RegistryError::Rejected(causes)) = result else {
             panic!("expected admission rejection");
         };
         assert!(
-            matches!(causes.as_slice(), [Cause::Use { user, endpoint, failure }]
+            matches!(causes.as_slice(), [Cause::Use { user, target: UseRef::Endpoint { endpoint }, failure }]
                 if user == expected_user
                     && endpoint == expected_endpoint
                     && failure.code == code::PLUGIN_UNAVAILABLE),
@@ -130,7 +131,7 @@ async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
         .unwrap();
     assert!(
         matches!(&error, RegistryError::Rejected(causes)
-            if matches!(causes.as_slice(), [Cause::Use { user, endpoint, failure }]
+            if matches!(causes.as_slice(), [Cause::Use { user, target: UseRef::Endpoint { endpoint }, failure }]
                 if user == "profile default.reply"
                     && endpoint == "new"
                     && failure.code == code::PLUGIN_UNAVAILABLE)),
@@ -187,15 +188,11 @@ async fn a_rejected_registration_writes_neither_a_generation_nor_a_name() {
     let registry = open(&store, runtime).await;
     let before = store.registry().await.unwrap().generations;
     assert!(matches!(
-        submit(
-            &registry,
-            artifact_request("new-name", b"rejected".to_vec())
-        )
-        .await,
+        submit(&registry, source_request("new-name", b"rejected")).await,
         Err(RegistryError::Rejected { .. })
     ));
     assert_eq!(store.registry().await.unwrap().generations, before);
-    assert_eq!(store.registry().await.unwrap().plugins.len(), 1);
+    assert_eq!(store.registry().await.unwrap().plugins.len(), 2);
 }
 
 #[tokio::test]
@@ -239,7 +236,7 @@ async fn unrelated_unavailable_plugins_do_not_block_incremental_repairs() {
     let registry = open_registry(deps, configuration_request(document.clone()))
         .await
         .unwrap();
-    submit(&registry, artifact_request("fixture", b"repair".to_vec()))
+    submit(&registry, source_request("fixture", b"repair"))
         .await
         .unwrap();
     document["owner"]["timezone"] = "Europe/Paris".into();

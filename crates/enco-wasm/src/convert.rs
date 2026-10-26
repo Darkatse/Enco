@@ -19,11 +19,7 @@ pub(crate) fn request(request: ProviderRequest) -> wire::Request {
                 name: tool.name,
                 description: tool.description,
                 input_schema: tool.input_schema.to_string(),
-                effect: match tool.effect {
-                    Effect::ReadOnly => wit::Effect::ReadOnly,
-                    Effect::Idempotent => wit::Effect::Idempotent,
-                    Effect::SideEffect => wit::Effect::SideEffect,
-                },
+                effect: tool.effect.into(),
             })
             .collect(),
         max_output_tokens: request.max_output_tokens,
@@ -31,23 +27,14 @@ pub(crate) fn request(request: ProviderRequest) -> wire::Request {
 }
 
 fn message(message: Message<ImageData>) -> wit::Message {
-    let role = match message.role {
-        Role::System => wit::Role::System,
-        Role::User => wit::Role::User,
-        Role::Assistant => wit::Role::Assistant,
-        Role::Tool => wit::Role::Tool,
-    };
+    let role = message.role.into();
     let parts = message
         .parts
         .into_iter()
         .map(|part| match part {
             Part::Text { text } => wit::Part::Text(text),
             Part::Image(image) => wit::Part::Image(wit::Image {
-                format: match image.format {
-                    ImageFormat::Png => wit::ImageFormat::Png,
-                    ImageFormat::Jpeg => wit::ImageFormat::Jpeg,
-                    ImageFormat::Webp => wit::ImageFormat::Webp,
-                },
+                format: image.format.into(),
                 data: image.data,
             }),
             Part::ToolCall(call) => wit::Part::ToolCall(wit::ToolCall {
@@ -214,11 +201,54 @@ fn distribution(probabilities: &[f64], count: usize) -> bool {
         && (probabilities.iter().sum::<f64>() - 1.0).abs() <= DECISION_SUM_TOLERANCE
 }
 
-/// Mutation semantics declared by a tool at the component boundary.
-pub(crate) fn effect(effect: wit::Effect) -> Effect {
-    match effect {
-        wit::Effect::ReadOnly => Effect::ReadOnly,
-        wit::Effect::Idempotent => Effect::Idempotent,
-        wit::Effect::SideEffect => Effect::SideEffect,
+impl From<Role> for wit::Role {
+    fn from(role: Role) -> Self {
+        match role {
+            Role::System => Self::System,
+            Role::User => Self::User,
+            Role::Assistant => Self::Assistant,
+            Role::Tool => Self::Tool,
+        }
+    }
+}
+
+impl From<wit::Role> for Role {
+    fn from(role: wit::Role) -> Self {
+        match role {
+            wit::Role::System => Self::System,
+            wit::Role::User => Self::User,
+            wit::Role::Assistant => Self::Assistant,
+            wit::Role::Tool => Self::Tool,
+        }
+    }
+}
+
+impl From<ImageFormat> for wit::ImageFormat {
+    fn from(format: ImageFormat) -> Self {
+        match format {
+            ImageFormat::Png => Self::Png,
+            ImageFormat::Jpeg => Self::Jpeg,
+            ImageFormat::Webp => Self::Webp,
+        }
+    }
+}
+
+impl From<Effect> for wit::Effect {
+    fn from(effect: Effect) -> Self {
+        match effect {
+            Effect::ReadOnly => Self::ReadOnly,
+            Effect::Idempotent => Self::Idempotent,
+            Effect::SideEffect => Self::SideEffect,
+        }
+    }
+}
+
+impl From<wit::Effect> for Effect {
+    fn from(effect: wit::Effect) -> Self {
+        match effect {
+            wit::Effect::ReadOnly => Self::ReadOnly,
+            wit::Effect::Idempotent => Self::Idempotent,
+            wit::Effect::SideEffect => Self::SideEffect,
+        }
     }
 }

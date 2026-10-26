@@ -52,7 +52,7 @@ fn configured() -> serde_json::Value {
     document
 }
 
-/// Holds a long conversation on `main` and, while its first compaction is in flight, either
+/// Starts a compaction on `main` and, while it is in flight, either
 /// assigns `main` the alternate profile or redefines its default one; returns that Round.
 async fn change_profile_during_compaction(
     kernel: &Kernel,
@@ -62,14 +62,9 @@ async fn change_profile_during_compaction(
 ) -> RoundId {
     let mut rx = kernel.subscribe(main).unwrap();
     let conversation = async {
-        for n in 0..6 {
+        for n in 0..2 {
             kernel
-                .submit(
-                    main,
-                    EventId::new(),
-                    format!("History {n}: {}", "some detailed history ".repeat(150)),
-                    Vec::new(),
-                )
+                .submit(main, EventId::new(), format!("History {n}"), Vec::new())
                 .await
                 .unwrap();
             assert!(matches!(
@@ -132,14 +127,26 @@ async fn profile_changes_bind_at_round_boundaries() {
     for update_definition in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let scripted = ScriptedProvider::new((0..30).map(|_| reply("summary or reply")).collect());
+        scripted
+            .steps
+            .lock()
+            .unwrap()
+            .push_front(calls(vec![call("fs_list", r#"{"path":"."}"#)]));
         let provider = Arc::new(PausedCompaction {
             provider: scripted.clone(),
             pause: AtomicBool::new(true),
             entered: Notify::new(),
             resume: Notify::new(),
         });
-        let (kernel, _) =
-            kernel_configured(dir.path(), provider.clone(), configured(), vec![], |_| {}).await;
+        let (kernel, _) = kernel_configured_composer(
+            dir.path(),
+            provider.clone(),
+            configured(),
+            vec![],
+            Arc::new(HistoryComposer),
+            |_| {},
+        )
+        .await;
         let main = kernel.open_session("main").await.unwrap();
         let other = kernel.open_session("other").await.unwrap();
         let round =
@@ -249,64 +256,6 @@ async fn a_session_whose_profile_was_rolled_back_away_remains_recoverable() {
             ..
         }
     ));
-    assert!(
-        scripted
-            .requests
-            .lock()
-            .unwrap()
-            .last()
-            .unwrap()
-            .messages
-            .iter()
-            .any(|m| m.joined_text().contains("unknown profile alternate"))
-    );
-    kernel.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn history_too_large_for_the_compaction_window_fails_only_when_the_reply_no_longer_fits() {
-    let dir = tempfile::tempdir().unwrap();
-    let provider = ScriptedProvider::new((0..10).map(|_| reply("reply")).collect());
-    let mut document = configured();
-    document["endpoint"]["compaction"]["window_tokens"] = 100.into();
-    document["endpoint"]["compaction"]["max_output_tokens"] = 10.into();
-    let (kernel, _) =
-        kernel_configured(dir.path(), provider.clone(), document, vec![], |_| {}).await;
-    let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
-    let mut overflow = None;
-    for _ in 0..10 {
-        kernel
-            .submit(
-                session.id,
-                EventId::new(),
-                "some detailed history ".repeat(150),
-                Vec::new(),
-            )
-            .await
-            .unwrap();
-        let entries = finish(&mut rx).await;
-        if let EntryBody::RunEnded {
-            end: RunEnd::Failed { failure },
-            ..
-        } = &entries.last().unwrap().body
-        {
-            overflow = Some(failure.clone());
-            break;
-        }
-    }
-    let failure = overflow.expect("history must outgrow the reply window");
-    assert_eq!(failure.code, code::CONTEXT_OVERFLOW);
-    assert!(failure.message.contains("window is 6000"));
-    // No boundary fits a 100-token window, so no summary request is ever sent.
-    assert!(
-        provider
-            .settings
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|s| s.model == "old-reply")
-    );
     kernel.shutdown().await.unwrap();
 }
 
@@ -369,15 +318,12 @@ async fn configuration_probes_conflict_with_registration_but_not_trial_promotion
         let (kernel, _) =
             kernel_configured(dir.path(), provider.clone(), configured(), vec![], |_| {}).await;
         let registry = kernel.registry();
-        let trial = submit(
-            registry,
-            artifact_request("fixture", FACTORY_BYTES.to_vec()),
-        )
-        .await
-        .unwrap()
-        .generations
-        .remove(0)
-        .id;
+        let trial = submit(registry, source_request("fixture", FACTORY_BYTES))
+            .await
+            .unwrap()
+            .generations
+            .remove(0)
+            .id;
         let before = registry.view().config.generation;
         let mut document = configured();
         document["endpoint"]["reply"]["model"] = "old-compaction".into();
@@ -389,12 +335,9 @@ async fn configuration_probes_conflict_with_registration_but_not_trial_promotion
                     registry.report(trial, Verdict::Ok, None).await.unwrap();
                 }
             } else {
-                submit(
-                    registry,
-                    artifact_request("fixture", FACTORY_BYTES.to_vec()),
-                )
-                .await
-                .unwrap();
+                submit(registry, source_request("fixture", FACTORY_BYTES))
+                    .await
+                    .unwrap();
             }
             provider.resume.notify_one();
         };

@@ -46,6 +46,7 @@ use enco_core::{IntentPath, PLUGINS_DIRECTORY, PluginId};
 use enco_kernel::{Cause, Registered, Runtime};
 pub use home::{HomeComparison, HomePlugin, SettingsComparison};
 pub use manual::{DIRECTORY as MANUAL_DIRECTORY, Following, Manual};
+pub use scaffold::{FactoryFiles, FactorySources};
 pub use sdk::Sdk;
 use serde::Serialize;
 pub use status::{ConfigurationUnit, DevelopmentStatus, PluginUnit, RegisteredUnit};
@@ -64,6 +65,7 @@ use tokio_util::sync::CancellationToken;
 pub struct Development {
     home: PathBuf,
     sdk: Sdk,
+    factory: FactorySources,
     manual: Arc<Manual>,
     store: Arc<SqliteStore>,
     runtime: Arc<dyn Runtime>,
@@ -90,6 +92,7 @@ impl Development {
     pub fn new(
         home: PathBuf,
         sdk: Sdk,
+        factory: FactorySources,
         manual: Manual,
         store: Arc<SqliteStore>,
         runtime: Arc<dyn Runtime>,
@@ -97,6 +100,7 @@ impl Development {
         Arc::new(Self {
             home,
             sdk,
+            factory,
             manual: Arc::new(manual),
             store,
             runtime,

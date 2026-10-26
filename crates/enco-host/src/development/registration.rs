@@ -3,7 +3,7 @@ use super::{
     Applied, Development, DevelopmentError, Failed, Operation, check_cancelled,
     intent::{Change, Prepared},
 };
-use enco_core::{Initiator, PluginName};
+use enco_core::Initiator;
 use enco_kernel::{
     ConfigurationSource, PluginChange, Registered, RegisteredIntent, RegistrationRequest, Registry,
     RegistryDeps, RegistryError, Store,
@@ -109,29 +109,6 @@ impl Development {
         })
     }
 
-    /// Direct artifacts share acceptance and history while leaving file intent unchanged.
-    pub async fn deploy(
-        &self,
-        registry: &Registry,
-        name: PluginName,
-        bytes: Vec<u8>,
-        initiator: Initiator,
-        cancel: &CancellationToken,
-    ) -> Result<Registered, Failed> {
-        let _operation = self.operation.lock().await;
-        async {
-            let baseline = registry.registered_intent(None).await?;
-            let prepared = Prepared {
-                plugins: [(name, Change::Artifact(bytes))].into(),
-                ..Prepared::default()
-            };
-            let request = self.request(&baseline, prepared, initiator).await?;
-            self.register(registry, request, cancel).await
-        }
-        .await
-        .map_err(|error| Operation::Deploy.failed(error))
-    }
-
     pub(super) async fn register(
         &self,
         registry: &Registry,
@@ -178,7 +155,6 @@ impl Development {
                 },
                 Change::Factory => PluginChange::Factory,
                 Change::Remove => PluginChange::Remove,
-                Change::Artifact(bytes) => PluginChange::Artifact(bytes),
                 Change::Rename(to) => PluginChange::Rename(to),
             };
             plugins.insert(name, change);

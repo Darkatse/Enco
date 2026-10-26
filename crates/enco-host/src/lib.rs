@@ -3,7 +3,6 @@
 
 pub mod channel;
 mod clock;
-mod composer;
 mod context;
 pub mod development;
 mod file;
@@ -16,7 +15,6 @@ pub mod telegram;
 mod tools;
 
 pub use clock::SystemClock;
-pub use composer::FactoryComposer;
 pub use context::InstructionsContextSource;
 pub use memory::{
     Memories, MemoryContextSource, MemoryError, MemoryList, MemoryPaths, Recall, memory_tool_specs,

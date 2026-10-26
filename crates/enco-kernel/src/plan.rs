@@ -1,41 +1,65 @@
-use crate::{ComposeInput, Exports, ProviderRequest, Transcript};
+use crate::{ComposeInput, CompositionItem, CompositionPlan, Exports, ProviderRequest, Transcript};
 use enco_core::*;
-use std::collections::HashSet;
+use std::{borrow::Borrow, collections::HashSet};
 
 #[derive(Debug, thiserror::Error)]
 #[error("invalid context plan: {0}")]
 pub(crate) struct PlanError(pub String);
 
-pub(crate) fn validate(
-    plan: &ContextPlan,
+pub(crate) fn bind(
+    draft: CompositionPlan,
     input: &ComposeInput,
     purpose: AttemptPurpose,
-    lifeline: &[CapabilityId],
-    requires_lifeline: bool,
-) -> Result<(), PlanError> {
+) -> Result<ContextPlan, PlanError> {
+    let mut names = HashSet::new();
+    let tools = draft
+        .tools
+        .into_iter()
+        .map(|id| {
+            if !names.insert(id.name.clone()) {
+                return Err(PlanError(format!("tool {id} is duplicated")));
+            }
+            let (_, spec) = input
+                .tools
+                .iter()
+                .find(|(available, _)| *available == id)
+                .ok_or_else(|| PlanError(format!("tool {id} is outside the Round snapshot")))?;
+            Ok((id, DisclosedTool::from(spec)))
+        })
+        .collect::<Result<_, _>>()?;
+    let plan = ContextPlan {
+        items: draft
+            .items
+            .into_iter()
+            .map(|item| match item {
+                CompositionItem::Message {
+                    role,
+                    text,
+                    sources,
+                } => PlanItem::Message {
+                    message: Message::text(role, text),
+                    sources,
+                },
+                CompositionItem::Log { pos, images } => PlanItem::Log { pos, images },
+            })
+            .collect(),
+        tools,
+        max_output_tokens: draft.max_output_tokens,
+        omitted: draft
+            .omitted
+            .into_iter()
+            .chain(input.omitted.iter().cloned())
+            .collect(),
+    };
     if plan.items.is_empty() {
         return Err(PlanError("no messages".into()));
     }
-    for item in &plan.items {
-        if let PlanItem::Message { message, .. } = item
-            && message
-                .parts
-                .iter()
-                .any(|part| !matches!(part, Part::Text { .. }))
-        {
-            return Err(PlanError("inline messages must contain only text".into()));
-        }
-    }
-    let messages = messages(plan, &input.transcript)?;
-    let images: Vec<_> = messages
+    let messages = messages(&plan, &input.transcript)?;
+    let has_images = messages
         .iter()
         .flat_map(|(message, _)| &message.parts)
-        .filter_map(|part| match part {
-            Part::Image(image) => Some(image),
-            _ => None,
-        })
-        .collect();
-    if !images.is_empty()
+        .any(|part| matches!(part, Part::Image(_)));
+    if has_images
         && (purpose == AttemptPurpose::Compaction
             || !input.reply.accepts.contains(&Modality::Image))
     {
@@ -44,35 +68,23 @@ pub(crate) fn validate(
         ));
     }
     validate_messages(&messages)?;
-    let mut names = HashSet::new();
-    for (id, spec) in &plan.tools {
-        if !names.insert(&spec.name)
-            || !input.tools.iter().any(|(available_id, available)| {
-                available_id == id && DisclosedTool::from(available) == *spec
-            })
-        {
-            return Err(PlanError(format!(
-                "tool {id} is duplicated or differs from the Round snapshot"
-            )));
-        }
-    }
     if purpose == AttemptPurpose::Compaction && !plan.tools.is_empty() {
         return Err(PlanError("compaction must not disclose tools".into()));
     }
     if purpose == AttemptPurpose::Reply
-        && requires_lifeline
-        && lifeline
+        && input
+            .lifeline
             .iter()
             .any(|id| !plan.tools.iter().any(|(given, _)| given == id))
     {
         return Err(PlanError("reply omitted a required lifeline tool".into()));
     }
-    Ok(())
+    Ok(plan)
 }
 
-pub(crate) fn resolve(
+pub(crate) fn resolve<I: Borrow<Image> + Clone>(
     plan: &ContextPlan,
-    transcript: &Transcript,
+    transcript: &Transcript<I>,
     exports: &Exports,
     target: PluginId,
 ) -> Result<ProviderRequest<Image>, PlanError> {
@@ -99,9 +111,9 @@ pub(crate) fn resolve(
 
 /// An entry with nothing left once its images stay behind, such as a photo alone, sends no
 /// message; the composer's note before it describes the entry.
-fn messages(
+fn messages<I: Borrow<Image> + Clone>(
     plan: &ContextPlan,
-    transcript: &Transcript,
+    transcript: &Transcript<I>,
 ) -> Result<Vec<(Message, Option<GenerationId>)>, PlanError> {
     let mut messages = Vec::with_capacity(plan.items.len());
     for item in &plan.items {
@@ -117,10 +129,19 @@ fn messages(
                             "Log position {pos:?} is not in the recorded transcript"
                         ))
                     })?;
-                let mut message = item.message.clone();
-                if !images {
-                    message.parts.retain(|part| !matches!(part, Part::Image(_)));
-                }
+                let message = Message {
+                    role: item.message.role,
+                    parts: item
+                        .message
+                        .parts
+                        .iter()
+                        .cloned()
+                        .filter_map(|part| match part.retype() {
+                            Ok(part) => Some(part),
+                            Err(image) => images.then(|| Part::Image(image.borrow().clone())),
+                        })
+                        .collect(),
+                };
                 if !message.parts.is_empty() {
                     messages.push((message, item.generation));
                 }

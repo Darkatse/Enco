@@ -24,7 +24,7 @@ pub(in crate::registry) struct PlannedPlugin {
 
 pub(in crate::registry) enum Action {
     Code(Content),
-    Existing(GenerationId, Loaded),
+    Existing(GenerationId, Box<Loaded>),
     Remove,
     Rename,
 }
@@ -59,7 +59,7 @@ pub(in crate::registry) async fn plan(
         return Err(RegistryError::EmptyRequest);
     }
     let declaration = match &request.configuration {
-        Some(config) => configuration::declare_valid(&config.document, &deps.owners)?,
+        Some(config) => configuration::declare_valid(&config.document, deps)?,
         None => current
             .map(Declaration::from_active)
             .ok_or_else(|| RegistryError::Bootstrap("configuration document is missing".into()))?,
@@ -90,13 +90,7 @@ async fn plan_plugin(
     change: PluginChange,
 ) -> Result<(), RegistryError> {
     let factory = deps.factory.iter().find(|factory| factory.name == name);
-    let registered = identities.get(&name).copied();
-    // A direct artifact replaces the code running under the name; intent follows registered names.
-    let existing = if matches!(change, PluginChange::Artifact(_)) {
-        state.running_names().get(&name).copied().or(registered)
-    } else {
-        registered
-    };
+    let existing = identities.get(&name).copied();
     let id = existing.unwrap_or_default();
     let intent = match &change {
         PluginChange::Code { source, .. } => Some(CodeIntent::Directory { source: *source }),
@@ -120,19 +114,12 @@ async fn plan_plugin(
                 registration: plan.expected.next,
             },
         }),
-        PluginChange::Artifact(bytes) => Action::Code(Content {
-            bytes,
-            settings,
-            origin: Origin::Artifact {
-                registration: plan.expected.next,
-            },
-        }),
         PluginChange::Factory => {
             let factory = factory.ok_or_else(|| RegistryError::NotFactory(name.clone()))?;
             let generation = state.factory[&factory.id];
             if settings == PluginSettings::default() {
                 let loaded = state.loaded[&generation].clone();
-                Action::Existing(generation, loaded)
+                Action::Existing(generation, Box::new(loaded))
             } else {
                 Action::Code(Content {
                     bytes: factory.artifact.clone(),
@@ -319,7 +306,9 @@ pub(in crate::registry) async fn prepare(
         };
         let result = match &plugin.action {
             Action::Code(content) => load(deps.runtime.as_ref(), content, name, candidate).await,
-            Action::Existing(_, existing) => probe(existing.clone(), name, candidate).await,
+            Action::Existing(_, existing) => {
+                probe(existing.as_ref().clone(), name, candidate).await
+            }
             Action::Remove | Action::Rename => continue,
         };
         match result {

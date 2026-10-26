@@ -1,5 +1,7 @@
 //! The kernel-owned configuration tables and their declared uses.
-use crate::{Budget, CompletionEndpoint, Endpoints, Need, Profile, Use};
+use crate::{
+    Budget, CompletionEndpoint, ComposerSettings, Endpoints, Need, Profile, Use, UseTarget,
+};
 use enco_core::{DEFAULT_PROFILE, Modality, PluginName, ProviderSettings, Tz};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -118,6 +120,7 @@ fn requires_lifeline() -> bool {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawProfile {
+    composer: Option<ComposerSettings>,
     reply: Vec<String>,
     compaction: Vec<String>,
     #[serde(default = "requires_lifeline")]
@@ -139,7 +142,12 @@ impl KernelSettings {
     ];
 
     /// Parse and validate only the kernel-owned tables.
-    pub fn from_document(document: &Value) -> Result<Self, SettingsError> {
+    ///
+    /// A profile that names no composer uses `factory_composer` with empty options.
+    pub fn from_document(
+        document: &Value,
+        factory_composer: &PluginName,
+    ) -> Result<Self, SettingsError> {
         let owner: Owner = parse_table(document, "owner")?;
         let run: Run = parse_table::<Option<Run>>(document, "run")?.unwrap_or_default();
         let raw: BTreeMap<String, Value> = parse_table(document, ENDPOINT_TABLE.name())?;
@@ -208,6 +216,10 @@ impl KernelSettings {
             settings.profiles.insert(
                 name,
                 Profile {
+                    composer: raw.composer.unwrap_or_else(|| ComposerSettings {
+                        plugin: factory_composer.clone(),
+                        options: serde_json::Map::new(),
+                    }),
                     reply: endpoints("reply", &raw.reply)?,
                     compaction: endpoints("compaction", &raw.compaction)?,
                     requires_lifeline: raw.requires_lifeline,
@@ -256,26 +268,37 @@ impl KernelSettings {
         self.profiles
             .iter()
             .flat_map(|(name, profile)| {
-                [
-                    ("reply", &profile.reply, true, true),
-                    ("compaction", &profile.compaction, false, false),
-                ]
-                .into_iter()
-                .flat_map(move |(purpose, endpoints, tools, media)| {
-                    endpoints.iter().map(move |endpoint| Use {
-                        user: format!("profile {name}.{purpose}"),
-                        endpoint: endpoint.endpoint.clone(),
-                        need: Need::Completion {
-                            tools,
-                            max_output_tokens: endpoint.budget.max_output_tokens,
-                            accepts: if media {
-                                endpoint.accepts.clone()
-                            } else {
-                                BTreeSet::new()
+                let composer = Use {
+                    user: format!("profile {name}.composer"),
+                    target: UseTarget::Composer {
+                        profile: name.clone(),
+                        settings: profile.composer.clone(),
+                    },
+                };
+                std::iter::once(composer).chain(
+                    [
+                        ("reply", &profile.reply, true, true),
+                        ("compaction", &profile.compaction, false, false),
+                    ]
+                    .into_iter()
+                    .flat_map(move |(purpose, endpoints, tools, media)| {
+                        endpoints.iter().map(move |endpoint| Use {
+                            user: format!("profile {name}.{purpose}"),
+                            target: UseTarget::Endpoint {
+                                endpoint: endpoint.endpoint.clone(),
+                                need: Need::Completion {
+                                    tools,
+                                    max_output_tokens: endpoint.budget.max_output_tokens,
+                                    accepts: if media {
+                                        endpoint.accepts.clone()
+                                    } else {
+                                        BTreeSet::new()
+                                    },
+                                },
                             },
-                        },
-                    })
-                })
+                        })
+                    }),
+                )
             })
             .collect()
     }

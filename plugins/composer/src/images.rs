@@ -1,12 +1,9 @@
-//! Which images a request shows, newest first within the request's byte limit, and the line that
-//! describes each attachment.
-use super::encoded_tokens;
-use crate::limits::{IMAGE_TOKENS, REQUEST_IMAGE_MAX_BYTES};
-use enco_core::*;
-use enco_kernel::*;
+//! Chooses whole image entries newest first and describes every owner attachment.
+use crate::composer::*;
+use crate::{key, limits::*, tokens};
 use std::collections::BTreeSet;
 
-pub(super) fn selected(input: &ComposeInput, omitted: &mut Vec<Omission>) -> BTreeSet<LogPos> {
+pub(super) fn selected(input: &ComposeInput, omitted: &mut Vec<Omission>) -> BTreeSet<(u64, u64)> {
     let accepts = input.reply.accepts.contains(&Modality::Image);
     let mut remaining = REQUEST_IMAGE_MAX_BYTES;
     let mut selected = BTreeSet::new();
@@ -26,12 +23,12 @@ pub(super) fn selected(input: &ComposeInput, omitted: &mut Vec<Omission>) -> BTr
         let size: u64 = images.iter().map(|image| image.size).sum();
         if accepts && size <= remaining {
             remaining -= size;
-            selected.insert(item.pos);
+            selected.insert(key(&item.pos));
         } else {
             remaining = 0;
             for image in images {
                 omitted.push(Omission {
-                    source: format!("image:{}:{}:{}", item.pos.epoch.0, item.pos.seq.0, image.content),
+                    source: format!("image:{}:{}:{}", item.pos.epoch, item.pos.seq, image.content),
                     reason: if accepts {
                         format!("entry's images do not fit the {REQUEST_IMAGE_MAX_BYTES}-byte image budget")
                     } else { "reply endpoint does not accept images".into() },
@@ -42,26 +39,23 @@ pub(super) fn selected(input: &ComposeInput, omitted: &mut Vec<Omission>) -> BTr
     selected
 }
 
-/// One line per attachment the owner sent, whether or not this request shows it.
-pub(super) fn attachments(input: &ComposeInput, body: &EventBody) -> Option<String> {
-    let EventBody::UserMessage {
-        images, unviewable, ..
-    } = body
-    else {
+/// Attachment descriptions survive even when the endpoint cannot view their images.
+pub(super) fn attachments(body: &EventBody) -> Option<String> {
+    let EventBody::UserMessage(message) = body else {
         return None;
     };
-    let images = images.iter().map(|image| {
+    let images = message.images.iter().map(|image| {
         format!(
             "[image: {}, {} bytes; file: {}]",
             image.format.mime(),
             image.size,
-            input.image_paths[&image.content].display()
+            image.path
         )
     });
-    let unviewable = unviewable.iter().map(|attachment| {
+    let unviewable = message.unviewable.iter().map(|attachment| {
         let reason = match &attachment.reason {
             UnviewableReason::Unsupported => "unsupported attachment format".into(),
-            UnviewableReason::TooLarge => format!("exceeds the {IMAGE_MAX_BYTES}-byte image limit"),
+            UnviewableReason::TooLarge => "too large to view as an image".into(),
             UnviewableReason::Unavailable(message) => message.clone(),
         };
         format!("[attachment unavailable: {}: {reason}]", attachment.what)
@@ -70,18 +64,24 @@ pub(super) fn attachments(input: &ComposeInput, body: &EventBody) -> Option<Stri
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-pub(super) fn message_tokens(message: &Message, include: bool) -> Result<u32, ComposeError> {
-    let mut text = Message {
-        role: message.role,
-        parts: Vec::new(),
-    };
-    let mut tokens: u32 = 0;
+/// A recorded message's text bytes and envelope, plus a fixed cost for each image it sends.
+pub(super) fn message_tokens(message: &Message, include: bool) -> u32 {
+    let mut bytes = MESSAGE_OVERHEAD_BYTES;
+    let mut images = 0u32;
     for part in &message.parts {
-        match part {
-            Part::Image(_) if include => tokens = tokens.saturating_add(IMAGE_TOKENS),
-            Part::Image(_) => {}
-            part => text.parts.push(part.clone()),
+        bytes += match part {
+            Part::Text(text) => text.len(),
+            Part::ToolCall(call) => call.id.len() + call.name.len() + call.arguments.len(),
+            Part::ToolResult(result) => result.call_id.len() + result.content.len(),
+            Part::Extension(size) => usize::try_from(*size).unwrap_or(usize::MAX),
+            Part::Image(_) => {
+                if include {
+                    images = images.saturating_add(IMAGE_TOKENS);
+                }
+                continue;
+            }
         }
+        .saturating_add(PART_OVERHEAD_BYTES);
     }
-    Ok(tokens.saturating_add(encoded_tokens(&text)?))
+    tokens(bytes).saturating_add(images)
 }

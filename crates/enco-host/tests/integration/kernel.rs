@@ -11,7 +11,7 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
     let dir = tempfile::tempdir().unwrap();
     let write = call("fs_write", r#"{"path":"note.txt","content":"hello"}"#);
     let provider = ScriptedProvider::new(vec![calls(vec![write.clone()]), reply("done")]);
-    let (kernel, store) = kernel(dir.path(), provider.clone()).await;
+    let (kernel, _) = kernel(dir.path(), provider.clone()).await;
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
     kernel
@@ -48,7 +48,13 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
     }
     // The next process must continue from the Log even if the last plan was removed.
     let (_, hash) = starts.last().unwrap();
-    std::fs::remove_file(store.blob_path(hash)).unwrap();
+    let connection = rusqlite::Connection::open(dir.path().join("enco.db")).unwrap();
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .unwrap();
+    connection
+        .execute("DELETE FROM context_plans WHERE hash=?", [hash.to_string()])
+        .unwrap();
     kernel.shutdown().await.unwrap();
     drop(kernel);
 
@@ -289,39 +295,36 @@ async fn retries_reuse_the_frozen_plan_and_nonretryable_failures_end_the_run() {
     kernel.shutdown().await.unwrap();
 }
 
-struct AlteredDefinition(enco_host::FactoryComposer);
+struct UndisclosedCapability;
 
-impl enco_kernel::Composer for AlteredDefinition {
-    fn code(&self) -> CodeRef {
-        CodeRef::Native {
-            name: "altered-definition".into(),
-            version: "test".into(),
-        }
-    }
-
-    fn compose(
+#[async_trait::async_trait]
+impl enco_kernel::Composer for UndisclosedCapability {
+    async fn compose(
         &self,
+        _: &enco_kernel::ComposerOptions,
         input: &enco_kernel::ComposeInput,
-    ) -> Result<enco_kernel::Composition, enco_kernel::ComposeError> {
-        let mut result = self.0.compose(input)?;
-        if let enco_kernel::Composition::Plan(plan) = &mut result {
-            plan.tools[0].1.description = "Not the actual tool contract".into();
-        }
-        Ok(result)
+    ) -> Result<enco_kernel::Composition, Failure> {
+        let mut plan = reply_plan(input);
+        plan.tools.push(CapabilityId {
+            node: NodeId::new(),
+            name: "absent".into(),
+        });
+        Ok(enco_kernel::Composition::Plan(plan))
     }
 }
 
 #[tokio::test]
-async fn changed_tool_definitions_are_rejected_before_any_provider_request() {
+async fn capabilities_outside_the_round_are_rejected_before_any_provider_request() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![]);
-    let (kernel, _) = kernel_with(dir.path(), provider.clone(), Tz::UTC, |deps| {
-        deps.composer = std::sync::Arc::new(AlteredDefinition(enco_host::FactoryComposer::new(
-            dir.path().to_owned(),
-            dir.path().join("workspace"),
-            dir.path().join("AGENTS.md"),
-        )))
-    })
+    let (kernel, _) = kernel_configured_composer(
+        dir.path(),
+        provider.clone(),
+        configuration(),
+        vec![],
+        Arc::new(UndisclosedCapability),
+        |_| {},
+    )
     .await;
     let session = kernel.open_session("main").await.unwrap();
     let mut rx = kernel.subscribe(session.id).unwrap();
@@ -333,10 +336,7 @@ async fn changed_tool_definitions_are_rejected_before_any_provider_request() {
     assert!(provider.requests.lock().unwrap().is_empty());
     assert!(matches!(
         &log.last().unwrap().body,
-        EntryBody::RunEnded {
-            end: RunEnd::Failed { failure },
-            ..
-        } if failure.code == code::PLAN_INVALID
+        EntryBody::RunEnded { end: RunEnd::Failed { failure }, .. } if failure.code == code::PLUGIN_CONTRACT
     ));
     kernel.shutdown().await.unwrap();
 }

@@ -169,9 +169,6 @@ fn origin(row: &Row<'_>) -> rusqlite::Result<Origin> {
         "code" => Origin::Code {
             registration: RegistrationId(rows::unsigned(row, 1)?),
         },
-        "artifact" => Origin::Artifact {
-            registration: RegistrationId(rows::unsigned(row, 1)?),
-        },
         "settings" => Origin::Settings {
             registration: RegistrationId(rows::unsigned(row, 1)?),
             based_on: GenerationId(rows::unsigned(row, 9)?),

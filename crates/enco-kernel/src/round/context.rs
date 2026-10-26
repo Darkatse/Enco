@@ -1,16 +1,21 @@
 use super::*;
 
+/// Facts gathered once per Round; a later composition changes only its targets and Transcript.
+pub(super) struct Gathered {
+    pub instructions: Option<String>,
+    pub memories: Vec<Memory>,
+    pub omitted: Vec<Omission>,
+    pub previous_plan: Option<ContextPlan>,
+    pub transcript: Transcript<LocatedImage>,
+}
+
 impl SessionActor {
-    pub(super) async fn compose_input(
+    pub(super) async fn gather(
         &self,
         snapshot: &Snapshot,
-        timezone: Tz,
-        safe_mode: Option<SafeMode>,
-        reply: ReplyTarget,
-        compaction: Option<Budget>,
+        safe_mode: bool,
         token: &CancellationToken,
-    ) -> Result<ComposeInput, RoundError> {
-        let now = self.deps.clock.now();
+    ) -> Result<Gathered, RoundError> {
         let latest_event = self.entries.iter().rev().find_map(|e| match &e.body {
             EntryBody::EventConsumed { event } => Some(event.clone()),
             _ => None,
@@ -27,51 +32,29 @@ impl SessionActor {
             new_input,
             cancel: token.child_token(),
         };
-        let mut context = Contribution::default();
-        if safe_mode.is_none() {
-            for source in &snapshot.context {
-                cancelled(token)?;
-                let contribution = source.contribute(&query).await;
-                cancelled(token)?;
-                let mut contribution =
-                    contribution.map_err(|e| failed(code::CONTEXT_FAILED, e.to_string()))?;
-                context.candidates.append(&mut contribution.candidates);
-                context.omitted.append(&mut contribution.omitted);
-            }
-        }
-        let tools = snapshot
-            .tools
-            .iter()
-            .filter(|t| safe_mode.is_none() || snapshot.lifeline.contains(&t.id))
-            .map(|t| (t.id.clone(), t.spec.clone()))
-            .collect();
-        let previous_plan = self.previous_plan(&mut context.omitted).await?;
-        let transcript = crate::transcript::project(&self.entries);
-        let image_paths = transcript
-            .items
-            .iter()
-            .flat_map(|item| &item.message.parts)
-            .filter_map(|part| match part {
-                Part::Image(image) => {
-                    Some((image.content, self.deps.store.blob_path(&image.content)))
-                }
-                _ => None,
-            })
-            .collect();
-        Ok(ComposeInput {
-            now,
-            timezone,
-            session: self.session.clone(),
-            transcript,
+        let (instructions, offered) = if safe_mode {
+            (None, OfferedMemories::default())
+        } else {
+            (
+                contribute(snapshot.instructions.as_ref(), &query, token).await?,
+                contribute(snapshot.memories.as_ref(), &query, token).await?,
+            )
+        };
+        let mut omitted = offered.omitted;
+        let previous_plan = self.previous_plan(&mut omitted).await?;
+        Ok(Gathered {
+            instructions,
+            memories: offered.memories,
+            omitted,
             previous_plan,
-            context,
-            unavailable: snapshot.unavailable.clone(),
-            tools,
-            safe_mode,
-            reply,
-            compaction,
-            compactions_left: limits::MAX_COMPACTIONS_PER_ROUND,
-            image_paths,
+            transcript: self.located_transcript(),
+        })
+    }
+
+    pub(super) fn located_transcript(&self) -> Transcript<LocatedImage> {
+        crate::transcript::project(&self.entries).map_images(|image| LocatedImage {
+            path: self.deps.store.blob_path(&image.content),
+            image,
         })
     }
 
@@ -94,11 +77,9 @@ impl SessionActor {
         else {
             return Ok(None);
         };
-        match self.deps.store.get_blob(hash).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
-                failed(code::PLAN_INVALID, format!("previous plan {hash}: {error}"))
-            }),
-            Err(StoreError::Blob(_)) => {
+        match self.deps.store.plan(hash).await {
+            Ok(plan) => Ok(Some(plan)),
+            Err(StoreError::Plan { .. }) => {
                 omitted.push(Omission {
                     source: format!("previous-plan:{hash}"),
                     reason: "previous plan is missing or corrupt".into(),
@@ -108,4 +89,16 @@ impl SessionActor {
             Err(error) => Err(error.into()),
         }
     }
+}
+
+/// Cancellation is checked before and after each source, so a cancelled Round asks no further.
+async fn contribute<T: Send>(
+    source: &dyn ContextSource<Supply = T>,
+    query: &ContextQuery,
+    token: &CancellationToken,
+) -> Result<T, RoundError> {
+    cancelled(token)?;
+    let supplied = source.contribute(query).await;
+    cancelled(token)?;
+    supplied.map_err(|e| failed(code::CONTEXT_FAILED, e.to_string()))
 }

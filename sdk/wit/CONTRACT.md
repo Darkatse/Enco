@@ -47,6 +47,13 @@ A plugin exposing model-facing tools.
 - Imports: types, host
 - Exports: tools, lifecycle
 
+### `composer-plugin`
+
+A plugin that writes model requests.
+
+- Imports: types, host
+- Exports: composer, lifecycle
+
 ## Interfaces
 
 ### `types`
@@ -301,6 +308,8 @@ list: func(config: json) -> list<tool-spec>;
 
 Project tool definitions from configuration already accepted by `lifecycle.describe`.
 
+Definitions are fixed with the generation, so this runs without network access.
+
 #### func `call`
 
 ```wit
@@ -485,7 +494,7 @@ describe: func(config: json) -> result<description, failure>;
 Describe the component or reject its configuration.
 
 An empty object must be accepted and provide the plugin's minimum capabilities.
-Declarations are fixed with the generation.
+Declarations are fixed with the generation, so this runs without network access.
 
 #### func `probe`
 
@@ -494,3 +503,449 @@ probe: async func() -> result<_, failure>;
 ```
 
 Check the component without network access or owner-specific configuration.
+
+### `composer`
+
+Writes the model requests of the Sessions whose profile names this plugin.
+
+A composition is a pure function of its arguments, the plugin's configuration and its own code,
+and changes nothing but its result: it has no files, no environment variables and no network, so
+`host.http` fails. The wall clock reads the Round's instant, the monotonic clock stands still and
+randomness is seeded by the Round, so the same generation, called again within a Round with the
+same arguments, returns the same plan.
+
+The host records each plan before sending it and resolves its Log references. A plan breaks
+this contract when it discloses a capability outside this Round, refers to a position outside
+the transcript, or sends images to a model that does not accept them; when a reply plan leaves
+out a capability in `lifeline`; or when a compaction discloses any tool or stops where no Round
+ends.
+
+#### record `datetime`
+
+A UTC instant, shaped like `wasi:clocks/wall-clock.datetime`.
+
+| Field | Type | Description |
+|---|---|---|
+| `seconds` | `u64` | Seconds since the Unix epoch. |
+| `nanoseconds` | `u32` | Nanoseconds past `seconds`. |
+
+#### record `log-pos`
+
+The position of an entry in this Session's Log.
+
+| Field | Type | Description |
+|---|---|---|
+| `epoch` | `u64` | The ownership epoch that wrote the entry; 1 on a single node. |
+| `seq` | `u64` | The entry's place within its epoch. |
+
+#### record `session`
+
+The Session the request is for.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Its permanent ID. |
+| `name` | `string` | Its unique name, as the owner's commands use it. |
+| `profile` | `string` | The profile it uses, by name. |
+| `created-at` | `datetime` | When it was created. |
+
+#### record `image-ref`
+
+A recorded image, by reference rather than by its bytes.
+
+| Field | Type | Description |
+|---|---|---|
+| `format` | `image-format` | How the bytes are encoded. |
+| `size` | `u64` | The size of the bytes. |
+| `content` | `string` | The BLAKE3 digest of the bytes, in lowercase hex. |
+| `path` | `string` | The file that holds the bytes. |
+
+#### record `call`
+
+A tool call that a reply proposed.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Enco's ID for the call, which its result repeats. |
+| `name` | `string` | The tool called. |
+| `arguments` | `string` | The arguments as the model wrote them, as JSON text. |
+
+#### record `call-result`
+
+What the model read as the result of a call.
+
+| Field | Type | Description |
+|---|---|---|
+| `call-id` | `string` | Matches the proposed call so its result can remain adjacent in the request. |
+| `content` | `string` | The result text. |
+| `is-error` | `bool` | Whether the call failed. |
+
+#### variant `part`
+
+One piece of a recorded message.
+
+| Case | Type | Description |
+|---|---|---|
+| `text` | `string` | Words recorded from a speaker or returned by a tool. |
+| `tool-call` | `call` | A proposed tool call. |
+| `tool-result` | `call-result` | The result of a call. |
+| `extension` | `u64` | The size in bytes of adapter fields, which the host gives only to the plugin that wrote them. |
+| `image` | `image-ref` | A recorded picture the plan may include when the target accepts images. |
+
+#### record `message`
+
+A message as the Log records it.
+
+| Field | Type | Description |
+|---|---|---|
+| `role` | `role` | Who speaks. |
+| `parts` | `list<part>` | The content, in order. |
+
+#### record `channel-source`
+
+The channel conversation an input came from.
+
+| Field | Type | Description |
+|---|---|---|
+| `channel` | `string` | The protocol, as the channel adapter names it. |
+| `account` | `string` | The account within the protocol. |
+| `conversation` | `string` | The conversation that replies return to. |
+| `sender` | `string` | The authenticated sender. |
+
+#### variant `event-source`
+
+Who produced an input.
+
+| Case | Type | Description |
+|---|---|---|
+| `cli` | `_` | The owner, through Enco's own interface. |
+| `channel` | `channel-source` | Someone in a channel conversation. |
+| `scheduler` | `_` | A schedule. |
+| `registry` | `_` | The plugin registry, after an automatic rollback. |
+
+#### variant `unviewable-reason`
+
+Why an attachment did not become an image.
+
+| Case | Type | Description |
+|---|---|---|
+| `unsupported` | `_` | Its format is not an accepted image format. |
+| `too-large` | `_` | It is larger than an image may be. |
+| `unavailable` | `string` | It could not be retrieved, for this reason. |
+
+#### record `unviewable`
+
+An attachment kept only as a description.
+
+| Field | Type | Description |
+|---|---|---|
+| `what` | `string` | The channel's description of it. |
+| `reason` | `unviewable-reason` | Why it is not an image. |
+
+#### record `user-message`
+
+A message from the owner.
+
+| Field | Type | Description |
+|---|---|---|
+| `text` | `string` | What the owner wrote. |
+| `images` | `list<image-ref>` | The images sent with it. |
+| `unviewable` | `list<unviewable>` | The attachments that are not images. |
+
+#### record `reminder`
+
+A schedule reaching its time.
+
+| Field | Type | Description |
+|---|---|---|
+| `schedule` | `string` | The schedule's ID. |
+| `due-at` | `datetime` | When this occurrence was due. |
+| `skipped` | `u32` | Earlier occurrences that were missed and not delivered. |
+| `text` | `string` | The instruction recorded when this occurrence became due. |
+
+#### record `rollback`
+
+A trial generation that failed, and what runs instead.
+
+| Field | Type | Description |
+|---|---|---|
+| `plugin` | `string` | The plugin, by name. |
+| `trial` | `u64` | The failed trial generation. |
+| `replacement` | `option<u64>` | The generation running now; absent when none is healthy. |
+| `failure` | `failure` | The fault that caused the rollback. |
+| `text` | `string` | The notice the registry wrote. |
+
+#### variant `event-body`
+
+What an input says.
+
+| Case | Type | Description |
+|---|---|---|
+| `user-message` | `user-message` | A message from the owner. |
+| `reminder` | `reminder` | A scheduled reminder. |
+| `generation-rolled-back` | `rollback` | A notice of an automatic rollback. |
+
+#### record `event`
+
+An input this Session consumed.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | The globally unique identity assigned when the input was accepted. |
+| `received-at` | `datetime` | When it arrived. |
+| `source` | `event-source` | Who produced it. |
+| `body` | `event-body` | What it says. |
+
+#### variant `run-end`
+
+How a Run ended.
+
+| Case | Type | Description |
+|---|---|---|
+| `completed` | `_` | It finished. |
+| `budget-exhausted` | `_` | It used every Round it was allowed. |
+| `interrupted` | `_` | The process stopped before it finished. |
+| `cancelled` | `_` | It was cancelled. |
+| `failed` | `failure` | Execution stopped with this recorded failure. |
+
+#### record `run-ended`
+
+A Run's end, and where the Log records it.
+
+| Field | Type | Description |
+|---|---|---|
+| `pos` | `log-pos` | The entry that records the end. |
+| `end` | `run-end` | How the Run ended. |
+
+#### record `transcript-item`
+
+A message the Log records, with the input it came from.
+
+| Field | Type | Description |
+|---|---|---|
+| `pos` | `log-pos` | Where the Log records it. |
+| `message` | `message` | Canonical content a plan can repeat through this Log position. |
+| `event` | `option<event>` | The input it records; absent for replies and tool results. |
+
+#### record `transcript`
+
+The history a plan may refer to.
+
+| Field | Type | Description |
+|---|---|---|
+| `summary` | `option<string>` | The latest summary, which replaces the history before it. |
+| `items` | `list<transcript-item>` | The messages after that summary, in Log order. |
+| `round-ends` | `list<log-pos>` | The ends of complete Rounds, where a compaction may stop, in Log order. |
+| `run-ends` | `list<run-ended>` | How each Run after the summary ended, in Log order. |
+
+#### record `memory`
+
+A durable fact about the owner, as the memory records hold it.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Its identity, kept through corrections; the memory tools take it. |
+| `text` | `string` | The current statement. |
+| `pinned` | `bool` | Whether it is offered every Round regardless of the input. |
+| `created-at` | `datetime` | When it was created. |
+| `updated-at` | `datetime` | When it was last changed. |
+| `rev` | `u64` | Starts at one and grows with each correction. |
+
+#### record `omission`
+
+Content left out of a request, and why.
+
+| Field | Type | Description |
+|---|---|---|
+| `source` | `string` | What was left out, such as `memory:<id>`. |
+| `reason` | `string` | Why, for whoever inspects the request. |
+
+#### record `capability-id`
+
+A tool's identity, qualified by the node that provides it.
+
+| Field | Type | Description |
+|---|---|---|
+| `node` | `string` | The node that provides the tool. |
+| `name` | `string` | The tool's name, unique within a Round. |
+
+#### record `capability`
+
+A tool this Round may disclose.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `capability-id` | The identity a plan discloses it by. |
+| `spec` | `tool-spec` | The definition the host records with a plan that discloses it. |
+
+#### record `unavailable-plugin`
+
+A plugin left out of this Round.
+
+| Field | Type | Description |
+|---|---|---|
+| `plugin` | `string` | The plugin, by name. |
+| `failure` | `failure` | Why it is left out. |
+
+#### variant `safe-mode`
+
+Why this Round runs in safe mode.
+
+| Case | Type | Description |
+|---|---|---|
+| `owner` | `_` | The owner turned safe mode on. |
+| `failed` | `failure` | This Run failed against the generations that are still running. |
+
+#### record `budget`
+
+A model's limits.
+
+| Field | Type | Description |
+|---|---|---|
+| `context-tokens` | `u32` | The context window, output included. |
+| `max-output-tokens` | `u32` | The most tokens a reply may use. |
+
+#### enum `modality`
+
+Input other than text that a model accepts.
+
+- `image`: Images.
+
+#### record `skipped-endpoint`
+
+A reply endpoint passed over, and why.
+
+| Field | Type | Description |
+|---|---|---|
+| `endpoint` | `string` | The endpoint, by its configured name. |
+| `failure` | `failure` | Why it was passed over. |
+
+#### record `reply-target`
+
+The model a reply plan is for.
+
+| Field | Type | Description |
+|---|---|---|
+| `budget` | `budget` | Its limits. |
+| `accepts` | `list<modality>` | What it accepts besides text. |
+| `skipped` | `list<skipped-endpoint>` | Earlier candidates that are unavailable or exhausted in this Run, in configured order. |
+
+#### record `source`
+
+A source a plan renders, with a digest a later composition can compare.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | The source, such as `memory:<id>`. |
+| `hash` | `string` | The BLAKE3 digest of its text before formatting, in lowercase hex. |
+
+#### record `inline`
+
+Text the composer wrote, recorded verbatim.
+
+| Field | Type | Description |
+|---|---|---|
+| `role` | `role` | Who speaks. |
+| `text` | `string` | The exact words the host will record and send to the model. |
+| `sources` | `list<source>` | The sources it renders, in order. |
+
+#### record `log-ref`
+
+A Log message the request repeats.
+
+| Field | Type | Description |
+|---|---|---|
+| `pos` | `log-pos` | The message, by its position in the transcript. |
+| `images` | `bool` | Whether its images go with it; all of them or none. |
+
+#### variant `plan-item`
+
+One message of a request.
+
+| Case | Type | Description |
+|---|---|---|
+| `message` | `inline` | Text the composer wrote. |
+| `log` | `log-ref` | A message from the Log. |
+
+#### record `plan`
+
+A request, before the host records and resolves it.
+
+| Field | Type | Description |
+|---|---|---|
+| `items` | `list<plan-item>` | The messages, in order. |
+| `tools` | `list<capability-id>` | The tools to disclose, by identity. |
+| `max-output-tokens` | `option<u32>` | The most tokens the reply may use; the service's default when absent. |
+| `omitted` | `list<omission>` | What the composer left out, and why. |
+
+#### record `compose-input`
+
+Everything the host supplies for one composition.
+
+| Field | Type | Description |
+|---|---|---|
+| `session` | `session` | The Session the request is for. |
+| `timezone` | `string` | The owner's time zone, as an IANA name such as `Asia/Shanghai`. |
+| `home` | `string` | The home's absolute path on the node running this Round.  Its layout is part of this contract: `config.toml`, `AGENTS.md` for the standing instructions, `plugins/<name>/`, `sdk/`, `manual/` and `workspace/`. `.data/` is Enco's own store and not part of it. |
+| `transcript` | `transcript` | The history a plan may refer to. |
+| `previous` | `option<plan>` | This Session's latest recorded reply plan; absent at the start, or when it could not be read, which `omitted` then says. |
+| `instructions` | `option<string>` | The text of `AGENTS.md`, as read at the start of this Round; absent when the file does not exist, and in safe mode. |
+| `memories` | `list<memory>` | Memories for this Round in priority order: pinned ones first, then those recalled for the latest input, most relevant first; empty in safe mode. |
+| `omitted` | `list<omission>` | Content the host could not supply; the host records it with the plan. |
+| `capabilities` | `list<capability>` | Every tool this Round may disclose; in safe mode, only the lifeline. |
+| `lifeline` | `list<capability-id>` | The tools every reply plan must disclose; empty when the Session does not require the lifeline. |
+| `unavailable` | `list<unavailable-plugin>` | Plugins left out of this Round. |
+| `safe-mode` | `option<safe-mode>` | Why this Round runs in safe mode; absent in normal operation. |
+| `reply` | `reply-target` | The model a reply plan is for. |
+| `compaction` | `option<budget>` | The summarizing model's limits; absent when no summarizing model is usable. |
+| `compactions-left` | `u32` | How many more compactions this Round allows. |
+
+#### record `compaction`
+
+A request to summarize history before replying.
+
+| Field | Type | Description |
+|---|---|---|
+| `upto` | `log-pos` | The last Round end to summarize, one of `transcript.round-ends`. |
+| `plan` | `plan` | The summarizing request; it discloses no tools. |
+
+#### variant `composition`
+
+What a composition returns.
+
+| Case | Type | Description |
+|---|---|---|
+| `reply` | `plan` | A reply request. |
+| `compact` | `compaction` | Summarize history first; the host composes again once the summary is recorded. |
+
+#### func `options-schema`
+
+```wit
+options-schema: func(config: json) -> json;
+```
+
+The JSON Schema of the options a profile passes to `compose`, in the subset `tool-spec`
+states.
+
+An empty object must fit it. The host checks a profile's options against the schema of the
+generation that runs them: registering configuration or code that breaks a profile's options
+is rejected, and a profile whose options no longer fit, as after a rollback, cannot use this
+plugin until they do. The schema is fixed with the generation, so this runs without network
+access.
+
+#### func `compose`
+
+```wit
+compose: func(options: json, input: compose-input) -> result<composition, failure>;
+```
+
+Write the next request.
+
+`options` fit the running generation's `options-schema` and are normalized as tool arguments
+are. Return `compact` only while `compaction` is present and `compactions-left` is above
+zero.
+
+# Errors
+`context.overflow` when no valid request fits the window; when only a compaction would make
+it fit and `compaction` is absent, the host records why no summarizing model is usable. The
+host records any other code as `compose.failed`.

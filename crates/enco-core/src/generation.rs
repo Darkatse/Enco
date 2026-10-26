@@ -81,11 +81,6 @@ pub enum Origin {
         /// Generation whose code is reused.
         based_on: GenerationId,
     },
-    /// A component supplied directly, independently of source intent.
-    Artifact {
-        /// Accepted change that supplied this component.
-        registration: RegistrationId,
-    },
 }
 
 impl Origin {
@@ -93,9 +88,7 @@ impl Origin {
     pub fn registration(self) -> Option<RegistrationId> {
         match self {
             Self::Factory => None,
-            Self::Code { registration }
-            | Self::Settings { registration, .. }
-            | Self::Artifact { registration } => Some(registration),
+            Self::Code { registration } | Self::Settings { registration, .. } => Some(registration),
         }
     }
 }

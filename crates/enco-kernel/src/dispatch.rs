@@ -66,14 +66,17 @@ impl SessionActor {
                 self.deps.store.blob_path(&image.content).display()
             ));
         }
-        self.commit(vec![EntryBody::ToolCallSettled {
-            call,
-            outcome: Settlement::from(&outcome),
-            content,
-            full,
-            images: stored,
-            outgoing,
-        }])
+        self.commit(
+            vec![EntryBody::ToolCallSettled {
+                call,
+                outcome: Settlement::from(&outcome),
+                content,
+                full,
+                images: stored,
+                outgoing,
+            }],
+            None,
+        )
         .await
     }
 
@@ -132,7 +135,7 @@ impl SessionActor {
             })
             .collect();
         if !starts.is_empty() {
-            self.commit(starts).await?;
+            self.commit(starts, None).await?;
         }
         let batch_cancel = token.child_token();
         let mut tasks = tokio::task::JoinSet::new();

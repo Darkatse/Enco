@@ -6,6 +6,10 @@
 #[doc(hidden)]
 mod bindings;
 
+mod call_world;
+mod composer;
+mod composer_convert;
+mod composer_events;
 mod convert;
 mod credentials;
 mod engine;

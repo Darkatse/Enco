@@ -27,6 +27,9 @@ use tokio_util::sync::CancellationToken;
 /// The target every plugin component is compiled for.
 pub(super) const TARGET: &str = "wasm32-wasip2";
 
+/// Cargo's build directory for home plugins; build logs live under it and go when it is cleaned.
+const TARGET_DIR: &str = ".data/target";
+
 /// What happened to one plugin source during an apply.
 #[derive(Serialize)]
 pub struct BuildResult {
@@ -40,7 +43,7 @@ pub struct BuildResult {
     /// At most `BUILD_DIAGNOSTICS` distinct compiler messages, errors first; empty when the build
     /// was reused.
     pub diagnostics: Vec<String>,
-    /// Path to Cargo's complete output; absent when the build was reused.
+    /// Path to Cargo's complete output, retained until the build directory is cleaned; absent on reuse.
     pub log: Option<PathBuf>,
 }
 
@@ -175,7 +178,7 @@ impl Development {
                     "--message-format=json-render-diagnostics",
                     "--target-dir",
                 ])
-                .arg(self.home.join(".data/target"));
+                .arg(self.home.join(TARGET_DIR));
             if stage == "clippy" {
                 command.args(["--", "-D", "warnings"]);
             }
@@ -194,7 +197,7 @@ impl Development {
                     .await);
             }
         }
-        let log = self.store.blob_path(&self.store.put_blob(&log).await?);
+        let log = self.build_log(name, &log).await?;
         let Some(artifact) = artifact else {
             return Err(failed(BuildFailure::NoArtifact(log)));
         };
@@ -247,9 +250,9 @@ impl Development {
         messages: Vec<(bool, String)>,
         stderr: &[u8],
     ) -> DevelopmentError {
-        let log = match self.store.put_blob(log).await {
-            Ok(hash) => self.store.blob_path(&hash),
-            Err(error) => return error.into(),
+        let log = match self.build_log(name, log).await {
+            Ok(path) => path,
+            Err(error) => return error,
         };
         let mut diagnostics = excerpts(messages);
         if diagnostics.is_empty() {
@@ -263,6 +266,22 @@ impl Development {
                 log,
             },
         }
+    }
+
+    async fn build_log(
+        &self,
+        name: &PluginName,
+        bytes: &[u8],
+    ) -> Result<PathBuf, DevelopmentError> {
+        let directory = self.home.join(TARGET_DIR).join("logs");
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .map_err(|error| io(&directory, &error))?;
+        let path = directory.join(format!("{name}-{}.log", ulid::Ulid::generate()));
+        tokio::fs::write(&path, bytes)
+            .await
+            .map_err(|error| io(&path, &error))?;
+        Ok(path)
     }
 
     /// Check that the SDK's toolchain and the plugin target are installed before Cargo runs, and

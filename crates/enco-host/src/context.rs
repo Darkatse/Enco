@@ -1,6 +1,5 @@
 //! The owner's standing instructions as a context source, read again for each Round.
 use async_trait::async_trait;
-use enco_core::*;
 use enco_kernel::{ContextError, ContextQuery, ContextSource};
 use std::path::PathBuf;
 
@@ -18,19 +17,13 @@ impl InstructionsContextSource {
 
 #[async_trait]
 impl ContextSource for InstructionsContextSource {
-    async fn contribute(&self, _query: &ContextQuery) -> Result<Contribution, ContextError> {
+    type Supply = Option<String>;
+
+    async fn contribute(&self, _query: &ContextQuery) -> Result<Option<String>, ContextError> {
         let path = &self.path;
         match tokio::fs::read_to_string(path).await {
-            Ok(text) => Ok(Contribution {
-                candidates: vec![Candidate {
-                    id: "instructions:AGENTS.md".into(),
-                    kind: CandidateKind::Instruction,
-                    text,
-                    standing: true,
-                }],
-                omitted: vec![],
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Contribution::default()),
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(ContextError(format!("{}: {e}", path.display()))),
         }
     }

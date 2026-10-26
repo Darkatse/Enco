@@ -6,10 +6,47 @@ use crate::protocol;
 use crate::support;
 
 use enco_core::{EntryBody, EventId, RunEnd, code};
+use enco_host::development::tree::FileTree;
 use protocol::Command;
 use serde_json::{Value, json};
 use support::*;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+
+#[tokio::test]
+async fn init_ships_no_plugin_source_and_scaffold_takes_a_factory_source() {
+    let server = MockServer::start().await;
+    let mut daemon = Daemon::start(&server, "openai-compatible").await;
+    let plugins = daemon.root.path().join("plugins");
+    assert_eq!(std::fs::read_dir(&plugins).unwrap().count(), 0);
+    daemon
+        .connect()
+        .await
+        .request(Command::PluginScaffold {
+            name: "composer".parse().unwrap(),
+        })
+        .await
+        .unwrap();
+    let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/composer");
+    let source =
+        |root: std::path::PathBuf| async move { FileTree::read(&root).await.unwrap().hash() };
+    assert_eq!(
+        source(plugins.join("composer")).await,
+        source(shipped).await
+    );
+    let status = daemon
+        .connect()
+        .await
+        .request(Command::Status {
+            output: protocol::Output::Json,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        status["plugins"]["composer"]["registered"]["code"]["intent"]["kind"],
+        "factory"
+    );
+    daemon.stop().await;
+}
 
 /// Serves embeddings and completions, except the `rejected` model and tool requests to `no-tools`.
 async fn model_service() -> MockServer {

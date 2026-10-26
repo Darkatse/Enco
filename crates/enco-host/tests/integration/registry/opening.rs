@@ -1,5 +1,5 @@
 //! What opening the registry establishes from the factory and restores from durable records.
-use super::{active, deploy_artifact, loaded, open, promote};
+use super::{active, loaded, open, promote, register_source};
 use crate::support::*;
 use enco_core::*;
 use enco_host::*;
@@ -54,7 +54,7 @@ async fn factory_records_need_registration_to_activate_and_preserve_source_overr
     .await
     .unwrap();
     let second = active(&registry).await;
-    assert_eq!(store.registry().await.unwrap().generations.len(), 2);
+    assert_eq!(store.registry().await.unwrap().generations.len(), 3);
     assert_eq!(second.origin, Origin::Factory);
     assert!(second.id > first.id);
     let owner_code = submit(&registry, source_request("fixture", b"owner"))
@@ -70,7 +70,7 @@ async fn factory_records_need_registration_to_activate_and_preserve_source_overr
     .await
     .unwrap();
     assert_eq!(active(&registry).await, owner_code);
-    assert_eq!(store.registry().await.unwrap().generations.len(), 4);
+    assert_eq!(store.registry().await.unwrap().generations.len(), 5);
     drop(registry);
     // A contract upgrade can make every older artifact unloadable, including the active one.
     let runtime = Arc::new(ScriptedRuntime::default());
@@ -155,9 +155,9 @@ impl Crashed {
         }
         let registry = open(&store, runtime.clone()).await;
         let factory = active(&registry).await.id;
-        let older = deploy_artifact(&registry, "fixture", b"older").await;
+        let older = register_source(&registry, "fixture", b"older").await;
         promote(&registry, older.id).await;
-        let latest = deploy_artifact(&registry, "fixture", b"latest").await;
+        let latest = register_source(&registry, "fixture", b"latest").await;
         promote(&registry, latest.id).await;
         drop(registry);
         Self {
@@ -217,7 +217,9 @@ async fn recovery_skips_missing_and_corrupt_artifacts() {
         .unwrap()
         .generations
         .values()
-        .filter(|record| record.id != crashed.factory)
+        .filter(|record| {
+            record.plugin == FIXTURE_ID.parse().unwrap() && record.id != crashed.factory
+        })
     {
         assert_eq!(record.status, GenerationStatus::Failed);
         let failure = record.failure.as_ref().unwrap();
@@ -234,9 +236,9 @@ async fn rollback_and_recovery_skip_lost_artifacts_of_a_registered_plugin() {
         .activation
         .generation
         .clone();
-    let only = deploy_artifact(&registry, "custom", b"latest").await;
+    let only = register_source(&registry, "custom", b"latest").await;
     promote(&registry, only.id).await;
-    let newer = deploy_artifact(&registry, "custom", b"older").await;
+    let newer = register_source(&registry, "custom", b"older").await;
     assert_eq!(
         crashed.store.artifact(&newer.artifact).await.unwrap(),
         b"older"

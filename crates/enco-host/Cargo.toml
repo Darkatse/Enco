@@ -13,6 +13,7 @@ rusqlite = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart"] }
 triviumdb = { workspace = true }
 imagesize = { workspace = true }
+zstd = { workspace = true }
 tokio = { workspace = true, features = ["rt", "fs", "process", "io-util", "time", "sync", "macros"] }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }

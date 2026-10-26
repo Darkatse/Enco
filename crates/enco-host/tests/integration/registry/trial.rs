@@ -1,5 +1,5 @@
 //! How verdicts move a generation through trial to health or rollback, and what survives restart.
-use super::{active, deploy_artifact, fault, loaded, open, promote};
+use super::{active, fault, loaded, open, promote, register_source};
 use crate::support::*;
 use enco_core::*;
 use enco_host::*;
@@ -18,7 +18,7 @@ async fn trial_promotion_counts_successes_since_opening_and_ignores_environment_
     let dir = tempfile::tempdir().unwrap();
     let (store, runtime) = factory_only(dir.path()).await;
     let registry = open(&store, runtime.clone()).await;
-    let trial = deploy_artifact(&registry, "custom", FACTORY_BYTES).await;
+    let trial = register_source(&registry, "custom", FACTORY_BYTES).await;
     for _ in 0..TRIAL_CALLS - 1 {
         registry.report(trial.id, Verdict::Ok, None).await.unwrap();
     }
@@ -84,9 +84,9 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (store, runtime) = factory_only(dir.path()).await;
     let registry = open(&store, runtime.clone()).await;
-    let healthy = deploy_artifact(&registry, "custom", FACTORY_BYTES).await;
+    let healthy = register_source(&registry, "custom", FACTORY_BYTES).await;
     promote(&registry, healthy.id).await;
-    let next = deploy_artifact(&registry, "custom", FACTORY_BYTES).await;
+    let next = register_source(&registry, "custom", FACTORY_BYTES).await;
     let session = store.ensure_session("notice", Utc::now()).await.unwrap();
     let sql = rusqlite::Connection::open(dir.path().join("enco.db")).unwrap();
     sql.execute_batch("CREATE TRIGGER reject_notice BEFORE INSERT ON inbox BEGIN SELECT RAISE(ABORT, 'notice unavailable'); END;").unwrap();
@@ -177,7 +177,7 @@ async fn a_failing_only_generation_leaves_its_plugin_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     let (store, runtime) = factory_only(dir.path()).await;
     let registry = open(&store, runtime).await;
-    let alone = deploy_artifact(&registry, "alone", FACTORY_BYTES).await;
+    let alone = register_source(&registry, "alone", FACTORY_BYTES).await;
     registry
         .report(
             alone.id,
@@ -206,15 +206,12 @@ async fn configuration_probes_report_trial_health_even_when_configuration_is_rej
     let provider = ScriptedProvider::new(vec![reply("OK"), Err(fault(code::PLUGIN_TRAP))]);
     runtime.insert(FACTORY_BYTES, loaded(provider));
     let registry = open(&store, runtime).await;
-    let trial = submit(
-        &registry,
-        artifact_request("fixture", FACTORY_BYTES.to_vec()),
-    )
-    .await
-    .unwrap()
-    .generations
-    .remove(0)
-    .id;
+    let trial = submit(&registry, source_request("fixture", FACTORY_BYTES))
+        .await
+        .unwrap()
+        .generations
+        .remove(0)
+        .id;
     let mut document = configuration();
     document["endpoint"]["reply"]["model"] = "probe-success".into();
     submit(&registry, configuration_request(document.clone()))
@@ -226,15 +223,12 @@ async fn configuration_probes_report_trial_health_even_when_configuration_is_rej
     assert_eq!(active(&registry).await.status, GenerationStatus::Trial);
     registry.report(trial, Verdict::Ok, None).await.unwrap();
     assert_eq!(active(&registry).await.status, GenerationStatus::Healthy);
-    let broken = submit(
-        &registry,
-        artifact_request("fixture", FACTORY_BYTES.to_vec()),
-    )
-    .await
-    .unwrap()
-    .generations
-    .remove(0)
-    .id;
+    let broken = submit(&registry, source_request("fixture", FACTORY_BYTES))
+        .await
+        .unwrap()
+        .generations
+        .remove(0)
+        .id;
     let config = registry.view().config.generation;
     document["endpoint"]["reply"]["model"] = "probe-trap".into();
     let result = submit(&registry, configuration_request(document)).await;

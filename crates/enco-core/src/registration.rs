@@ -164,7 +164,7 @@ pub struct RegisteredName {
 pub struct RegisteredCode {
     /// Code activated by this change.
     pub generation: GenerationId,
-    /// Code intent accepted here; settings and artifacts leave it unchanged.
+    /// Code intent accepted here; a settings change leaves it unchanged.
     pub intent: Option<CodeIntent>,
 }
 

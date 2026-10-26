@@ -1,5 +1,5 @@
 use crate::{
-    Clock, Commit, KernelError, Store, StoreError, limits::SESSION_BROADCAST_CAPACITY,
+    Clock, Commit, KernelError, PlanWrite, Store, StoreError, limits::SESSION_BROADCAST_CAPACITY,
     snapshot::Snapshot,
 };
 use enco_core::*;
@@ -15,6 +15,7 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 pub(crate) struct SessionDeps {
+    pub home: std::path::PathBuf,
     pub store: Arc<dyn Store>,
     pub clock: Arc<dyn Clock>,
     pub registry: Arc<crate::Registry>,
@@ -81,7 +82,7 @@ impl SessionActor {
             .map_or(1, |e| e.pos.seq.0 + 1);
         let recovery = crate::recovery::recover(&self.entries);
         if !recovery.is_empty() {
-            self.commit(recovery).await?;
+            self.commit(recovery, None).await?;
         }
         loop {
             if self.deps.shutdown.is_cancelled() {
@@ -102,7 +103,11 @@ impl SessionActor {
         }
     }
 
-    pub(crate) async fn commit(&mut self, bodies: Vec<EntryBody>) -> Result<(), StoreError> {
+    pub(crate) async fn commit(
+        &mut self,
+        bodies: Vec<EntryBody>,
+        plan: Option<Arc<PlanWrite>>,
+    ) -> Result<(), StoreError> {
         let entries: Vec<_> = bodies
             .into_iter()
             .enumerate()
@@ -121,6 +126,7 @@ impl SessionActor {
                 self.session.id,
                 Commit {
                     entries: entries.clone(),
+                    plan,
                 },
             )
             .await?;

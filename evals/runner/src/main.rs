@@ -13,6 +13,7 @@ mod result;
 mod run;
 mod server;
 mod snapshot;
+mod source;
 mod stats;
 mod task;
 mod trial;

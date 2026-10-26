@@ -21,10 +21,24 @@ CREATE TABLE log (
   body       TEXT NOT NULL,              -- Serialized EntryBody
   kind       TEXT GENERATED ALWAYS AS (json_extract(body, '$.kind')) VIRTUAL,
   event_id   TEXT GENERATED ALWAYS AS (CASE WHEN json_extract(body, '$.kind') = 'event_consumed' THEN json_extract(body, '$.event.id') END) VIRTUAL,
-  PRIMARY KEY (session_id, epoch, seq)
+  plan       TEXT GENERATED ALWAYS AS (CASE WHEN json_extract(body, '$.kind') = 'attempt_started' THEN json_extract(body, '$.plan') END) VIRTUAL,
+  PRIMARY KEY (session_id, epoch, seq),
+  FOREIGN KEY (plan) REFERENCES context_plans(hash)
 ) STRICT;
 
 CREATE UNIQUE INDEX log_event_id ON log(event_id) WHERE event_id IS NOT NULL;
+
+CREATE TABLE tool_catalogs (
+  hash TEXT PRIMARY KEY,
+  body BLOB NOT NULL                     -- zstd-compressed frozen tool definitions
+) STRICT;
+
+CREATE TABLE context_plans (
+  hash    TEXT PRIMARY KEY,              -- Complete ContextPlan identity, independent of encoding
+  catalog TEXT NOT NULL REFERENCES tool_catalogs(hash),
+  parent  TEXT REFERENCES context_plans(hash),
+  body    BLOB NOT NULL                  -- zstd-compressed items, output budget and omissions
+) STRICT;
 
 CREATE TABLE inbox (
   order_no       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,7 +141,7 @@ CREATE TABLE plugin_generations (
   artifact   TEXT NOT NULL,
   settings   TEXT NOT NULL,
   registration INTEGER REFERENCES registrations(id),
-  origin     TEXT NOT NULL CHECK (origin IN ('factory', 'code', 'settings', 'artifact')),
+  origin     TEXT NOT NULL CHECK (origin IN ('factory', 'code', 'settings')),
   based_on   INTEGER REFERENCES plugin_generations(id),
   status     TEXT NOT NULL CHECK (status IN ('trial', 'healthy', 'failed')),
   failure    TEXT,

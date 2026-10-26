@@ -49,6 +49,7 @@ async fn cancelling_a_source_built_computing_plugin_settles_unknown_and_joins() 
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/test-fixture"),
         &home.join("plugins/fixture"),
     );
+    support::initialize(root.path()).await;
     let mut daemon = Daemon::start_home(root).await;
     let status = daemon
         .connect()
@@ -529,6 +530,7 @@ async fn first_start_registers_a_source_provider_with_the_configuration_that_use
         toml::to_string(&document).unwrap(),
     )
     .unwrap();
+    support::initialize(root.path()).await;
     let mut daemon = Daemon::start_home(root).await;
     let status = daemon
         .connect()
@@ -670,6 +672,7 @@ async fn check_build_rejection(daemon: &Daemon, document: &Value, source: &Path)
         .find_map(|line| line.strip_prefix("Full log: "))
         .unwrap()
         .trim_matches('`');
+    assert!(Path::new(full).starts_with(home.join(".data/target")));
     assert!(std::fs::read_to_string(full).unwrap().contains("error"));
     let after = daemon
         .connect()

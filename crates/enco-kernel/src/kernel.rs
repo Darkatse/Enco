@@ -17,10 +17,12 @@ pub struct KernelDeps {
     pub store: Arc<dyn Store>,
     /// Sole owner of plugin generations and published exports.
     pub registry: Arc<Registry>,
-    /// Pure context policy.
-    pub composer: Arc<dyn Composer>,
-    /// Context sources in contribution order.
-    pub context: Vec<Arc<dyn ContextSource>>,
+    /// Absolute home location supplied to context policies.
+    pub home: std::path::PathBuf,
+    /// The owner's standing instructions, read once per Round.
+    pub instructions: Arc<dyn ContextSource<Supply = Option<String>>>,
+    /// The memories offered once per Round.
+    pub memories: Arc<dyn ContextSource<Supply = OfferedMemories>>,
     /// Host capabilities exposed through the ordinary Tool port.
     pub tools: Vec<Arc<dyn Tool>>,
     /// Tool names required by Sessions with requires_lifeline.
@@ -46,8 +48,6 @@ pub struct Status {
     pub node: NodeId,
     /// Policy observed at the next Round boundary.
     pub safe_mode: bool,
-    /// Configured composer code.
-    pub composer: CodeRef,
     /// Available profile names; endpoint credentials are never exposed.
     pub profiles: Vec<String>,
     /// State of every registered Session actor.
@@ -145,6 +145,7 @@ impl Kernel {
             schedules,
             scheduler: Mutex::new(None),
             deps: Arc::new(SessionDeps {
+                home: deps.home,
                 store: deps.store,
                 clock: deps.clock,
                 registry: deps.registry,
@@ -330,7 +331,6 @@ impl Kernel {
             timezone: view.config.kernel.timezone,
             node: node.id,
             safe_mode: node.safe_mode,
-            composer: self.deps.snapshot.composer.code(),
             profiles: view.config.kernel.profiles.keys().cloned().collect(),
             sessions,
             scheduler_stopped: self.schedules.stopped(),

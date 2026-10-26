@@ -372,7 +372,7 @@ const PROBE_REJECTED: &str = concat!(
 );
 
 #[tokio::test]
-async fn a_failed_probe_is_rejected_by_both_source_and_cli_artifact_registration() {
+async fn a_failed_probe_is_rejected_before_source_registration() {
     let server = MockServer::start().await;
     let mut daemon = Daemon::start(&server, "openai-compatible").await;
     let home = daemon.root.path().to_path_buf();
@@ -405,21 +405,6 @@ async fn a_failed_probe_is_rejected_by_both_source_and_cli_artifact_registration
         .unwrap_err()
         .to_string();
     assert!(rejected.contains("fixture probe rejected"), "{rejected}");
-    std::fs::copy(
-        home.join(".data/target/wasm32-wasip2/release/test_fixture.wasm"),
-        home.join("rejected.wasm"),
-    )
-    .unwrap();
-    std::fs::remove_dir_all(home.join("plugins/fixture")).unwrap();
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
-        .args(["plugin", "deploy", "fixture", "rejected.wasm"])
-        .current_dir(&home)
-        .env("ENCO_HOME", &home)
-        .output()
-        .await
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("fixture probe rejected"));
     let after = daemon
         .connect()
         .await

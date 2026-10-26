@@ -1,9 +1,9 @@
 use crate::paths::Paths;
 use anyhow::Result;
 use enco_host::{
-    FactoryComposer, InstructionsContextSource, LIFELINE, Memories, MemoryContextSource,
-    MemoryPaths, SqliteStore, StorePaths, SystemClock,
-    development::{Development, Following, Manual},
+    InstructionsContextSource, LIFELINE, Memories, MemoryContextSource, MemoryPaths, SqliteStore,
+    StorePaths, SystemClock,
+    development::{Development, FactorySources, Following, Manual},
     development_tool_specs, development_tools, memory_tool_specs, memory_tools, native_tools,
     self_status_spec,
 };
@@ -16,6 +16,8 @@ include!(concat!(env!("OUT_DIR"), "/sdk.rs"));
 include!(concat!(env!("OUT_DIR"), "/embedded_factory.rs"));
 
 include!(concat!(env!("OUT_DIR"), "/manual.rs"));
+
+include!(concat!(env!("OUT_DIR"), "/factory_sources.rs"));
 
 pub(crate) struct Application {
     pub kernel: Arc<Kernel>,
@@ -59,6 +61,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
     let development = Development::new(
         paths.home.clone(),
         sdk,
+        FactorySources::new(FACTORY_SOURCES)?,
         manual,
         store.clone(),
         runtime.clone(),
@@ -69,6 +72,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
             store: store.clone(),
             runtime,
             factory: factory()?,
+            composer: FACTORY_COMPOSER.parse()?,
             owners: enco_host::TABLE_OWNERS.into(),
             clock: clock.clone(),
         })
@@ -92,15 +96,9 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
     let kernel = Kernel::start(KernelDeps {
         store,
         registry,
-        composer: Arc::new(FactoryComposer::new(
-            paths.home.clone(),
-            paths.workspace(),
-            paths.instructions(),
-        )),
-        context: vec![
-            Arc::new(InstructionsContextSource::new(paths.instructions())),
-            Arc::new(MemoryContextSource::new(memories.clone())),
-        ],
+        home: paths.home.clone(),
+        instructions: Arc::new(InstructionsContextSource::new(paths.instructions())),
+        memories: Arc::new(MemoryContextSource::new(memories.clone())),
         tools,
         lifeline: LIFELINE.iter().map(|s| s.to_string()).collect(),
         clock: clock.clone(),

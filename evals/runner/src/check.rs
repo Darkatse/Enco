@@ -54,7 +54,7 @@ pub(crate) async fn check(repository: &Path, config: &Path, selected: Vec<String
     let variant = trial::Variant {
         name: "null".into(),
         binary: Binary::resolve(&base).await?,
-        deploy: Vec::new(),
+        source: Vec::new(),
         plugin: base.plugin,
         variables: base.variables,
     };

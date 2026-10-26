@@ -14,6 +14,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .join("../..")
         .canonicalize()?;
     embed_factory(&root)?;
+    embed_sources(&root)?;
     embed_sdk(&root)?;
     embed_manual(&root)?;
     record_revision(&root)?;
@@ -21,7 +22,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn embed_factory(root: &Path) -> Result<(), Box<dyn Error>> {
-    let mut source = String::from("const FACTORY: &[(&str, &str, &[u8])] = &[\n");
+    let mut source = format!(
+        "const FACTORY_COMPOSER: &str = {:?};\nconst FACTORY: &[(&str, &str, &[u8])] = &[\n",
+        factory::COMPOSER
+    );
     for (name, id) in factory::PLUGINS {
         let path = root.join(format!("target/factory/{name}.wasm"));
         if !path.try_exists()? {
@@ -48,11 +52,52 @@ fn embed_factory(root: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn embed_sources(root: &Path) -> Result<(), Box<dyn Error>> {
+    let mut source = String::from(
+        "pub(crate) const FACTORY_SOURCES: &[(&str, &enco_host::development::FactoryFiles)] = &[\n",
+    );
+    for (name, _) in factory::PLUGINS {
+        let directory = root.join("plugins").join(name);
+        let mut files: Vec<_> = [
+            "Cargo.toml",
+            "Cargo.lock",
+            ".gitignore",
+            ".cargo/config.toml",
+        ]
+        .into_iter()
+        .map(|file| directory.join(file))
+        .collect();
+        collect_files(&directory.join("src"), &["rs", "md"], &mut files)?;
+        files.sort();
+        source.push_str(&format!("({name:?}, &[\n"));
+        for path in files {
+            let relative = path
+                .strip_prefix(&directory)?
+                .to_str()
+                .ok_or("source path is not UTF-8")?;
+            source.push_str(&format!(
+                "({relative:?}, include_bytes!({:?})),\n",
+                path.to_str().ok_or("source path is not UTF-8")?
+            ));
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+        println!("cargo:rerun-if-changed={}", directory.join("src").display());
+        source.push_str("]),\n");
+    }
+    source.push_str("];\n");
+    fs::write(
+        PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR is missing")?)
+            .join("factory_sources.rs"),
+        source,
+    )?;
+    Ok(())
+}
+
 fn embed_sdk(root: &Path) -> Result<(), Box<dyn Error>> {
     let sdk = root.join("sdk");
     let mut sources = vec![sdk.join("Cargo.toml"), sdk.join("Cargo.lock")];
-    collect_files(&sdk.join("src"), &mut sources)?;
-    collect_files(&sdk.join("wit"), &mut sources)?;
+    collect_files(&sdk.join("src"), &["rs"], &mut sources)?;
+    collect_files(&sdk.join("wit"), &["wit"], &mut sources)?;
     let mut files = sources
         .into_iter()
         .map(|path| Ok((path.strip_prefix(&sdk)?.to_owned(), path)))
@@ -122,16 +167,19 @@ fn embed_manual(root: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Only Rust sources and the WIT enter the bundle: the contract's Markdown is in the manual, and
-/// editor and system files would change the bundle's hash.
-fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+/// Bundle the source kinds each caller owns, excluding editor and system files.
+fn collect_files(
+    directory: &Path,
+    extensions: &[&str],
+    files: &mut Vec<PathBuf>,
+) -> Result<(), std::io::Error> {
     for entry in fs::read_dir(directory)? {
         let path = entry?.path();
         if path.is_dir() {
-            collect_files(&path, files)?;
+            collect_files(&path, extensions, files)?;
         } else if path
             .extension()
-            .is_some_and(|extension| ["rs", "wit"].iter().any(|kind| extension == *kind))
+            .is_some_and(|extension| extensions.iter().any(|kind| extension == *kind))
             && !path
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with('.'))

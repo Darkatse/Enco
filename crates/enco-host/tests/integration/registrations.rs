@@ -110,6 +110,9 @@ struct ConfiguredFactory;
 #[async_trait]
 impl Runtime for ConfiguredFactory {
     async fn load(&self, bytes: &[u8], settings: &PluginSettings) -> Result<Loaded, LoadError> {
+        if bytes == COMPOSER_BYTES {
+            return Ok(composer_loaded(Arc::new(TestComposer)));
+        }
         if bytes == b"new"
             && settings
                 .config
@@ -330,6 +333,9 @@ struct PausedRegistration {
 #[async_trait]
 impl Runtime for PausedRegistration {
     async fn load(&self, bytes: &[u8], _settings: &PluginSettings) -> Result<Loaded, LoadError> {
+        if bytes == COMPOSER_BYTES {
+            return Ok(composer_loaded(Arc::new(TestComposer)));
+        }
         if bytes == b"paused" {
             self.entered.notify_one();
             self.resume.notified().await;
@@ -346,7 +352,7 @@ async fn status_remains_available_while_the_registry_loads_a_registration() {
         entered: tokio::sync::Notify::new(),
         resume: tokio::sync::Notify::new(),
     });
-    let (_, development, registry) =
+    let (store, development, registry) =
         open_following(root.path(), runtime.clone(), FACTORY_BYTES, configuration()).await;
     let baseline = registry
         .registered_intent(None)
@@ -355,13 +361,11 @@ async fn status_remains_available_while_the_registry_loads_a_registration() {
         .registration()
         .unwrap();
     let cancel = CancellationToken::new();
-    let applying = development.deploy(
-        &registry,
-        "fixture".parse().unwrap(),
-        b"paused".to_vec(),
-        Initiator::Owner { reason: None },
-        &cancel,
-    );
+    let directory = root.path().join("plugins/fixture");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("source.txt"), "paused").unwrap();
+    retain_build(root.path(), &store, &directory, b"paused").await;
+    let applying = development.apply(&registry, Initiator::Owner { reason: None }, &cancel);
     let inspecting = async {
         runtime.entered.notified().await;
         let status = development.status(&registry).await.unwrap();
@@ -375,7 +379,7 @@ async fn status_remains_available_while_the_registry_loads_a_registration() {
     })
     .await
     .unwrap();
-    assert!(result.unwrap().warnings.is_empty());
+    assert!(result.unwrap().registered.unwrap().warnings.is_empty());
 }
 
 async fn apply_configuration(
@@ -555,12 +559,12 @@ async fn check_running_source_and_repair(
 }
 
 #[tokio::test]
-async fn settings_use_registered_names_while_artifacts_replace_running_names() {
+async fn settings_use_registered_names_while_running_names_remain_reserved() {
     let root = tempfile::tempdir().unwrap();
     let mut document = configuration();
     let (store, development, registry) = open_following(
         root.path(),
-        runtime(&[FACTORY_BYTES, b"a", b"artifact", b"c"]),
+        runtime(&[FACTORY_BYTES, b"a", b"c"]),
         FACTORY_BYTES,
         document.clone(),
     )
@@ -613,17 +617,6 @@ async fn settings_use_registered_names_while_artifacts_replace_running_names() {
         "registered name"
     );
     assert_eq!(activation.code.generation, old.id);
-    let artifact = development
-        .deploy(
-            &registry,
-            "a".parse().unwrap(),
-            b"artifact".to_vec(),
-            Initiator::Owner { reason: None },
-            &cancel,
-        )
-        .await
-        .unwrap();
-    assert_eq!(artifact.generations[0].plugin, old.plugin);
     source_fixture(root.path(), &store, &development, &registry, "c", b"c").await;
     let taken: PluginName = "a".parse().unwrap();
     let collision = development

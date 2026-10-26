@@ -10,7 +10,6 @@ Native storage, tools and context policies.
 - module `memory` — The owner's memories: a SQLite database holds them, and a derived vector index finds them.
 - module `status` — Enco's state as `self_status` reports it, and what in it needs attention.
 - module `telegram` — Telegram-specific configuration, transport evidence and text limits.
-- struct `FactoryComposer` — The composer shipped with the host, used in ordinary operation and in safe mode alike.
 - struct `InstructionsContextSource` — Supplies the owner's current standing instructions once per Round.
 - struct `Memories` — Sole entry point for memory writes and recall. The index never owns memory content.
 - struct `MemoryContextSource` — Offers the pinned memories, and the memories recalled for a new message, to each Round.
@@ -31,34 +30,6 @@ Native storage, tools and context policies.
 - fn `self_status_spec` — The declaration of `self_status`, whose handler belongs to the application.
 - const `LIFELINE` — The repair tools that every reply must offer, unless its profile sets `requires_lifeline = false`.
 - const `TABLE_OWNERS` — Configuration ownership for the host components assembled by the application.
-
-## struct `FactoryComposer`
-
-`src/composer.rs`
-
-```rust
-pub struct FactoryComposer {
-    /* private fields */
-}
-```
-
-The composer shipped with the host, used in ordinary operation and in safe mode alike.
-
-No IO occurs here.
-
-### `FactoryComposer::new`
-
-```rust
-pub fn new(home: PathBuf, workspace: PathBuf, instructions: PathBuf) -> Self
-```
-
-A composer whose system prompt names `home`, `workspace` and the standing instructions file.
-
-Implements:
-
-```rust
-impl Composer for FactoryComposer
-```
 
 ## struct `InstructionsContextSource`
 
@@ -870,6 +841,7 @@ and only the registry changes them.
 - enum `development::DevelopmentTool` — A development tool that this crate implements; `self_status` belongs to the application.
 - struct `development::EntryError` — A file or directory in the home that cannot be used as it is.
 - enum `development::EntryProblem` — What is wrong with a file or directory in the home.
+- struct `development::FactorySources` — The source of each factory plugin, as the host ships it.
 - struct `development::Failed` — A failed development operation; its message says what failed, what was left behind, and what to do next.
 - struct `development::FileDiff` — One file that differs.
 - enum `development::FileDifference` — How a file differs between the two sides.
@@ -897,13 +869,14 @@ and only the registry changes them.
 - struct `development::UnitDiff` — How one unit differs between the two sides: `config.toml` or a plugin directory.
 - fn `development::registration_document` — A registration as the Markdown document a tool result shows.
 - fn `development::self_status_spec` — same as `self_status_spec`
+- type `development::FactoryFiles` — One factory plugin's shipped files, as paths relative to its directory and their bytes.
 - const `development::APPLY` — Name of the tool that registers every change in the home.
 - const `development::HISTORY` — Name of the tool that lists registrations and compares versions of the home's files.
 - const `development::HISTORY_PAGE_SIZE` — How many registrations one page of the history lists.
 - const `development::MANUAL_DIRECTORY` — The directory under the home that holds the manual.
 - const `development::RENAME` — Name of the tool that renames a plugin together with its directory.
 - const `development::REWIND` — Name of the tool that writes an earlier registration's files back into the home.
-- const `development::SCAFFOLD` — Name of the tool that creates a tool plugin in the home.
+- const `development::SCAFFOLD` — Name of the tool that creates a plugin directory in the home.
 - const `development::STATUS` — Name of the tool that shows Enco's state and what needs attention.
 
 ## struct `development::AgentReason`
@@ -1060,7 +1033,7 @@ What happened to one plugin source during an apply.
   the new code registered.
 - `diagnostics` — At most `BUILD_DIAGNOSTICS` distinct compiler messages, errors first; empty when the build
   was reused.
-- `log` — Path to Cargo's complete output; absent when the build was reused.
+- `log` — Path to Cargo's complete output, retained until the build directory is cleaned; absent on reuse.
 
 Implements:
 
@@ -1253,16 +1226,6 @@ pub async fn apply(&self, registry: &Registry, initiator: Initiator, cancel: &Ca
 
 Capture source and configuration once, then offer the complete change to the registry.
 
-### `development::Development::deploy`
-
-`src/development/registration.rs`
-
-```rust
-pub async fn deploy(&self, registry: &Registry, name: PluginName, bytes: Vec<u8>, initiator: Initiator, cancel: &CancellationToken) -> Result<Registered, Failed>
-```
-
-Direct artifacts share acceptance and history while leaving file intent unchanged.
-
 ### `development::Development::rename`
 
 `src/development/rename.rs`
@@ -1292,7 +1255,11 @@ registered.
 pub async fn scaffold(&self, registry: &Registry, name: &PluginName) -> Result<Vec<PathBuf>, Failed>
 ```
 
-Write a standalone tool plugin without registering an identity or changing running code.
+Write a plugin directory without registering an identity or changing running code.
+
+A factory plugin that follows the host starts from its shipped source: from the next
+registration it is ordinary source and no longer follows. Any other free name starts from
+the tool template.
 
 ### `development::Development::status`
 
@@ -1307,7 +1274,7 @@ Inspect source and registry facts without building or changing either of them.
 ### `development::Development::new`
 
 ```rust
-pub fn new(home: PathBuf, sdk: Sdk, manual: Manual, store: Arc<SqliteStore>, runtime: Arc<dyn Runtime>) -> Arc<Self>
+pub fn new(home: PathBuf, sdk: Sdk, factory: FactorySources, manual: Manual, store: Arc<SqliteStore>, runtime: Arc<dyn Runtime>) -> Arc<Self>
 ```
 
 Bind development to `home`; nothing is read or written until an operation runs.
@@ -1664,6 +1631,30 @@ impl Eq for EntryProblem
 impl Error for EntryProblem
 impl PartialEq for EntryProblem
 impl Serialize for EntryProblem
+```
+
+## struct `development::FactorySources`
+
+`src/development/scaffold.rs`
+
+```rust
+pub struct FactorySources(/* private field */);
+```
+
+The source of each factory plugin, as the host ships it.
+
+### `development::FactorySources::new`
+
+```rust
+pub fn new(sources: &[(&str, &FactoryFiles)]) -> Result<Self, DevelopmentError>
+```
+
+Read the embedded sources, keyed by the factory plugin's name.
+
+Implements:
+
+```rust
+impl Default for FactorySources
 ```
 
 ## struct `development::Failed`
@@ -2046,7 +2037,6 @@ Rewrite the manual after every view the registry publishes, until shutdown.
 ```rust
 pub enum Operation {
     Apply,
-    Deploy,
     Startup,
     Rename {
         name: enco_core::PluginName,
@@ -2063,7 +2053,6 @@ The development operation that failed; it decides what a failure left behind and
 repeat the operation.
 
 - `Apply` — Registering the home as it is now, after building the plugins whose source changed.
-- `Deploy` — Registering a component supplied directly, outside the home.
 - `Startup` — Restoring registered behavior as Enco starts, and registering a new home the first time.
 - `Rename` — Renaming a plugin together with its directory.
   - `name` — The plugin's current name.
@@ -2258,7 +2247,7 @@ pub struct ScaffoldArguments {
 
 The arguments of `plugin_scaffold`.
 
-- `name` — The new plugin's name.
+- `name` — The new plugin's name, or the name of a factory plugin whose source to take.
 
 Implements:
 
@@ -2480,6 +2469,16 @@ pub fn registration_document(registered: &enco_kernel::Registered) -> String
 
 A registration as the Markdown document a tool result shows.
 
+## type `development::FactoryFiles`
+
+`src/development/scaffold.rs`
+
+```rust
+pub type FactoryFiles = [(&'static str, &'static [u8])];
+```
+
+One factory plugin's shipped files, as paths relative to its directory and their bytes.
+
 ## const `development::APPLY`
 
 `src/development/call.rs`
@@ -2548,7 +2547,7 @@ Name of the tool that writes an earlier registration's files back into the home.
 pub const SCAFFOLD: &str = "plugin_scaffold";
 ```
 
-Name of the tool that creates a tool plugin in the home.
+Name of the tool that creates a plugin directory in the home.
 
 ## const `development::STATUS`
 
@@ -2992,7 +2991,7 @@ pub enum GenerationFailure<'a> {
 
 A recorded failure of a generation, attributed by what the generation introduced.
 
-- `Code` — The generation introduced code from a plugin directory or a component file.
+- `Code` — The generation introduced code from a plugin directory.
   - `failure` — The failure recorded for the generation.
 - `Settings` — The generation introduced new settings and reuses existing code.
   - `failure` — The failure recorded for the generation.
@@ -3042,7 +3041,6 @@ impl Serialize for Node
 pub enum OwnerAction {
     Restart,
     DisableSafeMode,
-    RetryDeployment,
     FactoryCode {
         name: enco_core::PluginName,
     },
@@ -3057,7 +3055,6 @@ Something only the owner can do; the Agent asks for it.
 
 - `Restart` — Restart Enco; the Agent cannot restart the process it runs in.
 - `DisableSafeMode` — Turn safe mode off with `enco safe-mode off`.
-- `RetryDeployment` — Deploy the component file again with `enco plugin deploy`.
 - `FactoryCode` — Repair the host's factory code for a plugin; only a host update changes it.
   - `name` — Plugin whose factory code is at fault.
 - `Environment` — Provide what a plugin needs from outside the home, such as a secret value or a toolchain.

@@ -182,7 +182,7 @@ pub enum Divergence<'a> {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GenerationFailure<'a> {
-    /// The generation introduced code from a plugin directory or a component file.
+    /// The generation introduced code from a plugin directory.
     Code {
         /// The failure recorded for the generation.
         failure: &'a Failure,

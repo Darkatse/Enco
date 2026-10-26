@@ -13,16 +13,13 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - enum `AttemptResult` — The durable settlement of a provider attempt.
 - struct `Binding` — Execution owner and fencing generation; a single node uses itself at epoch one.
 - struct `CallId` — Host-assigned identity of one proposed tool invocation.
-- struct `Candidate` — Content offered to the composer; source-prefixed IDs make omissions traceable.
-- enum `CandidateKind` — Semantic category interpreted by the composer.
 - struct `CapabilityId` — A node-qualified capability, displayed as `name@node`; the model sees only `name`.
 - enum `CodeIntent` — The owner's choice of code source, independent of the resulting component bytes.
 - enum `CodeRef` — Identifies the exact code used by an invocation.
 - struct `ConfigGeneration` — An immutable registered configuration document.
 - struct `ConfigurationRef` — The identity and registration of a configuration, without copying its document.
 - struct `ContentHash` — BLAKE3 address of immutable bytes, encoded as lowercase hexadecimal.
-- struct `ContextPlan` — The composer’s complete request plan, recorded as a content-addressed blob before sending.
-- struct `Contribution` — Candidate content and omissions supplied by one ContextSource for this Round.
+- struct `ContextPlan` — The complete request plan, recorded by content address before sending.
 - struct `Delivery` — A logical channel delivery referencing its original Log fact.
 - struct `DeliverySettlement` — Final outcome, committed atomically with the connection's outbound progress.
 - struct `DisclosedTool` — A tool as a plan disclosed it to the model, kept verbatim.
@@ -90,7 +87,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `SessionRecord` — Persistent Session identity, execution binding and selected profile.
 - struct `SessionRef` — A Session's stable identity with its resolved name for inspection.
 - enum `Settlement` — Durable execution outcome; result text is stored once in the Log entry's content or blob.
-- struct `Source` — The identity and exact content of a candidate used to compose an inline message.
+- struct `Source` — A source an inline message renders, named and hashed by the composer that wrote it.
 - enum `StopReason` — Provider-reported completion boundary.
 - struct `ToolCall` — A proposed invocation; arguments are normalized only when dispatched.
 - struct `ToolResult` — Model-facing settlement linked to the original provider call ID.
@@ -336,64 +333,6 @@ impl PartialOrd for CallId
 impl Serialize for CallId
 ```
 
-## struct `Candidate`
-
-`src/plan.rs`
-
-```rust
-pub struct Candidate {
-    pub id: String,
-    pub kind: CandidateKind,
-    pub text: String,
-    pub standing: bool,
-}
-```
-
-Content offered to the composer; source-prefixed IDs make omissions traceable.
-
-- `id` — Source-qualified ID, such as `instructions:AGENTS.md` or `memory:<MemoryId>`.
-- `kind` — Semantic category of this content.
-- `text` — Current source content that the composer may include within its budget.
-- `standing` — Supplied independently of the latest input, such as instructions or pinned memories.
-
-Implements:
-
-```rust
-impl Clone for Candidate
-impl Debug for Candidate
-impl<'de> Deserialize<'de> for Candidate
-impl PartialEq for Candidate
-impl Serialize for Candidate
-```
-
-## enum `CandidateKind`
-
-`src/plan.rs`
-
-```rust
-pub enum CandidateKind {
-    Instruction,
-    Memory,
-}
-```
-
-Semantic category interpreted by the composer.
-
-- `Instruction` — Standing instructions supplied by a context source.
-- `Memory` — A candidate durable memory.
-
-Implements:
-
-```rust
-impl Clone for CandidateKind
-impl Copy for CandidateKind
-impl Debug for CandidateKind
-impl<'de> Deserialize<'de> for CandidateKind
-impl Eq for CandidateKind
-impl PartialEq for CandidateKind
-impl Serialize for CandidateKind
-```
-
 ## struct `CapabilityId`
 
 `src/capability.rs`
@@ -601,12 +540,20 @@ pub struct ContextPlan {
 }
 ```
 
-The composer’s complete request plan, recorded as a content-addressed blob before sending.
+The complete request plan, recorded by content address before sending.
 
 - `items` — Messages in request order.
 - `tools` — Disclosed capabilities together with their frozen definitions.
 - `max_output_tokens` — Requested output budget; absent means provider default.
 - `omitted` — Reasons content was not included in this request.
+
+### `ContextPlan::hash`
+
+```rust
+pub fn hash(&self) -> Result<ContentHash, serde_json::Error>
+```
+
+The plan's identity: the address of its complete JSON, whatever form stores it.
 
 Implements:
 
@@ -616,33 +563,6 @@ impl Debug for ContextPlan
 impl<'de> Deserialize<'de> for ContextPlan
 impl PartialEq for ContextPlan
 impl Serialize for ContextPlan
-```
-
-## struct `Contribution`
-
-`src/plan.rs`
-
-```rust
-pub struct Contribution {
-    pub candidates: Vec<Candidate>,
-    pub omitted: Vec<Omission>,
-}
-```
-
-Candidate content and omissions supplied by one ContextSource for this Round.
-
-- `candidates` — Candidate content in descending priority.
-- `omitted` — Content this source could not supply, with reasons for the composer to record.
-
-Implements:
-
-```rust
-impl Clone for Contribution
-impl Debug for Contribution
-impl Default for Contribution
-impl<'de> Deserialize<'de> for Contribution
-impl PartialEq for Contribution
-impl Serialize for Contribution
 ```
 
 ## struct `Delivery`
@@ -815,7 +735,7 @@ pub enum EntryBody {
         attempt: crate::AttemptId,
         purpose: AttemptPurpose,
         plan: crate::ContentHash,
-        composer: crate::CodeRef,
+        composer: crate::GenerationId,
         provider: crate::GenerationId,
         settings: crate::ProviderSettings,
     },
@@ -864,12 +784,12 @@ Facts accepted by the Session owner.
   - `run` — Run containing this fact.
   - `round` — Round containing this fact.
   - `safe_mode` — Whether this Round uses only the lifeline.
-- `AttemptStarted` — Committed before calling the Provider; `plan` addresses the serialized ContextPlan blob.
+- `AttemptStarted` — Committed before calling the Provider; `plan` addresses the recorded ContextPlan.
   - `round` — Round containing this fact.
   - `attempt` — Provider attempt associated with this fact.
   - `purpose` — Purpose of this provider request.
   - `plan` — Address of the frozen ContextPlan.
-  - `composer` — Code which constructed the frozen plan.
+  - `composer` — Composer generation which constructed the frozen plan.
   - `provider` — Provider generation used by this Attempt.
   - `settings` — Exact per-call parameters; credentials are never recorded.
 - `AttemptSettled` — A provider attempt completed or failed.
@@ -1854,7 +1774,7 @@ pub struct Omission {
 
 A visible explanation of content excluded from this request.
 
-- `source` — Source or candidate identifier for the omitted content.
+- `source` — Identifier of the omitted content, such as `memory:<id>`.
 - `reason` — Explanation visible during request inspection.
 
 Implements:
@@ -1881,9 +1801,6 @@ pub enum Origin {
         registration: crate::RegistrationId,
         based_on: crate::GenerationId,
     },
-    Artifact {
-        registration: crate::RegistrationId,
-    },
 }
 ```
 
@@ -1895,8 +1812,6 @@ Source of a registered generation.
 - `Settings` — New settings paired with the currently active code.
   - `registration` — Accepted change that supplied these settings.
   - `based_on` — Generation whose code is reused.
-- `Artifact` — A component supplied directly, independently of source intent.
-  - `registration` — Accepted change that supplied this component.
 
 ### `Origin::registration`
 
@@ -2080,7 +1995,7 @@ Inline content or a reference to an immutable canonical message.
 
 - `Message` — Composer-created content recorded directly in this plan.
   - `message` — Inline content created by the composer, recorded verbatim in the plan.
-  - `sources` — Candidate contributions actually used in this message, in rendering order.
+  - `sources` — The sources this message renders, in rendering order.
 - `Log` — Reference to a canonical Log message.
   - `pos` — Entry whose canonical message is resolved from this Session’s Log.
   - `images` — Whether this whole entry's images accompany its text in the request.
@@ -2349,7 +2264,7 @@ pub struct RegisteredCode {
 One accepted code activation.
 
 - `generation` — Code activated by this change.
-- `intent` — Code intent accepted here; settings and artifacts leave it unchanged.
+- `intent` — Code intent accepted here; a settings change leaves it unchanged.
 
 Implements:
 
@@ -2564,6 +2479,14 @@ pub fn new() -> Self
 ```
 
 Allocate a globally unique identity, independent of ordering.
+
+### `RoundId::as_u128`
+
+```rust
+pub fn as_u128(self) -> u128
+```
+
+The full Round identity used to seed deterministic composition randomness.
 
 Implements:
 
@@ -2982,10 +2905,10 @@ pub struct Source {
 }
 ```
 
-The identity and exact content of a candidate used to compose an inline message.
+A source an inline message renders, named and hashed by the composer that wrote it.
 
-- `id` — Source-qualified candidate ID.
-- `hash` — Content hash of the candidate's original text, before formatting.
+- `id` — The composer's name for the source, such as `memory:<id>`.
+- `hash` — Content hash of the source's original text, before formatting.
 
 Implements:
 

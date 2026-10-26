@@ -60,6 +60,9 @@ impl Home {
         if fixture.try_exists()? {
             copy(&fixture, &enco, renderer).await?;
         }
+        for source in &variant.source {
+            source.write(&enco.join("plugins")).await?;
+        }
         let source = model.configuration(
             task.definition.environment.timezone,
             task.definition.budget.max_rounds,

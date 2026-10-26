@@ -65,11 +65,11 @@ dimensions = 4
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join(".data")).unwrap();
         std::fs::write(root.path().join("config.toml"), config).unwrap();
+        initialize(root.path()).await;
         Self::start_home(root).await
     }
 
     pub async fn start_home(root: tempfile::TempDir) -> Self {
-        initialize(root.path()).await;
         let (child, stderr, startup_log) = spawn(root.path(), &[]).await;
         Self {
             child,

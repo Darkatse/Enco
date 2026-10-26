@@ -1,5 +1,4 @@
-//! Rust bindings for the plugin contract, the [`export!`] macro, and helpers for plugins that call
-//! JSON services over HTTP.
+//! Rust bindings, world exports, and shared schema and protocol helpers for plugins.
 //!
 //! The host writes this crate to `sdk/` in every home, replacing any edits there; plugins depend on
 //! it by path.
@@ -19,9 +18,25 @@ pub use wit_bindgen;
     reason = "wit-bindgen adds undocumented items such as package modules; the contract gate checks the WIT"
 )]
 pub mod bindings {
-    wit_bindgen::generate!({ path: "wit", world: "completion-plugin", pub_export_macro: true });
+    wit_bindgen::generate!({
+        path: "wit", world: "completion-plugin", pub_export_macro: true,
+        additional_derives: [PartialEq],
+    });
 }
 pub use bindings::enco::plugin::{host, types};
+
+/// Parse normalized composer options into the type that generated their schema.
+///
+/// The host has already checked the options; custom deserialization failures are `compose.failed`.
+pub fn parse_options<T: serde::de::DeserializeOwned>(input: &str) -> Result<T, types::Failure> {
+    serde_json::from_str(input)
+        .map_err(|error| protocol::failure("compose.failed", error.to_string(), false))
+}
+
+/// The lowercase BLAKE3 digest of source text before the composer formats it.
+pub fn source_hash(text: &str) -> String {
+    blake3::hash(text.as_bytes()).to_hex().to_string()
+}
 
 impl types::ImageFormat {
     /// The MIME type of this format, such as `image/png`.
@@ -41,8 +56,9 @@ impl types::Image {
     }
 }
 
-/// The canonical argument schema of `T`; a [`types::ToolSpec`] takes it as JSON text.
+/// The canonical schema of `T`, used by tool arguments and composer options.
 ///
+/// Return it as JSON text from a tool's [`types::ToolSpec`] or a composer's `options-schema`.
 /// Field docs become the parameter descriptions the model reads. Every struct in `T` needs
 /// `#[serde(deny_unknown_fields)]`, because the host accepts only closed objects. Maps, sets and
 /// recursive types fall outside the subset the host accepts, so a plugin that uses them fails to
@@ -62,7 +78,7 @@ pub fn parse_arguments<T: serde::de::DeserializeOwned>(input: &str) -> Result<T,
 }
 
 /// Export `$implementation` as the plugin for one world: `completion`, `provider` (completion and
-/// embedding), `decision` or `tools`.
+/// embedding), `decision`, `tools` or `composer`.
 ///
 /// Call it in a crate in `plugins/<name>` that depends on this SDK as `enco_sdk`. It defines a
 /// `bindings` module beside the call, whose `exports` hold the `Guest` traits to implement; the
@@ -71,17 +87,18 @@ pub fn parse_arguments<T: serde::de::DeserializeOwned>(input: &str) -> Result<T,
 macro_rules! export {
     (completion, $implementation:ident) => { $crate::export!(@provider "completion-plugin", $implementation); };
     (provider, $implementation:ident) => { $crate::export!(@provider "provider-plugin", $implementation); };
-    (decision, $implementation:ident) => { $crate::export!(@world "decision-plugin", $implementation,); };
-    (tools, $implementation:ident) => { $crate::export!(@world "tool-plugin", $implementation,); };
+    (decision, $implementation:ident) => { $crate::export!(@world "decision-plugin", $implementation, [],); };
+    (tools, $implementation:ident) => { $crate::export!(@world "tool-plugin", $implementation, [],); };
+    (composer, $implementation:ident) => { $crate::export!(@world "composer-plugin", $implementation, [PartialEq],); };
     (@provider $world:literal, $implementation:ident) => {
-        $crate::export!(@world $world, $implementation,
+        $crate::export!(@world $world, $implementation, [],
             "enco:plugin/completion@0.6.0/request": enco_sdk::protocol::Request,
             "enco:plugin/completion@0.6.0/completion": enco_sdk::protocol::Completion,
             "enco:plugin/completion@0.6.0/usage": enco_sdk::protocol::Usage,
             "enco:plugin/completion@0.6.0/stop-reason": enco_sdk::protocol::StopReason,
         );
     };
-    (@world $world:literal, $implementation:ident, $($types:tt)*) => {
+    (@world $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => {
         // The contract's own documentation covers these bindings, so a plugin's manual omits them.
         #[doc(hidden)]
         mod bindings {
@@ -89,6 +106,7 @@ macro_rules! export {
                 path: "../../sdk/wit",
                 world: $world,
                 runtime_path: "enco_sdk::wit_bindgen::rt",
+                additional_derives: [$($derives),*],
                 with: {
                     "enco:plugin/host@0.6.0": enco_sdk::host,
                     "enco:plugin/types@0.6.0": enco_sdk::types,

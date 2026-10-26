@@ -7,7 +7,7 @@ use crate::{
     development::PluginUnit,
     status::{CallStep, Status, Step},
 };
-use enco_core::{CodeRef, IntentPath, Settlement, Tz};
+use enco_core::{IntentPath, Settlement, Tz};
 use enco_kernel::{CodeSource, Running};
 
 impl Status {
@@ -126,12 +126,8 @@ fn home(plugin: &PluginUnit, unreadable: bool) -> String {
 
 fn node(out: &mut String, status: &Status, timezone: Tz) {
     let node = &status.node;
-    let composer = match node.execution.composer {
-        CodeRef::Native { .. } => "factory code".into(),
-        CodeRef::Generation { id } => format!("generation {id}"),
-    };
     out.push_str(&format!(
-        "\n## Node\n\nHost {} ({}) · safe mode {} · composer: {composer}\n",
+        "\n## Node\n\nHost {} ({}) · safe mode {}\n",
         node.version,
         code(&node.revision),
         if node.execution.safe_mode {

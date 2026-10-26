@@ -32,8 +32,6 @@ pub enum PluginChange {
         /// Compiled component offered for validation.
         artifact: ArtifactSource,
     },
-    /// A component supplied independently of source intent.
-    Artifact(Vec<u8>),
     /// Remove the identity associated with the registered source name.
     Remove,
     /// Change a registered name without changing code or settings.

@@ -42,8 +42,8 @@ impl Authority {
             tokio::fs::create_dir_all(parent).await.map_err(error)?;
         }
         let connection = tokio::task::spawn_blocking(move || {
-            let mut connection = sqlite::open(&path).map_err(error)?;
-            match sqlite::schema_version(&connection).map_err(error)? {
+            let (mut connection, version) = sqlite::open(&path).map_err(error)?;
+            match version {
                 None => {
                     let tx = connection
                         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)

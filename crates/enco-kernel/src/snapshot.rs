@@ -1,12 +1,12 @@
-use crate::{CallContext, Composer, ContextSource, Exports, KernelError, Tool, Tools};
+use crate::{CallContext, ContextSource, Exports, KernelError, OfferedMemories, Tool, Tools};
 use enco_core::*;
 use std::{collections::HashSet, sync::Arc};
 
 #[derive(Clone)]
 pub(crate) struct Snapshot {
     node: NodeId,
-    pub composer: Arc<dyn Composer>,
-    pub context: Vec<Arc<dyn ContextSource>>,
+    pub instructions: Arc<dyn ContextSource<Supply = Option<String>>>,
+    pub memories: Arc<dyn ContextSource<Supply = OfferedMemories>>,
     pub tools: Vec<SnapshotTool>,
     pub lifeline: Vec<CapabilityId>,
     pub unavailable: Vec<(String, Failure)>,
@@ -54,8 +54,8 @@ impl Snapshot {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             node,
-            composer: deps.composer.clone(),
-            context: deps.context.clone(),
+            instructions: deps.instructions.clone(),
+            memories: deps.memories.clone(),
             tools,
             lifeline,
             unavailable: Vec::new(),

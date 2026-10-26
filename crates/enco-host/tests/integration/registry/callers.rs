@@ -1,5 +1,5 @@
 //! How Kernel attempts and memory calls follow the active generation and report on its health.
-use super::{deploy_artifact, fault, loaded, open, promote};
+use super::{fault, loaded, open, promote, register_source};
 use crate::support::*;
 use enco_core::*;
 use enco_host::*;
@@ -49,7 +49,7 @@ impl Node {
 }
 
 /// A node whose `fixture` plugin runs the `working` trial over factory code, with the `broken`
-/// artifact ready to deploy; providers start unscripted.
+/// source candidate ready to register; providers start unscripted.
 struct Callers {
     node: Node,
     store: Arc<SqliteStore>,
@@ -88,7 +88,7 @@ impl Callers {
             .completion(&fixture_endpoint("fixture"), true)
             .unwrap()
             .generation;
-        let trial = deploy_artifact(&registry, "fixture", b"working").await.id;
+        let trial = register_source(&registry, "fixture", b"working").await.id;
         let settings = registry.view().config.kernel.profiles["default"]
             .reply
             .first()
@@ -224,7 +224,7 @@ async fn a_failed_memory_call_rolls_back_without_a_session_notice() {
     let callers = Callers::start(dir.path()).await;
     promote(&callers.registry, callers.trial).await;
     *callers.broken.embedding_failure.lock().unwrap() = Some(fault(code::PLUGIN_CONTRACT));
-    let embedding_id = deploy_artifact(&callers.registry, "fixture", b"broken")
+    let embedding_id = register_source(&callers.registry, "fixture", b"broken")
         .await
         .id;
     let cancel = CancellationToken::new();
@@ -287,7 +287,7 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
         .lock()
         .unwrap()
         .push_back(Err(fault(code::PLUGIN_TRAP)));
-    let broken_id = deploy_artifact(&callers.registry, "fixture", b"broken")
+    let broken_id = register_source(&callers.registry, "fixture", b"broken")
         .await
         .id;
     callers
@@ -398,7 +398,7 @@ async fn safe_mode_replies_when_another_use_needs_an_interface_absent_from_facto
         .completion(&fixture_endpoint("fixture"), true)
         .unwrap()
         .generation;
-    deploy_artifact(&registry, "fixture", b"multi-export").await;
+    register_source(&registry, "fixture", b"multi-export").await;
     document["endpoint"]["embed"]["plugin"] = "fixture".into();
     submit(&registry, configuration_request(document))
         .await
@@ -437,7 +437,7 @@ async fn safe_mode_keeps_the_active_generation_of_a_plugin_without_factory_code(
         configuration(),
     )
     .await;
-    let custom_generation = deploy_artifact(&registry, "custom", b"custom").await;
+    let custom_generation = register_source(&registry, "custom", b"custom").await;
     let mut document = configuration();
     document["endpoint"]["reply"]["plugin"] = "custom".into();
     submit(&registry, configuration_request(document))

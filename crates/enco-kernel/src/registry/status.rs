@@ -126,8 +126,8 @@ pub struct ConfigStatus {
 pub struct UnservedUse {
     /// Configured consumer, such as `memory.embedding`.
     pub user: String,
-    /// Endpoint named by that consumer.
-    pub endpoint: String,
+    /// Configuration entry named by that consumer.
+    pub target: UseRef,
     /// Why the selected exports cannot serve it.
     pub causes: Vec<Cause>,
 }
@@ -150,7 +150,7 @@ impl Registry {
                     .err()
                     .map(|causes| UnservedUse {
                         user: usage.user.clone(),
-                        endpoint: usage.endpoint.name.clone(),
+                        target: usage.reference(),
                         causes,
                     })
             })

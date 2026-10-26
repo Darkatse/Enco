@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use enco_core::*;
 use std::path::PathBuf;
+use std::sync::Arc;
 mod registry;
 pub use registry::*;
 
@@ -36,6 +37,8 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<Entry>, StoreError>;
     /// Atomically append facts and consume their Inbox inputs after checking ownership and positions.
     async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreError>;
+    /// Restore a recorded request plan and verify its complete content address.
+    async fn plan(&self, hash: &ContentHash) -> Result<ContextPlan, StoreError>;
 
     // ---- Inbox (any producer may submit; only the Session actor consumes through Commit)
     /// Atomically accept Events, connection state and an optional final delivery outcome.
@@ -113,6 +116,34 @@ pub struct NodeRecord {
 pub struct Commit {
     /// Ordered facts to append.
     pub entries: Vec<Entry>,
+    /// A request plan accepted together with the Attempt that refers to it.
+    pub plan: Option<Arc<PlanWrite>>,
+}
+
+/// An immutable request plan whose complete content address is computed once before committing.
+pub struct PlanWrite {
+    plan: ContextPlan,
+    hash: ContentHash,
+}
+
+impl PlanWrite {
+    /// Prepare a plan for atomic acceptance with its Attempt, without changing storage.
+    pub fn new(plan: ContextPlan) -> Result<Self, StoreError> {
+        let hash = plan
+            .hash()
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        Ok(Self { plan, hash })
+    }
+
+    /// The address of the complete plan, independent of its storage representation.
+    pub fn hash(&self) -> ContentHash {
+        self.hash
+    }
+
+    /// The exact content accepted with the Attempt and shared with the request sender.
+    pub fn plan(&self) -> &ContextPlan {
+        &self.plan
+    }
 }
 
 /// State returned to the connection owner for atomic acceptance.
@@ -173,6 +204,14 @@ pub enum StoreError {
     /// Immutable bytes are missing or do not match their address.
     #[error("blob {0} is corrupt or missing")]
     Blob(ContentHash),
+    /// A plan or one of its storage dependencies is missing or fails content verification.
+    #[error("plan {hash}: {reason}")]
+    Plan {
+        /// Address of the complete plan being restored.
+        hash: ContentHash,
+        /// The missing dependency or invalid stored content.
+        reason: String,
+    },
     /// Component bytes are missing or do not match their address.
     #[error("artifact {0} is corrupt or missing")]
     Artifact(ContentHash),

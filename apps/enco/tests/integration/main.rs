@@ -1,6 +1,7 @@
 //! Integration tests share one binary, so an edit relinks the host once rather than per file.
 #[path = "../../src/client.rs"]
 mod client;
+mod composer;
 mod configuration;
 mod daemon;
 mod decision;

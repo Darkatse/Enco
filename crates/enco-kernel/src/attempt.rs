@@ -23,9 +23,8 @@ impl AttemptKind {
 /// The immutable request and its recorded plan, reused across retries.
 pub(crate) struct PlannedAttempt {
     pub kind: AttemptKind,
-    pub composer: CodeRef,
-    pub plan: ContextPlan,
-    pub hash: ContentHash,
+    pub composer: GenerationId,
+    pub plan: std::sync::Arc<PlanWrite>,
     pub request: ProviderRequest,
 }
 
@@ -81,15 +80,18 @@ impl SessionActor {
         token: &CancellationToken,
     ) -> Result<Completion, RoundError> {
         let attempt = AttemptId::new();
-        self.commit(vec![EntryBody::AttemptStarted {
-            round,
-            attempt,
-            purpose: planned.kind.purpose(),
-            plan: planned.hash,
-            composer: planned.composer.clone(),
-            provider: export.generation,
-            settings: endpoint.settings.clone(),
-        }])
+        self.commit(
+            vec![EntryBody::AttemptStarted {
+                round,
+                attempt,
+                purpose: planned.kind.purpose(),
+                plan: planned.plan.hash(),
+                composer: planned.composer,
+                provider: export.generation,
+                settings: endpoint.settings.clone(),
+            }],
+            Some(planned.plan.clone()),
+        )
         .await?;
         let result = tokio::select! {
             biased;
@@ -141,7 +143,7 @@ impl SessionActor {
                 attempt,
             });
         }
-        self.commit(bodies).await?;
+        self.commit(bodies, None).await?;
         self.deps
             .registry
             .report(generation, Verdict::Ok, Some(self.session.id))
@@ -156,12 +158,15 @@ impl SessionActor {
         generation: GenerationId,
         failure: &Failure,
     ) -> Result<(), RoundError> {
-        self.commit(vec![EntryBody::AttemptSettled {
-            attempt,
-            result: AttemptResult::Failed {
-                failure: failure.clone(),
-            },
-        }])
+        self.commit(
+            vec![EntryBody::AttemptSettled {
+                attempt,
+                result: AttemptResult::Failed {
+                    failure: failure.clone(),
+                },
+            }],
+            None,
+        )
         .await?;
         self.deps
             .registry

@@ -2,7 +2,7 @@ use super::*;
 use enco_core::Initiator;
 use enco_host::{
     SystemClock,
-    development::{Development, Manual, Sdk},
+    development::{Development, FactorySources, Manual, Sdk},
 };
 use enco_kernel::{FactoryPlugin, RegistryDeps};
 use std::collections::BTreeSet;
@@ -106,6 +106,7 @@ async fn sdk_upgrades_and_downgrades_compare_built_artifacts_and_unchanged_sdk_s
     let newer = Development::new(
         home.into(),
         with_label("two"),
+        FactorySources::default(),
         Manual::new(home, &[], Vec::new(), store.clone()).unwrap(),
         store.clone(),
         runtime.clone(),
@@ -156,7 +157,14 @@ async fn open(
     runtime: Arc<WasmRuntime>,
 ) -> (Arc<Development>, Arc<enco_kernel::Registry>) {
     let manual = Manual::new(home, &[], Vec::new(), store.clone()).unwrap();
-    let old = Development::new(home.into(), sdk, manual, store.clone(), runtime.clone());
+    let old = Development::new(
+        home.into(),
+        sdk,
+        FactorySources::default(),
+        manual,
+        store.clone(),
+        runtime.clone(),
+    );
     let registry = old
         .open(RegistryDeps {
             store: store.clone(),
@@ -170,6 +178,7 @@ async fn open(
                     artifact: bytes.to_vec(),
                 })
                 .collect(),
+            composer: FACTORY_COMPOSER.parse().unwrap(),
             owners: enco_host::TABLE_OWNERS.into(),
             clock: Arc::new(SystemClock),
         })
