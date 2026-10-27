@@ -22,9 +22,17 @@ description: "帮助用户安装、配置和使用 Enco，完成源码构建、h
 
 ## 构建与初始化
 
-Enco 目前从源码构建（后续发布预编译版本后将提供一键安装脚本）。仓库根目录的 `rust-toolchain.toml` 固定了所需的编译器版本（Rust 1.99.0）与 `wasm32-wasip2` 目标，`rustup` 会在首次调用时自动安装。
+在 Linux 与 macOS 上，优先用安装脚本获取预编译版本，装好后执行 `enco init`，再按第 2 步检查：
 
-1. 在仓库根目录预取依赖并构建内置出厂插件，然后初始化主目录：
+```bash
+curl -fsSL https://install.enco.sh | sh
+```
+
+脚本安装最新的正式版，还没有正式版时安装 nightly。要让 Enco 自己编写和修改插件，用户还需要安装 rustup；Enco 第一次构建插件时会说明需要哪个版本的工具链。用 Docker 部署时，参照 README 的 Docker 一节。
+
+从源码构建时，仓库根目录的 `rust-toolchain.toml` 固定了所需的编译器版本（Rust 1.99.0）与 `wasm32-wasip2` 目标，`rustup` 会在首次调用时自动安装。
+
+1. 从源码构建：在仓库根目录预取依赖并构建内置出厂插件，然后初始化主目录：
 
 ```bash
 cargo fetch

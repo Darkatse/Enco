@@ -1,0 +1,4 @@
+# The image needs only the published binaries and the toolchain file.
+*
+!dist/enco-*
+!rust-toolchain.toml

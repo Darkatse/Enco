@@ -31,11 +31,15 @@ iana-time-zone = "0.1.65"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 triviumdb = "=0.8.8"                     # 0.x, pinned exactly; only the derived memory index
 imagesize = { version = "0.15.0", default-features = false, features = ["png", "jpeg", "webp"] }
-zstd = "0.13.3"
+zstd = { version = "0.13.3", default-features = false } # one-shot compression only
 rand = "0.10.3"
-reqwest = "0.13.5"                       # 默认使用 rustls
-wasmtime = "49.0.1"                      # 默认 feature 已含 component-model-async
-wasmtime-wasi = "49.0.1"
+# Response bodies are read as raw bytes, never decoded as text, so `charset` stays off.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "system-proxy"] }
+# What the plugin runtime uses: async components compiled by Cranelift, the on-disk cache and
+# epoch interruption. Text formats, GC, threads, profilers and debuggers stay out of the binary;
+# tests that write components as text enable `wat` themselves.
+wasmtime = { version = "49.0.1", default-features = false, features = ["anyhow", "async", "backtrace", "cache", "component-model", "component-model-async", "cranelift", "parallel-compilation", "runtime", "std"] }
+wasmtime-wasi = { version = "49.0.1", default-features = false, features = ["p2"] }
 clap = { version = "4.6.7", features = ["derive"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -56,6 +60,29 @@ enco-manual = { path = "crates/enco-manual" }
 # builds incrementally. Plugins keep clean builds because their bytes are content-addressed.
 [profile.release]
 incremental = true
+
+# Published binaries: fat LTO over one codegen unit, optimized for size, symbols stripped. The Wasm
+# compiler's hot paths keep full speed, so plugins compile as fast as at opt-level 3. These names
+# follow wasmtime's crates; Cargo only warns when one no longer matches, so check them on upgrades.
+[profile.dist]
+inherits = "release"
+incremental = false
+codegen-units = 1
+lto = "fat"
+opt-level = "s"
+strip = "symbols"
+[profile.dist.package.cranelift-codegen]
+opt-level = 3
+[profile.dist.package.cranelift-assembler-x64]
+opt-level = 3
+[profile.dist.package.regalloc2]
+opt-level = 3
+[profile.dist.package.wasmparser]
+opt-level = 3
+[profile.dist.package.wasmtime-internal-cranelift]
+opt-level = 3
+[profile.dist.package.wasmtime-environ]
+opt-level = 3
 
 # Optimize the Wasm compiler's hot paths without slowing every dependency rebuild.
 [profile.dev.package.cranelift-codegen]

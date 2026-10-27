@@ -1,0 +1,19 @@
+# Runs `enco serve` with its home in ./enco-home, where config.toml can be edited directly.
+# Create the directory first so it belongs to you rather than root, then initialize once:
+#   mkdir -p enco-home
+#   docker compose run --rm enco init
+# Edit enco-home/.enco/config.toml, put the API keys it names in .env, and start:
+#   docker compose up -d
+#   docker compose exec enco enco chat
+services:
+  enco:
+    image: ${ENCO_IMAGE:-ghcr.io/darkatse/enco:edge}
+    container_name: ${ENCO_CONTAINER_NAME:-enco}
+    restart: unless-stopped
+    # The user that owns enco-home on the host; `id -u` and `id -g` print yours.
+    user: "${ENCO_UID:-1000}:${ENCO_GID:-1000}"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ${ENCO_HOME_DIR:-./enco-home}:/home/enco

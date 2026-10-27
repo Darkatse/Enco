@@ -1,0 +1,223 @@
+# Builds the published binaries and container images; the gate runs locally before each commit.
+# Pushes to main refresh the nightly pre-release and the `edge` image; `v*` tags publish a release
+# whose tag must match the workspace version.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, asset: enco-linux-x64 } # glibc 2.35 is the oldest supported
+          - { runner: ubuntu-22.04-arm, asset: enco-linux-arm64 }
+          - { runner: macos-latest, asset: enco-macos-arm64 }
+          - { runner: macos-15-intel, asset: enco-macos-x64 } # the last Intel macOS runner
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install the pinned toolchain
+        # rust-toolchain.toml is the one source of the version; rustup installs what it names.
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install
+
+      - name: Fetch dependencies
+        # xtask runs offline, so every workspace is fetched first.
+        run: |
+          cargo fetch --locked
+          for manifest in sdk/Cargo.toml evals/runner/Cargo.toml plugins/*/Cargo.toml; do
+            cargo fetch --locked --manifest-path "$manifest"
+          done
+
+      - name: Build the factory plugins
+        run: cargo xtask build-factory
+
+      - name: Build enco
+        run: cargo build --locked --profile dist -p enco
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/dist/enco "dist/${{ matrix.asset }}"
+          "dist/${{ matrix.asset }}" --version
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          cp artifacts/* release/
+          chmod +x release/enco-*
+          (cd release && sha256sum enco-* > SHA256SUMS.txt)
+          ls -l release
+
+      - name: Read the workspace version
+        id: version
+        run: echo "version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag against the workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if [ "${{ github.ref_name }}" != "v${{ steps.version.outputs.version }}" ]; then
+            echo "::error::Tag ${{ github.ref_name }} does not match workspace version v${{ steps.version.outputs.version }}."
+            exit 1
+          fi
+
+      - name: Publish the nightly pre-release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          target_commitish: ${{ github.sha }}
+          name: Nightly ${{ steps.version.outputs.version }} (${{ github.sha }})
+          body: |
+            Built from ${{ github.sha }}.
+
+            Linux and macOS:
+            ```sh
+            curl -fsSL https://install.enco.sh | sh -s -- --nightly
+            ```
+
+            Docker: `ghcr.io/darkatse/enco:edge`. `SHA256SUMS.txt` lists the checksums the install script verifies.
+          prerelease: true
+          overwrite_files: true
+          files: release/*
+
+      - name: Move the nightly tag to this commit
+        if: github.ref == 'refs/heads/main'
+        run: git push --force origin "${{ github.sha }}:refs/tags/nightly"
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Enco ${{ github.ref_name }}
+          body: |
+            Linux and macOS:
+            ```sh
+            curl -fsSL https://install.enco.sh | sh
+            ```
+
+            Docker: `ghcr.io/darkatse/enco:${{ steps.version.outputs.version }}`. `SHA256SUMS.txt` lists the checksums the install script verifies.
+          prerelease: false
+          files: release/*
+
+  image:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GHCR_IMAGE: ghcr.io/darkatse/enco
+      DOCKERHUB_IMAGE: darkatse/enco
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: enco-linux-*
+          merge-multiple: true
+
+      - name: Name the binaries by Docker platform
+        run: |
+          mv dist/enco-linux-x64 dist/enco-amd64
+          mv dist/enco-linux-arm64 dist/enco-arm64
+          chmod +x dist/enco-*
+
+      - name: Check for a Docker Hub token
+        id: dockerhub
+        run: |
+          if [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "No Docker Hub token; publishing to GHCR only."
+          fi
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.GHCR_IMAGE }}
+          tags: |
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=Enco
+            org.opencontainers.image.description=A personal agent that runs on your own machines
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: docker/login-action@v4
+        if: steps.dockerhub.outputs.enabled == 'true'
+        with:
+          username: darkatse
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Mirror the tags to Docker Hub
+        if: steps.dockerhub.outputs.enabled == 'true'
+        env:
+          TAG_NAMES: ${{ steps.meta.outputs['tag-names'] }}
+        run: |
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            docker buildx imagetools create --tag "$DOCKERHUB_IMAGE:$tag" "$GHCR_IMAGE:$tag"
+          done <<< "$TAG_NAMES"

@@ -24,6 +24,8 @@ iana-time-zone.workspace = true
 
 [dev-dependencies]
 futures-util.workspace = true
+# Some tests write components as text.
+wasmtime = { workspace = true, features = ["wat"] }
 tokio-tungstenite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 rusqlite.workspace = true

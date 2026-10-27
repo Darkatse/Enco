@@ -2,7 +2,8 @@
 
 # Enco
 
-A personal agent that runs on your own machines. Built on a Rust kernel and a WebAssembly plugin boundary, able to modify, verify and roll back its own capabilities while running.
+Enco is a personal agent assistant that runs on your own machines. Built on a Rust kernel and WebAssembly plugins, able to modify, verify and roll back its own capabilities while running.
+> Light, free, self-building. Always on.
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -12,53 +13,57 @@ A personal agent that runs on your own machines. Built on a Rust kernel and a We
 </div>
 
 > [!NOTE]
-> Enco is in early development. The kernel (P0), hot reload with rollback (P1), self-maintained plugins (P2), and conversation backtracking, Telegram and Discord channel plugins (P3 M30 to M32) are implemented, tested and reviewed. Sections marked with later phases describe planned work; see the [roadmap](#roadmap).
+> Enco is still in early development. The kernel (P0), plugin hot-swapping and automatic rollback (P1), self-maintained plugins (P2), and conversation backtracking, Telegram and Discord channel plugins (P3 M30 to M32) are implemented. See the [roadmap](#roadmap) for later phases. Features, interfaces and configuration formats may change before 1.0.
 
 ## What Enco is
 
-Enco is a personal assistant for one owner. It runs with full access to the machine it is on, writes everything it does to an append-only log, and remembers what you tell it across conversations.
+Enco is designed as a personal assistant for a single owner. It runs with full permissions on its host machine, writes everything it does to an append-only log, and keeps its own memory store.
 
-Personal agents usually break down in two places: adding a capability means waiting on a developer to change the codebase, and switching machines, restarting a process or breaking a module drops the work in progress. Enco treats both as the same problem: when the code, process or machine underneath an active task changes, how does the work continue safely?
+An agent ought to be free and adaptable, yet the real world is full of constraints. Enco sets out to answer one question: when the code, process or machine underneath a running agent changes, how does it adapt and continue safely?
 
-One rule is non-negotiable: no change or migration submitted through the official path may break the agent's or the owner's ability to repair it. The full design and the reasoning behind each decision live in [docs/design/](docs/design/README.md) (in Chinese).
+The entire system follows one baseline rule: no change or migration submitted through the official path may break the agent's or the owner's ability to repair it. The full design lives in [docs/design/](docs/design/README.md) (in Chinese).
 
 ## Design
 
-### Small kernel, everything else in plugins
+### Every capability is a plugin, guarded by the kernel
 
-Model providers (OpenAI-Compatible, Gemini, DeepSeek), relevance decisions (TypeSafe), web search and fetch tools, the policy that assembles each model request (`composer`), and chat channels (Telegram, Discord) are all standalone WebAssembly components. The kernel only records facts, pins which code serves each round, checks requests and schedules work. If you do not like how a plugin behaves, fork it, or ask your Enco to write a new one.
+Every capability lives in a WebAssembly plugin. Enco can rewrite or replace any of them while running.
 
-A plugin can only use what the [WIT contract](sdk/wit/CONTRACT.md) gives it. The host never branches on which plugin it is talking to, and plugins reach each other only through the kernel. Every logical call runs in a fresh Wasm instance, so a crash inside a plugin fails that one call and nothing else. Plugins also never see secret values: configurations name environment variables, and the host attaches credentials at the transport layer only to their bound origin and redacts them before returning responses.
+Model providers (OpenAI-Compatible, Gemini, DeepSeek), relevance decisions (TypeSafe), web search and fetch tools, the policy that assembles each model request (`composer`), and chat channels (Telegram, Discord) are all standalone WebAssembly components. The kernel only records facts, determines which code serves each round, validates requests and schedules execution. If you dislike how a plugin works, fork it, or ask your Enco to write a new one.
 
-### Self-modifying at runtime, with a way back
+A plugin can only call what the [WIT contract](sdk/wit/CONTRACT.md) exposes, while the kernel enforces type and rollback safety, eliminating plugin dependency hell at the root.
 
-The agent is the main user of Enco and also a long-term maintainer of its code. Capabilities, their source locations and their recent failures are directly inspectable, and changing one capability only requires reading one interface. The host renders the WIT contract (`sdk/wit/CONTRACT.md`), SDK interfaces and the running plugins' code structure into a read-only manual under `~/.enco/manual/`, and `cargo xtask check` fails when generated docs fall out of date. The agent can fix or write plugins by reading the manual and plugin source alone, without reading host source.
+### Live self-modification and automatic rollback
 
-Plugin code, plugin settings and host configuration are registered together as generations and take effect at the start of the next round, which is the only point where code is replaced. Configuration wiring is probed with a minimal live call during registration, stopping broken wiring before it goes live. New plugin code enters on trial and is kept only after passing health checks; a crash or contract violation rolls it back to the previous generation automatically. If a round still fails, safe mode swaps in embedded factory plugins with empty options and keeps a built-in lifeline toolset (files, shell, registration and status inspection) available for repair. Replacing the host binary itself always requires the owner's confirmation.
+The agent is both the user of Enco and its long-term maintainer. Enco compiles the SDK and host documentation into a local manual automatically, so the agent can fix or write plugins by reading the manual and plugin source alone, without reading Enco's host source.
 
-### Recorded before it happens
+Changes to plugins, configuration and API endpoints are validated and registered together. Any crash or failure is rolled back to the last healthy version by a formal mechanism. When all plugins fail and cannot recover, Enco switches to a minimal built-in safe mode so it stays online, and stays with you.
 
-Every model request and tool call is written to an append-only log before it runs, and the model only ever sees requests that were recorded. A pure Wasm `composer` plugin builds each request into a content-addressed plan that is committed to disk first; retries, `enco inspect`, crash recovery and resuming on another machine all resolve that recorded plan instead of reassembling it.
+### The record is its continuity
 
-If the process is killed in the middle of a task, the interrupted round is marked as such on restart. Tool calls settle as `ok`, `failed` or `unknown`: a side-effecting call whose result cannot be confirmed after the request went out is recorded as `unknown` and is never retried automatically, leaving the decision to the model and the owner who can read the log.
+Every action leaves a record. That record is Enco's continuity: it recovers from crashes and settles on any machine. Designed for cyberspace from day one.
 
-### Memory: the index nominates, the record decides
+Every model request and tool call is written to an append-only log before it runs, so the model only ever sees recorded requests. A pure-function `composer` plugin assembles each request deterministically and commits it to disk, allowing work to resume across crashes or restarts. The SQLite log is the agent's anchor: a statically linked Rust binary plus a single-file SQLite log lets Enco run anywhere, restart anytime and migrate at will.
 
-Long-term memories are stored as records in SQLite, which is the single source of truth. Recall goes through a [TriviumDB](https://github.com/YoKONCy/TriviumDB) index that combines vector search with keyword search suited to Chinese text. The index is a derived view that can be deleted and rebuilt from SQLite at any time, and every search hit is re-read from SQLite before entering the context, so a corrected or forgotten memory never comes back from a stale index. Pinned memories go into the context first. When the embedding service is unavailable, recall falls back to keywords and the recorded request notes why.
+### Long-term memory
 
-An optional TypeSafe decision plugin filters automatically recalled memories for relevance. Enable `[endpoint.relevance]` and select it with `[memory] relevance` in the [config example](examples/deepseek-gemini.toml). Service failures keep the recalled memories and record the reason; pinned memories and explicit `memory_search` results are not filtered.
+Long-term memories live in a dedicated SQLite database as the single source of truth. Recall goes through a [TriviumDB](https://github.com/YoKONCy/TriviumDB) index that combines vector search with keyword search tuned for Chinese text.
 
-### External inputs enter through pure mappers
+Memory is the soul of a personal assistant. Enco has shipped with a private memory store from day one: simple in structure, and effective in practice.
 
-Third-party tool servers such as MCP, model services, web pages, documents, command output and chat protocols sit outside Enco's control. They enter the system only through mappers. A mapper is a WebAssembly component with no imports, so all it can do is translate raw content into Enco's own types: it needs no trust, and the same input always gives the same result.
+### External inputs enter only through mappers
 
-Raw arrivals are recorded before reaching the mapper, so a new mapper version can be replayed against historical traffic and compared item by item with the old one. An external service's contract, such as an MCP tool catalog, is normalized and pinned as a file in the owner's intent and registered alongside plugin source; when the upstream service changes, the difference is reported as drift instead of silently changing what the model sees. Telegram and Discord already run on this model, and MCP and streaming model providers follow next: plugins become pure encoders and decoders, the host owns HTTP and sockets and sends requests only to configured endpoints, and raw responses are kept for replay.
+External data is strictly typed into Enco's internal format, keeping every input consistent and reproducible.
 
-### One ghost across your machines (P4 and P5)
+Third-party tool servers (such as MCP), model services, web pages, documents, command output and chat protocols sit outside Enco's control, and enter the system only through mappers. A mapper is a zero-dependency WebAssembly component whose sole job is translating raw input into Enco's own types: it requires no trust, and the same input always yields the same result. Strong typing is the foundation of reliability.
 
-The idea is close to Ghost in the Shell. The assistant is the ghost, and each of your devices is a shell it can move into. Your phone, desktop and server form one Space. Between two rounds, a conversation can leave the phone and continue on the server with its full record, and from there it can still use the phone's camera or location through remote calls (P5). Like a ghost, it lives in one shell at a time: a conversation never runs on two devices at once.
+### One ghost, roaming across machines (P4 and P5)
 
-Membership and ownership are kept by a consensus control plane (CP). Chat connections and timers use leases, so another node takes over when the current holder disappears. During a network split, the minority side keeps working on its own conversations without taking over anyone else's. The single-node version already stores data in the shape that multiple nodes need (ULIDs, `(epoch, seq)` log positions, ownership bindings and content-addressed files).
+The idea is close to Ghost in the Shell: the assistant is the ghost, and each of your devices is a shell it can inhabit. Your phone, computer and server form one Space. Mid-conversation, the agent can leave your phone and continue on your server with its full record, while still calling back to the phone's camera or location remotely (P5).
+
+Membership and ownership are maintained by a consensus control plane (CP). Chat connections and timers use leases so another node takes over when the holder disappears, while during a network split the minority side continues running its own sessions. Even the single-node version already stores data in the multi-node shape (ULIDs, `(epoch, seq)` log positions, ownership bindings and content-addressed files).
+
+When a node hits a fault (network outage, hardware failure or power loss), chat connections and timers automatically fail over to another node once their lease TTL expires; active sessions use sticky ownership so two nodes never execute the same session at once, and can be safely taken over on another node with the owner's confirmation. Once recovered, the node syncs back to the latest state automatically.
 
 ### Small concept set and runtime overhead
 
@@ -88,9 +93,27 @@ Hand the [Enco setup and usage skill](skills/enco-installation/SKILL.md) to your
 
 ## Installation and development
 
-### One-line install (planned)
+### One-line install
 
-Prebuilt binaries and a one-line install script will be provided once the first release is cut; until then, build from source below.
+On Linux and macOS (x64 and arm64):
+
+```bash
+curl -fsSL https://install.enco.sh | sh
+```
+
+By default the script installs the latest release, or the latest nightly build. To let Enco write and change its own plugins, also install [rustup](https://rustup.rs).
+
+### Docker
+
+The image `ghcr.io/darkatse/enco:edge` includes the pinned Rust toolchain, so Enco can build plugins inside the container. You can use [`docker-compose.yaml`](docker-compose.yaml):
+
+```bash
+mkdir -p enco-home
+docker compose run --rm enco init
+# edit enco-home/.enco/config.toml and put the API keys it names in .env
+docker compose up -d
+docker compose exec enco enco chat
+```
 
 ### Building from source
 
