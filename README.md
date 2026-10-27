@@ -2,7 +2,7 @@
 
 # Enco
 
-A personal agent that runs on your own machines. It is written in Rust, and everything it can do comes from WebAssembly plugins that the agent can maintain and replace on its own.
+A personal agent that runs on your own machines. Built on a Rust kernel and a WebAssembly plugin boundary, able to modify, verify and roll back its own capabilities while running.
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -12,82 +12,87 @@ A personal agent that runs on your own machines. It is written in Rust, and ever
 </div>
 
 > [!NOTE]
-> Enco is in early development. The P0 kernel is implemented, tested and reviewed. Sections marked with later phases describe planned work; see the [roadmap](#roadmap).
+> Enco is in early development. The kernel (P0), hot reload with rollback (P1), self-maintained plugins (P2), and conversation backtracking, Telegram and Discord channel plugins (P3 M30 to M32) are implemented, tested and reviewed. Sections marked with later phases describe planned work; see the [roadmap](#roadmap).
 
 ## What Enco is
 
-Enco is an assistant for one owner. It runs with full access to the machine it is on, keeps an append-only record of what it does, and remembers what you tell it across conversations. The kernel is small, and features live in plugins that the agent can read, fix and rebuild on its own.
+Enco is a personal assistant for one owner. It runs with full access to the machine it is on, writes everything it does to an append-only log, and remembers what you tell it across conversations.
 
-The design is described in [docs/design/](docs/design/README.md) (in Chinese).
+Personal agents usually break down in two places: adding a capability means waiting on a developer to change the codebase, and switching machines, restarting a process or breaking a module drops the work in progress. Enco treats both as the same problem: when the code, process or machine underneath an active task changes, how does the work continue safely?
+
+One rule is non-negotiable: no change or migration submitted through the official path may break the agent's or the owner's ability to repair it. The full design and the reasoning behind each decision live in [docs/design/](docs/design/README.md) (in Chinese).
 
 ## Design
 
-### Everything is a plugin
+### Small kernel, everything else in plugins
 
-Model providers, chat channels, tools and the policy that assembles each model request are all plugins. The kernel only keeps the record, pins which code serves each round, checks requests and schedules work, so any feature can be swapped out. If you don't like how a plugin behaves, fork it, or ask your Enco to write a different one.
+Model providers (OpenAI-Compatible, Gemini, DeepSeek), relevance decisions (TypeSafe), web search and fetch tools, the policy that assembles each model request (`composer`), and chat channels (Telegram, Discord) are all standalone WebAssembly components. The kernel only records facts, pins which code serves each round, checks requests and schedules work. If you do not like how a plugin behaves, fork it, or ask your Enco to write a new one.
 
-A plugin is a WebAssembly component and can only use what the WIT contract gives it. The host never branches on which plugin it is talking to, and plugins reach each other only through the kernel. Every call runs in a fresh instance, so a crash inside a plugin fails that one call and nothing else.
+A plugin can only use what the [WIT contract](sdk/wit/CONTRACT.md) gives it. The host never branches on which plugin it is talking to, and plugins reach each other only through the kernel. Every logical call runs in a fresh Wasm instance, so a crash inside a plugin fails that one call and nothing else. Plugins also never see secret values: configurations name environment variables, and the host attaches credentials at the transport layer only to their bound origin and redacts them before returning responses.
 
-In P0 the model provider already runs as a plugin. Tools and request assembly move to WebAssembly in P2, and their built-in versions stay as the fallback that safe mode uses.
+### Self-modifying at runtime, with a way back
 
-### Built for the agent
+The agent is the main user of Enco and also a long-term maintainer of its code. Capabilities, their source locations and their recent failures are directly inspectable, and changing one capability only requires reading one interface. The host renders the WIT contract (`sdk/wit/CONTRACT.md`), SDK interfaces and the running plugins' code structure into a read-only manual under `~/.enco/manual/`, and `cargo xtask check` fails when generated docs fall out of date. The agent can fix or write plugins by reading the manual and plugin source alone, without reading host source.
 
-The agent is the main user of Enco and also a long-term maintainer of its code. Capabilities, their source locations and their recent failures should be easy for it to find, and changing one capability should only require reading one interface. Plugin documentation (`sdk/wit/CONTRACT.md`) is generated from the WIT contract, and `cargo xtask check` fails when the generated file is out of date.
+Plugin code, plugin settings and host configuration are registered together as generations and take effect at the start of the next round, which is the only point where code is replaced. Configuration wiring is probed with a minimal live call during registration, stopping broken wiring before it goes live. New plugin code enters on trial and is kept only after passing health checks; a crash or contract violation rolls it back to the previous generation automatically. If a round still fails, safe mode swaps in embedded factory plugins with empty options and keeps a built-in lifeline toolset (files, shell, registration and status inspection) available for repair. Replacing the host binary itself always requires the owner's confirmation.
 
-### Hot reload with rollback (P1)
+### Recorded before it happens
 
-The agent can edit a plugin, rebuild it and swap it in while Enco keeps running. New code takes effect at the start of the next round, which is the only point where code is replaced. A new version is kept only if it passes a health check, and Enco falls back to the previous one otherwise. If things break badly, safe mode keeps a small set of file and shell tools, plus tools to register changes and inspect the node available for repair. Replacing the host binary itself always needs the owner's confirmation.
+Every model request and tool call is written to an append-only log before it runs, and the model only ever sees requests that were recorded. A pure Wasm `composer` plugin builds each request into a content-addressed plan that is committed to disk first; retries, `enco inspect`, crash recovery and resuming on another machine all resolve that recorded plan instead of reassembling it.
 
-### A durable record
+If the process is killed in the middle of a task, the interrupted round is marked as such on restart. Tool calls settle as `ok`, `failed` or `unknown`: a side-effecting call whose result cannot be confirmed after the request went out is recorded as `unknown` and is never retried automatically, leaving the decision to the model and the owner who can read the log.
 
-Every model request and tool call is written to an append-only log before it runs, and the model only ever sees requests that were recorded. If the process is killed in the middle of a task, the interrupted round is marked as such on restart. A tool call whose result cannot be known is reported as `unknown` and is never retried automatically.
+### Memory: the index nominates, the record decides
 
-### Memory
-
-Long-term memories are stored as records in SQLite. Recall goes through a [TriviumDB](https://github.com/YoKONCy/TriviumDB) index that combines vector search with keyword search suited to Chinese text. The index can be deleted and rebuilt from the records at any time, and every search hit is re-read from the records, so a corrected or forgotten memory cannot come back from a stale index. Pinned memories go into the context first. When the embedding service is unavailable, recall falls back to keywords and the recorded request notes why.
+Long-term memories are stored as records in SQLite, which is the single source of truth. Recall goes through a [TriviumDB](https://github.com/YoKONCy/TriviumDB) index that combines vector search with keyword search suited to Chinese text. The index is a derived view that can be deleted and rebuilt from SQLite at any time, and every search hit is re-read from SQLite before entering the context, so a corrected or forgotten memory never comes back from a stale index. Pinned memories go into the context first. When the embedding service is unavailable, recall falls back to keywords and the recorded request notes why.
 
 An optional TypeSafe decision plugin filters automatically recalled memories for relevance. Enable `[endpoint.relevance]` and select it with `[memory] relevance` in the [config example](examples/deepseek-gemini.toml). Service failures keep the recalled memories and record the reason; pinned memories and explicit `memory_search` results are not filtered.
 
-### Roaming across devices (P4)
+### External inputs enter through pure mappers
+
+Third-party tool servers such as MCP, model services, web pages, documents, command output and chat protocols sit outside Enco's control. They enter the system only through mappers. A mapper is a WebAssembly component with no imports, so all it can do is translate raw content into Enco's own types: it needs no trust, and the same input always gives the same result.
+
+Raw arrivals are recorded before reaching the mapper, so a new mapper version can be replayed against historical traffic and compared item by item with the old one. An external service's contract, such as an MCP tool catalog, is normalized and pinned as a file in the owner's intent and registered alongside plugin source; when the upstream service changes, the difference is reported as drift instead of silently changing what the model sees. Telegram and Discord already run on this model, and MCP and streaming model providers follow next: plugins become pure encoders and decoders, the host owns HTTP and sockets and sends requests only to configured endpoints, and raw responses are kept for replay.
+
+### One ghost across your machines (P4 and P5)
 
 The idea is close to Ghost in the Shell. The assistant is the ghost, and each of your devices is a shell it can move into. Your phone, desktop and server form one Space. Between two rounds, a conversation can leave the phone and continue on the server with its full record, and from there it can still use the phone's camera or location through remote calls (P5). Like a ghost, it lives in one shell at a time: a conversation never runs on two devices at once.
 
-### Consistency over availability (P4)
+Membership and ownership are kept by a consensus control plane (CP). Chat connections and timers use leases, so another node takes over when the current holder disappears. During a network split, the minority side keeps working on its own conversations without taking over anyone else's. The single-node version already stores data in the shape that multiple nodes need (ULIDs, `(epoch, seq)` log positions, ownership bindings and content-addressed files).
 
-Membership and ownership are kept by a control plane that uses consensus. A conversation has exactly one owner and never runs on two devices at once. Chat connections and timers use leases, so another node takes over when the current holder disappears. During a network split, the smaller side keeps working on its own conversations but does not take over anyone else's. The single-node version already stores data in the shape that multiple nodes need (ULIDs, `(epoch, seq)` log positions, ownership records, content-addressed files).
+### Small concept set and runtime overhead
 
-### Rust
+The whole system is described with ten concepts and two rules for mutable state: each piece of state has one owner that applies changes in order, and callbacks return their writes for the owner to commit in one transaction. Chat connections, stateful tools and derived indexes all follow these two rules instead of each having a framework of its own. The design keeps a fixed vocabulary, where each word names one thing.
 
 The kernel runs on tokio and the plugins on Wasmtime. On the desktop prototype, an incremental plugin build took about 1 s, compiling a component about 27 ms, creating an instance about 40 µs and calling it about 1.5 µs. Plugin overhead is small next to model latency, so performance work goes mainly into avoiding copies of large data.
 
-### Platforms
-
-P0 runs on macOS and Linux as a background service with a command-line client; so far it has been tested on macOS. Phones join later as full nodes (P5): Android runs plugins with Cranelift and iOS with the Pulley interpreter. Before the system suspends the app, a phone hands its conversations to an always-on node. Windows support is on the roadmap, with Unix first: there the local protocol will use named pipes instead of Unix domain sockets.
-
-### A small set of concepts
-
-The whole system is described with ten concepts and two rules for mutable state. Each piece of state has one owner that applies changes in order, and callbacks return their writes for the owner to commit in one transaction. Chat connections, stateful tools and derived indexes all follow these two rules instead of each having a framework of its own. The design keeps a fixed vocabulary, so each word names one thing.
-
-### Type mapping for externalities (MCP)
-
-Some things Enco can neither design nor control: third-party tool servers such as MCP, model services, web pages, documents, command output and chat protocols. They enter only through mappers. A mapper is a WebAssembly component with no imports, so all it can do is translate raw content into Enco's own types: it needs no trust, and the same input always gives the same result. The raw content is recorded, so a new version of a mapper can be replayed against everything seen before and compared with the old one. A service's contract, such as a tool server's catalog, is pinned as a normalized file in the owner's intent and registered like plugin source; when the service changes, the difference is reported as drift instead of silently changing what the model sees. MCP is the first user. Model providers follow together with streaming: they become pure encoders and decoders, the host makes the HTTP requests and sends them only to the configured endpoint, and raw responses are kept for replay.
+Enco currently runs on macOS and Linux as a background service with a command-line client, and has been tested on macOS. Phones join later as full nodes (P5): Android runs plugins with Cranelift and iOS with the Pulley interpreter, handing active conversations back to an always-on node before the OS suspends the app. Windows support is on the roadmap, with Unix first: there the local protocol will use named pipes instead of Unix domain sockets.
 
 ## Roadmap
 
 | Phase | Goal | Status |
 |---|---|---|
 | P0 | Kernel: sessions, durable log, crash recovery, OpenAI-Compatible and DeepSeek provider plugins, memory, reminders, safe mode | Done |
-| Telegram | Daily chat through a native Telegram channel | Implemented; owner review and live use pending |
-| P1 | Replacing plugins at runtime with health checks and rollback | Implemented; owner review pending |
-| P2 | The agent maintains its own plugins, reading only the manual and plugin source | Planned |
-| Supervision tree | Delegating work to child sessions that can use other models, report back and take further messages | Planned |
-| P3 | Channels as plugins: Telegram moves to WebAssembly, QQ (OneBot) | Planned |
-| P4 | Multiple devices: control plane, roaming, replication | Planned |
+| P1 | Replacing plugins and configuration at runtime with health checks and rollback | Done |
+| P2 | The agent maintains its own plugins from the generated manual and plugin source, verified by black-box evals | Done |
+| P3 | Channels as plugins: conversation backtracking (M30), Telegram (M31) and Discord (M32) mappers, QQ OneBot (M33) | In progress (M30 to M32 done) |
+| Supervision tree and scripts | Delegating work to child sessions on other models; sandboxed scripts orchestrating tool calls | Planned |
+| P4 | Multiple devices: consensus control plane, session roaming, replication | Planned |
 | P5 | Phones as nodes | Planned |
 
 Each phase has acceptance criteria, listed in [docs/Roadmap.md](docs/Roadmap.md).
 
-## Building from source
+## AI-assisted setup
+
+Hand the [Enco setup and usage skill](skills/enco-installation/SKILL.md) to your coding agent (such as Claude Code or Codex) to walk through building from source, initializing `~/.enco`, configuring models and memory, connecting Telegram and Discord, and verifying `enco status`. Tools that support skills can load the `skills/enco-installation` directory directly, or you can ask your assistant to read the file.
+
+## Installation and development
+
+### One-line install (planned)
+
+Prebuilt binaries and a one-line install script will be provided once the first release is cut; until then, build from source below.
+
+### Building from source
 
 Requirements: Rust 1.99.0 with the `wasm32-wasip2` target. The versions are pinned in `rust-toolchain.toml`, so `rustup` installs them on first build.
 
@@ -102,7 +107,7 @@ cargo xtask build-factory      # build the bundled plugins
 cargo run -p enco -- init      # create ~/.enco and a config template
 ```
 
-Edit `~/.enco/config.toml` (examples are in [`examples/`](examples/)), export the API key named in it, then:
+Edit `~/.enco/config.toml` (examples are in [`examples/`](examples/)), export the API key named in it, then start the service:
 
 ```bash
 cargo run -p enco -- serve     # start the service
@@ -110,34 +115,18 @@ cargo run -p enco -- chat      # in another terminal
 cargo run -p enco -- send --image photo.png "Describe this image"
 ```
 
-`enco init` creates the plugin directory and writes the bundled SDK to `sdk/`. Put plugin sources in `plugins/<name>/`, or use `enco plugin scaffold <name>` to start a tool plugin. Factory plugins such as `composer` run the code shipped with the host and follow it across upgrades; `enco plugin scaffold composer` writes that plugin's shipped source instead, and from the next apply the directory replaces the factory code until you delete it and apply again. Each plugin is a standalone Cargo workspace that depends on `../../sdk`. Its own `.gitignore` determines which files belong to its source value; Git is not required.
+Standing instructions live in `~/.enco/AGENTS.md` and runtime data lives in `~/.enco/.data/`; set `ENCO_HOME` to use a directory other than `~/.enco`. For day-to-day commands, image and file messages, conversation backtracking, plugin management, and Telegram or Discord setup, see the [usage and channel guide](docs/Usage.md) and [plugins/README.md](plugins/README.md) (in Chinese).
 
-After editing source or `config.toml`, run `enco apply --reason "Describe the change"` to build and register all changed intent together. The reason is optional for the owner and required for the agent's `self_apply`. `enco status` and `self_status` show running, registered and home facts together for each unit. Use `enco status --json` for scripts. `enco rollback` mechanically restores the still-effective parts of the latest registration without Cargo or model calls. Restarts restore registered state. Schema version 14 requires a new database or an owner-managed migration; Enco does not migrate existing data automatically.
+Before sending repository changes, run the offline gate:
 
-Each profile can choose `composer = { plugin = "<name>", options = {} }`; without it, a profile uses the factory composer with empty options. A composer declares its options schema, and registration checks every profile against it. It receives recorded history, instructions and recalled memory without filesystem or network access. Safe mode uses the embedded factory composer with empty options.
-
-Accepted source and configuration live in Enco's own content store. Use `enco history` to list registrations, `enco history --to <registration>` for one change, or `enco history --to home` for unregistered edits. To undo file intent, run `enco rewind <registration> [config.toml | plugins/<name> ...]`, review the files, then apply again. With no paths, rewind selects units changed since that registration and refuses to overwrite unregistered edits; explicit paths authorize overwriting those units. Ignored files survive, and a directory containing them cannot be removed. Plugin names stay current. The agent uses `self_history` and `self_rewind` through the same entry points.
-
-Completion endpoints accept text by default; add `accepts = ["image"]` to an endpoint to send images to it. `enco send --image <path>` accepts PNG, JPEG and WebP, may be repeated, and also works without text. The agent can read these images with `fs_read`. Images are limited to 10 MB each and 32 MB per request.
-
-The agent can send progress or a file with `message_send`, using Markdown `text`, a `file` path, or both. Each message accepts one file up to 50 MB and follows the same destination as replies. Telegram displays supported media or sends the original document; `enco chat` displays the recorded file's local path. Success records the message for delivery; `self_status` reports delivery failures.
-
-Standing instructions live in `~/.enco/AGENTS.md`; runtime data lives in `~/.enco/.data/`. To enable Telegram, uncomment `[channel.telegram]` in the config example, set `owner` to your user ID as a string, and export the token variable named in `secrets`. The factory `telegram` plugin translates the protocol; the host holds the connection and credentials. Photos and image documents enter the same message as their caption; unsupported attachments are reported to the agent. In private chats, `/session` selects a Session. `/cancel` stops its Run and `/backtrack`, sent as a reply to a message, resumes from that point. `enco status` lists channel health and recent failed or uncertain deliveries. While a Run is active, Telegram and Discord show a `Working` card with elapsed time, the five latest tool names and their outcomes, and a `Cancel` button. Only the owner can cancel; the card disappears after the reply is delivered.
-
-To enable Discord, uncomment `[channel.discord]` in the example configuration. In the [Discord Developer Portal](https://discord.com/developers/applications), create an application and bot, enable **Message Content Intent** on the Bot page, and export `DISCORD_BOT_TOKEN`. Enable Developer Mode in Discord, copy your user ID, and put it in `owner`. Invite the bot with the `bot` and `applications.commands` scopes, giving it View Channels, Send Messages, Send Messages in Threads, Read Message History, Attach Files, and Embed Links permissions in the channels it should serve. You and the bot must share a server to use direct messages. The bot records messages in channels it can read, so grant access only where needed.
-
-Discord uses native `/session`, `/cancel`, and `/everyone` commands; **Backtrack here** appears in a message's context menu. `/session` is private-chat only; `/everyone` is server only. Command and button receipts are visible only to their sender. Typing a slash command as ordinary message text does not invoke it. Channel and thread conversations use their own group Sessions, with the same `context` and `group_profile` settings as Telegram.
-
-Group chats each get a fresh Session using `group_profile`; without it, the connection serves private chats only. A group profile must set `owner_context = false` and name a tool whitelist without memory tools. This separates the group bot from your private assistant. Choose tools whose results may be shared with the group: allowing file or shell access can still expose private files. The example uses web tools and turns off the required repair toolset with `requires_lifeline = false`.
-
-By default, only the owner's messages addressed to the bot drive a group Session. `/everyone on` lets other members address it; `/everyone off` closes it again. Member messages retain their authorship. Set `context = N` to include up to N earlier chat messages as quoted context; zero disables this. To receive other group messages, disable privacy mode in BotFather or make the bot a group administrator. Telegram command menus and typing indicators are registered automatically. Forum topics are not supported yet: replies go to the General topic.
-
-To go back in a conversation, reply to one of its messages in Telegram with `/backtrack`, or run `enco backtrack <epoch>:<seq>` with an entry's `pos` from `enco log`. The conversation continues from that message; going back to your own message gets a new reply to it. Later messages stay recorded but leave the conversation, so you can go back to them as well. Changes made outside the conversation, such as to files, memories, schedules or plugins, are not undone, and the agent is told so.
-
-Set `ENCO_HOME` to use a directory other than `~/.enco`. Run `cargo xtask check` before sending changes.
+```bash
+cargo xtask check
+```
 
 ## Documentation
 
+- [docs/Usage.md](docs/Usage.md): CLI commands, multimodal messages, plugin management, and Telegram / Discord setup (Chinese)
+- [skills/enco-installation/SKILL.md](skills/enco-installation/SKILL.md): installation and configuration skill for coding agents (Chinese)
 - [docs/design/](docs/design/README.md): the design outline and the judgments behind each area (Chinese)
 - [docs/Roadmap.md](docs/Roadmap.md): phases and their acceptance criteria (Chinese)
 - [LESSONS.md](LESSONS.md): approaches that failed in practice; read before changing code (Chinese)
