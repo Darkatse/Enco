@@ -13,10 +13,11 @@ use enco_host::{
     channel::{Channel, ConnectionSettings},
 };
 use enco_kernel::{
-    AttachmentContent, ChannelAction as Action, ChannelAdapter as Adapter,
+    AttachmentContent, ChannelAction as Action, ChannelActivity, ChannelAdapter as Adapter,
     ChannelAttachment as Attachment, ChannelCallError, ChannelCommand,
     ChannelContent as MessageContent, ChannelFault as Fault, ChannelIdentity as Identity,
-    ChannelInput as Input, ChannelSent, ChannelUpdate as Update, ConnectionWrite, Kernel, Store,
+    ChannelInput as Input, ChannelMessage, ChannelReading, ChannelSent, ConnectionWrite, Kernel,
+    Store,
 };
 use serde_json::{Value, json};
 use std::{
@@ -29,6 +30,19 @@ use std::{
 };
 use support::*;
 use tokio::sync::{Mutex, mpsc, oneshot};
+
+struct Update {
+    key: String,
+    origin: MappingOrigin,
+    protocol: Value,
+    input: Input,
+}
+struct Activity {
+    target: String,
+    shown: Option<String>,
+    view: Option<ChannelActivity>,
+    result: oneshot::Sender<Result<Option<String>, Fault>>,
+}
 
 struct Send {
     target: String,
@@ -55,9 +69,13 @@ struct ControlledChannel {
     split_called: tokio::sync::Notify,
     menu_failure: AtomicBool,
     menu_scopes: Mutex<Vec<(bool, bool)>>,
-    typing_failure: AtomicBool,
-    typed: AtomicU32,
-    typing_notify: tokio::sync::Notify,
+    activity_enabled: AtomicBool,
+    activities: mpsc::UnboundedSender<Activity>,
+    answers: Mutex<Vec<(String, Option<String>)>>,
+    answer_notify: tokio::sync::Notify,
+    acknowledgment: Mutex<Option<oneshot::Receiver<()>>>,
+    receive_failure: Mutex<Option<Fault>>,
+    receive_failed: tokio::sync::Notify,
 }
 
 #[async_trait]
@@ -69,28 +87,71 @@ impl Adapter for ControlledChannel {
             facts: Value::Null,
         }
     }
-    async fn poll(&self, protocol: Option<Value>) -> Result<Vec<Update>, ChannelCallError> {
-        self.polls
-            .send(protocol.clone().unwrap_or(Value::Null))
-            .unwrap();
-        let mut invalid = self.invalid_state.lock().await;
-        if invalid.as_ref() == Some(&protocol) {
-            *invalid = None;
-            return Err(Fault {
-                failure: Failure {
-                    code: code::CHANNEL_INVALID_STATE.into(),
-                    message: "this mapper no longer reads the stored state".into(),
-                    retryable: false,
-                },
-                unknown: false,
-                fatal: true,
-                retry_after: None,
-                origin: None,
+    async fn receive(
+        &self,
+        mut protocol: Option<Value>,
+        readings: mpsc::UnboundedSender<ChannelReading>,
+        stop: tokio_util::sync::CancellationToken,
+    ) -> Result<(), ChannelCallError> {
+        loop {
+            self.polls
+                .send(protocol.clone().unwrap_or(Value::Null))
+                .unwrap();
+            let mut invalid = self.invalid_state.lock().await;
+            if invalid.as_ref() == Some(&protocol) {
+                *invalid = None;
+                let (accepted, done) = oneshot::channel();
+                readings
+                    .send(ChannelReading::Reset {
+                        failure: Failure {
+                            code: code::CHANNEL_INVALID_STATE.into(),
+                            message: "this mapper no longer reads the stored state".into(),
+                            retryable: false,
+                        },
+                        accepted,
+                    })
+                    .unwrap();
+                tokio::select! { _ = stop.cancelled() => return Ok(()), _ = done => {} }
+                protocol = None;
+                continue;
             }
-            .into());
+            drop(invalid);
+            let updates = tokio::select! { _ = stop.cancelled() => return Ok(()), updates = async { self.updates.lock().await.recv().await.unwrap() } => updates };
+            if let Some(error) = self.receive_failure.lock().await.take() {
+                self.receive_failed.notify_one();
+                return Err(error.into());
+            }
+            if let Some(last) = updates.last() {
+                protocol = Some(last.protocol.clone());
+            }
+            let messages = updates
+                .into_iter()
+                .map(|update| ChannelMessage {
+                    key: update.key,
+                    origin: update.origin,
+                    input: update.input,
+                })
+                .collect();
+            let (accepted, done) = oneshot::channel();
+            let (ack, acknowledged) = oneshot::channel();
+            if let Some(gate) = self.acknowledgment.lock().await.take() {
+                tokio::spawn(async move {
+                    gate.await.unwrap();
+                    let _ = ack.send(());
+                });
+            } else {
+                ack.send(()).unwrap();
+            }
+            readings
+                .send(ChannelReading::Batch {
+                    messages,
+                    protocol: protocol.clone(),
+                    accepted: Some(accepted),
+                    acknowledged,
+                })
+                .unwrap();
+            tokio::select! { _ = stop.cancelled() => return Ok(()), _ = done => {} }
         }
-        drop(invalid);
-        Ok(self.updates.lock().await.recv().await.unwrap())
     }
     async fn fetch(&self, locator: &str) -> Result<AttachmentContent, ChannelCallError> {
         let (result, receive) = oneshot::channel();
@@ -158,13 +219,41 @@ impl Adapter for ControlledChannel {
         }
         Ok(())
     }
-    async fn typing(&self, _target: &str) -> Result<(), ChannelCallError> {
-        self.typed.fetch_add(1, Ordering::SeqCst);
-        self.typing_notify.notify_one();
-        if self.typing_failure.load(Ordering::SeqCst) {
-            return Err(lost_response().into());
-        }
+    async fn respond(&self, handle: &str, text: Option<&str>) -> Result<(), ChannelCallError> {
+        self.answers
+            .lock()
+            .await
+            .push((handle.into(), text.map(str::to_owned)));
+        self.answer_notify.notify_one();
         Ok(())
+    }
+    async fn activity(
+        &self,
+        target: &str,
+        shown: Option<&str>,
+        view: Option<&ChannelActivity>,
+    ) -> Result<Option<ChannelSent>, ChannelCallError> {
+        if !self.activity_enabled.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let (result, done) = oneshot::channel();
+        self.activities
+            .send(Activity {
+                target: target.into(),
+                shown: shown.map(str::to_owned),
+                view: view.cloned(),
+                result,
+            })
+            .unwrap();
+        done.await
+            .unwrap()
+            .map(|message| {
+                Some(ChannelSent {
+                    message,
+                    origin: origin(),
+                })
+            })
+            .map_err(Into::into)
     }
 }
 
@@ -177,6 +266,7 @@ struct Harness {
     polling: mpsc::UnboundedReceiver<Value>,
     sending: mpsc::UnboundedReceiver<Send>,
     fetching: mpsc::UnboundedReceiver<Fetch>,
+    activity: mpsc::UnboundedReceiver<Activity>,
 }
 
 async fn harness(root: &Path, provider: Arc<ScriptedProvider>) -> Harness {
@@ -190,12 +280,14 @@ struct Traffic {
     polling: mpsc::UnboundedReceiver<Value>,
     sending: mpsc::UnboundedReceiver<Send>,
     fetching: mpsc::UnboundedReceiver<Fetch>,
+    activity: mpsc::UnboundedReceiver<Activity>,
 }
 fn traffic() -> Traffic {
     let (updates, rx) = mpsc::channel(4);
     let (polls, polling) = mpsc::unbounded_channel();
     let (sends, sending) = mpsc::unbounded_channel();
     let (fetches, fetching) = mpsc::unbounded_channel();
+    let (activities, activity) = mpsc::unbounded_channel();
     let adapter = Arc::new(ControlledChannel {
         updates: Mutex::new(rx),
         polls,
@@ -207,9 +299,13 @@ fn traffic() -> Traffic {
         split_called: tokio::sync::Notify::new(),
         menu_failure: AtomicBool::new(false),
         menu_scopes: Mutex::new(Vec::new()),
-        typing_failure: AtomicBool::new(false),
-        typed: AtomicU32::new(0),
-        typing_notify: tokio::sync::Notify::new(),
+        activity_enabled: AtomicBool::new(false),
+        activities,
+        answers: Mutex::new(Vec::new()),
+        answer_notify: tokio::sync::Notify::new(),
+        acknowledgment: Mutex::new(None),
+        receive_failure: Mutex::new(None),
+        receive_failed: tokio::sync::Notify::new(),
     });
     Traffic {
         adapter,
@@ -217,6 +313,7 @@ fn traffic() -> Traffic {
         polling,
         sending,
         fetching,
+        activity,
     }
 }
 
@@ -227,6 +324,7 @@ fn controlled(kernel: Kernel, store: Arc<SqliteStore>) -> Harness {
         polling,
         sending,
         fetching,
+        activity,
     } = traffic();
     Harness {
         kernel: Arc::new(kernel),
@@ -236,6 +334,7 @@ fn controlled(kernel: Kernel, store: Arc<SqliteStore>) -> Harness {
         polling,
         sending,
         fetching,
+        activity,
     }
 }
 
@@ -287,16 +386,17 @@ fn update(offset: u32, action: Action) -> Update {
         key: EventId::new().to_string(),
         origin: origin(),
         protocol: json!(offset),
-        input: Some(Input {
+        input: Input {
             conversation: "chat".into(),
             message: offset.to_string(),
             sender: Some("owner".into()),
             sender_name: Some("Owner".into()),
             addressed: true,
             reply_to: None,
+            respond: None,
             direct: true,
             action,
-        }),
+        },
     }
 }
 
@@ -343,10 +443,10 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
     let channel = start(&kernel, &adapter);
     assert_eq!(receive(&mut polling).await, Value::Null);
     let mut foreign = update(0, Action::Message("unauthorized".into()));
-    foreign.input.as_mut().unwrap().sender = Some("another user".into());
+    foreign.input.sender = Some("another user".into());
     let mut group = update(0, Action::Message("group input".into()));
-    group.input.as_mut().unwrap().direct = false;
-    group.input.as_mut().unwrap().addressed = false;
+    group.input.direct = false;
+    group.input.addressed = false;
     updates
         .send(vec![
             foreign,
@@ -581,6 +681,7 @@ async fn attachments_are_authorized_before_fetch_and_retry_after_the_committed_p
         mut polling,
         mut sending,
         mut fetching,
+        ..
     } = harness(dir.path(), provider).await;
     let channel = start(&kernel, &adapter);
     receive(&mut polling).await;
@@ -590,7 +691,7 @@ async fn attachments_are_authorized_before_fetch_and_retry_after_the_committed_p
         .unwrap();
     receive(&mut polling).await;
     let mut foreign = update(1, photo());
-    foreign.input.as_mut().unwrap().sender = Some("stranger".into());
+    foreign.input.sender = Some("stranger".into());
     updates
         .send(vec![
             foreign,
@@ -608,11 +709,7 @@ async fn attachments_are_authorized_before_fetch_and_retry_after_the_committed_p
     let mut error = lost_response();
     error.retry_after = Some(Duration::ZERO);
     fetch.result.send(Err(error)).unwrap();
-    assert_eq!(receive(&mut polling).await, json!(2));
-    assert!(fetching.try_recv().is_err());
     receive(&mut sending).await.result.send(Ok(())).unwrap();
-
-    updates.send(vec![update(3, photo())]).await.unwrap();
     let bytes = PNG.to_vec();
     receive(&mut fetching)
         .await
@@ -668,5 +765,37 @@ async fn attachments_are_authorized_before_fetch_and_retry_after_the_committed_p
     assert!(
         matches!(&unviewable[0].reason, UnviewableReason::Unavailable(reason) if reason.contains("403"))
     );
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_receiver_failure_keeps_its_protocol_reason_when_the_preparation_queue_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    let Harness {
+        kernel,
+        adapter,
+        updates,
+        mut polling,
+        ..
+    } = harness(dir.path(), ScriptedProvider::new(vec![])).await;
+    let channel = start(&kernel, &adapter);
+    receive(&mut polling).await;
+    *adapter.receive_failure.lock().await = Some(Fault {
+        failure: Failure {
+            code: "gateway.4014".into(),
+            message: "Message Content intent is disabled".into(),
+            retryable: false,
+        },
+        unknown: false,
+        fatal: true,
+        retry_after: None,
+        origin: None,
+    });
+    updates.send(Vec::new()).await.unwrap();
+    adapter.receive_failed.notified().await;
+    channel.shutdown().await.unwrap();
+    let stopped = channel.status().await.unwrap().stopped.unwrap();
+    assert!(stopped.contains("gateway.4014"));
+    assert!(stopped.contains("Message Content intent is disabled"));
     kernel.shutdown().await.unwrap();
 }

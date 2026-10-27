@@ -175,6 +175,7 @@ pub fn fixture(completion: Arc<dyn Provider>, embedding: Arc<dyn Embedding>) -> 
         summary: "fixture".into(),
         config_schema: serde_json::json!({}),
         credentials: Vec::new(),
+        channel_origins: Vec::new(),
         unavailable: None,
         tools: None,
         composer: None,
@@ -523,12 +524,14 @@ pub fn source_request(name: &str, bytes: &[u8]) -> RegistrationRequest {
 pub fn credential(required: bool) -> Credential {
     Credential {
         name: "service".into(),
-        origin: None,
         required,
-        placement: Placement::Header(HeaderPlacement {
-            name: "authorization".into(),
-            prefix: "Bearer ".into(),
-        }),
+        placements: vec![Placement {
+            origin: None,
+            location: Location::Header(HeaderPlacement {
+                name: "authorization".into(),
+                prefix: "Bearer ".into(),
+            }),
+        }],
     }
 }
 

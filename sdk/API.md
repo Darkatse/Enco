@@ -3,12 +3,13 @@
 
 `src/lib.rs`
 
-Rust bindings, world exports, and shared schema and protocol helpers for plugins.
+Rust bindings, world exports, and shared schema, protocol and channel helpers for plugins.
 
 The host writes this crate to `sdk/` in every home, replacing any edits there; plugins depend on
 it by path.
 
 - module `bindings` — Types and host functions generated from the WIT.
+- module `channel` — What every channel mapper shares: the activity card's wording and `multipart/form-data` uploads.
 - module `host` — Host-owned logging and transport available to plugins.
 - module `protocol` — Helpers for plugins that call model services through the host's `http` import, including OpenAI-compatible Chat Completions and embeddings.
 - module `types` — Canonical data exchanged between the host and plugins.
@@ -43,7 +44,9 @@ embedding), `decision`, `tools`, `composer` or `channel`.
 
 Call it in a crate in `plugins/<name>` that depends on this SDK as `enco_sdk`. It defines a
 `bindings` module beside the call, whose `exports` hold the `Guest` traits to implement; the
-WIT is read from `../../sdk/wit`.
+WIT is read from `../../sdk/wit`. The traits take the SDK's own types where it has helpers for
+them, such as `protocol::Request` and `channel::ActivityView`; name those from the SDK, not
+from `bindings`.
 
 ## fn `input_schema`
 
@@ -103,11 +106,165 @@ The lowercase BLAKE3 digest of source text before the composer formats it.
 
 Types and host functions generated from the WIT.
 
-Plugins built with `export!` use these same types, so a value from `protocol` can be
-returned from a plugin as it is.
+Plugins built with `export!` use these same types, so values pass between a plugin and
+`protocol` or `channel` as they are.
 
 - module `bindings::enco` — (no summary)
 - module `bindings::exports` — (no summary)
+
+# module `enco_sdk::channel`
+
+`src/channel.rs`
+
+What every channel mapper shares: the activity card's wording and `multipart/form-data` uploads.
+
+Each protocol lays the card out with its own components; the words on it are the same
+everywhere. `export!` gives a channel plugin's `activity` these same types, so
+name them from here.
+
+- struct `channel::ActivityView` — What the Agent is doing while a Run goes on.
+- struct `channel::FormPart` — One part of a `multipart/form-data` body.
+- struct `channel::ToolActivity` — One tool call shown in an activity view.
+- enum `channel::ToolState` — Where a tool call stands.
+- fn `channel::multipart` — Encode `parts` in order as `multipart/form-data`, returning the `content-type` header value and the body.
+- const `channel::CANCEL_LABEL` — The label of the activity card's button that cancels the Run.
+
+## struct `channel::ActivityView`
+
+`src/lib.rs`
+
+```rust
+pub struct ActivityView {
+    pub elapsed_seconds: u32,
+    pub tools: Vec<ToolActivity>,
+}
+```
+
+What the Agent is doing while a Run goes on.
+
+- `elapsed_seconds` — Seconds since the Run started.
+- `tools` — The Run's latest tool calls, oldest first.
+
+### `channel::ActivityView::text`
+
+`src/channel.rs`
+
+```rust
+pub fn text(&self) -> String
+```
+
+The activity card's text: `Working` and the elapsed `m:ss`, then a line per tool.
+
+Each tool line is a mark and the tool's name; the marks are `…` running, `✓` ok,
+`✗` failed and `?` unknown.
+
+Implements:
+
+```rust
+impl Clone for ActivityView
+impl Debug for ActivityView
+impl PartialEq for ActivityView
+```
+
+## struct `channel::FormPart`
+
+`src/channel.rs`
+
+```rust
+pub struct FormPart<'a> {
+    pub name: &'a str,
+    pub filename: Option<&'a str>,
+    pub content_type: Option<&'a str>,
+    pub data: &'a [u8],
+}
+```
+
+One part of a `multipart/form-data` body.
+
+- `name` — The form field's name.
+- `filename` — The uploaded file's name, sent with `\r`, `\n` and `"` percent-encoded; absent for a field
+  that is not a file.
+- `content_type` — The part's `Content-Type`; absent leaves the receiver's default, `text/plain`.
+- `data` — The part's bytes, sent as they are.
+
+## struct `channel::ToolActivity`
+
+`src/lib.rs`
+
+```rust
+pub struct ToolActivity {
+    pub name: String,
+    pub state: ToolState,
+}
+```
+
+One tool call shown in an activity view.
+
+- `name` — The tool's name, as the model calls it.
+- `state` — Where the call stands.
+
+Implements:
+
+```rust
+impl Clone for ToolActivity
+impl Debug for ToolActivity
+impl PartialEq for ToolActivity
+```
+
+## enum `channel::ToolState`
+
+`src/lib.rs`
+
+```rust
+pub enum ToolState {
+    Running,
+    Ok,
+    Failed,
+    Unknown,
+}
+```
+
+Where a tool call stands.
+
+- `Running` — The call has started and has no settlement yet.
+- `Ok` — It succeeded.
+- `Failed` — The call finished with a known failure.
+- `Unknown` — It may have taken effect, but its result is not known.
+
+Implements:
+
+```rust
+impl Clone for ToolState
+impl Copy for ToolState
+impl Debug for ToolState
+impl Eq for ToolState
+impl Ord for ToolState
+impl PartialEq for ToolState
+impl PartialOrd for ToolState
+```
+
+## fn `channel::multipart`
+
+`src/channel.rs`
+
+```rust
+pub fn multipart(parts: &[FormPart<'_>]) -> (String, Vec<u8>)
+```
+
+Encode `parts` in order as `multipart/form-data`, returning the `content-type` header value and
+the body.
+
+The boundary occurs in no part's name, file name or bytes.
+
+## const `channel::CANCEL_LABEL`
+
+`src/channel.rs`
+
+```rust
+pub const CANCEL_LABEL: &str = "Cancel";
+```
+
+The label of the activity card's button that cancels the Run.
 
 # module `enco_sdk::protocol`
 
@@ -1034,8 +1191,691 @@ A JSON document encoded as UTF-8 text.
 
 `src/lib.rs`
 
+- module `bindings::exports::enco::plugin::channel` — Translates a messaging protocol as a pure state machine; the host owns connections, timers and credentials.
 - module `bindings::exports::enco::plugin::completion` — Adapts canonical requests to a model service protocol.
 - module `bindings::exports::enco::plugin::lifecycle` — Describes and checks the component without assigning its registry identity.
+
+# module `enco_sdk::bindings::exports::enco::plugin::channel`
+
+`src/lib.rs`
+
+Translates a messaging protocol as a pure state machine; the host owns connections, timers and credentials.
+
+The host records each external input before handing it over, and carries out what the mapper asks.
+
+- enum `bindings::exports::enco::plugin::channel::Action` — What an incoming message asks for, whatever the protocol's command syntax.
+- struct `bindings::exports::enco::plugin::channel::ActivityView` — same as `channel::ActivityView`
+- enum `bindings::exports::enco::plugin::channel::Arrival` — Something that reached the mapper through the host.
+- struct `bindings::exports::enco::plugin::channel::Attachment` — An image attachment described by its protocol locator.
+- struct `bindings::exports::enco::plugin::channel::Closure` — How a socket ended.
+- struct `bindings::exports::enco::plugin::channel::Command` — A command the host understands, as it should appear in the protocol's menus.
+- enum `bindings::exports::enco::plugin::channel::CommandKind` — The commands the host understands.
+- struct `bindings::exports::enco::plugin::channel::Content` — The text and attachments of a message.
+- struct `bindings::exports::enco::plugin::channel::Fault` — What a protocol answer means for the host's settlement and retries.
+- enum `bindings::exports::enco::plugin::channel::FetchStep` — The next step of fetching an attachment.
+- struct `bindings::exports::enco::plugin::channel::FileData` — File bytes for one outgoing message.
+- struct `bindings::exports::enco::plugin::channel::Identity` — The account a connection reaches.
+- struct `bindings::exports::enco::plugin::channel::Inbound` — A message that arrived, as the protocol describes it.
+- struct `bindings::exports::enco::plugin::channel::Outgoing` — Markdown text with at most one file to send.
+- enum `bindings::exports::enco::plugin::channel::ReadStep` — How the host reads the protocol next.
+- struct `bindings::exports::enco::plugin::channel::Reading` — What the mapper asks of the host after one arrival.
+- struct `bindings::exports::enco::plugin::channel::Request` — A request for the host to send.
+- struct `bindings::exports::enco::plugin::channel::Response` — A response the protocol returned, whatever its status.
+- struct `bindings::exports::enco::plugin::channel::Socket` — A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection stops.
+- struct `bindings::exports::enco::plugin::channel::ToolActivity` — same as `channel::ToolActivity`
+- enum `bindings::exports::enco::plugin::channel::ToolState` — same as `channel::ToolState`
+- trait `bindings::exports::enco::plugin::channel::Guest` — (no summary)
+- type `bindings::exports::enco::plugin::channel::Failure` — (no summary)
+- type `bindings::exports::enco::plugin::channel::Json` — (no summary)
+- type `bindings::exports::enco::plugin::channel::Unviewable` — (no summary)
+
+## enum `bindings::exports::enco::plugin::channel::Action`
+
+`src/lib.rs`
+
+```rust
+pub enum Action {
+    Message(Content),
+    Sessions,
+    SelectSession(String),
+    Cancel,
+    Backtrack,
+    Everyone(::core::option::Option<bool>),
+}
+```
+
+What an incoming message asks for, whatever the protocol's command syntax.
+
+- `Message` — A message for the conversation's Session.
+- `Sessions` — List the Sessions to choose from.
+- `SelectSession` — Route this conversation to the named Session.
+- `Cancel` — Stop the work the conversation's Session is doing.
+- `Backtrack` — Take the conversation back to the message `reply-to` names.
+- `Everyone` — Open this group to everyone or close it to the owner only; absent reports which.
+
+Implements:
+
+```rust
+impl Clone for Action
+impl Debug for Action
+impl PartialEq for Action
+```
+
+## enum `bindings::exports::enco::plugin::channel::Arrival`
+
+`src/lib.rs`
+
+```rust
+pub enum Arrival {
+    Response(Response),
+    Frame(String),
+    Closed(Closure),
+    Timer,
+}
+```
+
+Something that reached the mapper through the host.
+
+- `Response` — The response to the read request.
+- `Frame` — A text frame on the open socket.
+- `Closed` — The socket closed, by the protocol or through a network failure.
+- `Timer` — The timer the mapper set has expired; its reading can change state and request actions, but has no inbound messages.
+
+Implements:
+
+```rust
+impl Clone for Arrival
+impl Debug for Arrival
+impl PartialEq for Arrival
+```
+
+## struct `bindings::exports::enco::plugin::channel::Attachment`
+
+`src/lib.rs`
+
+```rust
+pub struct Attachment {
+    pub what: String,
+    pub locator: String,
+}
+```
+
+An image attachment described by its protocol locator.
+
+- `what` — What the attachment is, for a message that cannot show it.
+- `locator` — The opaque locator passed to `fetch`.
+
+Implements:
+
+```rust
+impl Clone for Attachment
+impl Debug for Attachment
+impl PartialEq for Attachment
+```
+
+## struct `bindings::exports::enco::plugin::channel::Closure`
+
+`src/lib.rs`
+
+```rust
+pub struct Closure {
+    pub code: ::core::option::Option<u16>,
+    pub reason: String,
+}
+```
+
+How a socket ended.
+
+- `code` — The close code, when the protocol sent one.
+- `reason` — The close reason, or the host's description of the network failure.
+
+Implements:
+
+```rust
+impl Clone for Closure
+impl Debug for Closure
+impl PartialEq for Closure
+```
+
+## struct `bindings::exports::enco::plugin::channel::Command`
+
+`src/lib.rs`
+
+```rust
+pub struct Command {
+    pub kind: CommandKind,
+    pub description: String,
+    pub direct: bool,
+    pub group: bool,
+}
+```
+
+A command the host understands, as it should appear in the protocol's menus.
+
+- `kind` — Which command.
+- `description` — What it does, for the menu.
+- `direct` — Whether it applies in one-to-one conversations.
+- `group` — Whether it applies in group conversations.
+
+Implements:
+
+```rust
+impl Clone for Command
+impl Debug for Command
+impl PartialEq for Command
+```
+
+## enum `bindings::exports::enco::plugin::channel::CommandKind`
+
+`src/lib.rs`
+
+```rust
+pub enum CommandKind {
+    Session,
+    Cancel,
+    Backtrack,
+    Everyone,
+}
+```
+
+The commands the host understands.
+
+- `Session` — List the Sessions, or switch to the one named after it.
+- `Cancel` — Stop the work of the conversation's Session.
+- `Backtrack` — Go back to the message the command replies to.
+- `Everyone` — Open the group to everyone, or close it to the owner only.
+
+Implements:
+
+```rust
+impl Clone for CommandKind
+impl Copy for CommandKind
+impl Debug for CommandKind
+impl Eq for CommandKind
+impl Ord for CommandKind
+impl PartialEq for CommandKind
+impl PartialOrd for CommandKind
+```
+
+## struct `bindings::exports::enco::plugin::channel::Content`
+
+`src/lib.rs`
+
+```rust
+pub struct Content {
+    pub text: String,
+    pub images: Vec<Attachment>,
+    pub unviewable: Vec<Unviewable>,
+}
+```
+
+The text and attachments of a message.
+
+- `text` — What the sender wrote.
+- `images` — Images, by the protocol's locator for fetching them.
+- `unviewable` — Attachments that cannot be images, and why.
+
+Implements:
+
+```rust
+impl Clone for Content
+impl Debug for Content
+impl PartialEq for Content
+```
+
+## struct `bindings::exports::enco::plugin::channel::Fault`
+
+`src/lib.rs`
+
+```rust
+pub struct Fault {
+    pub failure: Failure,
+    pub unknown: bool,
+    pub fatal: bool,
+    pub retry_after: ::core::option::Option<u32>,
+}
+```
+
+What a protocol answer means for the host's settlement and retries.
+
+- `failure` — What failed.
+- `unknown` — The request may have taken effect, so it must not be sent again.
+- `fatal` — The whole connection is unusable, not just this request or destination.
+- `retry_after` — How long the protocol asks to wait before retrying, in seconds.
+
+Implements:
+
+```rust
+impl Clone for Fault
+impl Debug for Fault
+impl Display for Fault
+impl Error for Fault
+impl PartialEq for Fault
+```
+
+## enum `bindings::exports::enco::plugin::channel::FetchStep`
+
+`src/lib.rs`
+
+```rust
+pub enum FetchStep {
+    Request(Request),
+    Image(Vec<u8>),
+    Unavailable(String),
+}
+```
+
+The next step of fetching an attachment.
+
+- `Request` — Send this request and call again with its response.
+- `Image` — The attachment's bytes.
+- `Unavailable` — The protocol refused it for good; the text says why.
+
+Implements:
+
+```rust
+impl Clone for FetchStep
+impl Debug for FetchStep
+impl PartialEq for FetchStep
+```
+
+## struct `bindings::exports::enco::plugin::channel::FileData`
+
+`src/lib.rs`
+
+```rust
+pub struct FileData {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+```
+
+File bytes for one outgoing message.
+
+- `name` — The filename without its original directory.
+- `data` — The original bytes, encoded by the mapper for transport.
+
+Implements:
+
+```rust
+impl Clone for FileData
+impl Debug for FileData
+impl PartialEq for FileData
+```
+
+## struct `bindings::exports::enco::plugin::channel::Identity`
+
+`src/lib.rs`
+
+```rust
+pub struct Identity {
+    pub protocol: String,
+    pub account: String,
+    pub facts: Json,
+}
+```
+
+The account a connection reaches.
+
+- `protocol` — A nonempty protocol name without colons; with `account`, it keys connection state.
+- `account` — A nonempty, stable account ID within the protocol, treated as opaque by the host.
+- `facts` — What the mapper needs to know about the account later, such as the bot's username.
+
+Implements:
+
+```rust
+impl Clone for Identity
+impl Debug for Identity
+impl PartialEq for Identity
+```
+
+## struct `bindings::exports::enco::plugin::channel::Inbound`
+
+`src/lib.rs`
+
+```rust
+pub struct Inbound {
+    pub key: String,
+    pub conversation: String,
+    pub message: String,
+    pub sender: ::core::option::Option<String>,
+    pub sender_name: ::core::option::Option<String>,
+    pub direct: bool,
+    pub addressed: bool,
+    pub reply_to: ::core::option::Option<String>,
+    pub respond: ::core::option::Option<String>,
+    pub action: Action,
+}
+```
+
+A message that arrived, as the protocol describes it.
+
+- `key` — The protocol's key for accepting this message once, such as an update or event ID.
+- `conversation` — The conversation, where replies go.
+- `message` — This message's ID, unique within the conversation.
+- `sender` — The sender's ID, when the protocol reports one.
+- `sender_name` — The sender's display name, when the protocol reports one.
+- `direct` — Whether the conversation is one to one.
+- `addressed` — Whether the message is addressed to this bot; always true in a direct conversation.
+- `reply_to` — The message this one replies to, or the message a command was invoked on.
+- `respond` — The handle for answering this message once accepted, when the protocol expects an
+  answer, such as for a command or a button.
+- `action` — What it asks for.
+
+Implements:
+
+```rust
+impl Clone for Inbound
+impl Debug for Inbound
+impl PartialEq for Inbound
+```
+
+## struct `bindings::exports::enco::plugin::channel::Outgoing`
+
+`src/lib.rs`
+
+```rust
+pub struct Outgoing {
+    pub text: String,
+    pub file: ::core::option::Option<FileData>,
+}
+```
+
+Markdown text with at most one file to send.
+
+- `text` — All text to send, in Markdown.
+- `file` — A file to send with this text, if any.
+
+Implements:
+
+```rust
+impl Clone for Outgoing
+impl Debug for Outgoing
+impl PartialEq for Outgoing
+```
+
+## enum `bindings::exports::enco::plugin::channel::ReadStep`
+
+`src/lib.rs`
+
+```rust
+pub enum ReadStep {
+    Request(Request),
+    Socket(Socket),
+}
+```
+
+How the host reads the protocol next.
+
+- `Request` — Send this request; its response is one arrival.
+- `Socket` — Open this socket; each frame on it is one arrival, until it closes.
+
+Implements:
+
+```rust
+impl Clone for ReadStep
+impl Debug for ReadStep
+impl PartialEq for ReadStep
+```
+
+## struct `bindings::exports::enco::plugin::channel::Reading`
+
+`src/lib.rs`
+
+```rust
+pub struct Reading {
+    pub messages: Vec<Inbound>,
+    pub state: ::core::option::Option<Json>,
+    pub frames: Vec<String>,
+    pub acknowledgments: Vec<Request>,
+    pub timer: ::core::option::Option<u32>,
+    pub reconnect: bool,
+}
+```
+
+What the mapper asks of the host after one arrival.
+
+- `messages` — Messages to accept, in order.
+- `state` — The protocol state after this arrival; absent leaves it unchanged.
+
+  The host uses it for the next call at once, and commits it once every message of this reading is accepted.
+- `frames` — Text frames to send on the socket now, in order.
+- `acknowledgments` — Protocol acknowledgments to send before acceptance, with no effect beyond confirming receipt.
+
+  Answers to this reading's messages are sent only after these complete.
+- `timer` — Milliseconds until a `timer` arrival, replacing any pending timer; absent keeps it.
+  Timers end with the socket.
+- `reconnect` — Close the socket and start the next read with `read`.
+
+Implements:
+
+```rust
+impl Clone for Reading
+impl Debug for Reading
+impl PartialEq for Reading
+```
+
+## struct `bindings::exports::enco::plugin::channel::Request`
+
+`src/lib.rs`
+
+```rust
+pub struct Request {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: ::core::option::Option<Vec<u8>>,
+    pub timeout_ms: ::core::option::Option<u32>,
+}
+```
+
+A request for the host to send.
+
+- `method` — The method, such as `GET` or `POST`.
+- `url` — A path starting with `/`, joined to the connection's base URL, or an absolute URL at
+  one of the mapper's `origins`.
+- `headers` — Header names and values, in order.
+- `body` — The bytes to send, if any.
+- `timeout_ms` — The time limit in milliseconds; the host's default when absent.
+
+Implements:
+
+```rust
+impl Clone for Request
+impl Debug for Request
+impl PartialEq for Request
+```
+
+## struct `bindings::exports::enco::plugin::channel::Response`
+
+`src/lib.rs`
+
+```rust
+pub struct Response {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+```
+
+A response the protocol returned, whatever its status.
+
+- `status` — The status code, such as 200.
+- `headers` — Header names and values, in order.
+- `body` — The whole body.
+
+Implements:
+
+```rust
+impl Clone for Response
+impl Debug for Response
+impl PartialEq for Response
+```
+
+## struct `bindings::exports::enco::plugin::channel::Socket`
+
+`src/lib.rs`
+
+```rust
+pub struct Socket {
+    pub url: String,
+    pub close_code: u16,
+}
+```
+
+A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection
+stops.
+
+- `url` — An absolute `ws` or `wss` URL at one of the mapper's `origins`.
+- `close_code` — The code the host closes the socket with; a protocol that resumes sessions across
+  reconnects may need one other than 1000.
+
+Implements:
+
+```rust
+impl Clone for Socket
+impl Debug for Socket
+impl PartialEq for Socket
+```
+
+## trait `bindings::exports::enco::plugin::channel::Guest`
+
+`src/lib.rs`
+
+```rust
+pub trait Guest
+```
+
+### `bindings::exports::enco::plugin::channel::Guest::origins`
+
+```rust
+fn origins() -> Vec<String>
+```
+
+Additional origins for requests and sockets; `*.` before a host covers its subdomains. Read when the generation loads.
+
+### `bindings::exports::enco::plugin::channel::Guest::identify`
+
+```rust
+fn identify() -> Request
+```
+
+The request that reads which account the connection reaches.
+
+### `bindings::exports::enco::plugin::channel::Guest::identified`
+
+```rust
+fn identified(response: Response) -> ::core::result::Result<Identity, Fault>
+```
+
+The account in that request's response.
+
+### `bindings::exports::enco::plugin::channel::Guest::read`
+
+```rust
+fn read(identity: Identity, state: ::core::option::Option<Json>) -> ::core::result::Result<ReadStep, Fault>
+```
+
+How to read next, from the latest protocol state; `state` is absent before the protocol
+gave one.
+
+`channel.invalid_state` means the state cannot be resumed. The host clears only that
+state and retries from `none`, keeping routes and other committed business facts. If the
+mapper rejects `none` too, the host stops the connection.
+
+### `bindings::exports::enco::plugin::channel::Guest::received`
+
+```rust
+fn received(identity: Identity, state: ::core::option::Option<Json>, arrival: Arrival) -> ::core::result::Result<Reading, Fault>
+```
+
+What an arrival means, given the latest protocol state.
+
+### `bindings::exports::enco::plugin::channel::Guest::fetch`
+
+```rust
+fn fetch(locator: String, responses: Vec<Response>) -> ::core::result::Result<FetchStep, Fault>
+```
+
+The next step of fetching the attachment at `locator`, given the responses so far.
+
+### `bindings::exports::enco::plugin::channel::Guest::split`
+
+```rust
+fn split(message: Outgoing) -> Vec<Outgoing>
+```
+
+The parts an outgoing message is sent as, keeping all of its text.
+
+### `bindings::exports::enco::plugin::channel::Guest::send`
+
+```rust
+fn send(conversation: String, part: Outgoing) -> ::core::result::Result<Request, Fault>
+```
+
+The request that sends one part to a conversation.
+
+### `bindings::exports::enco::plugin::channel::Guest::answered`
+
+```rust
+fn answered(response: Response) -> ::core::result::Result<::core::option::Option<String>, Fault>
+```
+
+What the protocol answered: the ID of the message a request created, if any, or why it
+failed.
+
+### `bindings::exports::enco::plugin::channel::Guest::respond`
+
+```rust
+fn respond(handle: String, text: ::core::option::Option<String>) -> ::core::result::Result<::core::option::Option<Request>, Fault>
+```
+
+The request that answers the accepted message carrying `handle`, showing `text` to its
+sender; absent when nothing more needs sending.
+
+### `bindings::exports::enco::plugin::channel::Guest::commands`
+
+```rust
+fn commands(identity: Identity, commands: Vec<Command>) -> Vec<Request>
+```
+
+Requests that offer the host's commands in the protocol's menus, sent when a connection
+starts.
+
+### `bindings::exports::enco::plugin::channel::Guest::activity`
+
+```rust
+fn activity(conversation: String, shown: ::core::option::Option<String>, activity: ::core::option::Option<ActivityView>) -> ::core::option::Option<Request>
+```
+
+Creates or refreshes the activity view, or removes `shown` when `activity` is absent; absent when nothing needs sending.
+
+The host reads the response to a request made without `shown` with `answered`, and keeps
+the message ID it gives as `shown`. Without an ID, it asks again at each refresh.
+
+## type `bindings::exports::enco::plugin::channel::Failure`
+
+`src/lib.rs`
+
+```rust
+pub type Failure = super::super::super::super::enco::plugin::types::Failure;
+```
+
+## type `bindings::exports::enco::plugin::channel::Json`
+
+`src/lib.rs`
+
+```rust
+pub type Json = super::super::super::super::enco::plugin::types::Json;
+```
+
+## type `bindings::exports::enco::plugin::channel::Unviewable`
+
+`src/lib.rs`
+
+```rust
+pub type Unviewable = super::super::super::super::enco::plugin::types::Unviewable;
+```
 
 # module `enco_sdk::bindings::exports::enco::plugin::completion`
 
@@ -1111,10 +1951,11 @@ pub type ToolSpec = super::super::super::super::enco::plugin::types::ToolSpec;
 
 Describes and checks the component without assigning its registry identity.
 
-- struct `bindings::exports::enco::plugin::lifecycle::Credential` — Named credential attached to `origin`, or to the caller-selected service when absent.
+- struct `bindings::exports::enco::plugin::lifecycle::Credential` — A secret the host writes into the plugin's requests or frames; the plugin never sees it.
 - struct `bindings::exports::enco::plugin::lifecycle::Description` — Plugin-wide facts and requirements.
 - struct `bindings::exports::enco::plugin::lifecycle::HeaderPlacement` — A request header that carries a credential.
-- enum `bindings::exports::enco::plugin::lifecycle::Placement` — Where the host writes a credential; the plugin never sees the value.
+- enum `bindings::exports::enco::plugin::lifecycle::Location` — Where the host writes a credential.
+- struct `bindings::exports::enco::plugin::lifecycle::Placement` — One place a credential goes, and the only origin that receives it there.
 - trait `bindings::exports::enco::plugin::lifecycle::Guest` — (no summary)
 - type `bindings::exports::enco::plugin::lifecycle::Failure` — (no summary)
 - type `bindings::exports::enco::plugin::lifecycle::Json` — (no summary)
@@ -1126,22 +1967,16 @@ Describes and checks the component without assigning its registry identity.
 ```rust
 pub struct Credential {
     pub name: String,
-    pub origin: ::core::option::Option<String>,
-    pub placement: Placement,
     pub required: bool,
+    pub placements: Vec<Placement>,
 }
 ```
 
-Named credential attached to `origin`, or to the caller-selected service when absent.
+A secret the host writes into the plugin's requests or frames; the plugin never sees it.
 
-A fixed origin uses the generation's secret mapping; an absent origin uses the endpoint's.
-Names and origins must be unique, including at most one absent origin.
-The host writes the value at `placement`; plugins never see it.
-
-- `name` — The name the owner's configuration maps to an environment variable.
-- `origin` — The origin the credential is sent to; absent for the service the caller selects.
-- `placement` — Where the host writes the credential.
-- `required` — Whether the plugin cannot work without it.
+- `name` — The name the owner maps to an environment variable.
+- `required` — Whether registration fails without a secret mapping for it.
+- `placements` — Every place the host writes the value, each bound to its origin; at least one.
 
 Implements:
 
@@ -1201,21 +2036,47 @@ impl Debug for HeaderPlacement
 impl PartialEq for HeaderPlacement
 ```
 
-## enum `bindings::exports::enco::plugin::lifecycle::Placement`
+## enum `bindings::exports::enco::plugin::lifecycle::Location`
 
 `src/lib.rs`
 
 ```rust
-pub enum Placement {
+pub enum Location {
     Header(HeaderPlacement),
     Path(Vec<String>),
+    Frame(String),
 }
 ```
 
-Where the host writes a credential; the plugin never sees the value.
+Where the host writes a credential.
 
-- `Header` — A header set to its prefix followed by the value.
-- `Path` — Insert after the matching prefix at the beginning of the request path.
+- `Header` — A request header set to its prefix followed by the value.
+- `Path` — Right after whichever of these prefixes the request path starts with.
+- `Frame` — In each text frame sent on a socket, at this JSON pointer, where the frame holds `null`.
+
+Implements:
+
+```rust
+impl Clone for Location
+impl Debug for Location
+impl PartialEq for Location
+```
+
+## struct `bindings::exports::enco::plugin::lifecycle::Placement`
+
+`src/lib.rs`
+
+```rust
+pub struct Placement {
+    pub origin: ::core::option::Option<String>,
+    pub location: Location,
+}
+```
+
+One place a credential goes, and the only origin that receives it there.
+
+- `origin` — The destination origin; `*.` covers subdomains. Absent means the caller-selected service, such as a channel's base URL.
+- `location` — Where in a request or frame to that origin.
 
 Implements:
 

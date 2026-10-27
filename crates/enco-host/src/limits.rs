@@ -14,11 +14,11 @@ pub(crate) const MEMORY_RELEVANCE_THRESHOLD: f64 = 0.5;
 pub(crate) const EMBED_BATCH: usize = 64;
 
 // A destination that stays unavailable must not starve later logical deliveries.
-pub(crate) const CHANNEL_SEND_ATTEMPTS: u32 = 4;
+pub(crate) const CHANNEL_ATTEMPTS: u32 = 4;
 pub(crate) const CHANNEL_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 pub(crate) const CHANNEL_WAKE_CAPACITY: usize = 32;
-// Renewed before the shortest protocol indicator lapses: Telegram's lasts five seconds.
-pub(crate) const CHANNEL_TYPING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
+pub(crate) const CHANNEL_ACTIVITY_TOOLS: usize = 5;
+pub(crate) const CHANNEL_ACTIVITY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
 pub(crate) const RECENT_DELIVERY_FAILURES: u32 = 10;
 pub(crate) const BUILD_DIAGNOSTICS: usize = 12;
 pub(crate) const PLAN_CHAIN_LIMIT: usize = 32;

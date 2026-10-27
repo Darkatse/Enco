@@ -1,7 +1,7 @@
 //! Updates, addressing and attachments translated at the protocol boundary.
 use crate::{
     channel::{
-        Action, Attachment, CommandKind, Content, Fault, Identity, Inbound, Response, Update,
+        Action, Attachment, CommandKind, Content, Fault, Identity, Inbound, Reading, Response,
     },
     wire::{answer, invalid_response},
 };
@@ -21,6 +21,14 @@ struct Facts {
 struct TelegramUpdate {
     update_id: i64,
     message: Option<Message>,
+    callback_query: Option<Callback>,
+}
+#[derive(Deserialize)]
+struct Callback {
+    id: String,
+    from: User,
+    message: Option<Message>,
+    data: Option<String>,
 }
 #[derive(Deserialize)]
 struct Message {
@@ -51,6 +59,16 @@ struct User {
     id: i64,
     first_name: String,
     last_name: Option<String>,
+}
+
+impl User {
+    /// The name Telegram shows for this user: the first name, then the last name when there is one.
+    fn name(&self) -> String {
+        match &self.last_name {
+            Some(last) => format!("{} {last}", self.first_name),
+            None => self.first_name.clone(),
+        }
+    }
 }
 #[derive(Deserialize)]
 struct Replied {
@@ -100,7 +118,7 @@ pub(super) fn received(
     identity: Identity,
     state: Option<String>,
     response: Response,
-) -> Result<Vec<Update>, Fault> {
+) -> Result<Reading, Fault> {
     let mut offset = offset(state.as_deref())?;
     let facts: Facts = serde_json::from_str(&identity.facts).map_err(|_| Fault {
         failure: Failure {
@@ -113,31 +131,67 @@ pub(super) fn received(
         retry_after: None,
     })?;
     let updates: Vec<TelegramUpdate> = answer("getUpdates", response)?;
-    updates
-        .into_iter()
-        .map(|update| {
-            let next = update
-                .update_id
-                .checked_add(1)
-                .ok_or_else(|| invalid_response("getUpdates update_id"))?;
-            if next <= offset {
-                return Err(invalid_response("getUpdates update order"));
-            }
-            offset = next;
-            Ok(Update {
-                key: update.update_id.to_string(),
-                state: json!({"offset": next}).to_string(),
-                message: update
-                    .message
-                    .map(|message| inbound(message, &identity.account, &facts.username))
-                    .transpose()?
-                    .flatten(),
-            })
-        })
-        .collect()
+    let mut messages = Vec::new();
+    for update in updates {
+        let next = update
+            .update_id
+            .checked_add(1)
+            .ok_or_else(|| invalid_response("getUpdates update_id"))?;
+        if next <= offset {
+            return Err(invalid_response("getUpdates update order"));
+        }
+        offset = next;
+        let key = update.update_id.to_string();
+        let message = if let Some(callback) = update.callback_query {
+            callback_inbound(callback, key)?
+        } else {
+            update
+                .message
+                .map(|message| inbound(message, key, &identity.account, &facts.username))
+                .transpose()?
+                .flatten()
+        };
+        if let Some(message) = message {
+            messages.push(message);
+        }
+    }
+    Ok(Reading {
+        messages,
+        state: Some(json!({"offset": offset}).to_string()),
+        frames: vec![],
+        acknowledgments: vec![],
+        timer: None,
+        reconnect: false,
+    })
 }
 
-fn inbound(message: Message, account: &str, username: &str) -> Result<Option<Inbound>, Fault> {
+fn callback_inbound(callback: Callback, key: String) -> Result<Option<Inbound>, Fault> {
+    if callback.data.as_deref() != Some("cancel") {
+        return Ok(None);
+    }
+    let message = callback
+        .message
+        .ok_or_else(|| invalid_response("callback_query message"))?;
+    Ok(Some(Inbound {
+        key,
+        conversation: message.chat.id.to_string(),
+        message: message.message_id.to_string(),
+        sender: Some(callback.from.id.to_string()),
+        sender_name: Some(callback.from.name()),
+        direct: message.chat.kind == "private",
+        addressed: true,
+        reply_to: None,
+        respond: Some(callback.id),
+        action: Action::Cancel,
+    }))
+}
+
+fn inbound(
+    message: Message,
+    key: String,
+    account: &str,
+    username: &str,
+) -> Result<Option<Inbound>, Fault> {
     let direct = message.chat.kind == "private";
     // Telegram commands are text messages; a caption is never one.
     let command = message
@@ -177,18 +231,13 @@ fn inbound(message: Message, account: &str, username: &str) -> Result<Option<Inb
         }
         _ => Action::Message(content),
     };
-    let (sender, sender_name) = message.from.map_or((None, None), |user| {
-        let name = match user.last_name {
-            Some(last) => format!("{} {last}", user.first_name),
-            None => user.first_name,
-        };
-        (Some(user.id.to_string()), Some(name))
-    });
     Ok(Some(Inbound {
+        key,
+        respond: None,
         conversation: message.chat.id.to_string(),
         message: message.message_id.to_string(),
-        sender,
-        sender_name,
+        sender: message.from.as_ref().map(|user| user.id.to_string()),
+        sender_name: message.from.as_ref().map(User::name),
         direct,
         addressed,
         reply_to: message

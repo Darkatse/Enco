@@ -27,19 +27,19 @@ async fn telegram_photos_documents_and_unsupported_attachments_keep_their_messag
             }}},
             {"update_id": 3, "message": {"message_id": 3, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}, "voice": {"file_id": "voice"}}}
         ]}))).expect(1).mount(&server).await;
-    let updates = telegram.poll(None).await.unwrap();
-    let Action::Message(photo) = &updates[0].input.as_ref().unwrap().action else {
+    let updates = channel::messages(telegram.clone()).await;
+    let Action::Message(photo) = &updates[0].input.action else {
         panic!("expected photo")
     };
     assert_eq!(photo.text, "look");
     assert_eq!(photo.images.len(), 1);
     assert_eq!(photo.images[0].locator, json!("large"));
-    let Action::Message(document) = &updates[1].input.as_ref().unwrap().action else {
+    let Action::Message(document) = &updates[1].input.action else {
         panic!("expected document")
     };
     assert!(document.text.is_empty());
     assert_eq!(document.images[0].locator, json!("document"));
-    let Action::Message(voice) = &updates[2].input.as_ref().unwrap().action else {
+    let Action::Message(voice) = &updates[2].input.action else {
         panic!("expected voice")
     };
     assert!(voice.images.is_empty());

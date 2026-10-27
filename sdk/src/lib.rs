@@ -1,8 +1,9 @@
-//! Rust bindings, world exports, and shared schema and protocol helpers for plugins.
+//! Rust bindings, world exports, and shared schema, protocol and channel helpers for plugins.
 //!
 //! The host writes this crate to `sdk/` in every home, replacing any edits there; plugins depend on
 //! it by path.
 #![warn(missing_docs)]
+pub mod channel;
 mod http;
 pub mod protocol;
 mod schema;
@@ -11,15 +12,26 @@ pub use wit_bindgen;
 
 /// Types and host functions generated from the WIT.
 ///
-/// Plugins built with [`export!`] use these same types, so a value from [`protocol`] can be
-/// returned from a plugin as it is.
+/// Plugins built with [`export!`] use these same types, so values pass between a plugin and
+/// [`protocol`] or [`channel`] as they are.
 #[expect(
     missing_docs,
     reason = "wit-bindgen adds undocumented items such as package modules; the contract gate checks the WIT"
 )]
 pub mod bindings {
+    // One world for every interface the helpers use: a second `generate!` would define the
+    // shared export macros twice. Plugins export their own worlds through `export!`.
     wit_bindgen::generate!({
-        path: "wit", world: "completion-plugin", pub_export_macro: true,
+        path: "wit",
+        inline: "
+            package enco:sdk;
+            world sdk {
+                include enco:plugin/completion-plugin@0.9.0;
+                export enco:plugin/channel@0.9.0;
+            }
+        ",
+        generate_all,
+        pub_export_macro: true,
         additional_derives: [PartialEq],
     });
 }
@@ -82,7 +94,9 @@ pub fn parse_arguments<T: serde::de::DeserializeOwned>(input: &str) -> Result<T,
 ///
 /// Call it in a crate in `plugins/<name>` that depends on this SDK as `enco_sdk`. It defines a
 /// `bindings` module beside the call, whose `exports` hold the `Guest` traits to implement; the
-/// WIT is read from `../../sdk/wit`.
+/// WIT is read from `../../sdk/wit`. The traits take the SDK's own types where it has helpers for
+/// them, such as [`protocol::Request`] and [`channel::ActivityView`]; name those from the SDK, not
+/// from `bindings`.
 #[macro_export]
 macro_rules! export {
     (completion, $implementation:ident) => { $crate::export!(@provider "completion-plugin", $implementation); };
@@ -90,18 +104,24 @@ macro_rules! export {
     (decision, $implementation:ident) => { $crate::export!(@world "decision-plugin", $implementation, [],); };
     (tools, $implementation:ident) => { $crate::export!(@world "tool-plugin", $implementation, [],); };
     (composer, $implementation:ident) => { $crate::export!(@world "composer-plugin", $implementation, [PartialEq],); };
-    (channel, $implementation:ident) => { $crate::export!(@bindings "channel-plugin", $implementation, [PartialEq],); };
+    (channel, $implementation:ident) => {
+        $crate::export!(@bindings "channel-plugin", $implementation, [PartialEq],
+            "enco:plugin/channel@0.9.0/activity-view": enco_sdk::channel::ActivityView,
+            "enco:plugin/channel@0.9.0/tool-activity": enco_sdk::channel::ToolActivity,
+            "enco:plugin/channel@0.9.0/tool-state": enco_sdk::channel::ToolState,
+        );
+    };
     (@provider $world:literal, $implementation:ident) => {
         $crate::export!(@world $world, $implementation, [],
-            "enco:plugin/completion@0.8.0/request": enco_sdk::protocol::Request,
-            "enco:plugin/completion@0.8.0/completion": enco_sdk::protocol::Completion,
-            "enco:plugin/completion@0.8.0/usage": enco_sdk::protocol::Usage,
-            "enco:plugin/completion@0.8.0/stop-reason": enco_sdk::protocol::StopReason,
+            "enco:plugin/completion@0.9.0/request": enco_sdk::protocol::Request,
+            "enco:plugin/completion@0.9.0/completion": enco_sdk::protocol::Completion,
+            "enco:plugin/completion@0.9.0/usage": enco_sdk::protocol::Usage,
+            "enco:plugin/completion@0.9.0/stop-reason": enco_sdk::protocol::StopReason,
         );
     };
     (@world $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => {
         $crate::export!(@bindings $world, $implementation, [$($derives),*],
-            "enco:plugin/host@0.8.0": enco_sdk::host,
+            "enco:plugin/host@0.9.0": enco_sdk::host,
             $($types)*
         );
     };
@@ -115,7 +135,7 @@ macro_rules! export {
                 runtime_path: "enco_sdk::wit_bindgen::rt",
                 additional_derives: [$($derives),*],
                 with: {
-                    "enco:plugin/types@0.8.0": enco_sdk::types,
+                    "enco:plugin/types@0.9.0": enco_sdk::types,
                     $($types)*
                 },
             });

@@ -6,7 +6,7 @@ use crate::{
 use enco_core::{Failure, FileData, MappingOrigin, Outgoing, Unviewable, UnviewableReason};
 use enco_kernel::{
     ChannelAction, ChannelAttachment, ChannelCommand, ChannelCommandKind, ChannelContent,
-    ChannelFault, ChannelIdentity, ChannelInput, ChannelUpdate,
+    ChannelFault, ChannelIdentity, ChannelInput, ChannelMessage,
 };
 use std::time::Duration;
 
@@ -41,29 +41,16 @@ pub(super) fn identified(value: wire::Identity) -> Result<ChannelIdentity, Failu
     })
 }
 
-fn json(value: &str, label: &str) -> Result<serde_json::Value, Failure> {
+pub(super) fn json(value: &str, label: &str) -> Result<serde_json::Value, Failure> {
     serde_json::from_str(value).map_err(|error| convert::bad(format!("{label}: {error}")))
 }
 
-pub(super) fn update(value: wire::Update, origin: MappingOrigin) -> Result<ChannelUpdate, Failure> {
-    let wire::Update {
-        key,
-        state,
-        message,
-    } = value;
-    if key.is_empty() {
-        return Err(convert::bad("channel update key is empty"));
-    }
-    Ok(ChannelUpdate {
-        key,
-        protocol: json(&state, "channel update state")?,
-        input: message.map(input),
-        origin,
-    })
-}
-
-fn input(value: wire::Inbound) -> ChannelInput {
+pub(super) fn message(
+    value: wire::Inbound,
+    origin: MappingOrigin,
+) -> Result<ChannelMessage, Failure> {
     let wire::Inbound {
+        key,
         conversation,
         message,
         sender,
@@ -71,8 +58,12 @@ fn input(value: wire::Inbound) -> ChannelInput {
         direct,
         addressed,
         reply_to,
+        respond,
         action,
     } = value;
+    if key.is_empty() {
+        return Err(convert::bad("channel message key is empty"));
+    }
     let action = match action {
         wire::Action::Message(content) => ChannelAction::Message(self::content(content)),
         wire::Action::Sessions => ChannelAction::Sessions,
@@ -81,16 +72,21 @@ fn input(value: wire::Inbound) -> ChannelInput {
         wire::Action::Backtrack => ChannelAction::Backtrack,
         wire::Action::Everyone(value) => ChannelAction::Everyone(value),
     };
-    ChannelInput {
-        conversation,
-        message,
-        sender,
-        sender_name,
-        direct,
-        addressed,
-        reply_to,
-        action,
-    }
+    Ok(ChannelMessage {
+        key,
+        origin,
+        input: ChannelInput {
+            conversation,
+            message,
+            sender,
+            sender_name,
+            direct,
+            addressed,
+            reply_to,
+            respond,
+            action,
+        },
+    })
 }
 
 fn content(value: wire::Content) -> ChannelContent<ChannelAttachment> {
@@ -181,6 +177,30 @@ pub(super) fn command(value: &ChannelCommand) -> wire::Command {
         description: description.clone(),
         direct: *direct,
         group: *group,
+    }
+}
+
+pub(super) fn activity(value: &enco_kernel::ChannelActivity) -> wire::ActivityView {
+    let enco_kernel::ChannelActivity {
+        elapsed_seconds,
+        tools,
+    } = value;
+    wire::ActivityView {
+        elapsed_seconds: *elapsed_seconds,
+        tools: tools
+            .iter()
+            .map(
+                |enco_kernel::ChannelToolActivity { name, state }| wire::ToolActivity {
+                    name: name.clone(),
+                    state: match state {
+                        enco_kernel::ChannelToolState::Running => wire::ToolState::Running,
+                        enco_kernel::ChannelToolState::Ok => wire::ToolState::Ok,
+                        enco_kernel::ChannelToolState::Failed => wire::ToolState::Failed,
+                        enco_kernel::ChannelToolState::Unknown => wire::ToolState::Unknown,
+                    },
+                },
+            )
+            .collect(),
     }
 }
 

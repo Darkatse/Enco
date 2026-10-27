@@ -97,7 +97,12 @@ async fn request(stream: TcpStream, requests: mpsc::UnboundedSender<Request>) {
     };
     let automatic = if path.ends_with("/getMe") {
         Some(serde_json::json!({"ok": true, "result": {"id": 42, "username": "FixtureBot"}}))
-    } else if path.ends_with("/setMyCommands") || path.ends_with("/sendChatAction") {
+    } else if path.ends_with("/sendMessage") {
+        Some(serde_json::json!({"ok": true, "result": {"message_id": 900}}))
+    } else if path.ends_with("/setMyCommands")
+        || path.ends_with("/editMessageText")
+        || path.ends_with("/deleteMessage")
+    {
         Some(serde_json::json!({"ok": true, "result": true}))
     } else {
         None

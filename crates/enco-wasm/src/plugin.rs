@@ -9,7 +9,7 @@ use crate::{
     },
     call_world::CallWorld,
     convert,
-    credentials::{self, Placement},
+    credentials::{self, Credential},
     engine::WasmEngine,
     host_imports::HostState,
     limits,
@@ -32,7 +32,8 @@ pub(super) struct WasmPlugin {
     pub engine: Arc<WasmEngine>,
     pub http: reqwest::Client,
     pub name: String,
-    pub placements: Vec<Placement>,
+    pub credentials: Vec<Credential>,
+    pub channel_origins: Vec<crate::origins::Origin>,
 }
 
 impl WasmPlugin {
@@ -142,7 +143,7 @@ impl Provider for WasmPlugin {
             .ok_or_else(|| trap("completion export is missing"))?;
         let request = convert::request(request);
         let settings = settings(params);
-        let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
+        let credentials = credentials::resolve(&self.credentials, &self.settings, Some(params))?;
         let result = self
             .invoke(
                 CallWorld::Regular(credentials),
@@ -177,7 +178,7 @@ impl Embedding for WasmPlugin {
             .ok_or_else(|| trap("embedding export is missing"))?;
         let count = inputs.len();
         let settings = settings(params);
-        let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
+        let credentials = credentials::resolve(&self.credentials, &self.settings, Some(params))?;
         let vectors = self
             .invoke(
                 CallWorld::Regular(credentials),
@@ -213,7 +214,7 @@ impl Decision for WasmPlugin {
             .ok_or_else(|| trap("decision export is missing"))?;
         let wire_questions = questions.iter().map(convert::question).collect();
         let settings = settings(params);
-        let credentials = credentials::resolve(&self.placements, &self.settings, Some(params))?;
+        let credentials = credentials::resolve(&self.credentials, &self.settings, Some(params))?;
         let answers = self
             .invoke(
                 CallWorld::Regular(credentials),

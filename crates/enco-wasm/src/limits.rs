@@ -34,3 +34,5 @@ pub fn call_limits() -> Vec<(String, String)> {
     .map(|(what, limit)| (what.to_owned(), limit))
     .collect()
 }
+
+pub(crate) const CHANNEL_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);

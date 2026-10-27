@@ -1,9 +1,11 @@
 use super::{
     Plugin,
     channel::{
-        Action, Command, CommandKind, FetchStep, FileData, Guest, Identity, Outgoing, Response,
+        Action, Arrival, Command, CommandKind, FetchStep, FileData, Guest, Identity, Outgoing,
+        ReadStep, Response,
     },
 };
+use enco_sdk::channel::ActivityView;
 use serde_json::{Value, json};
 
 fn response(status: u16, body: &[u8]) -> Response {
@@ -24,14 +26,11 @@ fn updates_translate_group_addressing_senders_and_attachment_locators() -> Resul
     let updates = Plugin::received(
         identity()?,
         Some(r#"{"offset":100}"#.into()),
-        response(200, super::fixtures::UPDATES.as_bytes()),
+        Arrival::Response(response(200, super::fixtures::UPDATES.as_bytes())),
     )
     .map_err(|fault| fault.failure.message)?;
-    assert_eq!(updates.len(), 9);
-    let messages: Vec<_> = updates
-        .iter()
-        .filter_map(|update| update.message.as_ref())
-        .collect();
+    assert_eq!(updates.messages.len(), 9);
+    let messages = updates.messages;
     assert_eq!(
         messages
             .iter()
@@ -56,8 +55,11 @@ fn updates_translate_group_addressing_senders_and_attachment_locators() -> Resul
         return Err("expected voice".into());
     };
     assert_eq!(voice.unviewable[0].what, "voice message");
-    let state = updates.last().map(|update| update.state.clone());
-    let poll = Plugin::poll(identity()?, state).map_err(|fault| fault.failure.message)?;
+    let ReadStep::Request(poll) =
+        Plugin::read(identity()?, updates.state).map_err(|fault| fault.failure.message)?
+    else {
+        return Err("expected request".into());
+    };
     let body: Value = serde_json::from_slice(&poll.body.ok_or("missing poll body")?)
         .map_err(|error| error.to_string())?;
     assert_eq!(body["offset"], 109);
@@ -71,7 +73,7 @@ fn fetch_drives_two_requests_and_keeps_permanent_file_rejection_local() -> Resul
     else {
         return Err("expected getFile".into());
     };
-    assert_eq!(first.path, "/bot/getFile");
+    assert_eq!(first.url, "/bot/getFile");
     let metadata = response(
         200,
         br#"{"ok":true,"result":{"file_path":"photos/a b.jpg"}}"#,
@@ -81,7 +83,7 @@ fn fetch_drives_two_requests_and_keeps_permanent_file_rejection_local() -> Resul
     else {
         return Err("expected download".into());
     };
-    assert_eq!(download.path, "/file/bot/photos/a%20b.jpg");
+    assert_eq!(download.url, "/file/bot/photos/a%20b.jpg");
     assert_eq!(
         Plugin::fetch(
             "image-id".into(),
@@ -127,7 +129,7 @@ fn protocol_faults_preserve_delivery_evidence_and_retry_delay() {
         matches!(Plugin::answered(response(429, br#"{"ok":false,"error_code":429,"parameters":{"retry_after":17}}"#)), Err(fault) if fault.retry_after == Some(17))
     );
     assert!(
-        matches!(Plugin::received(Identity { protocol: "telegram".into(), account: "42".into(), facts: r#"{"username":"HelperBot"}"#.into() }, None, response(200, br#"{"ok":true,"result":[{"update_id":"changed"}]}"#)), Err(fault) if fault.failure.code == "channel.bad_response")
+        matches!(Plugin::received(Identity { protocol: "telegram".into(), account: "42".into(), facts: r#"{"username":"HelperBot"}"#.into() }, None, Arrival::Response(response(200, br#"{"ok":true,"result":[{"update_id":"changed"}]}"#))), Err(fault) if fault.failure.code == "channel.bad_response")
     );
 }
 
@@ -142,9 +144,13 @@ fn private_commands_and_group_commands_target_only_this_bot() -> Result<(), Stri
     ];
     for (kind, text, addressed) in cases {
         let body = json!({"ok":true,"result":[{"update_id":5,"message":{"message_id":1,"chat":{"id":9,"type":kind},"from":{"id":7,"first_name":"Ada"},"text":text}}]}).to_string();
-        let updates = Plugin::received(identity()?, None, response(200, body.as_bytes()))
-            .map_err(|fault| fault.failure.message)?;
-        let message = updates[0].message.as_ref().ok_or("missing message")?;
+        let updates = Plugin::received(
+            identity()?,
+            None,
+            Arrival::Response(response(200, body.as_bytes())),
+        )
+        .map_err(|fault| fault.failure.message)?;
+        let message = updates.messages.first().ok_or("missing message")?;
         assert_eq!(message.addressed, addressed);
         match text {
             "/session work" => {
@@ -162,9 +168,13 @@ fn private_commands_and_group_commands_target_only_this_bot() -> Result<(), Stri
 #[test]
 fn a_caption_is_never_a_command() -> Result<(), String> {
     let body = json!({"ok":true,"result":[{"update_id":5,"message":{"message_id":1,"chat":{"id":-100,"type":"supergroup"},"from":{"id":7,"first_name":"Ada"},"photo":[{"file_id":"photo","width":1,"height":1}],"caption":"/cancel"}}]}).to_string();
-    let updates = Plugin::received(identity()?, None, response(200, body.as_bytes()))
-        .map_err(|fault| fault.failure.message)?;
-    let message = updates[0].message.as_ref().ok_or("missing message")?;
+    let updates = Plugin::received(
+        identity()?,
+        None,
+        Arrival::Response(response(200, body.as_bytes())),
+    )
+    .map_err(|fault| fault.failure.message)?;
+    let message = updates.messages.first().ok_or("missing message")?;
     assert!(!message.addressed);
     assert!(matches!(&message.action, Action::Message(content) if content.text == "/cancel"));
     Ok(())
@@ -175,7 +185,7 @@ fn split_preserves_unicode_and_upload_keeps_file_bytes_outside_json() -> Result<
     let text = format!("{}\n{}", "😀".repeat(32760), "next".repeat(40));
     let file = FileData {
         name: "song.mp3".into(),
-        data: b"binary\0enco-telegram".into(),
+        data: b"binary\0song".into(),
     };
     let parts = Plugin::split(Outgoing {
         text: text.clone(),
@@ -201,36 +211,28 @@ fn split_preserves_unicode_and_upload_keeps_file_bytes_outside_json() -> Result<
     assert!(wire.contains(r#""type":"audio""#));
     assert!(wire.contains("filename=\"song.mp3\""));
     assert!(wire.contains("attach://file"));
-    let boundary = request
-        .headers
-        .iter()
-        .find_map(|(_, value)| value.strip_prefix("multipart/form-data; boundary="))
-        .ok_or("missing multipart boundary")?;
-    assert!(
-        !file
-            .data
-            .windows(boundary.len())
-            .any(|window| window == boundary.as_bytes())
-    );
     Ok(())
 }
 
 #[test]
-fn menus_use_chat_scopes_and_typing_uses_chat_action() -> Result<(), String> {
-    let requests = Plugin::commands(vec![
-        Command {
-            kind: CommandKind::Session,
-            description: "Choose Session".into(),
-            direct: true,
-            group: false,
-        },
-        Command {
-            kind: CommandKind::Everyone,
-            description: "Open group".into(),
-            direct: false,
-            group: true,
-        },
-    ]);
+fn menus_use_chat_scopes_and_activity_has_cancel() -> Result<(), String> {
+    let requests = Plugin::commands(
+        identity()?,
+        vec![
+            Command {
+                kind: CommandKind::Session,
+                description: "Choose Session".into(),
+                direct: true,
+                group: false,
+            },
+            Command {
+                kind: CommandKind::Everyone,
+                description: "Open group".into(),
+                direct: false,
+                group: true,
+            },
+        ],
+    );
     let bodies: Vec<Value> = requests
         .iter()
         .map(|request| {
@@ -242,9 +244,66 @@ fn menus_use_chat_scopes_and_typing_uses_chat_action() -> Result<(), String> {
     assert_eq!(bodies[0]["commands"][0]["command"], "session");
     assert_eq!(bodies[1]["scope"]["type"], "all_group_chats");
     assert_eq!(bodies[1]["commands"][0]["command"], "everyone");
-    let typing = Plugin::typing("-100".into()).ok_or("missing typing request")?;
-    let body: Value = serde_json::from_slice(&typing.body.ok_or("missing typing body")?)
+    let card = Plugin::activity(
+        "-100".into(),
+        None,
+        Some(ActivityView {
+            elapsed_seconds: 61,
+            tools: vec![],
+        }),
+    )
+    .ok_or("missing activity request")?;
+    let body: Value = serde_json::from_slice(&card.body.ok_or("missing card body")?)
         .map_err(|error| error.to_string())?;
-    assert_eq!(body, json!({"chat_id":"-100","action":"typing"}));
+    assert_eq!(body["text"], "Working 1:01");
+    assert_eq!(
+        body["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
+        "cancel"
+    );
+    Ok(())
+}
+
+#[test]
+fn callback_cancel_requests_no_acknowledgment_at_reception() -> Result<(), String> {
+    let body = json!({"ok":true,"result":[{"update_id":10,"callback_query":{"id":"cb-1","from":{"id":7,"first_name":"Ada","last_name":"Lovelace"},"message":{"message_id":4,"chat":{"id":9,"type":"private"}},"data":"cancel"}}]}).to_string();
+    let reading = Plugin::received(
+        identity()?,
+        None,
+        Arrival::Response(response(200, body.as_bytes())),
+    )
+    .map_err(|fault| fault.failure.message)?;
+    assert!(reading.acknowledgments.is_empty());
+    let message = reading.messages.first().ok_or("missing cancel")?;
+    assert!(matches!(message.action, Action::Cancel));
+    assert_eq!(message.key, "10");
+    assert_eq!(message.sender.as_deref(), Some("7"));
+    assert_eq!(message.sender_name.as_deref(), Some("Ada Lovelace"));
+    let request = Plugin::respond(
+        message.respond.clone().ok_or("missing handle")?,
+        Some("Cancellation requested.".into()),
+    )
+    .map_err(|fault| fault.failure.message)?
+    .ok_or("missing response")?;
+    assert_eq!(request.url, "/bot/answerCallbackQuery");
+    let body: Value = serde_json::from_slice(request.body.as_deref().ok_or("missing body")?)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(body["callback_query_id"], "cb-1");
+    assert_eq!(body["text"], "Cancellation requested.");
+    let edit = Plugin::activity(
+        "9".into(),
+        Some("4".into()),
+        Some(ActivityView {
+            elapsed_seconds: 0,
+            tools: vec![],
+        }),
+    )
+    .ok_or("missing edit")?;
+    assert_eq!(edit.url, "/bot/editMessageText");
+    assert_eq!(
+        Plugin::activity("9".into(), Some("4".into()), None)
+            .ok_or("missing delete")?
+            .url,
+        "/bot/deleteMessage"
+    );
     Ok(())
 }

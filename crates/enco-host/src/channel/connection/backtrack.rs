@@ -30,7 +30,7 @@ impl Connection {
         source: EventSource,
         key: String,
         reply: Option<String>,
-    ) -> Result<(), ChannelError> {
+    ) -> Result<Option<String>, ChannelError> {
         match self.target(&state, conversation, reply.as_deref()).await? {
             Ok(Target {
                 session,
@@ -39,13 +39,9 @@ impl Connection {
             }) => {
                 let body = EventBody::Backtrack { to: pos };
                 self.submit(state, session, source, body, key, None).await?;
-                self.receipts.push_back(Receipt {
-                    target: conversation.into(),
-                    text: receipt.into(),
-                });
-                Ok(())
+                Ok(Some(receipt.into()))
             }
-            Err(refusal) => self.receipt(state, key, conversation.into(), refusal).await,
+            Err(refusal) => self.receipt(state, key, refusal).await,
         }
     }
 

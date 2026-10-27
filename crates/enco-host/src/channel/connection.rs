@@ -1,13 +1,14 @@
 //! The connection's actor, the only writer of its state: it accepts the owner's input, sends
 //! replies and settles deliveries, one at a time.
-mod activity;
+pub(super) mod activity;
 mod backtrack;
 mod delivery;
 mod input;
+mod receipts;
 
 use super::{projection, transport, *};
 use enco_kernel::{ConnectionWrite, NewSession, StoreError};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 use tokio::{
     sync::{broadcast, mpsc},
     task::{JoinHandle, JoinSet},
@@ -27,28 +28,30 @@ struct Connection {
     watched: BTreeSet<SessionId>,
     dirty: BTreeSet<SessionId>,
     wake: mpsc::Sender<SessionId>,
-    // Immediate command receipts are interface responses, not Log-derived deliveries.
-    receipts: VecDeque<Receipt>,
+    // Receipts of the reading being accepted, sent once its acknowledgments are done; they are
+    // interface responses, not Log-derived deliveries.
+    receipts: Vec<Receipt>,
     in_flight: Option<InFlight>,
+    replies: JoinSet<Result<(), ChannelError>>,
+    observations: BTreeMap<SessionId, activity::Observation>,
+    activities: JoinSet<activity::Completed>,
+    activity_busy: BTreeSet<RunId>,
 }
 
-struct Receipt {
-    target: String,
-    text: String,
+/// What the connection says back about an accepted message.
+enum Receipt {
+    /// Answer the message holding this handle, with text or only to settle it.
+    Answer {
+        handle: String,
+        text: Option<String>,
+    },
+    /// Say this in the conversation.
+    Say { target: String, text: String },
 }
 
-/// Runtime sending kind is explicit; persisted `State::sending` is only the recovery checkpoint.
-enum InFlight {
-    Receipt(JoinHandle<Result<transport::Sent, ChannelError>>),
-    Delivery(Delivery, JoinHandle<Result<transport::Sent, ChannelError>>),
-}
-
-impl InFlight {
-    fn task(&mut self) -> &mut JoinHandle<Result<transport::Sent, ChannelError>> {
-        match self {
-            Self::Receipt(task) | Self::Delivery(_, task) => task,
-        }
-    }
+struct InFlight {
+    delivery: Delivery,
+    task: JoinHandle<Result<transport::Sent, ChannelError>>,
 }
 
 /// Operational failure is observable state; only cleanup failures are returned by shutdown.
@@ -95,8 +98,12 @@ pub(super) async fn run(
         watched: BTreeSet::new(),
         dirty: BTreeSet::new(),
         wake,
-        receipts: VecDeque::new(),
+        receipts: Vec::new(),
         in_flight: None,
+        replies: JoinSet::new(),
+        observations: BTreeMap::new(),
+        activities: JoinSet::new(),
+        activity_busy: BTreeSet::new(),
     };
     // Run cleanup even if recovery, subscription or acceptance fails.
     let result = connection.serve(wakes).await;
@@ -114,6 +121,7 @@ async fn restore(kernel: &Kernel, adapter: &dyn Adapter) -> Result<State, Channe
             everyone: BTreeSet::new(),
             outbound: BTreeMap::new(),
             sending: None,
+            activity: BTreeMap::new(),
         },
     })
 }
@@ -124,55 +132,28 @@ impl Connection {
     /// First settle a delivery the last process left in flight and follow the Sessions this
     /// connection delivers for.
     async fn serve(&mut self, mut wakes: mpsc::Receiver<SessionId>) -> Result<(), ChannelError> {
-        if let Some(delivery) = self.state.sending.clone() {
-            self.settle(
-                delivery,
-                Settlement::Unknown {
-                    failure: Failure {
-                        code: code::INTERRUPTED.into(),
-                        message: "process stopped during delivery; it will not be resent".into(),
-                        retryable: false,
-                    },
-                },
-                Vec::new(),
-                Vec::new(),
-            )
-            .await?;
-        }
+        self.recover_delivery().await?;
         self.register_commands().await;
         let sessions: Vec<_> = self.state.outbound.keys().copied().collect();
         for session in sessions {
             self.follow(session)?;
+            self.observe(session).await?;
         }
-        let (batches, mut incoming) = mpsc::channel(1);
-        self.readers.spawn(
-            transport::Reader {
-                adapter: self.adapter.clone(),
-                kernel: self.kernel.clone(),
-                settings: self.settings.clone(),
-                generation: self.generation,
-                clock: self.clock.clone(),
-            }
-            .poll(
-                transport::Policy {
-                    protocol: self.state.protocol.clone(),
-                    everyone: self.state.everyone.clone(),
-                },
-                batches,
-                self.stop.clone(),
-            ),
-        );
+        let mut incoming = self.start_receiving();
+        let mut ticks = tokio::time::interval(crate::limits::CHANNEL_ACTIVITY_INTERVAL);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             if self.stop.is_cancelled() {
                 return Ok(());
             }
             self.next_delivery().await?;
+            self.refresh_activity(false).await?;
             tokio::select! {
                 biased;
                 _ = self.stop.cancelled() => return Ok(()),
                 result = async {
                     match &mut self.in_flight {
-                        Some(flight) => flight.task().await,
+                        Some(flight) => (&mut flight.task).await,
                         None => std::future::pending().await,
                     }
                 } => {
@@ -185,7 +166,16 @@ impl Connection {
                 }
                 Some(batch) = incoming.recv() => {
                     match batch.change {
-                        transport::Change::Update(update) => self.accept(*update).await?,
+                        transport::Change::Message(update) => self.accept(*update).await?,
+                        transport::Change::Checkpoint { protocol, accepted, acknowledged } => {
+                            if let Some(protocol) = protocol {
+                                let mut state = self.state.clone();
+                                state.protocol = Some(protocol);
+                                self.commit(state, None).await?;
+                            }
+                            if let Some(accepted) = accepted { let _ = accepted.send(()); }
+                            self.answer(acknowledged);
+                        }
                         transport::Change::Reset(failure) => {
                             tracing::warn!(connection = %self.identity.key(), code = %failure.code, reason = %failure.message, "channel protocol state reset; reading from initial state");
                             let mut state = self.state.clone();
@@ -193,11 +183,65 @@ impl Connection {
                             self.commit(state, None).await?;
                         }
                     }
-                    let _ = batch.committed.send(transport::Policy { protocol: self.state.protocol.clone(), everyone: self.state.everyone.clone() });
+                    let _ = batch.committed.send(transport::Policy { everyone: self.state.everyone.clone() });
                 }
-                Some(session) = wakes.recv() => { self.dirty.insert(session); }
+                Some(result) = self.activities.join_next() => {
+                    let completed = result.map_err(|error| ChannelError::Task(error.to_string()))?;
+                    self.activity_completed(completed).await?;
+                }
+                _ = ticks.tick() => self.refresh_activity(true).await?,
+                Some(result) = self.replies.join_next() => {
+                    result.map_err(|error| ChannelError::Task(error.to_string()))??;
+                }
+                Some(session) = wakes.recv() => { self.dirty.insert(session); self.observe(session).await?; }
             }
         }
+    }
+
+    fn start_receiving(&mut self) -> mpsc::Receiver<transport::Batch> {
+        let (batches, incoming) = mpsc::channel(1);
+        let (readings, received) = mpsc::unbounded_channel();
+        let adapter = self.adapter.clone();
+        let protocol = self.state.protocol.clone();
+        let stop = self.stop.clone();
+        let kernel = self.kernel.clone();
+        let generation = self.generation;
+        self.readers.spawn(async move {
+            let pending = readings.clone();
+            let result = health::call(
+                &kernel,
+                generation,
+                adapter.receive(protocol, readings, stop.clone()),
+            )
+            .await;
+            let unexpected = result.is_ok() && !stop.is_cancelled();
+            stop.cancel();
+            drop(pending);
+            if unexpected {
+                return Err(ChannelError::Task(
+                    "channel receiver stopped unexpectedly".into(),
+                ));
+            }
+            result
+        });
+        self.readers.spawn(
+            transport::Reader {
+                adapter: self.adapter.clone(),
+                kernel: self.kernel.clone(),
+                settings: self.settings.clone(),
+                generation: self.generation,
+                clock: self.clock.clone(),
+            }
+            .prepare(
+                transport::Policy {
+                    everyone: self.state.everyone.clone(),
+                },
+                received,
+                batches,
+                self.stop.clone(),
+            ),
+        );
+        incoming
     }
 
     /// Signal stop, then wait for the send in flight and every reader to finish.
@@ -208,7 +252,7 @@ impl Connection {
             shutdown: Ok(()),
         };
         if let Some(mut flight) = self.in_flight.take() {
-            let result = flight.task().await;
+            let result = (&mut flight.task).await;
             match self.sent(flight, result).await {
                 Ok(Some(error)) => {
                     exit.stopped
@@ -219,6 +263,25 @@ impl Connection {
             }
         }
         while let Some(result) = self.readers.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    exit.stopped.get_or_insert(error);
+                }
+                Err(error) => exit.shutdown = Err(ChannelError::Task(error.to_string())),
+            }
+        }
+        while let Some(result) = self.activities.join_next().await {
+            match result {
+                Ok(completed) => {
+                    if let Err(error) = self.activity_completed(completed).await {
+                        exit.shutdown = Err(error);
+                    }
+                }
+                Err(error) => exit.shutdown = Err(ChannelError::Task(error.to_string())),
+            }
+        }
+        while let Some(result) = self.replies.join_next().await {
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
@@ -285,13 +348,6 @@ impl Connection {
         self.dirty.insert(session);
         let wake = self.wake.clone();
         let stop = self.stop.clone();
-        self.readers.spawn(activity::follow(
-            self.kernel.clone(),
-            self.adapter.clone(),
-            self.generation,
-            session,
-            self.stop.clone(),
-        ));
         self.readers.spawn(async move {
             loop {
                 let event = tokio::select! {
@@ -299,7 +355,7 @@ impl Connection {
                     event = entries.recv() => event,
                 };
                 match event {
-                    Ok(Entry { body: EntryBody::RunStarted { .. } | EntryBody::EventConsumed { .. } | EntryBody::RoundEnded { .. } | EntryBody::RunEnded { .. } | EntryBody::ToolCallSettled { outgoing: Some(_), .. }, .. })
+                    Ok(Entry { body: EntryBody::ToolCallStarted { .. } | EntryBody::ToolCallSettled { .. } | EntryBody::RunStarted { .. } | EntryBody::EventConsumed { .. } | EntryBody::RoundEnded { .. } | EntryBody::RunEnded { .. }, .. })
                     | Err(broadcast::error::RecvError::Lagged(_)) => {
                         tokio::select! {
                             _ = stop.cancelled() => return Ok(()),

@@ -3,6 +3,8 @@ use async_trait::async_trait;
 use enco_core::{Failure, FileData, GenerationId, MappingOrigin, Outgoing, Unviewable};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 /// Opens accounts through one loaded, pure protocol mapper.
 #[async_trait]
@@ -43,15 +45,35 @@ impl ChannelIdentity {
     }
 }
 
-/// One update and the protocol state after accepting it.
-pub struct ChannelUpdate {
+/// One arrival's messages and protocol checkpoint, delivered in receive order.
+pub enum ChannelReading {
+    /// Accept the messages in order before committing the optional protocol checkpoint.
+    Batch {
+        /// Messages emitted by this arrival, each accepted at most once by its key.
+        messages: Vec<ChannelMessage>,
+        /// The next committed protocol state; absent leaves it unchanged.
+        protocol: Option<Value>,
+        /// Complete after acceptance when request-based reading must wait before reading again.
+        accepted: Option<oneshot::Sender<()>>,
+        /// Completes after all receipt acknowledgments finish; answers must wait for it.
+        acknowledged: oneshot::Receiver<()>,
+    },
+    /// Clear a protocol checkpoint rejected by the mapper before reading from its initial state.
+    Reset {
+        /// Why the checkpoint was rejected.
+        failure: Failure,
+        /// Complete after the cleared checkpoint is committed.
+        accepted: oneshot::Sender<()>,
+    },
+}
+
+/// One protocol message, its acceptance key and recorded origin.
+pub struct ChannelMessage {
     /// Protocol key accepted at most once, including for commands.
     pub key: String,
-    /// The protocol state after this update.
-    pub protocol: Value,
-    /// What the update brings, if the host should consider it.
-    pub input: Option<ChannelInput>,
-    /// The recorded mapper call and this update's position in its result.
+    /// What this message asks the host to consider.
+    pub input: ChannelInput,
+    /// The recorded mapper call and this message's position in its result.
     pub origin: MappingOrigin,
 }
 
@@ -71,6 +93,8 @@ pub struct ChannelInput {
     pub addressed: bool,
     /// The protocol ID of the message it replies to, when present.
     pub reply_to: Option<String>,
+    /// The opaque handle to answer after acceptance and receipt acknowledgment.
+    pub respond: Option<String>,
     /// The host action requested by this message.
     pub action: ChannelAction,
 }
@@ -199,13 +223,49 @@ pub enum ChannelCommandKind {
     Everyone,
 }
 
+/// A Run's current progress, containing only public tool names and outcomes.
+#[derive(Clone)]
+pub struct ChannelActivity {
+    /// Whole seconds elapsed since the Run started.
+    pub elapsed_seconds: u32,
+    /// The latest tools in their start order, oldest first.
+    pub tools: Vec<ChannelToolActivity>,
+}
+
+/// One tool call visible in a Run's progress view.
+#[derive(Clone)]
+pub struct ChannelToolActivity {
+    /// The tool's model-visible name, without its arguments.
+    pub name: String,
+    /// The call's current outcome.
+    pub state: ChannelToolState,
+}
+
+/// A tool's current state in a progress view.
+#[derive(Clone, Copy)]
+pub enum ChannelToolState {
+    /// The call is still running.
+    Running,
+    /// The call succeeded.
+    Ok,
+    /// The call failed.
+    Failed,
+    /// The call may have taken effect but its outcome is unknown.
+    Unknown,
+}
+
 /// One identified account, using the same generation until it is stopped.
 #[async_trait]
 pub trait ChannelAdapter: Send + Sync {
     /// The stable account reached by this connection.
     fn identity(&self) -> ChannelIdentity;
-    /// Read updates from committed protocol state; cancellation has no external effects.
-    async fn poll(&self, protocol: Option<Value>) -> Result<Vec<ChannelUpdate>, ChannelCallError>;
+    /// Receive arrivals without waiting for preparation; drain receipt acknowledgments on stop.
+    async fn receive(
+        &self,
+        protocol: Option<Value>,
+        readings: mpsc::UnboundedSender<ChannelReading>,
+        stop: CancellationToken,
+    ) -> Result<(), ChannelCallError>;
     /// Fetch an authorized attachment; reads have no external effects.
     async fn fetch(&self, locator: &str) -> Result<AttachmentContent, ChannelCallError>;
     /// Preserve all text and attach a file once, propagating mapper invocation failures.
@@ -221,6 +281,13 @@ pub trait ChannelAdapter: Send + Sync {
     ) -> Result<ChannelSent, ChannelCallError>;
     /// Offer the host's commands in the protocol's menus.
     async fn commands(&self, commands: &[ChannelCommand]) -> Result<(), ChannelCallError>;
-    /// Show activity when the protocol supports it.
-    async fn typing(&self, target: &str) -> Result<(), ChannelCallError>;
+    /// Answer an accepted message after its receipt acknowledgment completes.
+    async fn respond(&self, handle: &str, text: Option<&str>) -> Result<(), ChannelCallError>;
+    /// Create, refresh or remove an activity view; creation returns its recorded response, if any.
+    async fn activity(
+        &self,
+        target: &str,
+        shown: Option<&str>,
+        activity: Option<&ChannelActivity>,
+    ) -> Result<Option<ChannelSent>, ChannelCallError>;
 }

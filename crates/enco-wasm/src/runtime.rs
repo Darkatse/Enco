@@ -15,8 +15,8 @@ use crate::{
 use async_trait::async_trait;
 use enco_core::{ContentHash, Failure, PluginSettings, code};
 use enco_kernel::{
-    Channel, Credential, Decision, Embedding, HeaderPlacement, LoadError, Loaded, Placement,
-    Provider, Runtime,
+    Channel, Credential, Decision, Embedding, HeaderPlacement, LoadError, Loaded, Location,
+    Placement, Provider, Runtime,
 };
 use std::sync::Arc;
 use wasmtime::component::{Component, HasSelf, Linker};
@@ -161,7 +161,8 @@ impl Runtime for WasmRuntime {
             http: self.http.clone(),
             name: hash.to_string()[..8].into(),
             settings: settings.clone(),
-            placements: Vec::new(),
+            credentials: Vec::new(),
+            channel_origins: Vec::new(),
         };
         describe(plugin, tools, composer, channel).await
     }
@@ -180,8 +181,37 @@ async fn describe(
         .map_err(describe_error)?;
     let config_schema = serde_json::from_str(&description.config_schema)
         .map_err(|e| LoadError::Component(format!("configuration schema is not JSON: {e}")))?;
-    plugin.placements = credentials::placements(&description.credentials)?;
-    let unavailable = credentials::resolve(&plugin.placements, &plugin.settings, None).err();
+    let declared_credentials = description
+        .credentials
+        .into_iter()
+        .map(credential)
+        .collect::<Vec<_>>();
+    plugin.credentials = credentials::declarations(&declared_credentials)?;
+    let unavailable = credentials::resolve(&plugin.credentials, &plugin.settings, None).err();
+    let channel_origins = match &channel {
+        Some(pre) => plugin
+            .invoke(
+                crate::call_world::CallWorld::Mapper,
+                Default::default(),
+                async |mut store| {
+                    let instance = pre.instantiate_async(&mut store).await?;
+                    Ok(Ok(instance
+                        .enco_plugin_channel()
+                        .call_origins(&mut store)
+                        .await?))
+                },
+            )
+            .await
+            .map_err(LoadError::Plugin)?,
+        None => Vec::new(),
+    };
+    plugin.channel_origins = channel_origins
+        .iter()
+        .map(|origin| {
+            crate::origins::Origin::parse(origin)
+                .map_err(|error| LoadError::Component(format!("channel origin {origin}: {error}")))
+        })
+        .collect::<Result<_, _>>()?;
     let plugin = Arc::new(plugin);
     let tools = match tools {
         Some(pre) => Some(
@@ -202,33 +232,8 @@ async fn describe(
     Ok(Loaded {
         summary: description.summary,
         config_schema,
-        credentials: description
-            .credentials
-            .into_iter()
-            .map(|credential| {
-                let crate::bindings::lifecycle::Credential {
-                    name,
-                    origin,
-                    required,
-                    placement,
-                } = credential;
-                let placement = match placement {
-                    crate::bindings::lifecycle::Placement::Header(value) => {
-                        let crate::bindings::lifecycle::HeaderPlacement { name, prefix } = value;
-                        Placement::Header(HeaderPlacement { name, prefix })
-                    }
-                    crate::bindings::lifecycle::Placement::Path(prefixes) => {
-                        Placement::Path(prefixes)
-                    }
-                };
-                Credential {
-                    name,
-                    origin,
-                    required,
-                    placement,
-                }
-            })
-            .collect(),
+        credentials: declared_credentials,
+        channel_origins,
         unavailable,
         tools,
         composer,
@@ -249,6 +254,37 @@ async fn describe(
             .is_some()
             .then(|| plugin.clone() as Arc<dyn Decision>),
     })
+}
+
+fn credential(value: crate::bindings::lifecycle::Credential) -> Credential {
+    let crate::bindings::lifecycle::Credential {
+        name,
+        required,
+        placements,
+    } = value;
+    Credential {
+        name,
+        required,
+        placements: placements
+            .into_iter()
+            .map(|value| {
+                let crate::bindings::lifecycle::Placement { origin, location } = value;
+                let location = match location {
+                    crate::bindings::lifecycle::Location::Header(value) => {
+                        let crate::bindings::lifecycle::HeaderPlacement { name, prefix } = value;
+                        Location::Header(HeaderPlacement { name, prefix })
+                    }
+                    crate::bindings::lifecycle::Location::Path(prefixes) => {
+                        Location::Path(prefixes)
+                    }
+                    crate::bindings::lifecycle::Location::Frame(pointer) => {
+                        Location::Frame(pointer)
+                    }
+                };
+                Placement { origin, location }
+            })
+            .collect(),
+    }
 }
 
 /// A component that rejects its configuration reports `config.invalid` from `describe`.

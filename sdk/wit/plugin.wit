@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.8.0;
+package enco:plugin@0.9.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -353,12 +353,32 @@ interface decision {
 interface lifecycle {
     use types.{json, failure};
 
-    /// Where the host writes a credential; the plugin never sees the value.
-    variant placement {
-        /// A header set to its prefix followed by the value.
+    /// A secret the host writes into the plugin's requests or frames; the plugin never sees it.
+    record credential {
+        /// The name the owner maps to an environment variable.
+        name: string,
+        /// Whether registration fails without a secret mapping for it.
+        required: bool,
+        /// Every place the host writes the value, each bound to its origin; at least one.
+        placements: list<placement>,
+    }
+
+    /// One place a credential goes, and the only origin that receives it there.
+    record placement {
+        /// The destination origin; `*.` covers subdomains. Absent means the caller-selected service, such as a channel's base URL.
+        origin: option<string>,
+        /// Where in a request or frame to that origin.
+        location: location,
+    }
+
+    /// Where the host writes a credential.
+    variant location {
+        /// A request header set to its prefix followed by the value.
         header(header-placement),
-        /// Insert after the matching prefix at the beginning of the request path.
+        /// Right after whichever of these prefixes the request path starts with.
         path(list<string>),
+        /// In each text frame sent on a socket, at this JSON pointer, where the frame holds `null`.
+        frame(string),
     }
 
     /// A request header that carries a credential.
@@ -367,22 +387,6 @@ interface lifecycle {
         name: string,
         /// Text placed before the value, such as `Bearer `.
         prefix: string,
-    }
-
-    /// Named credential attached to `origin`, or to the caller-selected service when absent.
-    ///
-    /// A fixed origin uses the generation's secret mapping; an absent origin uses the endpoint's.
-    /// Names and origins must be unique, including at most one absent origin.
-    /// The host writes the value at `placement`; plugins never see it.
-    record credential {
-        /// The name the owner's configuration maps to an environment variable.
-        name: string,
-        /// The origin the credential is sent to; absent for the service the caller selects.
-        origin: option<string>,
-        /// Where the host writes the credential.
-        placement: placement,
-        /// Whether the plugin cannot work without it.
-        required: bool,
     }
 
     /// Plugin-wide facts and requirements.
@@ -918,19 +922,19 @@ world composer-plugin {
     export composer;
 }
 
-/// Translates a messaging protocol; the host owns transport, credentials, recording and commits.
+/// Translates a messaging protocol as a pure state machine; the host owns connections, timers and credentials.
 ///
-/// Every function is pure: the same arguments always give the same result, so a new generation can
-/// be checked against recorded calls before it is registered.
+/// The host records each external input before handing it over, and carries out what the mapper asks.
 interface channel {
     use types.{failure, json, unviewable};
 
-    /// A request for the host to send to the connection's base URL.
+    /// A request for the host to send.
     record request {
         /// The method, such as `GET` or `POST`.
         method: string,
-        /// The path and query, starting with `/`; the host joins it to the configured base URL.
-        path: string,
+        /// A path starting with `/`, joined to the connection's base URL, or an absolute URL at
+        /// one of the mapper's `origins`.
+        url: string,
         /// Header names and values, in order.
         headers: list<tuple<string, string>>,
         /// The bytes to send, if any.
@@ -947,6 +951,65 @@ interface channel {
         headers: list<tuple<string, string>>,
         /// The whole body.
         body: list<u8>,
+    }
+
+    /// A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection
+    /// stops.
+    record socket {
+        /// An absolute `ws` or `wss` URL at one of the mapper's `origins`.
+        url: string,
+        /// The code the host closes the socket with; a protocol that resumes sessions across
+        /// reconnects may need one other than 1000.
+        close-code: u16,
+    }
+
+    /// How the host reads the protocol next.
+    variant read-step {
+        /// Send this request; its response is one arrival.
+        request(request),
+        /// Open this socket; each frame on it is one arrival, until it closes.
+        socket(socket),
+    }
+
+    /// Something that reached the mapper through the host.
+    variant arrival {
+        /// The response to the read request.
+        response(response),
+        /// A text frame on the open socket.
+        frame(string),
+        /// The socket closed, by the protocol or through a network failure.
+        closed(closure),
+        /// The timer the mapper set has expired; its reading can change state and request actions, but has no inbound messages.
+        timer,
+    }
+
+    /// How a socket ended.
+    record closure {
+        /// The close code, when the protocol sent one.
+        code: option<u16>,
+        /// The close reason, or the host's description of the network failure.
+        reason: string,
+    }
+
+    /// What the mapper asks of the host after one arrival.
+    record reading {
+        /// Messages to accept, in order.
+        messages: list<inbound>,
+        /// The protocol state after this arrival; absent leaves it unchanged.
+        ///
+        /// The host uses it for the next call at once, and commits it once every message of this reading is accepted.
+        state: option<json>,
+        /// Text frames to send on the socket now, in order.
+        frames: list<string>,
+        /// Protocol acknowledgments to send before acceptance, with no effect beyond confirming receipt.
+        ///
+        /// Answers to this reading's messages are sent only after these complete.
+        acknowledgments: list<request>,
+        /// Milliseconds until a `timer` arrival, replacing any pending timer; absent keeps it.
+        /// Timers end with the socket.
+        timer: option<u32>,
+        /// Close the socket and start the next read with `read`.
+        reconnect: bool,
     }
 
     /// What a protocol answer means for the host's settlement and retries.
@@ -971,18 +1034,10 @@ interface channel {
         facts: json,
     }
 
-    /// One update read from the protocol.
-    record update {
-        /// The protocol's key for accepting this update once, such as an update ID.
-        key: string,
-        /// The protocol state once this update is accepted.
-        state: json,
-        /// The message it carries, if the host should consider one.
-        message: option<inbound>,
-    }
-
     /// A message that arrived, as the protocol describes it.
     record inbound {
+        /// The protocol's key for accepting this message once, such as an update or event ID.
+        key: string,
         /// The conversation, where replies go.
         conversation: string,
         /// This message's ID, unique within the conversation.
@@ -995,8 +1050,11 @@ interface channel {
         direct: bool,
         /// Whether the message is addressed to this bot; always true in a direct conversation.
         addressed: bool,
-        /// The message this one replies to.
+        /// The message this one replies to, or the message a command was invoked on.
         reply-to: option<string>,
+        /// The handle for answering this message once accepted, when the protocol expects an
+        /// answer, such as for a command or a button.
+        respond: option<string>,
         /// What it asks for.
         action: action,
     }
@@ -1085,36 +1143,77 @@ interface channel {
         unavailable(string),
     }
 
+    /// What the Agent is doing while a Run goes on.
+    record activity-view {
+        /// Seconds since the Run started.
+        elapsed-seconds: u32,
+        /// The Run's latest tool calls, oldest first.
+        tools: list<tool-activity>,
+    }
+
+    /// One tool call shown in an activity view.
+    record tool-activity {
+        /// The tool's name, as the model calls it.
+        name: string,
+        /// Where the call stands.
+        state: tool-state,
+    }
+
+    /// Where a tool call stands.
+    enum tool-state {
+        /// The call has started and has no settlement yet.
+        running,
+        /// It succeeded.
+        ok,
+        /// The call finished with a known failure.
+        failed,
+        /// It may have taken effect, but its result is not known.
+        unknown,
+    }
+
+    /// Additional origins for requests and sockets; `*.` before a host covers its subdomains. Read when the generation loads.
+    origins: func() -> list<string>;
     /// The request that reads which account the connection reaches.
     identify: func() -> request;
     /// The account in that request's response.
     identified: func(response: response) -> result<identity, fault>;
-    /// The first request of the next read; `state` is absent before any update was accepted.
+    /// How to read next, from the latest protocol state; `state` is absent before the protocol
+    /// gave one.
     ///
-    /// `channel.invalid_state` means the saved protocol state cannot be resumed. The host clears
-    /// only that state and retries from `none`, keeping routes and other committed business facts.
-    /// If the mapper rejects `none` too, the host stops the connection.
-    poll: func(identity: identity, state: option<json>) -> result<request, fault>;
-    /// The updates in a read's response, each with its key and the protocol state after it.
+    /// `channel.invalid_state` means the state cannot be resumed. The host clears only that
+    /// state and retries from `none`, keeping routes and other committed business facts. If the
+    /// mapper rejects `none` too, the host stops the connection.
+    read: func(identity: identity, state: option<json>) -> result<read-step, fault>;
+    /// What an arrival means, given the latest protocol state.
     received: func(
         identity: identity,
         state: option<json>,
-        response: response,
-    ) -> result<list<update>, fault>;
+        arrival: arrival,
+    ) -> result<reading, fault>;
     /// The next step of fetching the attachment at `locator`, given the responses so far.
     fetch: func(locator: string, responses: list<response>) -> result<fetch-step, fault>;
     /// The parts an outgoing message is sent as, keeping all of its text.
     split: func(message: outgoing) -> list<outgoing>;
     /// The request that sends one part to a conversation.
     send: func(conversation: string, part: outgoing) -> result<request, fault>;
-    /// What the protocol answered: the ID of the message a send created, if any, or why it failed.
+    /// What the protocol answered: the ID of the message a request created, if any, or why it
+    /// failed.
     answered: func(response: response) -> result<option<string>, fault>;
+    /// The request that answers the accepted message carrying `handle`, showing `text` to its
+    /// sender; absent when nothing more needs sending.
+    respond: func(handle: string, text: option<string>) -> result<option<request>, fault>;
     /// Requests that offer the host's commands in the protocol's menus, sent when a connection
     /// starts.
-    commands: func(commands: list<command>) -> list<request>;
-    /// The request that shows the bot is working in a conversation; absent when the protocol has
-    /// none.
-    typing: func(conversation: string) -> option<request>;
+    commands: func(identity: identity, commands: list<command>) -> list<request>;
+    /// Creates or refreshes the activity view, or removes `shown` when `activity` is absent; absent when nothing needs sending.
+    ///
+    /// The host reads the response to a request made without `shown` with `answered`, and keeps
+    /// the message ID it gives as `shown`. Without an ID, it asks again at each refresh.
+    activity: func(
+        conversation: string,
+        shown: option<string>,
+        activity: option<activity-view>,
+    ) -> option<request>;
 }
 
 /// A messaging protocol's mapper. It imports nothing; the host trusts it with the connection's

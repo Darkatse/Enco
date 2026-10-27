@@ -31,7 +31,7 @@ async fn recorded_channel_calls() {
     let blobs = root.path().join("blobs");
     let generation = GenerationId(31);
     assert_eq!(adapter.identity().key(), "telegram:42");
-    let updates = adapter.poll(None).await.unwrap();
+    let updates = channel::messages(adapter.clone()).await;
     assert_eq!(updates.len(), 1);
     assert_eq!(updates[0].key, "12");
     assert_eq!(updates[0].origin.index, 0);
@@ -43,15 +43,15 @@ async fn recorded_channel_calls() {
         json!({"protocol":"telegram", "account":"42", "facts": "{\"username\":\"FixtureBot\"}"})
     );
     assert_eq!(record.arguments["state"], Value::Null);
-    let response = &record.arguments["response"];
+    let response = &record.arguments["arrival"]["response"];
     let body = store
         .get_blob(&serde_json::from_value(response["body"].clone()).unwrap())
         .await
         .unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), raw);
-    let invalid_state = adapter.poll(Some(Value::Null)).await;
+    let invalid_state = channel::reading(adapter.clone(), Some(Value::Null)).await;
     assert!(
-        matches!(invalid_state, Err(ChannelCallError::Protocol(fault)) if fault.failure.code == "channel.invalid_state")
+        matches!(invalid_state, Ok(enco_kernel::ChannelReading::Reset {failure, ..}) if failure.code == "channel.invalid_state")
     );
     let sent = adapter
         .send(
@@ -91,7 +91,7 @@ async fn recorded_channel_calls() {
     std::fs::remove_dir_all(&blobs).unwrap();
     std::fs::write(&blobs, b"not a directory").unwrap();
     assert!(matches!(
-        adapter.poll(None).await,
+        channel::reading(adapter.clone(), None).await,
         Err(ChannelCallError::Store(_))
     ));
 }

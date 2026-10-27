@@ -5,6 +5,7 @@ use crate::{
     channel_convert as convert,
     credentials::{self, CallCredential},
     host_imports::{self, HostState},
+    origins::Destinations,
     plugin::WasmPlugin,
 };
 use async_trait::async_trait;
@@ -13,11 +14,16 @@ use enco_core::{
 };
 use enco_kernel::{
     AttachmentContent, Channel, ChannelAdapter, ChannelCallError, ChannelCommand, ChannelFault,
-    ChannelIdentity, ChannelSent, ChannelSettings, ChannelUpdate, Store, StoreError,
+    ChannelIdentity, ChannelReading, ChannelSent, ChannelSettings, Store, StoreError,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use wasmtime::Store as WasmStore;
+
+mod receiver;
+mod socket;
 
 #[derive(Clone)]
 pub(super) struct WasmChannel {
@@ -46,14 +52,14 @@ impl WasmChannel {
 
 struct Transport {
     mapper: WasmChannel,
-    base_url: reqwest::Url,
+    destinations: Destinations,
     credentials: Vec<CallCredential>,
     generation: GenerationId,
     store: Arc<dyn Store>,
 }
 
 struct Connection {
-    transport: Transport,
+    transport: Arc<Transport>,
     identity: ChannelIdentity,
 }
 
@@ -74,7 +80,7 @@ impl Channel for WasmChannel {
             )
         })?;
         let credentials =
-            credentials::resolve_channel(&self.plugin.placements, &base_url, &settings.secrets)
+            credentials::resolve_channel(&self.plugin.credentials, &base_url, &settings.secrets)
                 .map_err(|failure| convert::failure(failure, false, None))?;
         let request = self
             .call(async |guest, store| guest.call_identify(store).await)
@@ -82,7 +88,7 @@ impl Channel for WasmChannel {
             .map_err(|failure| convert::failure(failure, false, None))?;
         let transport = Transport {
             mapper: self.clone(),
-            base_url,
+            destinations: Destinations::new(base_url, &self.plugin.channel_origins),
             credentials,
             generation,
             store,
@@ -102,7 +108,7 @@ impl Channel for WasmChannel {
         let identity = convert::identified(identity)
             .map_err(|failure| convert::failure(failure, false, Some(origin)))?;
         Ok(Arc::new(Connection {
-            transport,
+            transport: Arc::new(transport),
             identity,
         }))
     }
@@ -134,7 +140,7 @@ impl Transport {
     }
 
     async fn http(&self, request: wire::Request) -> Result<wire::Response, ChannelFault> {
-        let request = request_for(&self.base_url, request)
+        let request = request_for(&self.destinations, request)
             .map_err(|failure| convert::failure(failure, false, None))?;
         let response = host_imports::http(&self.mapper.plugin.http, &self.credentials, request)
             .await
@@ -192,44 +198,13 @@ impl ChannelAdapter for Connection {
         self.identity.clone()
     }
 
-    async fn poll(&self, protocol: Option<Value>) -> Result<Vec<ChannelUpdate>, ChannelCallError> {
-        let identity = convert::identity(&self.identity);
-        let state = protocol.as_ref().map(Value::to_string);
-        let request = self
-            .transport
-            .mapper
-            .call(async |guest, store| guest.call_poll(store, &identity, state.as_ref()).await)
-            .await
-            .map_err(|failure| convert::failure(failure, false, None))?
-            .map_err(|fault| convert::fault(fault, None))?;
-        let response = self.transport.http(request).await?;
-        let origin = self.transport.record("received", json!({
-            "identity": {"protocol": identity.protocol, "account": identity.account, "facts": identity.facts},
-            "state": state, "response": self.transport.response_record(&response).await?,
-        })).await?;
-        let updates = self
-            .transport
-            .mapper
-            .call(async |guest, store| {
-                guest
-                    .call_received(store, &identity, state.as_ref(), &response)
-                    .await
-            })
-            .await
-            .map_err(|failure| convert::failure(failure, false, Some(origin)))?
-            .map_err(|fault| convert::fault(fault, Some(origin)))?;
-        updates
-            .into_iter()
-            .enumerate()
-            .map(|(index, update)| {
-                let index = u32::try_from(index).map_err(|error| {
-                    convert::failure(crate::convert::bad(error.to_string()), false, Some(origin))
-                })?;
-                let origin = MappingOrigin { index, ..origin };
-                convert::update(update, origin)
-                    .map_err(|failure| convert::failure(failure, false, Some(origin)).into())
-            })
-            .collect()
+    async fn receive(
+        &self,
+        protocol: Option<Value>,
+        readings: mpsc::UnboundedSender<ChannelReading>,
+        stop: CancellationToken,
+    ) -> Result<(), ChannelCallError> {
+        receiver::receive(self, protocol, readings, stop).await
     }
 
     async fn fetch(&self, locator: &str) -> Result<AttachmentContent, ChannelCallError> {
@@ -296,10 +271,11 @@ impl ChannelAdapter for Connection {
 
     async fn commands(&self, commands: &[ChannelCommand]) -> Result<(), ChannelCallError> {
         let commands = commands.iter().map(convert::command).collect::<Vec<_>>();
+        let identity = convert::identity(&self.identity);
         let requests = self
             .transport
             .mapper
-            .call(async |guest, store| guest.call_commands(store, &commands).await)
+            .call(async |guest, store| guest.call_commands(store, &identity, &commands).await)
             .await
             .map_err(|failure| convert::failure(failure, false, None))?;
         for request in requests {
@@ -310,67 +286,88 @@ impl ChannelAdapter for Connection {
         Ok(())
     }
 
-    async fn typing(&self, target: &str) -> Result<(), ChannelCallError> {
+    async fn respond(&self, handle: &str, text: Option<&str>) -> Result<(), ChannelCallError> {
         let request = self
             .transport
             .mapper
-            .call(async |guest, store| guest.call_typing(store, target).await)
+            .call(async |guest, store| guest.call_respond(store, handle, text).await)
+            .await
+            .map_err(|failure| convert::failure(failure, false, None))?
+            .map_err(|fault| convert::fault(fault, None))?;
+        if let Some(request) = request {
+            self.transport.notice(request).await?;
+        }
+        Ok(())
+    }
+
+    async fn activity(
+        &self,
+        target: &str,
+        shown: Option<&str>,
+        activity: Option<&enco_kernel::ChannelActivity>,
+    ) -> Result<Option<ChannelSent>, ChannelCallError> {
+        let activity = activity.map(convert::activity);
+        let request = self
+            .transport
+            .mapper
+            .call(async |guest, store| {
+                guest
+                    .call_activity(store, target, shown, activity.as_ref())
+                    .await
+            })
             .await
             .map_err(|failure| convert::failure(failure, false, None))?;
         let Some(request) = request else {
-            return Ok(());
+            return Ok(None);
         };
-        // An indicator settles nothing, so its response is neither translated nor recorded.
-        let wire::Response { status, .. } = self.transport.http(request).await?;
+        if shown.is_none() && activity.is_some() {
+            return self
+                .transport
+                .answered(self.transport.http(request).await?)
+                .await
+                .map(Some);
+        }
+        self.transport.notice(request).await?;
+        Ok(None)
+    }
+}
+
+impl Transport {
+    async fn notice(&self, request: wire::Request) -> Result<(), ChannelFault> {
+        let wire::Response { status, .. } = self.http(request).await?;
         if (200..300).contains(&status) {
             return Ok(());
         }
         Err(ChannelFault {
             failure: Failure {
                 code: format!("channel.http.{status}"),
-                message: format!("typing indicator request returned HTTP {status}"),
+                message: format!("channel notice returned HTTP {status}"),
                 retryable: false,
             },
             unknown: false,
             fatal: false,
             retry_after: None,
             origin: None,
-        }
-        .into())
+        })
     }
 }
 
-fn request_for(base: &reqwest::Url, request: wire::Request) -> Result<host::HttpRequest, Failure> {
+fn request_for(
+    destinations: &Destinations,
+    request: wire::Request,
+) -> Result<host::HttpRequest, Failure> {
     let wire::Request {
         method,
-        path,
+        url,
         headers,
         body,
         timeout_ms,
     } = request;
-    if !path.starts_with('/') || path.starts_with("//") || path.contains(['#', '\\']) {
-        return Err(crate::convert::bad(
-            "channel request requires an absolute path without an authority, fragment or backslash",
-        ));
-    }
-    let prefix = base.as_str().trim_end_matches('/');
-    let url = reqwest::Url::parse(&format!("{prefix}{path}"))
-        .map_err(|error| crate::convert::bad(format!("channel request URL: {error}")))?;
-    let root = format!("{}/", base.path().trim_end_matches('/'));
-    if url.origin() != base.origin() || !url.path().starts_with(&root) {
-        return Err(crate::convert::bad(
-            "channel request leaves the configured base URL",
-        ));
-    }
     Ok(host::HttpRequest {
         method,
-        url: url.to_string(),
+        url: destinations.request(&url)?.to_string(),
         headers,
         body,
         timeout_ms,
     })
 }
-
-#[cfg(test)]
-#[path = "channel_tests.rs"]
-mod tests;

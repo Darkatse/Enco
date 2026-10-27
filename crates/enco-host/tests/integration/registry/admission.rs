@@ -63,7 +63,14 @@ async fn admission_keeps_configured_exports_connected() {
     runtime.insert(FACTORY_BYTES, factory);
     runtime.insert(b"no-credential", loaded(provider.clone()));
     let mut required = loaded(provider.clone());
-    required.credentials = vec![credential(true)];
+    let mut optional = credential(false);
+    optional.name = "optional".into();
+    let mut token = credential(true);
+    token.placements.push(Placement {
+        origin: Some("wss://*.gateway.example".into()),
+        location: Location::Frame("/token".into()),
+    });
+    required.credentials = vec![optional, token];
     runtime.insert(b"required", required);
     runtime.insert(
         b"completion-only",
@@ -72,6 +79,7 @@ async fn admission_keeps_configured_exports_connected() {
             summary: "completion".into(),
             config_schema: serde_json::json!({}),
             credentials: Vec::new(),
+            channel_origins: Vec::new(),
             unavailable: None,
             tools: None,
             composer: None,

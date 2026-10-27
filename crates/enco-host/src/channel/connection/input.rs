@@ -1,10 +1,12 @@
 //! The connection's update boundary: routing, group context and owner commands commit here.
 use super::*;
 use enco_kernel::{ChannelCommand, ChannelCommandKind};
+use transport::Disposition;
 
 const NO_GROUP_PROFILE: &str =
     "Set group_profile for this connection to use the Agent in group chats.";
 const GROUP_SESSION: &str = "A group chat always uses its own Session.";
+const REFUSAL: &str = "Only the owner can use this.";
 
 /// The commands the connection understands, as offered in the protocol's menus.
 fn commands() -> Vec<ChannelCommand> {
@@ -55,32 +57,62 @@ impl Connection {
         }
     }
 
+    /// Accept one prepared message; its receipt waits for the reading's acknowledgments.
     pub(super) async fn accept(&mut self, update: transport::Prepared) -> Result<(), ChannelError> {
         let transport::Prepared {
             key,
-            duplicate,
-            protocol,
             origin,
-            input,
-            earlier,
+            disposition,
         } = update;
         let mut state = self.state.clone();
-        state.protocol = Some(protocol);
-        // An update accepted before brings no effects again; only the protocol's progress moves.
-        if duplicate {
-            return self.commit(state, None).await;
-        }
-        if let Some((conversation, message)) = earlier
-            && self.settings.context > 0
-        {
-            let buffer = state.context.entry(conversation).or_default();
-            buffer.push(message);
-            let excess = buffer.len().saturating_sub(self.settings.context);
-            buffer.drain(..excess);
-        }
-        let Some(input) = input else {
-            return self.commit_update(state, key, None, None).await;
+        let receipt = match disposition {
+            Disposition::Duplicate => return Ok(()),
+            Disposition::Refused { handle } => {
+                self.commit_update(state, key, None, None).await?;
+                Some(Receipt::Answer {
+                    handle,
+                    text: Some(REFUSAL.into()),
+                })
+            }
+            Disposition::Ignored => {
+                self.commit_update(state, key, None, None).await?;
+                None
+            }
+            Disposition::Earlier {
+                conversation,
+                message,
+            } => {
+                if self.settings.context > 0 {
+                    let buffer = state.context.entry(conversation).or_default();
+                    buffer.push(message);
+                    let excess = buffer.len().saturating_sub(self.settings.context);
+                    buffer.drain(..excess);
+                }
+                self.commit_update(state, key, None, None).await?;
+                None
+            }
+            Disposition::Input(input) => {
+                let target = input.conversation.clone();
+                let respond = input.respond.clone();
+                let text = self.input(state, key, origin, input).await?;
+                match respond {
+                    Some(handle) => Some(Receipt::Answer { handle, text }),
+                    None => text.map(|text| Receipt::Say { target, text }),
+                }
+            }
         };
+        self.receipts.extend(receipt);
+        Ok(())
+    }
+
+    /// Carry out an authorized input; the result is the receipt's text, if it has one.
+    async fn input(
+        &mut self,
+        mut state: State,
+        key: String,
+        origin: MappingOrigin,
+        input: transport::Input,
+    ) -> Result<Option<String>, ChannelError> {
         let transport::Input {
             conversation: target,
             message,
@@ -89,6 +121,7 @@ impl Connection {
             owner,
             direct,
             reply_to,
+            respond: _,
             action,
         } = input;
         let source = EventSource::Channel {
@@ -126,17 +159,15 @@ impl Connection {
                     .get(&target)
                     .map(|session| self.kernel.cancel(*session))
                     .transpose();
-                let text = match result {
+                return Ok(Some(match result {
                     Ok(Some(true)) => "Cancellation requested.".into(),
                     Ok(_) => "No active Run.".into(),
                     Err(error) => format!("Cancel failed: {error}"),
-                };
-                self.receipts.push_back(Receipt { target, text });
-                return Ok(());
+                }));
             }
             Action::Everyone(open) => everyone(&mut state, &target, direct, open),
         };
-        self.receipt(state, key, target, receipt).await
+        self.receipt(state, key, receipt).await
     }
 
     /// Route a message to its conversation's Session; a group's first creates the group's own.
@@ -147,15 +178,11 @@ impl Connection {
         source: EventSource,
         (target, direct): (&str, bool),
         content: enco_kernel::ChannelContent<Image>,
-    ) -> Result<(), ChannelError> {
+    ) -> Result<Option<String>, ChannelError> {
         let group_profile = match (direct, &self.settings.group_profile) {
             (true, _) => None,
             (false, Some(profile)) => Some(profile.clone()),
-            (false, None) => {
-                return self
-                    .receipt(state, key, target.into(), NO_GROUP_PROFILE.into())
-                    .await;
-            }
+            (false, None) => return self.receipt(state, key, NO_GROUP_PROFILE.into()).await,
         };
         let (session, created) = match (state.chats.get(target), group_profile) {
             (Some(session), _) => (*session, None),
@@ -179,20 +206,19 @@ impl Connection {
             earlier,
         };
         self.submit(state, session, source, body, key, created)
-            .await
+            .await?;
+        Ok(None)
     }
 
-    /// Accept the update with its receipt, which is sent once the update is committed.
+    /// Accept the update; `text` is its receipt.
     pub(super) async fn receipt(
         &mut self,
         state: State,
         key: String,
-        target: String,
         text: String,
-    ) -> Result<(), ChannelError> {
+    ) -> Result<Option<String>, ChannelError> {
         self.commit_update(state, key, None, None).await?;
-        self.receipts.push_back(Receipt { target, text });
-        Ok(())
+        Ok(Some(text))
     }
 
     /// Accept the update with an input for `session`, creating it when `created` says so, and
@@ -215,7 +241,8 @@ impl Connection {
             received_at: self.clock.now(),
         };
         self.commit_update(state, key, Some(event), created).await?;
-        self.follow(session)
+        self.follow(session)?;
+        self.observe(session).await
     }
 }
 

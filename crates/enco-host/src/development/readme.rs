@@ -7,7 +7,7 @@ use super::{
     DevelopmentError, EntryError, EntryProblem,
     error::{entry, io},
 };
-use enco_kernel::Loaded;
+use enco_kernel::{Loaded, Location};
 use std::path::Path;
 
 pub(super) const FILE: &str = "README.md";
@@ -63,18 +63,35 @@ pub(super) fn runtime(loaded: &Loaded) -> Result<String, DevelopmentError> {
         loaded.summary,
         schema(&loaded.config_schema)?
     );
+    if !loaded.channel_origins.is_empty() {
+        out.push_str("\n## Channel origins\n\n");
+        for origin in &loaded.channel_origins {
+            out.push_str(&format!("- `{origin}`\n"));
+        }
+    }
     if !loaded.credentials.is_empty() {
-        out.push_str("\n## Credentials\n\n| Name | Destination | Required |\n|---|---|---|\n");
+        out.push_str(
+            "\n## Credentials\n\n| Name | Destination | Location | Required |\n|---|---|---|---|\n",
+        );
         for credential in &loaded.credentials {
-            out.push_str(&format!(
-                "| `{}` | {} | {} |\n",
-                credential.name,
-                credential
-                    .origin
-                    .as_deref()
-                    .unwrap_or("Caller-selected service"),
-                credential.required
-            ));
+            for placement in &credential.placements {
+                let location = match &placement.location {
+                    Location::Header(value) => {
+                        format!("Header `{}` (prefix `{}`)", value.name, value.prefix)
+                    }
+                    Location::Path(prefixes) => format!("Path prefixes: {}", prefixes.join(", ")),
+                    Location::Frame(pointer) => format!("Frame JSON pointer `{pointer}`"),
+                };
+                out.push_str(&format!(
+                    "| `{}` | {} | {location} | {} |\n",
+                    credential.name,
+                    placement
+                        .origin
+                        .as_deref()
+                        .unwrap_or("Caller-selected service"),
+                    credential.required
+                ));
+            }
         }
     }
     let tools = loaded.tools.as_ref().map_or(&[][..], |tools| &tools.specs);

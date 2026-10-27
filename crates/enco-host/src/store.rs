@@ -25,7 +25,7 @@ use std::{
 ///
 /// It covers the SQLite schema, plan records included. Until P4, persistent format changes
 /// require a new database; opening never migrates or deletes the old one.
-const SCHEMA_VERSION: u32 = 15;
+const SCHEMA_VERSION: u32 = 16;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {

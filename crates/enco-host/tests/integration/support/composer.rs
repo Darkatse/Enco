@@ -98,6 +98,7 @@ pub fn composer_loaded(adapter: Arc<dyn Composer>) -> Loaded {
         summary: "scripted composer".into(),
         config_schema: serde_json::json!({}),
         credentials: vec![],
+        channel_origins: Vec::new(),
         unavailable: None,
         composer: Some(LoadedComposer {
             schema: InputSchema::empty(),

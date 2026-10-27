@@ -119,7 +119,11 @@ cargo run -p enco -- chat      # 在另一个终端中
 
 补全 endpoint 默认只接受文本；在 endpoint 中加上 `accepts = ["image"]` 即可发送图片。`enco send --image <path>` 接受 PNG、JPEG 和 WebP，可重复，也可不附文字；Agent 通过 `fs_read` 读取这些图片。单张上限 10 MB，每次请求图片合计上限 32 MB。
 
-常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`。启用 Telegram 时，取消配置示例中 `[channel.telegram]` 段的注释，把主人的用户 ID 以字符串填入 `owner`，并导出 `secrets` 指定的 token 环境变量。出厂 `telegram` 插件翻译协议，宿主持有连接与凭证。照片与图片文件连同 caption 进入同一条消息；不支持的附件会如实告知 Agent。私聊中的 `/session` 切换 Session；`/cancel` 停止当前 Run，回复一条消息并发送 `/backtrack` 可从那里继续。`enco status` 列出渠道状态以及最近失败或未知的投递。
+常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`。启用 Telegram 时，取消配置示例中 `[channel.telegram]` 段的注释，把主人的用户 ID 以字符串填入 `owner`，并导出 `secrets` 指定的 token 环境变量。出厂 `telegram` 插件翻译协议，宿主持有连接与凭证。照片与图片文件连同 caption 进入同一条消息；不支持的附件会如实告知 Agent。私聊中的 `/session` 切换 Session；`/cancel` 停止当前 Run，回复一条消息并发送 `/backtrack` 可从那里继续。`enco status` 列出渠道状态以及最近失败或未知的投递。 Run 进行时，Telegram 与 Discord 都显示 `Working` 进度卡，列出已用时间、最近五个工具名与结局，并提供 `Cancel` 按钮；只有主人能取消，回复送达后删除卡片。
+
+启用 Discord 时，取消示例配置中 `[channel.discord]` 段的注释。在 [Discord 开发者后台](https://discord.com/developers/applications)创建应用与 bot，在 Bot 页面打开 **Message Content Intent**，导出 `DISCORD_BOT_TOKEN`。在 Discord 设置中启用开发者模式，复制自己的用户 ID，填入 `owner`。邀请 bot 时选择 `bot` 与 `applications.commands` 作用域，并授予所需频道的查看频道、发送消息、在线程中发送消息、读取消息历史、附加文件与嵌入链接权限。私聊要求主人与 bot 至少同在一个服务器里。bot 能读取的频道消息会进入映射记录，请只开放需要的频道。
+
+Discord 使用原生 `/session`、`/cancel`、`/everyone` 命令；回溯在消息右键菜单的 **Backtrack here** 中。`/session` 只用于私聊，`/everyone` 只用于服务器。命令与按钮回执只有发送者可见；把 `/cancel` 等写在普通消息中不会触发命令。频道与线程各有自己的群 Session，`context` 与 `group_profile` 设置与 Telegram 相同。
 
 每个群用 `group_profile` 新建自己的 Session；未配置它时只服务私聊。群的 profile 必须设置 `owner_context = false`，并明确列出不含记忆工具的白名单，让群聊机器人与私人助理分开。只开放结果可以在群里分享的工具：文件与 shell 工具仍可能读到私人文件。示例使用网页工具，并以 `requires_lifeline = false` 关闭必备的修复工具集。
 

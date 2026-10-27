@@ -82,7 +82,7 @@ impl Tools for WasmTools {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Outcome {
         let credentials =
-            match credentials::resolve(&self.plugin.placements, &self.plugin.settings, None) {
+            match credentials::resolve(&self.plugin.credentials, &self.plugin.settings, None) {
                 Ok(credentials) => credentials,
                 Err(failure) => return Outcome::Failed { failure },
             };

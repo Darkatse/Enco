@@ -45,7 +45,13 @@ impl Runtime for ConfiguredRuntime {
         let mut loaded = fixture(self.provider.clone(), self.provider.clone());
         // Settings may map `service`, so the component declares it at a fixed origin.
         loaded.credentials = vec![Credential {
-            origin: Some("https://service.test".into()),
+            placements: vec![Placement {
+                origin: Some("https://service.test".into()),
+                location: Location::Header(HeaderPlacement {
+                    name: "authorization".into(),
+                    prefix: "Bearer ".into(),
+                }),
+            }],
             ..credential(false)
         }];
         loaded.tools = Some(LoadedTools {

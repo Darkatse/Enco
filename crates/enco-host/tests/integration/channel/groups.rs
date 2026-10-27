@@ -2,7 +2,7 @@ use super::*;
 
 fn group(offset: u32, sender: &str, addressed: bool, action: Action) -> Update {
     let mut value = update(offset, action);
-    let input = value.input.as_mut().unwrap();
+    let input = &mut value.input;
     input.direct = false;
     input.addressed = addressed;
     input.sender = Some(sender.into());
@@ -165,6 +165,7 @@ async fn only_new_owner_commands_open_groups_and_member_sources_survive_backtrac
         .await
         .unwrap();
     assert_eq!(receive(&mut polling).await, json!(8));
+    // A member's command expects no answer, so it is ignored rather than refused.
     let receipt = receive(&mut sending).await;
     assert_eq!(receipt.text, "A group chat always uses its own Session.");
     receipt.result.send(Ok(())).unwrap();
@@ -191,7 +192,7 @@ async fn only_new_owner_commands_open_groups_and_member_sources_survive_backtrac
     assert_eq!(receive(&mut polling).await, json!(12));
     assert_eq!(provider.requests.lock().unwrap().len(), 1);
     let mut back = group(13, "owner", true, Action::Backtrack);
-    back.input.as_mut().unwrap().reply_to = Some("6".into());
+    back.input.reply_to = Some("6".into());
     updates.send(vec![back]).await.unwrap();
     receive(&mut polling).await;
     let receipt = receive(&mut sending).await;

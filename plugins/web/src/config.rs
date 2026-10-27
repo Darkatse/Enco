@@ -1,6 +1,8 @@
 use crate::{
     bad,
-    bindings::exports::enco::plugin::lifecycle::{Credential, HeaderPlacement, Placement},
+    bindings::exports::enco::plugin::lifecycle::{
+        Credential, HeaderPlacement, Location, Placement,
+    },
     types::Failure,
 };
 use schemars::JsonSchema;
@@ -103,6 +105,10 @@ impl Config {
             .trim_end_matches('/')
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "describe already accepted each configured service URL"
+    )]
     pub fn credentials(&self) -> Vec<Credential> {
         std::iter::once((Service::Jina, false))
             .chain(self.search.iter().map(|engine| (engine.service(), true)))
@@ -110,12 +116,19 @@ impl Config {
                 let (_, header, prefix) = service.defaults();
                 Credential {
                     name: service.name().into(),
-                    origin: Some(self.url(service).into()),
                     required,
-                    placement: Placement::Header(HeaderPlacement {
-                        name: header.into(),
-                        prefix: prefix.into(),
-                    }),
+                    placements: vec![Placement {
+                        origin: Some(
+                            url::Url::parse(self.url(service))
+                                .expect("accepted service URL")
+                                .origin()
+                                .ascii_serialization(),
+                        ),
+                        location: Location::Header(HeaderPlacement {
+                            name: header.into(),
+                            prefix: prefix.into(),
+                        }),
+                    }],
                 }
             })
             .collect()

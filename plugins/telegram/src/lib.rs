@@ -5,8 +5,13 @@ mod outgoing;
 mod wire;
 
 use bindings::exports::enco::plugin::{channel, lifecycle};
-use channel::{Command, Fault, FetchStep, Identity, Outgoing, Request, Response, Update};
-use enco_sdk::types::Failure;
+use channel::{
+    Arrival, Command, Fault, FetchStep, Identity, Outgoing, ReadStep, Reading, Request, Response,
+};
+use enco_sdk::{
+    channel::{ActivityView, CANCEL_LABEL},
+    types::Failure,
+};
 use limits::{POLL_SECONDS, POLL_TIMEOUT_MS, READ_TIMEOUT_MS, SEND_TIMEOUT_MS};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -23,8 +28,10 @@ impl lifecycle::Guest for Plugin {
             config_schema: r#"{"type":"object","additionalProperties":false}"#.into(),
             credentials: vec![lifecycle::Credential {
                 name: "token".into(),
-                origin: None,
-                placement: lifecycle::Placement::Path(vec!["/bot".into(), "/file/bot".into()]),
+                placements: vec![lifecycle::Placement {
+                    origin: None,
+                    location: lifecycle::Location::Path(vec!["/bot".into(), "/file/bot".into()]),
+                }],
                 required: true,
             }],
         })
@@ -59,6 +66,10 @@ enum Answer {
 }
 
 impl channel::Guest for Plugin {
+    fn origins() -> Vec<String> {
+        vec![]
+    }
+
     fn identify() -> Request {
         request("getMe", json!({}), READ_TIMEOUT_MS)
     }
@@ -72,20 +83,23 @@ impl channel::Guest for Plugin {
         })
     }
 
-    fn poll(_identity: Identity, state: Option<String>) -> Result<Request, Fault> {
+    fn read(_identity: Identity, state: Option<String>) -> Result<ReadStep, Fault> {
         let offset = incoming::offset(state.as_deref())?;
-        Ok(request(
+        Ok(ReadStep::Request(request(
             "getUpdates",
-            json!({"offset": offset, "timeout": POLL_SECONDS, "allowed_updates": ["message"]}),
+            json!({"offset": offset, "timeout": POLL_SECONDS, "allowed_updates": ["message", "callback_query"]}),
             POLL_TIMEOUT_MS,
-        ))
+        )))
     }
 
     fn received(
         identity: Identity,
         state: Option<String>,
-        response: Response,
-    ) -> Result<Vec<Update>, Fault> {
+        arrival: Arrival,
+    ) -> Result<Reading, Fault> {
+        let Arrival::Response(response) = arrival else {
+            return Err(invalid_response("Telegram read arrival"));
+        };
         incoming::received(identity, state, response)
     }
 
@@ -115,7 +129,7 @@ impl channel::Guest for Plugin {
         }
     }
 
-    fn commands(commands: Vec<Command>) -> Vec<Request> {
+    fn commands(_identity: Identity, commands: Vec<Command>) -> Vec<Request> {
         [("all_private_chats", true), ("all_group_chats", false)]
             .into_iter()
             .map(|(scope, direct)| {
@@ -144,12 +158,42 @@ impl channel::Guest for Plugin {
             .collect()
     }
 
-    fn typing(conversation: String) -> Option<Request> {
-        Some(request(
-            "sendChatAction",
-            json!({"chat_id": conversation, "action": "typing"}),
+    fn respond(handle: String, text: Option<String>) -> Result<Option<Request>, Fault> {
+        Ok(Some(request(
+            "answerCallbackQuery",
+            json!({"callback_query_id": handle, "text": text}),
             SEND_TIMEOUT_MS,
-        ))
+        )))
+    }
+
+    fn activity(
+        conversation: String,
+        shown: Option<String>,
+        activity: Option<ActivityView>,
+    ) -> Option<Request> {
+        match (shown, activity) {
+            (Some(message), None) => Some(request(
+                "deleteMessage",
+                json!({"chat_id": conversation, "message_id": message}),
+                SEND_TIMEOUT_MS,
+            )),
+            (shown, Some(activity)) => {
+                let cancel = json!({"text": CANCEL_LABEL, "callback_data": "cancel"});
+                let mut body = json!({
+                    "chat_id": conversation,
+                    "text": activity.text(),
+                    "reply_markup": {"inline_keyboard": [[cancel]]},
+                });
+                let method = if let Some(message) = shown {
+                    body["message_id"] = json!(message);
+                    "editMessageText"
+                } else {
+                    "sendMessage"
+                };
+                Some(request(method, body, SEND_TIMEOUT_MS))
+            }
+            (None, None) => None,
+        }
     }
 }
 
@@ -166,7 +210,7 @@ fn fetch_step(locator: &str, responses: Vec<Response>) -> Result<FetchStep, Faul
     let Some(response) = responses.next() else {
         return Ok(FetchStep::Request(Request {
             method: "GET".into(),
-            path: format!("/file/bot/{}", wire::path(&file.file_path)),
+            url: format!("/file/bot/{}", wire::path(&file.file_path)),
             headers: vec![],
             body: None,
             timeout_ms: Some(READ_TIMEOUT_MS),

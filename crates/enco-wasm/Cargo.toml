@@ -13,6 +13,8 @@ rand = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 tokio-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 ulid = { workspace = true }

@@ -64,6 +64,7 @@ struct State {
     everyone: std::collections::BTreeSet<String>,
     outbound: BTreeMap<SessionId, Cursor>,
     sending: Option<Delivery>,
+    activity: BTreeMap<RunId, connection::activity::Card>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]

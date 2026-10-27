@@ -364,14 +364,14 @@ async fn load(
 
 /// Whether the owner's secret mapping fits the credentials the code declares.
 ///
-/// Every mapped name must be a credential bound to a fixed origin, and every required credential
-/// with a fixed origin must be mapped. The rule joins code and settings, so it is checked here,
+/// Every mapped name must have only fixed-origin placements, and every required credential
+/// with only fixed-origin placements must be mapped. The rule joins code and settings, so it is checked here,
 /// where both are accepted together; a build loads code alone, with no settings to check.
 fn secrets_fit(declared: &[Credential], settings: &PluginSettings) -> Result<(), LoadError> {
     let fixed = |name: &String| {
         declared
             .iter()
-            .any(|credential| credential.name == *name && credential.origin.is_some())
+            .any(|credential| credential.name == *name && !credential.caller_selected())
     };
     if let Some(name) = settings.secrets.keys().find(|name| !fixed(name)) {
         return Err(LoadError::Settings(format!(
@@ -379,7 +379,7 @@ fn secrets_fit(declared: &[Credential], settings: &PluginSettings) -> Result<(),
         )));
     }
     if let Some(credential) = declared.iter().find(|credential| {
-        credential.origin.is_some()
+        !credential.caller_selected()
             && credential.required
             && !settings.secrets.contains_key(&credential.name)
     }) {

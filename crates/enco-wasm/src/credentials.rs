@@ -1,32 +1,34 @@
-//! Credentials for plugin HTTP requests.
-//!
-//! A plugin declares the origin and placement of each credential; the value is read from the
-//! environment for each call and never handed to the guest or the kernel.
-use crate::bindings::{enco::plugin::host, lifecycle};
+//! Credentials stay in the transport; validated placements bind each recipient and location.
+use crate::{bindings::enco::plugin::host, origins::Origin};
 use enco_core::{Failure, PluginSettings, ProviderSettings, code};
-use enco_kernel::LoadError;
+use enco_kernel::{LoadError, Location};
 use reqwest::{
     Url,
     header::{HeaderName, HeaderValue},
 };
 
-/// A credential's destination and placement, validated once when the generation loads.
-pub(crate) struct Placement {
+/// One secret mapping and every validated place it may be written.
+pub(crate) struct Credential {
     name: String,
-    origin: Option<Url>,
+    caller_selected: bool,
+    placements: Vec<Placement>,
+}
+
+struct Placement {
+    origin: Option<Origin>,
     destination: Destination,
 }
 
 enum Destination {
     Header { header: HeaderName, prefix: String },
     Path(Vec<String>),
+    Frame(String),
 }
 
 impl Placement {
-    pub fn new(credential: &lifecycle::Credential) -> Result<Self, LoadError> {
-        let name = &credential.name;
-        let destination = match &credential.placement {
-            lifecycle::Placement::Header(lifecycle::HeaderPlacement {
+    fn new(name: &str, placement: &enco_kernel::Placement) -> Result<Self, LoadError> {
+        let destination = match &placement.location {
+            Location::Header(enco_kernel::HeaderPlacement {
                 name: header,
                 prefix,
             }) => {
@@ -41,7 +43,7 @@ impl Placement {
                     prefix: prefix.clone(),
                 }
             }
-            lifecycle::Placement::Path(prefixes) => {
+            Location::Path(prefixes) => {
                 if prefixes.is_empty()
                     || prefixes
                         .iter()
@@ -53,84 +55,101 @@ impl Placement {
                 }
                 Destination::Path(prefixes.clone())
             }
+            Location::Frame(pointer) => {
+                if !valid_pointer(pointer) {
+                    return Err(LoadError::Component(format!(
+                        "credential {name} frame placement requires a JSON pointer"
+                    )));
+                }
+                Destination::Frame(pointer.clone())
+            }
         };
-        Ok(Self {
-            name: name.clone(),
-            origin: credential
-                .origin
-                .as_deref()
-                .map(|declared| {
-                    origin(declared).map_err(|error| {
-                        LoadError::Component(format!(
-                            "credential {name} origin {declared}: {}",
-                            error.message
-                        ))
-                    })
+        let origin = placement
+            .origin
+            .as_deref()
+            .map(|declared| {
+                Origin::parse(declared).map_err(|error| {
+                    LoadError::Component(format!("credential {name} origin {declared}: {error}"))
                 })
-                .transpose()?,
+            })
+            .transpose()?;
+        Ok(Self {
+            origin,
             destination,
         })
     }
 }
 
-/// Accept declarations once, including the one-credential-per-origin rule.
-///
-/// Whether the owner's secret mapping fits these declarations is the registry's check, made when
-/// it accepts code and settings together.
-pub(crate) fn placements(declared: &[lifecycle::Credential]) -> Result<Vec<Placement>, LoadError> {
+/// Accept credential names and all placements at the declaration boundary.
+pub(crate) fn declarations(
+    declared: &[enco_kernel::Credential],
+) -> Result<Vec<Credential>, LoadError> {
     let mut names = std::collections::HashSet::new();
-    let mut origins = std::collections::HashMap::new();
-    let mut placements = Vec::new();
-    for credential in declared {
-        if credential.name.is_empty() {
-            return Err(LoadError::Component(format!(
-                "credential name is empty (origin {})",
-                origin_text(credential.origin.as_deref())
-            )));
-        }
-        if !names.insert(&credential.name) {
-            return Err(LoadError::Component(format!(
-                "duplicate credential name {}",
-                credential.name
-            )));
-        }
-        let placement = Placement::new(credential)?;
-        if let Some(previous) =
-            origins.insert(placement.origin.as_ref().map(Url::origin), &credential.name)
-        {
-            let origin = placement
-                .origin
-                .as_ref()
-                .map(|url| url.origin().ascii_serialization());
-            return Err(LoadError::Component(format!(
-                "credentials {previous} and {} both bind origin {}",
-                credential.name,
-                origin_text(origin.as_deref())
-            )));
-        }
-        placements.push(placement);
-    }
-    Ok(placements)
+    declared
+        .iter()
+        .map(|credential| {
+            if credential.name.is_empty() || !names.insert(&credential.name) {
+                return Err(LoadError::Component(format!(
+                    "empty or duplicate credential name {}",
+                    credential.name
+                )));
+            }
+            if credential.placements.is_empty() {
+                return Err(LoadError::Component(format!(
+                    "credential {} requires at least one placement",
+                    credential.name
+                )));
+            }
+            Ok(Credential {
+                name: credential.name.clone(),
+                caller_selected: credential.caller_selected(),
+                placements: credential
+                    .placements
+                    .iter()
+                    .map(|placement| Placement::new(&credential.name, placement))
+                    .collect::<Result<_, _>>()?,
+            })
+        })
+        .collect()
 }
 
-/// Values live only for an invocation. A fixed origin reads the generation's mapping; an
-/// unbound declaration reads the endpoint selected by its caller.
+fn valid_pointer(pointer: &str) -> bool {
+    if !pointer.is_empty() && !pointer.starts_with('/') {
+        return false;
+    }
+    let mut chars = pointer.chars();
+    while let Some(character) = chars.next() {
+        if character == '~' && !matches!(chars.next(), Some('0' | '1')) {
+            return false;
+        }
+    }
+    true
+}
+
+/// A caller-selected secret also fills that credential's fixed-origin placements.
 pub(crate) fn resolve(
-    placements: &[Placement],
+    declared: &[Credential],
     settings: &PluginSettings,
     endpoint: Option<&ProviderSettings>,
 ) -> Result<Vec<CallCredential>, Failure> {
     let mut credentials = Vec::new();
-    for placement in placements {
-        let (origin, name) = match &placement.origin {
-            Some(origin) => (origin.clone(), settings.secrets.get(&placement.name)),
-            None => {
-                let Some(endpoint) = endpoint else { continue };
-                (origin(&endpoint.base_url)?, endpoint.api_key_env.as_ref())
-            }
+    for credential in declared {
+        let (base, name) = if credential.caller_selected {
+            let Some(endpoint) = endpoint else { continue };
+            (
+                Some(service_url(&endpoint.base_url)?),
+                endpoint.api_key_env.as_ref(),
+            )
+        } else {
+            (None, settings.secrets.get(&credential.name))
         };
         if let Some(name) = name {
-            credentials.push(CallCredential::resolve(placement, origin, name)?);
+            credentials.push(CallCredential::resolve(
+                credential,
+                base.as_ref(),
+                name,
+                "",
+            )?);
         }
     }
     Ok(credentials)
@@ -138,37 +157,26 @@ pub(crate) fn resolve(
 
 /// Connection credentials follow the service and secret mapping chosen for that account.
 pub(crate) fn resolve_channel(
-    placements: &[Placement],
+    declared: &[Credential],
     base: &Url,
     secrets: &std::collections::BTreeMap<String, String>,
 ) -> Result<Vec<CallCredential>, Failure> {
-    placements
+    declared
         .iter()
-        .filter_map(|placement| {
-            secrets.get(&placement.name).map(|name| {
-                let mut credential = CallCredential::resolve(
-                    placement,
-                    placement.origin.clone().unwrap_or_else(|| base.clone()),
+        .filter_map(|credential| {
+            secrets.get(&credential.name).map(|name| {
+                CallCredential::resolve(
+                    credential,
+                    Some(base),
                     name,
-                )?;
-                if let CallDestination::Path(prefixes) = &mut credential.destination {
-                    let base_path = base.path().trim_end_matches('/');
-                    for prefix in prefixes {
-                        *prefix = format!("{base_path}{prefix}");
-                    }
-                }
-                Ok(credential)
+                    base.path().trim_end_matches('/'),
+                )
             })
         })
         .collect()
 }
 
-/// How load errors name an origin; an absent one follows the endpoint its caller selects.
-fn origin_text(origin: Option<&str>) -> &str {
-    origin.unwrap_or("caller-selected service")
-}
-
-fn origin(url: &str) -> Result<Url, Failure> {
+fn service_url(url: &str) -> Result<Url, Failure> {
     let parsed = Url::parse(url).map_err(|error| {
         failure(
             code::PROVIDER_BAD_REQUEST,
@@ -184,13 +192,16 @@ fn origin(url: &str) -> Result<Url, Failure> {
     Ok(parsed)
 }
 
-/// One invocation's credential. It exists only in the call's transport state, never in the guest
-/// or the kernel.
+/// One invocation's credential, shared by all its placements and never handed to the guest.
 pub(crate) struct CallCredential {
-    origin: Url,
-    destination: CallDestination,
+    placements: Vec<CallPlacement>,
     secret: String,
     replacement: String,
+}
+
+struct CallPlacement {
+    origin: Origin,
+    destination: CallDestination,
 }
 
 enum CallDestination {
@@ -199,10 +210,16 @@ enum CallDestination {
         value: HeaderValue,
     },
     Path(Vec<String>),
+    Frame(String),
 }
 
 impl CallCredential {
-    fn resolve(placement: &Placement, origin: Url, name: &str) -> Result<Self, Failure> {
+    fn resolve(
+        credential: &Credential,
+        base: Option<&Url>,
+        name: &str,
+        path_prefix: &str,
+    ) -> Result<Self, Failure> {
         let unavailable = |reason: &str| {
             failure(
                 code::CREDENTIAL_UNAVAILABLE,
@@ -214,30 +231,64 @@ impl CallCredential {
         if secret.is_empty() {
             return Err(unavailable("empty value"));
         }
-        let destination = match &placement.destination {
-            Destination::Header { header, prefix } => {
-                let mut value = HeaderValue::from_str(&format!("{prefix}{secret}"))
-                    .map_err(|_| unavailable("not valid in an HTTP header"))?;
-                value.set_sensitive(true);
-                CallDestination::Header {
-                    header: header.clone(),
-                    value,
-                }
-            }
-            Destination::Path(prefixes) => CallDestination::Path(prefixes.clone()),
-        };
+        let placements = credential
+            .placements
+            .iter()
+            .map(|placement| {
+                let origin = match &placement.origin {
+                    Some(origin) => origin.clone(),
+                    None => Origin::exact(base.ok_or_else(|| {
+                        failure(
+                            code::PLUGIN_CONTRACT,
+                            "caller-selected credential requires a service URL",
+                        )
+                    })?),
+                };
+                let destination = match &placement.destination {
+                    Destination::Header { header, prefix } => {
+                        let mut value = HeaderValue::from_str(&format!("{prefix}{secret}"))
+                            .map_err(|_| unavailable("not valid in an HTTP header"))?;
+                        value.set_sensitive(true);
+                        CallDestination::Header {
+                            header: header.clone(),
+                            value,
+                        }
+                    }
+                    Destination::Path(prefixes) => {
+                        let prefix = if placement.origin.is_none() {
+                            path_prefix
+                        } else {
+                            ""
+                        };
+                        CallDestination::Path(
+                            prefixes
+                                .iter()
+                                .map(|path| format!("{prefix}{path}"))
+                                .collect(),
+                        )
+                    }
+                    Destination::Frame(pointer) => CallDestination::Frame(pointer.clone()),
+                };
+                Ok(CallPlacement {
+                    origin,
+                    destination,
+                })
+            })
+            .collect::<Result<_, Failure>>()?;
         Ok(Self {
-            origin,
-            destination,
+            placements,
             secret,
             replacement: format!("[redacted:{name}]"),
         })
     }
 
-    /// Fill the declared position only on requests to this credential's origin.
+    /// Fill declared positions only on requests to their credential recipients.
     pub fn attach(&self, request: &mut reqwest::Request) {
-        if request.url().origin() == self.origin.origin() {
-            match &self.destination {
+        for placement in &self.placements {
+            if !placement.origin.matches(request.url()) {
+                continue;
+            }
+            match &placement.destination {
                 CallDestination::Header { header, value } => {
                     request.headers_mut().insert(header.clone(), value.clone());
                 }
@@ -252,6 +303,7 @@ impl CallCredential {
                         request.url_mut().set_path(&path);
                     }
                 }
+                CallDestination::Frame(_) => {}
             }
         }
     }
@@ -269,7 +321,7 @@ impl CallCredential {
         }
     }
 
-    fn redact_text(&self, text: &mut String) {
+    pub(crate) fn redact_text(&self, text: &mut String) {
         if text.contains(&self.secret) {
             *text = text.replace(&self.secret, &self.replacement);
         }
@@ -299,86 +351,58 @@ fn failure(code: &str, message: impl Into<String>) -> Failure {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn credentials_are_origin_scoped_and_redaction_preserves_binary_data() {
-        let credential = CallCredential {
-            origin: Url::parse("https://api.example:443/v1").unwrap(),
-            destination: CallDestination::Header {
-                header: HeaderName::from_static("x-api-key"),
-                value: HeaderValue::from_static("a-secret"),
-            },
-            secret: "a-secret".into(),
-            replacement: "[redacted:KEY]".into(),
-        };
-        let client = reqwest::Client::new();
-        for (url, allowed) in [
-            ("https://api.example/next", true),
-            ("http://api.example/next", false),
-            ("https://api.example:444/next", false),
-            ("https://other.example/next", false),
-        ] {
-            let mut request = client
-                .get(url)
-                .header("x-api-key", "guest-value")
-                .build()
-                .unwrap();
-            credential.attach(&mut request);
-            assert_eq!(
-                request.headers()["x-api-key"],
-                if allowed { "a-secret" } else { "guest-value" }
-            );
-        }
-        let mut body = b"\xffa-secret\x00a-secret\xfe".to_vec();
-        credential.redact_body(&mut body);
-        assert_eq!(body, b"\xff[redacted:KEY]\x00[redacted:KEY]\xfe");
+/// Remove every resolved credential from text returned by the transport.
+pub(crate) fn redact_text(credentials: &[CallCredential], text: &str) -> String {
+    let mut text = text.to_owned();
+    for credential in credentials {
+        credential.redact_text(&mut text);
     }
-
-    #[test]
-    fn path_credentials_only_enter_declared_prefixes_at_the_bound_origin() {
-        let credential = CallCredential {
-            origin: Url::parse("https://api.example").unwrap(),
-            destination: CallDestination::Path(vec!["/bot".into(), "/file/bot".into()]),
-            secret: "42:test-secret".into(),
-            replacement: "[redacted:TOKEN]".into(),
-        };
-        let client = reqwest::Client::new();
-        for (url, expected) in [
-            (
-                "https://api.example/bot/getMe?x=1",
-                "https://api.example/bot42:test-secret/getMe?x=1",
-            ),
-            (
-                "https://api.example/file/bot/images/photo.jpg",
-                "https://api.example/file/bot42:test-secret/images/photo.jpg",
-            ),
-            ("https://api.example/other", "https://api.example/other"),
-            (
-                "https://other.example/bot/getMe",
-                "https://other.example/bot/getMe",
-            ),
-        ] {
-            let mut request = client.get(url).build().unwrap();
-            credential.attach(&mut request);
-            assert_eq!(request.url().as_str(), expected);
-        }
-        let mut response = Ok(host::HttpResponse {
-            status: 200,
-            headers: vec![(
-                "location".into(),
-                "https://api.example/bot42:test-secret/a".into(),
-            )],
-            body: b"\xff42:test-secret\x00".to_vec(),
-        });
-        credential.redact(&mut response);
-        let response = response.unwrap();
-        assert_eq!(
-            response.headers[0].1,
-            "https://api.example/bot[redacted:TOKEN]/a"
-        );
-        assert_eq!(response.body, b"\xff[redacted:TOKEN]\x00");
-    }
+    text
 }
+
+/// Fill null frame positions only for credentials bound to this socket's origin.
+pub(crate) fn attach_frame(
+    credentials: &[CallCredential],
+    destination: &Url,
+    frame: &str,
+) -> Result<String, Failure> {
+    let mut placements = credentials
+        .iter()
+        .flat_map(|credential| {
+            credential.placements.iter().filter_map(move |placement| {
+                if placement.origin.matches(destination)
+                    && let CallDestination::Frame(pointer) = &placement.destination
+                {
+                    Some((credential, pointer))
+                } else {
+                    None
+                }
+            })
+        })
+        .peekable();
+    if placements.peek().is_none() {
+        return Ok(frame.to_owned());
+    }
+    let mut value: serde_json::Value = serde_json::from_str(frame).map_err(|_| {
+        failure(
+            code::PLUGIN_CONTRACT,
+            "credential-bearing frame must be JSON",
+        )
+    })?;
+    for (credential, pointer) in placements {
+        if let Some(position) = value.pointer_mut(pointer) {
+            if !position.is_null() {
+                return Err(failure(
+                    code::PLUGIN_CONTRACT,
+                    format!("credential frame position {pointer} must be null"),
+                ));
+            }
+            *position = serde_json::Value::String(credential.secret.clone());
+        }
+    }
+    Ok(value.to_string())
+}
+
+#[cfg(test)]
+#[path = "credentials_tests.rs"]
+mod tests;

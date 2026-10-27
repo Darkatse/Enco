@@ -46,7 +46,7 @@ pub(super) fn answer<T: DeserializeOwned>(method: &str, response: Response) -> R
 pub(super) fn request(method: &str, body: Value, timeout_ms: u32) -> Request {
     Request {
         method: "POST".into(),
-        path: format!("/bot/{method}"),
+        url: format!("/bot/{method}"),
         headers: vec![("content-type".into(), "application/json".into())],
         body: Some(body.to_string().into_bytes()),
         timeout_ms: Some(timeout_ms),

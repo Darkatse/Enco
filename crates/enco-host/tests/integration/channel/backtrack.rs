@@ -147,6 +147,6 @@ async fn a_backtrack_without_a_recorded_message_in_the_current_session_is_refuse
 
 fn backtrack(offset: u32, reply: Option<String>) -> Update {
     let mut value = update(offset, Action::Backtrack);
-    value.input.as_mut().unwrap().reply_to = reply;
+    value.input.reply_to = reply;
     value
 }

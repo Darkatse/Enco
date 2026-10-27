@@ -16,11 +16,13 @@ impl lifecycle::Guest for Plugin {
             config_schema: r#"{"type":"object","additionalProperties":false}"#.into(),
             credentials: vec![lifecycle::Credential {
                 name: "api-key".into(),
-                origin: None,
-                placement: lifecycle::Placement::Header(lifecycle::HeaderPlacement {
-                    name: "authorization".into(),
-                    prefix: "Bearer ".into(),
-                }),
+                placements: vec![lifecycle::Placement {
+                    origin: None,
+                    location: lifecycle::Location::Header(lifecycle::HeaderPlacement {
+                        name: "authorization".into(),
+                        prefix: "Bearer ".into(),
+                    }),
+                }],
                 required: true,
             }],
         })

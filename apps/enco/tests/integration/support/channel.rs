@@ -75,3 +75,29 @@ pub fn fault<T>(result: Result<T, ChannelCallError>) -> ChannelFault {
         Ok(_) => panic!("expected protocol failure"),
     }
 }
+
+/// Read one batch, then stop before the next request can confirm its protocol state.
+pub async fn reading(
+    adapter: Arc<dyn ChannelAdapter>,
+    protocol: Option<serde_json::Value>,
+) -> Result<enco_kernel::ChannelReading, ChannelCallError> {
+    let (send, mut readings) = tokio::sync::mpsc::unbounded_channel();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let cancelled = stop.clone();
+    let mut task = tokio::spawn(async move { adapter.receive(protocol, send, cancelled).await });
+    let reading = tokio::select! {
+        result = readings.recv() => result,
+        result = &mut task => { result.unwrap()?; panic!("receiver stopped without a reading") }
+    };
+    stop.cancel();
+    task.await.unwrap()?;
+    Ok(reading.unwrap())
+}
+
+pub async fn messages(adapter: Arc<dyn ChannelAdapter>) -> Vec<enco_kernel::ChannelMessage> {
+    let enco_kernel::ChannelReading::Batch { messages, .. } = reading(adapter, None).await.unwrap()
+    else {
+        panic!("expected messages")
+    };
+    messages
+}

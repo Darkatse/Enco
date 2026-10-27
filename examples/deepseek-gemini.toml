@@ -55,3 +55,12 @@ max_rounds = 24
 # tools = ["web_search", "web_fetch"]
 # owner_context = false
 # requires_lifeline = false
+
+# Optional Discord connection. Enable Message Content Intent in the developer portal.
+# [channel.discord]
+# plugin = "discord"
+# base_url = "https://discord.com/api/v10"
+# owner = "123456789012345678"
+# secrets = { token = "DISCORD_BOT_TOKEN" }
+# context = 0
+# group_profile = "group"

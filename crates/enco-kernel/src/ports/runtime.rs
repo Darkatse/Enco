@@ -19,6 +19,8 @@ pub struct Loaded {
     pub config_schema: serde_json::Value,
     /// Credential declarations used by transport, wiring and generated documentation.
     pub credentials: Vec<Credential>,
+    /// Additional network origins declared by the channel mapper, fixed with its generation.
+    pub channel_origins: Vec<String>,
     /// A missing environment requirement; the code still loads and retains its health.
     pub unavailable: Option<Failure>,
     /// Self-check required before a deployment is admitted.
@@ -72,12 +74,19 @@ pub trait Tools: Send + Sync {
 pub struct Credential {
     /// Name used in the owner's secret mapping.
     pub name: String,
-    /// Fixed service origin, or the service selected by the caller.
-    pub origin: Option<String>,
     /// Whether the mapping must be present.
     pub required: bool,
-    /// The location populated by transport.
-    pub placement: Placement,
+    /// Every origin and location populated by transport; never empty.
+    pub placements: Vec<Placement>,
+}
+
+impl Credential {
+    /// Whether one placement follows the caller's service, which also supplies this credential's secret.
+    pub fn caller_selected(&self) -> bool {
+        self.placements
+            .iter()
+            .any(|placement| placement.origin.is_none())
+    }
 }
 
 /// A request header carrying a credential.
@@ -89,14 +98,25 @@ pub struct HeaderPlacement {
     pub prefix: String,
 }
 
+/// One credential recipient and the location populated for that recipient.
+#[derive(Clone, serde::Serialize)]
+pub struct Placement {
+    /// Fixed origin, with optional subdomain wildcard, or the service selected by the caller.
+    pub origin: Option<String>,
+    /// Request or frame position written by the transport.
+    pub location: Location,
+}
+
 /// Where transport alone writes a credential value.
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum Placement {
+pub enum Location {
     /// One header populated with a prefix and the secret.
     Header(HeaderPlacement),
     /// Insert immediately after the matching request-path prefix.
     Path(Vec<String>),
+    /// Replace null at this JSON pointer in an outbound socket frame.
+    Frame(String),
 }
 
 /// Why a component cannot be loaded, attributed to its code or to the settings it was given.

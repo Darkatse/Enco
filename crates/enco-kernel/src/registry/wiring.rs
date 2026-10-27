@@ -14,18 +14,19 @@ impl Endpoint {
             retryable: false,
         };
         let adapter = adapter.ok_or_else(|| unavailable(format!("requires {interface}")))?;
-        let mismatch = match (
-            loaded
-                .credentials
-                .iter()
-                .find(|credential| credential.origin.is_none()),
-            self.settings.api_key_env.is_some(),
-        ) {
-            (None, true) => Some("sets api_key_env, but the artifact declares no credential"),
-            (Some(Credential { required: true, .. }), false) => {
-                Some("has no api_key_env, but the artifact requires a credential")
-            }
-            _ => None,
+        let mut credentials = loaded
+            .credentials
+            .iter()
+            .filter(|credential| credential.caller_selected());
+        let mismatch = if self.settings.api_key_env.is_some() {
+            credentials
+                .next()
+                .is_none()
+                .then_some("sets api_key_env, but the artifact declares no credential")
+        } else {
+            credentials
+                .any(|credential| credential.required)
+                .then_some("has no api_key_env, but the artifact requires a credential")
         };
         match mismatch {
             Some(reason) => Err(unavailable(reason.into())),

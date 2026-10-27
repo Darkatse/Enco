@@ -1,14 +1,27 @@
 //! Log-derived deliveries and their durable settlements.
 use super::*;
 impl Connection {
+    pub(super) async fn recover_delivery(&mut self) -> Result<(), ChannelError> {
+        if let Some(delivery) = self.state.sending.clone() {
+            self.settle(
+                delivery,
+                Settlement::Unknown {
+                    failure: Failure {
+                        code: code::INTERRUPTED.into(),
+                        message: "process stopped during delivery; it will not be resent".into(),
+                        retryable: false,
+                    },
+                },
+                Vec::new(),
+                Vec::new(),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn next_delivery(&mut self) -> Result<(), ChannelError> {
         if self.in_flight.is_some() {
-            return Ok(());
-        }
-        if let Some(Receipt { target, text }) = self.receipts.pop_front() {
-            self.in_flight = Some(InFlight::Receipt(
-                self.send(target, Outgoing { text, file: None }),
-            ));
             return Ok(());
         }
         while let Some(session) = self.dirty.pop_first() {
@@ -52,7 +65,10 @@ impl Connection {
                 let mut state = self.state.clone();
                 state.sending = Some(delivery.clone());
                 self.commit(state, None).await?;
-                self.in_flight = Some(InFlight::Delivery(delivery, self.send(target, message)));
+                self.in_flight = Some(InFlight {
+                    delivery,
+                    task: self.send(target, message),
+                });
                 break;
             }
             if previous != cursor.processed {
@@ -85,16 +101,8 @@ impl Connection {
         result: Result<Result<transport::Sent, ChannelError>, tokio::task::JoinError>,
     ) -> Result<Option<Fault>, ChannelError> {
         let sent = result.map_err(|error| ChannelError::Task(error.to_string()))??;
-        match flight {
-            InFlight::Delivery(delivery, _) => {
-                self.settle(delivery, sent.outcome, sent.messages, sent.origins)
-                    .await?;
-            }
-            InFlight::Receipt(_) if !matches!(sent.outcome, Settlement::Ok) => {
-                tracing::warn!(outcome = ?sent.outcome, "command receipt was not delivered");
-            }
-            InFlight::Receipt(_) => {}
-        }
+        self.settle(flight.delivery, sent.outcome, sent.messages, sent.origins)
+            .await?;
         Ok(sent.fatal)
     }
 

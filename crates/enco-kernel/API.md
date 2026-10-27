@@ -19,6 +19,7 @@ Session execution through explicit ports.
 - struct `CallContext` — Invocation identity, cooperative cancellation and the inline result budget.
 - enum `Cause` — A failure attributed to the part of the intent it concerns.
 - enum `ChannelAction` — The meaning of an incoming message, independent of protocol command syntax.
+- struct `ChannelActivity` — A Run's current progress, containing only public tool names and outcomes.
 - struct `ChannelAttachment` — An image still held by the protocol.
 - enum `ChannelCallError` — A mapper or protocol failure, distinct from failing to record its evidence.
 - struct `ChannelCommand` — A command offered by the host in protocol menus.
@@ -27,9 +28,12 @@ Session execution through explicit ports.
 - struct `ChannelFault` — A protocol failure and the facts that determine retry and settlement.
 - struct `ChannelIdentity` — Stable account identity declared by a mapper.
 - struct `ChannelInput` — An incoming message, before host authorization or attachment fetching.
+- struct `ChannelMessage` — One protocol message, its acceptance key and recorded origin.
+- enum `ChannelReading` — One arrival's messages and protocol checkpoint, delivered in receive order.
 - struct `ChannelSent` — The confirmed result of sending one part.
 - struct `ChannelSettings` — The service and secret names chosen for one connection; values remain in transport.
-- struct `ChannelUpdate` — One update and the protocol state after accepting it.
+- struct `ChannelToolActivity` — One tool call visible in a Run's progress view.
+- enum `ChannelToolState` — A tool's current state in a progress view.
 - struct `CodeProvenance` — Where a generation's code came from; settings-only generations follow their code generation.
 - enum `CodeSource` — How a generation's code entered the registry.
 - struct `Commit` — An atomic append of Log facts and consumption of their corresponding Inbox rows.
@@ -72,11 +76,12 @@ Session execution through explicit ports.
 - struct `LoadedComposer` — A composer's option declaration and invocation, loaded from the same content.
 - struct `LoadedTools` — Tool declarations are evaluated once with the generation's accepted configuration.
 - struct `LocatedImage` — An image reference with the node-local address supplied by its store.
+- enum `Location` — Where transport alone writes a credential value.
 - enum `Need` — A use's interface and behavior requirements, shared by wiring checks and real probes.
 - struct `NewSession` — A Session created together with the input that first reaches it.
 - struct `NodeRecord` — Persistent node identity and recovery policy.
 - struct `OfferedMemories` — The memories offered for one Round, and what could not be offered.
-- enum `Placement` — Where transport alone writes a credential value.
+- struct `Placement` — One credential recipient and the location populated for that recipient.
 - struct `PlanWrite` — An immutable request plan whose complete content address is computed once before committing.
 - enum `PluginChange` — One plugin's contribution to an atomic registration.
 - enum `PluginChangeKind` — Accepted changes to one plugin; each variant carries only its own facts.
@@ -582,6 +587,28 @@ The meaning of an incoming message, independent of protocol command syntax.
 - `Backtrack` — Return to the message named by the input's reply target.
 - `Everyone` — Open or close a group to members; absent queries its current setting.
 
+## struct `ChannelActivity`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelActivity {
+    pub elapsed_seconds: u32,
+    pub tools: Vec<ChannelToolActivity>,
+}
+```
+
+A Run's current progress, containing only public tool names and outcomes.
+
+- `elapsed_seconds` — Whole seconds elapsed since the Run started.
+- `tools` — The latest tools in their start order, oldest first.
+
+Implements:
+
+```rust
+impl Clone for ChannelActivity
+```
+
 ## struct `ChannelAttachment`
 
 `src/ports/channel.rs`
@@ -765,6 +792,7 @@ pub struct ChannelInput {
     pub direct: bool,
     pub addressed: bool,
     pub reply_to: Option<String>,
+    pub respond: Option<String>,
     pub action: ChannelAction,
 }
 ```
@@ -778,7 +806,56 @@ An incoming message, before host authorization or attachment fetching.
 - `direct` — Whether the conversation is one to one.
 - `addressed` — Whether this message addresses the bot.
 - `reply_to` — The protocol ID of the message it replies to, when present.
+- `respond` — The opaque handle to answer after acceptance and receipt acknowledgment.
 - `action` — The host action requested by this message.
+
+## struct `ChannelMessage`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelMessage {
+    pub key: String,
+    pub input: ChannelInput,
+    pub origin: enco_core::MappingOrigin,
+}
+```
+
+One protocol message, its acceptance key and recorded origin.
+
+- `key` — Protocol key accepted at most once, including for commands.
+- `input` — What this message asks the host to consider.
+- `origin` — The recorded mapper call and this message's position in its result.
+
+## enum `ChannelReading`
+
+`src/ports/channel.rs`
+
+```rust
+pub enum ChannelReading {
+    Batch {
+        messages: Vec<ChannelMessage>,
+        protocol: Option<serde_json::Value>,
+        accepted: Option<oneshot::Sender<()>>,
+        acknowledged: oneshot::Receiver<()>,
+    },
+    Reset {
+        failure: enco_core::Failure,
+        accepted: oneshot::Sender<()>,
+    },
+}
+```
+
+One arrival's messages and protocol checkpoint, delivered in receive order.
+
+- `Batch` — Accept the messages in order before committing the optional protocol checkpoint.
+  - `messages` — Messages emitted by this arrival, each accepted at most once by its key.
+  - `protocol` — The next committed protocol state; absent leaves it unchanged.
+  - `accepted` — Complete after acceptance when request-based reading must wait before reading again.
+  - `acknowledged` — Completes after all receipt acknowledgments finish; answers must wait for it.
+- `Reset` — Clear a protocol checkpoint rejected by the mapper before reading from its initial state.
+  - `failure` — Why the checkpoint was rejected.
+  - `accepted` — Complete after the cleared checkpoint is committed.
 
 ## struct `ChannelSent`
 
@@ -818,25 +895,54 @@ Implements:
 impl Clone for ChannelSettings
 ```
 
-## struct `ChannelUpdate`
+## struct `ChannelToolActivity`
 
 `src/ports/channel.rs`
 
 ```rust
-pub struct ChannelUpdate {
-    pub key: String,
-    pub protocol: serde_json::Value,
-    pub input: Option<ChannelInput>,
-    pub origin: enco_core::MappingOrigin,
+pub struct ChannelToolActivity {
+    pub name: String,
+    pub state: ChannelToolState,
 }
 ```
 
-One update and the protocol state after accepting it.
+One tool call visible in a Run's progress view.
 
-- `key` — Protocol key accepted at most once, including for commands.
-- `protocol` — The protocol state after this update.
-- `input` — What the update brings, if the host should consider it.
-- `origin` — The recorded mapper call and this update's position in its result.
+- `name` — The tool's model-visible name, without its arguments.
+- `state` — The call's current outcome.
+
+Implements:
+
+```rust
+impl Clone for ChannelToolActivity
+```
+
+## enum `ChannelToolState`
+
+`src/ports/channel.rs`
+
+```rust
+pub enum ChannelToolState {
+    Running,
+    Ok,
+    Failed,
+    Unknown,
+}
+```
+
+A tool's current state in a progress view.
+
+- `Running` — The call is still running.
+- `Ok` — The call succeeded.
+- `Failed` — The call failed.
+- `Unknown` — The call may have taken effect but its outcome is unknown.
+
+Implements:
+
+```rust
+impl Clone for ChannelToolState
+impl Copy for ChannelToolState
+```
 
 ## struct `CodeProvenance`
 
@@ -1278,18 +1384,24 @@ Shared input to a Round's context sources.
 ```rust
 pub struct Credential {
     pub name: String,
-    pub origin: Option<String>,
     pub required: bool,
-    pub placement: Placement,
+    pub placements: Vec<Placement>,
 }
 ```
 
 A declared credential; transport validates placement and alone reads its value.
 
 - `name` — Name used in the owner's secret mapping.
-- `origin` — Fixed service origin, or the service selected by the caller.
 - `required` — Whether the mapping must be present.
-- `placement` — The location populated by transport.
+- `placements` — Every origin and location populated by transport; never empty.
+
+### `Credential::caller_selected`
+
+```rust
+pub fn caller_selected(&self) -> bool
+```
+
+Whether one placement follows the caller's service, which also supplies this credential's secret.
 
 Implements:
 
@@ -2190,6 +2302,7 @@ pub struct Loaded {
     pub summary: String,
     pub config_schema: serde_json::Value,
     pub credentials: Vec<Credential>,
+    pub channel_origins: Vec<String>,
     pub unavailable: Option<enco_core::Failure>,
     pub lifecycle: std::sync::Arc<dyn Lifecycle>,
     pub composer: Option<LoadedComposer>,
@@ -2206,6 +2319,7 @@ Exports returned by loading a component. Each invocation owns its own runtime st
 - `summary` — Adapter-provided description, not a plugin identity.
 - `config_schema` — Plugin-owned configuration documentation, retained with the loaded generation.
 - `credentials` — Credential declarations used by transport, wiring and generated documentation.
+- `channel_origins` — Additional network origins declared by the channel mapper, fixed with its generation.
 - `unavailable` — A missing environment requirement; the code still loads and retains its health.
 - `lifecycle` — Self-check required before a deployment is admitted.
 - `composer` — Context policy and its profile options, fixed with the loaded generation.
@@ -2287,6 +2401,31 @@ Implements:
 impl Borrow<Image> for LocatedImage
 impl Clone for LocatedImage
 impl Debug for LocatedImage
+```
+
+## enum `Location`
+
+`src/ports/runtime.rs`
+
+```rust
+pub enum Location {
+    Header(HeaderPlacement),
+    Path(Vec<String>),
+    Frame(String),
+}
+```
+
+Where transport alone writes a credential value.
+
+- `Header` — One header populated with a prefix and the secret.
+- `Path` — Insert immediately after the matching request-path prefix.
+- `Frame` — Replace null at this JSON pointer in an outbound socket frame.
+
+Implements:
+
+```rust
+impl Clone for Location
+impl Serialize for Location
 ```
 
 ## enum `Need`
@@ -2398,21 +2537,21 @@ impl Debug for OfferedMemories
 impl Default for OfferedMemories
 ```
 
-## enum `Placement`
+## struct `Placement`
 
 `src/ports/runtime.rs`
 
 ```rust
-pub enum Placement {
-    Header(HeaderPlacement),
-    Path(Vec<String>),
+pub struct Placement {
+    pub origin: Option<String>,
+    pub location: Location,
 }
 ```
 
-Where transport alone writes a credential value.
+One credential recipient and the location populated for that recipient.
 
-- `Header` — One header populated with a prefix and the secret.
-- `Path` — Insert immediately after the matching request-path prefix.
+- `origin` — Fixed origin, with optional subdomain wildcard, or the service selected by the caller.
+- `location` — Request or frame position written by the transport.
 
 Implements:
 
@@ -4162,13 +4301,13 @@ fn identity(&self) -> ChannelIdentity
 
 The stable account reached by this connection.
 
-### `ChannelAdapter::poll`
+### `ChannelAdapter::receive`
 
 ```rust
-async fn poll(&self, protocol: Option<Value>) -> Result<Vec<ChannelUpdate>, ChannelCallError>
+async fn receive(&self, protocol: Option<Value>, readings: mpsc::UnboundedSender<ChannelReading>, stop: CancellationToken) -> Result<(), ChannelCallError>
 ```
 
-Read updates from committed protocol state; cancellation has no external effects.
+Receive arrivals without waiting for preparation; drain receipt acknowledgments on stop.
 
 ### `ChannelAdapter::fetch`
 
@@ -4202,13 +4341,21 @@ async fn commands(&self, commands: &[ChannelCommand]) -> Result<(), ChannelCallE
 
 Offer the host's commands in the protocol's menus.
 
-### `ChannelAdapter::typing`
+### `ChannelAdapter::respond`
 
 ```rust
-async fn typing(&self, target: &str) -> Result<(), ChannelCallError>
+async fn respond(&self, handle: &str, text: Option<&str>) -> Result<(), ChannelCallError>
 ```
 
-Show activity when the protocol supports it.
+Answer an accepted message after its receipt acknowledgment completes.
+
+### `ChannelAdapter::activity`
+
+```rust
+async fn activity(&self, target: &str, shown: Option<&str>, activity: Option<&ChannelActivity>) -> Result<Option<ChannelSent>, ChannelCallError>
+```
+
+Create, refresh or remove an activity view; creation returns its recorded response, if any.
 
 ## trait `Clock`
 

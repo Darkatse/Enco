@@ -570,13 +570,10 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
                 {"update_id": 10, "message": {"message_id": 6, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}}}
             ]
         }))).mount(&server).await;
-    let updates = telegram.poll(None).await.unwrap();
-    assert!(
-        matches!(&updates[0].input.as_ref().unwrap().action, Action::SelectSession(name) if name == "work")
-    );
-    assert!(!updates[1].input.as_ref().unwrap().direct);
-    assert!(updates[2].input.is_none());
-    assert_eq!(updates[2].protocol["offset"], 11);
+    let updates = channel::messages(telegram.clone()).await;
+    assert!(matches!(&updates[0].input.action, Action::SelectSession(name) if name == "work"));
+    assert!(!updates[1].input.direct);
+    assert_eq!(updates.len(), 2);
     let text = format!("{}\n{}", "🌱".repeat(32767), "汉字".repeat(18000));
     let parts = telegram.split(telegram_text(&text)).await.unwrap();
     assert!(parts.iter().all(|s| s.text.chars().count() <= 32768));
@@ -673,15 +670,12 @@ async fn telegram_backtrack_names_the_message_it_replies_to() {
                 {"update_id": 2, "message": {"message_id": 8, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}, "text": "/backtrack"}}
             ]
         }))).mount(&server).await;
-    let updates = telegram.poll(None).await.unwrap();
-    let replying = updates[0].input.as_ref().unwrap();
+    let updates = channel::messages(telegram.clone()).await;
+    let replying = &updates[0].input;
     assert_eq!(replying.message, "7");
     assert!(matches!(&replying.action, Action::Backtrack));
     assert_eq!(replying.reply_to.as_deref(), Some("3"));
-    assert!(matches!(
-        updates[1].input.as_ref().unwrap().action,
-        Action::Backtrack
-    ));
+    assert!(matches!(updates[1].input.action, Action::Backtrack));
 }
 
 #[tokio::test]

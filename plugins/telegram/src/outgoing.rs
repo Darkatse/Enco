@@ -7,6 +7,7 @@ use crate::{
     },
     wire::request,
 };
+use enco_sdk::channel::{FormPart, multipart};
 use serde_json::json;
 use std::path::Path;
 
@@ -89,55 +90,33 @@ pub(super) fn send(conversation: String, message: Outgoing) -> Request {
     } else {
         format!("{}\n\n{link}", message.text)
     };
-    let rich_message = json!({"markdown": markdown, "media": [{"id": "file", "media": {"type": kind, "media": "attach://file"}}]}).to_string();
-    let mut boundary = "enco-telegram".to_owned();
-    while [
-        &file.data[..],
-        conversation.as_bytes(),
-        rich_message.as_bytes(),
-        file.name.as_bytes(),
-    ]
-    .into_iter()
-    .any(|value| {
-        value
-            .windows(boundary.len())
-            .any(|window| window == boundary.as_bytes())
-    }) {
-        boundary.push('_');
-    }
-    let mut body = Vec::new();
-    field(&mut body, &boundary, "chat_id", conversation.as_bytes());
-    field(
-        &mut body,
-        &boundary,
-        "rich_message",
-        rich_message.as_bytes(),
-    );
-    let name = file
-        .name
-        .replace('\r', "%0D")
-        .replace('\n', "%0A")
-        .replace('"', "%22");
-    body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n").as_bytes());
-    body.extend_from_slice(&file.data);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let media = json!({"id": "file", "media": {"type": kind, "media": "attach://file"}});
+    let rich_message = json!({"markdown": markdown, "media": [media]}).to_string();
+    let (content_type, body) = multipart(&[
+        FormPart {
+            name: "chat_id",
+            filename: None,
+            content_type: None,
+            data: conversation.as_bytes(),
+        },
+        FormPart {
+            name: "rich_message",
+            filename: None,
+            content_type: None,
+            data: rich_message.as_bytes(),
+        },
+        FormPart {
+            name: "file",
+            filename: Some(&file.name),
+            content_type: Some("application/octet-stream"),
+            data: &file.data,
+        },
+    ]);
     Request {
         method: "POST".into(),
-        path: "/bot/sendRichMessage".into(),
-        headers: vec![(
-            "content-type".into(),
-            format!("multipart/form-data; boundary={boundary}"),
-        )],
+        url: "/bot/sendRichMessage".into(),
+        headers: vec![("content-type".into(), content_type)],
         body: Some(body),
         timeout_ms: Some(UPLOAD_TIMEOUT_MS),
     }
-}
-
-fn field(body: &mut Vec<u8>, boundary: &str, name: &str, data: &[u8]) {
-    body.extend_from_slice(
-        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n")
-            .as_bytes(),
-    );
-    body.extend_from_slice(data);
-    body.extend_from_slice(b"\r\n");
 }
