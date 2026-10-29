@@ -37,6 +37,7 @@ struct Connection {
     observations: BTreeMap<SessionId, activity::Observation>,
     activities: JoinSet<activity::Completed>,
     activity_busy: BTreeSet<RunId>,
+    presence_busy: BTreeSet<RunId>,
 }
 
 /// What the connection says back about an accepted message.
@@ -106,6 +107,7 @@ pub(super) async fn run(
         observations: BTreeMap::new(),
         activities: JoinSet::new(),
         activity_busy: BTreeSet::new(),
+        presence_busy: BTreeSet::new(),
     };
     // Run cleanup even if recovery, subscription or acceptance fails.
     let result = connection.serve(wakes).await;

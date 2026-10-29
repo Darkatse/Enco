@@ -162,12 +162,17 @@ impl channel::Guest for Plugin {
         Ok(None)
     }
 
+    // QQ cannot edit a sent message, so a Run has no view to keep current.
     fn activity(
-        conversation: String,
+        _conversation: String,
         _shown: Option<String>,
-        activity: Option<ActivityView>,
+        _activity: Option<ActivityView>,
     ) -> Option<Request> {
-        activity?;
+        None
+    }
+
+    // Only private chats have an input status.
+    fn presence(conversation: String) -> Option<Request> {
         let wire::Conversation::Private(user) = wire::Conversation::parse(&conversation).ok()?
         else {
             return None;

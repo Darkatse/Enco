@@ -375,6 +375,21 @@ impl ChannelAdapter for Connection {
         self.transport.notice(request).await?;
         Ok(None)
     }
+
+    async fn presence(&self, target: &str) -> Result<(), ChannelCallError> {
+        let request = self
+            .transport
+            .mapper
+            .call(async |guest, store| guest.call_presence(store, target).await)
+            .await
+            .map_err(|failure| convert::failure(failure, false, None))?;
+        if let Some(request) = request {
+            self.transport
+                .answered(self.transport.http(request).await?)
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 impl Transport {

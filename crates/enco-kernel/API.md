@@ -4442,6 +4442,14 @@ async fn activity(&self, target: &str, shown: Option<&str>, activity: Option<&Ch
 
 Create, refresh or remove an activity view; creation returns its recorded response, if any.
 
+### `ChannelAdapter::presence`
+
+```rust
+async fn presence(&self, target: &str) -> Result<(), ChannelCallError>
+```
+
+Show in `target` that the Agent is working, when the protocol can; nothing is kept.
+
 ## trait `Clock`
 
 `src/ports/clock.rs`

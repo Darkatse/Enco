@@ -17,8 +17,9 @@ message text does not invoke a command. Commands and Cancel buttons are deferred
 privately on receipt; their result follows acceptance and authorization by the host.
 
 Responses use Components V2, with Markdown tables shown in code blocks and image
-or file attachments exposed through components. A Working card shows the latest
-five tool names and their outcomes, with a Cancel button.
+or file attachments exposed through components. While a Run works, the channel
+shows the bot typing, and a Working card shows the latest five tool names and
+their outcomes, with a Cancel button.
 
 Gateway sessions resume across brief disconnects and restarts. Discord cannot
 replay messages once a session has expired; send those messages again. The mapper

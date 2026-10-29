@@ -127,22 +127,7 @@ async fn send_outputs(
             .message
             .is_none()
     );
-    assert!(
-        adapter
-            .activity(
-                "private:9",
-                None,
-                Some(&enco_kernel::ChannelActivity {
-                    elapsed_seconds: 0,
-                    tools: vec![]
-                })
-            )
-            .await
-            .unwrap()
-            .unwrap()
-            .message
-            .is_none()
-    );
+    adapter.presence("private:9").await.unwrap();
     for route in [
         "/send_private_msg",
         "/upload_private_file",

@@ -100,6 +100,7 @@ async fn request(stream: TcpStream, requests: mpsc::UnboundedSender<Request>) {
     } else if path.ends_with("/sendMessage") {
         Some(serde_json::json!({"ok": true, "result": {"message_id": 900}}))
     } else if path.ends_with("/setMyCommands")
+        || path.ends_with("/sendChatAction")
         || path.ends_with("/editMessageText")
         || path.ends_with("/deleteMessage")
     {

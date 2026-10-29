@@ -355,17 +355,16 @@ fn uploaded_files_and_typing_settle_without_a_message_id() -> Result<(), String>
         assert!(malformed.unknown && !malformed.failure.retryable);
         assert!(malformed.failure.message.contains("data.message_id"));
     }
+    let request = Plugin::presence("private:10002".into()).ok_or("typing")?;
+    assert_eq!(request.url, "/set_input_status");
+    let body: Value =
+        serde_json::from_slice(&request.body.ok_or("body")?).map_err(|e| e.to_string())?;
+    assert_eq!(body, json!({"user_id": 10002, "event_type": 1}));
+    assert!(Plugin::presence("group:20001".into()).is_none());
     let activity = ActivityView {
         elapsed_seconds: 0,
         tools: vec![],
     };
-    let request =
-        Plugin::activity("private:10002".into(), None, Some(activity.clone())).ok_or("typing")?;
-    assert_eq!(request.url, "/set_input_status");
-    let body: Value =
-        serde_json::from_slice(&request.body.ok_or("body")?).map_err(|e| e.to_string())?;
-    assert_eq!(body["event_type"], 1);
-    assert!(Plugin::activity("group:20001".into(), None, Some(activity)).is_none());
-    assert!(Plugin::activity("private:10002".into(), None, None).is_none());
+    assert!(Plugin::activity("private:10002".into(), None, Some(activity)).is_none());
     Ok(())
 }

@@ -76,4 +76,5 @@ impl channel::Guest for Fixture {
     fn respond(_handle: String, _text: Option<String>) -> Result<Option<channel::Request>, channel::Fault> { Ok(None) }
     fn commands(_identity: channel::Identity, _commands: Vec<channel::Command>) -> Vec<channel::Request> { Vec::new() }
     fn activity(_conversation: String, _shown: Option<String>, _activity: Option<enco_sdk::channel::ActivityView>) -> Option<channel::Request> { None }
+    fn presence(_conversation: String) -> Option<channel::Request> { None }
 }

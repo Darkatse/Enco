@@ -73,6 +73,7 @@ struct ControlledChannel {
     menu_scopes: Mutex<Vec<(bool, bool)>>,
     activity_enabled: AtomicBool,
     activities: mpsc::UnboundedSender<Activity>,
+    presences: mpsc::UnboundedSender<String>,
     answers: Mutex<Vec<(String, Option<String>)>>,
     answer_notify: tokio::sync::Notify,
     acknowledgment: Mutex<Option<oneshot::Receiver<()>>>,
@@ -271,6 +272,11 @@ impl Adapter for ControlledChannel {
             })
             .map_err(Into::into)
     }
+    async fn presence(&self, target: &str) -> Result<(), ChannelCallError> {
+        // Tests that do not watch presence drop its receiver.
+        let _ = self.presences.send(target.into());
+        Ok(())
+    }
 }
 
 /// A node with a controlled adapter: the test feeds its updates and observes its polls and sends.
@@ -283,6 +289,7 @@ struct Harness {
     sending: mpsc::UnboundedReceiver<Send>,
     fetching: mpsc::UnboundedReceiver<Fetch>,
     activity: mpsc::UnboundedReceiver<Activity>,
+    presence: mpsc::UnboundedReceiver<String>,
 }
 
 async fn harness(root: &Path, provider: Arc<ScriptedProvider>) -> Harness {
@@ -297,6 +304,7 @@ struct Traffic {
     sending: mpsc::UnboundedReceiver<Send>,
     fetching: mpsc::UnboundedReceiver<Fetch>,
     activity: mpsc::UnboundedReceiver<Activity>,
+    presence: mpsc::UnboundedReceiver<String>,
 }
 fn traffic() -> Traffic {
     let (updates, rx) = mpsc::channel(4);
@@ -304,6 +312,7 @@ fn traffic() -> Traffic {
     let (sends, sending) = mpsc::unbounded_channel();
     let (fetches, fetching) = mpsc::unbounded_channel();
     let (activities, activity) = mpsc::unbounded_channel();
+    let (presences, presence) = mpsc::unbounded_channel();
     let adapter = Arc::new(ControlledChannel {
         updates: Mutex::new(rx),
         polls,
@@ -319,6 +328,7 @@ fn traffic() -> Traffic {
         menu_scopes: Mutex::new(Vec::new()),
         activity_enabled: AtomicBool::new(false),
         activities,
+        presences,
         answers: Mutex::new(Vec::new()),
         answer_notify: tokio::sync::Notify::new(),
         acknowledgment: Mutex::new(None),
@@ -332,6 +342,7 @@ fn traffic() -> Traffic {
         sending,
         fetching,
         activity,
+        presence,
     }
 }
 
@@ -343,6 +354,7 @@ fn controlled(kernel: Kernel, store: Arc<SqliteStore>) -> Harness {
         sending,
         fetching,
         activity,
+        presence,
     } = traffic();
     Harness {
         kernel: Arc::new(kernel),
@@ -353,6 +365,7 @@ fn controlled(kernel: Kernel, store: Arc<SqliteStore>) -> Harness {
         sending,
         fetching,
         activity,
+        presence,
     }
 }
 

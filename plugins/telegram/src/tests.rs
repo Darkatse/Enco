@@ -215,7 +215,7 @@ fn split_preserves_unicode_and_upload_keeps_file_bytes_outside_json() -> Result<
 }
 
 #[test]
-fn menus_use_chat_scopes_and_activity_has_cancel() -> Result<(), String> {
+fn menus_use_chat_scopes_and_runs_show_typing_and_a_card_with_cancel() -> Result<(), String> {
     let requests = Plugin::commands(
         identity()?,
         vec![
@@ -260,6 +260,11 @@ fn menus_use_chat_scopes_and_activity_has_cancel() -> Result<(), String> {
         body["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
         "cancel"
     );
+    let typing = Plugin::presence("-100".into()).ok_or("missing presence request")?;
+    assert_eq!(typing.url, "/bot/sendChatAction");
+    let body: Value = serde_json::from_slice(&typing.body.ok_or("missing typing body")?)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(body, json!({"chat_id": "-100", "action": "typing"}));
     Ok(())
 }
 

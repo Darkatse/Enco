@@ -322,4 +322,6 @@ pub trait ChannelAdapter: Send + Sync {
         shown: Option<&str>,
         activity: Option<&ChannelActivity>,
     ) -> Result<Option<ChannelSent>, ChannelCallError>;
+    /// Show in `target` that the Agent is working, when the protocol can; nothing is kept.
+    async fn presence(&self, target: &str) -> Result<(), ChannelCallError>;
 }

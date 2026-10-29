@@ -1952,10 +1952,23 @@ starts.
 fn activity(conversation: String, shown: ::core::option::Option<String>, activity: ::core::option::Option<ActivityView>) -> ::core::option::Option<Request>
 ```
 
-Creates or refreshes the activity view, or removes `shown` when `activity` is absent; absent when nothing needs sending.
+Creates or refreshes the activity view, or removes `shown` when `activity` is absent;
+absent when nothing needs sending.
 
 The host reads the response to a request made without `shown` with `answered`, and keeps
-the message ID it gives as `shown`. Without an ID, it asks again at each refresh.
+the message ID it gives as `shown`; without one, the Run shows no view.
+
+### `bindings::exports::enco::plugin::channel::Guest::presence`
+
+```rust
+fn presence(conversation: String) -> ::core::option::Option<Request>
+```
+
+A passing sign in `conversation` that the Agent is working, such as typing; absent when
+the protocol has none.
+
+The host sends it when a Run starts and at each refresh until the Run ends, keeps nothing
+of it, and reads its response with `answered`.
 
 ## type `bindings::exports::enco::plugin::channel::Failure`
 

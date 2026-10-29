@@ -163,6 +163,14 @@ impl channel::Guest for Plugin {
     ) -> Option<Request> {
         outgoing::activity(conversation, shown, activity)
     }
+
+    fn presence(conversation: String) -> Option<Request> {
+        Some(wire::request(
+            "POST",
+            format!("/channels/{}/typing", wire::path(&conversation)),
+            None,
+        ))
+    }
 }
 
 #[cfg(test)]

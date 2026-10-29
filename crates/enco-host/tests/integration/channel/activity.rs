@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn progress_tracks_tools_during_delivery_and_is_deleted_after_the_reply() {
+async fn progress_tracks_tools_and_shows_presence_until_the_reply_deletes_the_card() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![
         calls(vec![
@@ -17,6 +17,7 @@ async fn progress_tracks_tools_during_delivery_and_is_deleted_after_the_reply() 
         mut polling,
         mut sending,
         mut activity,
+        mut presence,
         ..
     } = harness(dir.path(), provider).await;
     adapter.activity_enabled.store(true, Ordering::SeqCst);
@@ -40,6 +41,8 @@ async fn progress_tracks_tools_during_delivery_and_is_deleted_after_the_reply() 
     let created = receive(&mut activity).await;
     assert_eq!(created.target, "chat");
     assert!(created.shown.is_none());
+    // Presence starts with the Run, beside the card's creation.
+    assert_eq!(receive(&mut presence).await, "chat");
     created.result.send(Ok(Some("card".into()))).unwrap();
     let progress = receive(&mut sending).await;
     assert_eq!(progress.text, "working");
@@ -47,6 +50,7 @@ async fn progress_tracks_tools_during_delivery_and_is_deleted_after_the_reply() 
     tokio::time::advance(Duration::from_secs(4)).await;
     let refreshed = receive(&mut activity).await;
     assert_eq!(refreshed.shown.as_deref(), Some("card"));
+    assert_eq!(receive(&mut presence).await, "chat");
     assert!(
         refreshed
             .view
@@ -75,6 +79,8 @@ async fn progress_tracks_tools_during_delivery_and_is_deleted_after_the_reply() 
     assert!(deleted.view.is_none());
     deleted.result.send(Ok(None)).unwrap();
     replacement.shutdown().await.unwrap();
+    // The Run had ended before the replacement started, so it shows no presence.
+    assert!(presence.try_recv().is_err());
     kernel.shutdown().await.unwrap();
 }
 

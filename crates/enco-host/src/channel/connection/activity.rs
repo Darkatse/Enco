@@ -1,4 +1,5 @@
-//! Progress views follow their own Log cursor while the connection owns creation and cleanup.
+//! Progress views and presence follow their own Log cursor; the connection owns each card's
+//! creation and cleanup, while presence keeps nothing.
 use super::*;
 use enco_kernel::{ChannelActivity, ChannelSent, ChannelToolActivity, ChannelToolState};
 
@@ -27,16 +28,18 @@ pub(in crate::channel) struct Card {
 enum Creation {
     /// The protocol's message for the card, refreshed and finally deleted.
     Shown(String),
-    /// Shown without a message to keep, such as a typing indicator; sent again on each refresh.
-    Repeated,
-    /// Failed, uncertain or unsupported; never attempted again for this Run.
+    /// Failed, uncertain, unsupported or without a message; never attempted again for this Run.
     Abandoned,
 }
 #[derive(Clone, Copy)]
 pub(super) enum Operation {
-    Create { session: SessionId },
+    Create {
+        session: SessionId,
+    },
     Refresh,
     Delete,
+    /// A passing sign that the Run goes on; nothing of it is kept.
+    Presence,
 }
 pub(super) struct Completed {
     run: RunId,
@@ -110,6 +113,7 @@ impl Connection {
     /// Create cards for new Runs, refresh shown ones on a tick, and remove those whose Run ended
     /// and whose replies have been delivered.
     pub(super) async fn refresh_activity(&mut self, refresh: bool) -> Result<(), ChannelError> {
+        self.send_presence(refresh);
         let mut requests = Vec::new();
         for (session, observation) in &self.observations {
             let Some(run) = &observation.run else {
@@ -128,11 +132,6 @@ impl Connection {
                     creation: Creation::Shown(shown),
                     ..
                 }) if refresh => (Operation::Refresh, target, Some(shown.clone())),
-                Some(Card {
-                    target,
-                    creation: Creation::Repeated,
-                    ..
-                }) if refresh => (Operation::Refresh, target, None),
                 Some(_) => continue,
             };
             let view = ChannelActivity {
@@ -162,7 +161,7 @@ impl Connection {
                     Some(shown.clone()),
                     None,
                 )),
-                Creation::Repeated | Creation::Abandoned => finished.push((*run, card.session)),
+                Creation::Abandoned => finished.push((*run, card.session)),
             }
         }
         if !finished.is_empty() {
@@ -195,6 +194,43 @@ impl Connection {
         Ok(())
     }
 
+    /// Show each Run in progress as it starts and on every tick, one request at a time per Run.
+    fn send_presence(&mut self, refresh: bool) {
+        let mut targets = Vec::new();
+        for observation in self.observations.values() {
+            let Some(run) = &observation.run else {
+                continue;
+            };
+            let card = self.state.activity.get(&run.id);
+            let starting = card.is_none() && !self.activity_busy.contains(&run.id);
+            if run.ended || !(refresh || starting) || self.presence_busy.contains(&run.id) {
+                continue;
+            }
+            if let Some(target) = card
+                .map(|card| &card.target)
+                .or(observation.target.as_ref())
+            {
+                targets.push((run.id, target.clone()));
+            }
+        }
+        for (run, target) in targets {
+            self.presence_busy.insert(run);
+            let adapter = self.adapter.clone();
+            let kernel = self.kernel.clone();
+            let generation = self.generation;
+            self.activities.spawn(async move {
+                Completed {
+                    run,
+                    operation: Operation::Presence,
+                    target: target.clone(),
+                    result: health::call(&kernel, generation, adapter.presence(&target))
+                        .await
+                        .map(|()| None),
+                }
+            });
+        }
+    }
+
     pub(super) async fn activity_completed(
         &mut self,
         completed: Completed,
@@ -205,7 +241,12 @@ impl Connection {
             target,
             result,
         } = completed;
-        self.activity_busy.remove(&run);
+        match operation {
+            Operation::Presence => self.presence_busy.remove(&run),
+            Operation::Create { .. } | Operation::Refresh | Operation::Delete => {
+                self.activity_busy.remove(&run)
+            }
+        };
         let result = match result {
             Err(error @ ChannelError::Protocol(ChannelCallError::Protocol(_))) => {
                 tracing::warn!(%error, "channel activity request failed");
@@ -221,8 +262,7 @@ impl Connection {
                         message: Some(shown),
                         ..
                     })) => Creation::Shown(shown),
-                    Some(Some(_)) => Creation::Repeated,
-                    Some(None) | None => Creation::Abandoned,
+                    Some(_) | None => Creation::Abandoned,
                 };
                 let mut state = self.state.clone();
                 state.activity.insert(
@@ -242,7 +282,7 @@ impl Connection {
                 }
                 self.commit(state, None).await
             }
-            Operation::Refresh => Ok(()),
+            Operation::Refresh | Operation::Presence => Ok(()),
         }
     }
 

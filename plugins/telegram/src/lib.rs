@@ -199,6 +199,14 @@ impl channel::Guest for Plugin {
             (None, None) => None,
         }
     }
+
+    fn presence(conversation: String) -> Option<Request> {
+        Some(request(
+            "sendChatAction",
+            json!({"chat_id": conversation, "action": "typing"}),
+            SEND_TIMEOUT_MS,
+        ))
+    }
 }
 
 fn fetch_step(locator: &str, responses: Vec<Response>) -> Result<FetchStep, Fault> {

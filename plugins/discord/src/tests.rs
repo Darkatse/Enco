@@ -369,7 +369,7 @@ fn split_preserves_markdown_and_budgets_the_rendered_components() -> Result<(), 
 }
 
 #[test]
-fn activity_card_is_created_edited_and_deleted_with_a_cancel_button() -> Result<(), String> {
+fn runs_show_typing_and_a_card_created_edited_and_deleted_with_cancel() -> Result<(), String> {
     let activity = ActivityView {
         elapsed_seconds: 125,
         tools: (2..7)
@@ -401,6 +401,11 @@ fn activity_card_is_created_edited_and_deleted_with_a_cancel_button() -> Result<
     let deleted = Plugin::activity("thread".into(), Some("card".into()), None).ok_or("delete")?;
     assert_eq!(deleted.method, "DELETE");
     assert_eq!(deleted.url, "/channels/thread/messages/card");
+    let typing = Plugin::presence("thread".into()).ok_or("typing")?;
+    assert_eq!(
+        (typing.method.as_str(), typing.url.as_str()),
+        ("POST", "/channels/thread/typing")
+    );
     Ok(())
 }
 
