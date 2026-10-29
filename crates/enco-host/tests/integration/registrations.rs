@@ -75,7 +75,7 @@ async fn default_factory_follow_activates_existing_host_code_and_rollback_surviv
     let followed = registry.history(None, 1).await.unwrap().remove(0);
     assert_eq!(followed.initiator, Initiator::Host);
     assert_eq!(activation.registration, Some(followed.id));
-    assert!(followed.changes.iter().any(|change| matches!(change, UnitChange::Plugin { name, change: PluginChangeKind::Factory { generation } } if name.as_ref() == "fixture" && generation.id == active.id)));
+    assert!(followed.changes.iter().any(|change| matches!(change, UnitChange::Plugin { name, change: PluginChangeKind::Factory { generation } } if name.as_ref() == "fixture" && generation.record.id == active.id)));
     assert_eq!(registry.rollback().await.unwrap().registration, followed.id);
     assert_eq!(
         running_generation(&registry.status().await.unwrap().plugins[0])

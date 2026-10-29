@@ -36,18 +36,28 @@ pub enum PluginChangeKind {
     /// Source selected new code.
     Code {
         /// Selected generation and its current outcome.
-        generation: Box<GenerationRecord>,
+        generation: Box<SelectedGeneration>,
     },
     /// The host's factory code was selected.
     Factory {
         /// Selected generation and its current outcome.
-        generation: Box<GenerationRecord>,
+        generation: Box<SelectedGeneration>,
     },
     /// New settings selected a generation using existing code.
     Settings {
         /// Selected generation and its current outcome.
-        generation: Box<GenerationRecord>,
+        generation: Box<SelectedGeneration>,
     },
+}
+
+/// A generation a registration selected, as it stands now.
+#[derive(Clone, serde::Serialize)]
+pub struct SelectedGeneration {
+    /// The generation and its recorded outcome.
+    #[serde(flatten)]
+    pub record: GenerationRecord,
+    /// Whether its plugin still runs it; a trial generation that does not was never promoted.
+    pub active: bool,
 }
 
 impl UnitChange {
@@ -62,7 +72,7 @@ impl UnitChange {
 
 impl PluginChangeKind {
     /// Generation selected by this change, including a reused factory generation.
-    pub fn generation(&self) -> Option<&GenerationRecord> {
+    pub fn generation(&self) -> Option<&SelectedGeneration> {
         match self {
             Self::Code { generation }
             | Self::Factory { generation }
@@ -269,6 +279,8 @@ impl State {
                 .find(|(_, existing)| **existing == id)
                 .map(|(name, _)| name.clone())
         };
+        // A candidate is not in the history yet, and everything it selects becomes active.
+        let candidate = !self.history.registrations.contains_key(&record.id);
         let mut changes = Vec::new();
         for (id, row) in &record.names {
             match (&row.name, name_before(*id)) {
@@ -311,8 +323,15 @@ impl State {
                 .or_else(|| self.history.generations.get(&code.generation))
                 .ok_or(RegistryError::UnknownGeneration(code.generation))?
                 .clone();
-            let generation = Box::new(generation);
-            let change = match (code.intent, generation.origin) {
+            let active = candidate
+                || self.history.plugins[id]
+                    .active
+                    .is_some_and(|active| active.generation == generation.id);
+            let generation = Box::new(SelectedGeneration {
+                record: generation,
+                active,
+            });
+            let change = match (code.intent, generation.record.origin) {
                 (Some(CodeIntent::Directory { .. }), _) => PluginChangeKind::Code { generation },
                 (Some(CodeIntent::Factory), _) => PluginChangeKind::Factory { generation },
                 (None, Origin::Settings { .. }) => PluginChangeKind::Settings { generation },

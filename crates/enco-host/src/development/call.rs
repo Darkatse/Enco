@@ -8,7 +8,7 @@ use enco_core::{
     Effect, Failure, InputSchema, REASON_PLACEHOLDER, Reason, SchemaError, ToolSpec,
     parse_arguments,
 };
-use enco_kernel::RECENT_REGISTRATIONS;
+use enco_kernel::{RECENT_REGISTRATIONS, TRIAL_CALLS};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -130,7 +130,7 @@ impl DevelopmentTool {
             Self::Apply => ToolSpec::of::<ApplyArguments>(
                 name,
                 format!(
-                    r#"Register all changes in the home as one registration. Changed plugin sources are built, and config.toml is validated together with them. If nothing changed, nothing is registered. New plugin code starts on trial and becomes healthy once its probe and first calls succeed; if it fails on trial, Enco runs the previous code again and the registered source stays as it is. Registering config.toml replaces the whole registered document. Sources built with an earlier SDK are rebuilt. The result lists the registration, the builds with up to {BUILD_DIAGNOSTICS} compiler diagnostics and the full log path, and the checks that ran. If another change was registered first, nothing is registered; read {STATUS} and call again."#
+                    r#"Register all changes in the home as one registration. Changed plugin sources are built, and config.toml is validated together with them. If nothing changed, nothing is registered. New plugin code starts on trial and becomes healthy after its probe and {TRIAL_CALLS} successful calls while it runs; if it fails on trial, Enco runs the previous code again and the registered source stays as it is. Registering config.toml replaces the whole registered document. Sources built with an earlier SDK are rebuilt. The result lists the registration, the builds with up to {BUILD_DIAGNOSTICS} compiler diagnostics and the full log path, and the checks that ran. If another change was registered first, nothing is registered; read {STATUS} and call again."#
                 ),
                 Effect::SideEffect,
             ),

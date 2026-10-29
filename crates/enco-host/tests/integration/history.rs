@@ -368,6 +368,43 @@ async fn history_reports_missing_content_locally_and_rewind_preflights_before_wr
 }
 
 #[tokio::test]
+async fn a_generation_replaced_during_its_trial_stays_unpromoted_and_inactive() {
+    let root = tempfile::tempdir().unwrap();
+    let (development, registry, store) = home(root.path()).await;
+    let selected = |changes: &[UnitChange]| match changes {
+        [
+            ..,
+            UnitChange::Plugin {
+                change: PluginChangeKind::Code { generation },
+                ..
+            },
+        ] => (generation.record.status, generation.active),
+        _ => panic!("the registration selected no code"),
+    };
+    let first = source_fixture(
+        root.path(),
+        &store,
+        &development,
+        &registry,
+        "alpha",
+        b"one",
+    )
+    .await;
+    assert_eq!(selected(&first.changes), (GenerationStatus::Trial, true));
+    source_fixture(
+        root.path(),
+        &store,
+        &development,
+        &registry,
+        "alpha",
+        b"two",
+    )
+    .await;
+    let earlier = registry.registration(first.registration.id).await.unwrap();
+    assert_eq!(selected(&earlier.changes), (GenerationStatus::Trial, false));
+}
+
+#[tokio::test]
 async fn history_pages_provenance_and_status_bounds_are_independent_of_history_length() {
     let root = tempfile::tempdir().unwrap();
     let (development, registry, store) = home(root.path()).await;

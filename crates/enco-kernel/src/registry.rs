@@ -9,7 +9,7 @@ mod exports;
 mod factory;
 mod health;
 mod history;
-pub use history::{PluginChangeKind, RegistrationDetails, UnitChange};
+pub use history::{PluginChangeKind, RegistrationDetails, SelectedGeneration, UnitChange};
 mod intent;
 mod probe;
 mod registration;

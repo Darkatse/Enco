@@ -4,8 +4,8 @@ use crate::{
     development::{Applied, HistoryPoint, HistoryQuery, Rewound},
     status::{CallStep, Steps},
 };
-use enco_core::IntentPath;
-use enco_kernel::{PluginChangeKind, Registered, UnitChange};
+use enco_core::{GenerationStatus, IntentPath};
+use enco_kernel::{PluginChangeKind, Registered, TRIAL_CALLS, UnitChange};
 use std::collections::BTreeMap;
 
 /// A registration as the Markdown document a tool result shows.
@@ -91,16 +91,16 @@ impl Applied {
                     UnitChange::Plugin { change, .. } => change.generation(),
                     UnitChange::Configuration { .. } => None,
                 })
-                .filter(|generation| generation.status == enco_core::GenerationStatus::Trial)
-                .map(|generation| generation.id.to_string())
+                .filter(|generation| generation.record.status == GenerationStatus::Trial)
+                .map(|generation| generation.record.id.to_string())
                 .collect();
             match trials.as_slice() {
                 [] => {}
                 [one] => out.push_str(&format!(
-                    "\nNew code starts on trial: generation {one} becomes healthy once the required probe and first calls succeed.\n"
+                    "\nNew code starts on trial: generation {one} becomes healthy after {TRIAL_CALLS} successful calls while it runs.\n"
                 )),
                 many => out.push_str(&format!(
-                    "\nNew code starts on trial: generations {} become healthy once the required probe and first calls succeed.\n",
+                    "\nNew code starts on trial: generations {} each become healthy after {TRIAL_CALLS} successful calls while they run.\n",
                     many.join(", ")
                 )),
             }
@@ -223,12 +223,12 @@ fn plugin_change(change: &PluginChangeKind, created: bool, failures: bool) -> St
         PluginChangeKind::Settings { .. } => "new settings".into(),
     };
     if let Some(generation) = change.generation() {
-        detail.push_str(&format!(
-            " → generation {} · {}",
-            generation.id,
-            generation_state(generation.status)
-        ));
-        if failures && let Some(failure) = &generation.failure {
+        let state = match generation.record.status {
+            GenerationStatus::Trial if !generation.active => "retired during trial",
+            status => generation_state(status),
+        };
+        detail.push_str(&format!(" → generation {} · {state}", generation.record.id));
+        if failures && let Some(failure) = &generation.record.failure {
             detail.push_str(&format!(": {}", failure.message));
         }
     }

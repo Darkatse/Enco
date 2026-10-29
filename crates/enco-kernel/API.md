@@ -118,6 +118,7 @@ Session execution through explicit ports.
 - struct `Scheduled` — An active schedule with its derived next occurrence, for tools and administration.
 - struct `Schedules` — Commands to the sole owner of durable schedules.
 - enum `ScopeError` — A requested rewind that the scope cannot address.
+- struct `SelectedGeneration` — A generation a registration selected, as it stands now.
 - struct `SessionStatus` — Live execution status, separate from durable Session facts.
 - struct `SettingsError` — A configuration error attributed to the table that owns it.
 - enum `Standing` — How the running layer of one plugin stands against its registered layer.
@@ -2685,13 +2686,13 @@ pub enum PluginChangeKind {
     },
     Removed,
     Code {
-        generation: Box<GenerationRecord>,
+        generation: Box<SelectedGeneration>,
     },
     Factory {
-        generation: Box<GenerationRecord>,
+        generation: Box<SelectedGeneration>,
     },
     Settings {
-        generation: Box<GenerationRecord>,
+        generation: Box<SelectedGeneration>,
     },
 }
 ```
@@ -2712,7 +2713,7 @@ Accepted changes to one plugin; each variant carries only its own facts.
 ### `PluginChangeKind::generation`
 
 ```rust
-pub fn generation(&self) -> Option<&GenerationRecord>
+pub fn generation(&self) -> Option<&SelectedGeneration>
 ```
 
 Generation selected by this change, including a reused factory generation.
@@ -3818,6 +3819,29 @@ Implements:
 
 ```rust
 impl Debug for ScopeError
+```
+
+## struct `SelectedGeneration`
+
+`src/registry/history.rs`
+
+```rust
+pub struct SelectedGeneration {
+    pub record: GenerationRecord,
+    pub active: bool,
+}
+```
+
+A generation a registration selected, as it stands now.
+
+- `record` — The generation and its recorded outcome.
+- `active` — Whether its plugin still runs it; a trial generation that does not was never promoted.
+
+Implements:
+
+```rust
+impl Clone for SelectedGeneration
+impl Serialize for SelectedGeneration
 ```
 
 ## struct `SessionStatus`
