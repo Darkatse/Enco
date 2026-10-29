@@ -9,7 +9,7 @@ The host writes this crate to `sdk/` in every home, replacing any edits there; p
 it by path.
 
 - module `bindings` — Types and host functions generated from the WIT.
-- module `channel` — What every channel mapper shares: the activity card's wording and `multipart/form-data` uploads.
+- module `channel` — What every channel mapper shares: commands, the activity card's wording and `multipart/form-data` uploads.
 - module `host` — Host-owned logging and transport available to plugins.
 - module `protocol` — Helpers for plugins that call model services through the host's `http` import, including OpenAI-compatible Chat Completions and embeddings.
 - module `types` — Canonical data exchanged between the host and plugins.
@@ -45,8 +45,8 @@ embedding), `decision`, `tools`, `composer` or `channel`.
 Call it in a crate in `plugins/<name>` that depends on this SDK as `enco_sdk`. It defines a
 `bindings` module beside the call, whose `exports` hold the `Guest` traits to implement; the
 WIT is read from `../../sdk/wit`. The traits take the SDK's own types where it has helpers for
-them, such as `protocol::Request` and `channel::ActivityView`; name those from the SDK, not
-from `bindings`.
+them, such as `protocol::Request`, `channel::Action` and `channel::CommandKind`; name
+those from the SDK, not from `bindings`.
 
 ## fn `input_schema`
 
@@ -116,18 +116,55 @@ Plugins built with `export!` use these same types, so values pass between a plug
 
 `src/channel.rs`
 
-What every channel mapper shares: the activity card's wording and `multipart/form-data` uploads.
+What every channel mapper shares: commands, the activity card's wording and `multipart/form-data` uploads.
 
-Each protocol lays the card out with its own components; the words on it are the same
-everywhere. `export!` gives a channel plugin's `activity` these same types, so
+Each protocol marks commands and lays the card out its own way; the names, meanings and words
+are the same everywhere. `export!` gives a channel plugin these same types, so
 name them from here.
 
+- enum `channel::Action` — What an incoming message asks for, whatever the protocol's command syntax.
 - struct `channel::ActivityView` — What the Agent is doing while a Run goes on.
+- struct `channel::Attachment` — An image attachment described by its protocol locator.
+- enum `channel::CommandKind` — The commands the host understands.
+- struct `channel::Content` — The text and attachments of a message.
 - struct `channel::FormPart` — One part of a `multipart/form-data` body.
 - struct `channel::ToolActivity` — One tool call shown in an activity view.
 - enum `channel::ToolState` — Where a tool call stands.
 - fn `channel::multipart` — Encode `parts` in order as `multipart/form-data`, returning the `content-type` header value and the body.
+- fn `channel::typed_command` — The command typed at the start of `text`, as its name and the rest as its argument; absent when `text` starts otherwise.
 - const `channel::CANCEL_LABEL` — The label of the activity card's button that cancels the Run.
+
+## enum `channel::Action`
+
+`src/lib.rs`
+
+```rust
+pub enum Action {
+    Message(Content),
+    Sessions,
+    SelectSession(String),
+    Cancel,
+    Backtrack,
+    Everyone(::core::option::Option<bool>),
+}
+```
+
+What an incoming message asks for, whatever the protocol's command syntax.
+
+- `Message` — A message for the conversation's Session.
+- `Sessions` — List the Sessions to choose from.
+- `SelectSession` — Route this conversation to the named Session.
+- `Cancel` — Stop the work the conversation's Session is doing.
+- `Backtrack` — Take the conversation back to the message `reply-to` names.
+- `Everyone` — Open this group to everyone or close it to the owner only; absent reports which.
+
+Implements:
+
+```rust
+impl Clone for Action
+impl Debug for Action
+impl PartialEq for Action
+```
 
 ## struct `channel::ActivityView`
 
@@ -164,6 +201,119 @@ Implements:
 impl Clone for ActivityView
 impl Debug for ActivityView
 impl PartialEq for ActivityView
+```
+
+## struct `channel::Attachment`
+
+`src/lib.rs`
+
+```rust
+pub struct Attachment {
+    pub what: String,
+    pub locator: String,
+}
+```
+
+An image attachment described by its protocol locator.
+
+- `what` — What the attachment is, for a message that cannot show it.
+- `locator` — The opaque locator passed to `fetch`.
+
+Implements:
+
+```rust
+impl Clone for Attachment
+impl Debug for Attachment
+impl PartialEq for Attachment
+```
+
+## enum `channel::CommandKind`
+
+`src/lib.rs`
+
+```rust
+pub enum CommandKind {
+    Session,
+    Cancel,
+    Backtrack,
+    Everyone,
+}
+```
+
+The commands the host understands.
+
+- `Session` — List the Sessions, or switch to the one named after it.
+- `Cancel` — Stop the work of the conversation's Session.
+- `Backtrack` — Go back to the message the command replies to.
+- `Everyone` — Open the group to everyone, or close it to the owner only.
+
+### `channel::CommandKind::name`
+
+`src/channel.rs`
+
+```rust
+pub fn name(self) -> &'static str
+```
+
+The shared name, without a leading `/` or a protocol's decoration.
+
+### `channel::CommandKind::from_name`
+
+`src/channel.rs`
+
+```rust
+pub fn from_name(name: &str) -> Option<Self>
+```
+
+The command with this exact, case-sensitive name; unknown names are ordinary text.
+
+### `channel::CommandKind::action`
+
+`src/channel.rs`
+
+```rust
+pub fn action(self, argument: &str) -> Option<Action>
+```
+
+What the command asks for with `argument`, compared without surrounding whitespace;
+unknown arguments are ordinary text.
+
+Implements:
+
+```rust
+impl Clone for CommandKind
+impl Copy for CommandKind
+impl Debug for CommandKind
+impl Eq for CommandKind
+impl Ord for CommandKind
+impl PartialEq for CommandKind
+impl PartialOrd for CommandKind
+```
+
+## struct `channel::Content`
+
+`src/lib.rs`
+
+```rust
+pub struct Content {
+    pub text: String,
+    pub images: Vec<Attachment>,
+    pub unviewable: Vec<Unviewable>,
+}
+```
+
+The text and attachments of a message.
+
+- `text` — What the sender wrote.
+- `images` — Images, by the protocol's locator for fetching them.
+- `unviewable` — Attachments that cannot be images, and why.
+
+Implements:
+
+```rust
+impl Clone for Content
+impl Debug for Content
+impl PartialEq for Content
 ```
 
 ## struct `channel::FormPart`
@@ -255,6 +405,20 @@ Encode `parts` in order as `multipart/form-data`, returning the `content-type` h
 the body.
 
 The boundary occurs in no part's name, file name or bytes.
+
+## fn `channel::typed_command`
+
+`src/channel.rs`
+
+```rust
+pub fn typed_command(text: &str) -> Option<(&str, &str)>
+```
+
+The command typed at the start of `text`, as its name and the rest as its argument; absent
+when `text` starts otherwise.
+
+The name follows a half-width `/` up to the first whitespace and keeps any decoration the
+protocol adds, such as Telegram's `@bot`.
 
 ## const `channel::CANCEL_LABEL`
 
@@ -1203,20 +1367,21 @@ Translates a messaging protocol as a pure state machine; the host owns connectio
 
 The host records each external input before handing it over, and carries out what the mapper asks.
 
-- enum `bindings::exports::enco::plugin::channel::Action` — What an incoming message asks for, whatever the protocol's command syntax.
+- enum `bindings::exports::enco::plugin::channel::Action` — same as `channel::Action`
 - struct `bindings::exports::enco::plugin::channel::ActivityView` — same as `channel::ActivityView`
 - enum `bindings::exports::enco::plugin::channel::Arrival` — Something that reached the mapper through the host.
-- struct `bindings::exports::enco::plugin::channel::Attachment` — An image attachment described by its protocol locator.
+- struct `bindings::exports::enco::plugin::channel::Attachment` — same as `channel::Attachment`
 - struct `bindings::exports::enco::plugin::channel::Closure` — How a socket ended.
 - struct `bindings::exports::enco::plugin::channel::Command` — A command the host understands, as it should appear in the protocol's menus.
-- enum `bindings::exports::enco::plugin::channel::CommandKind` — The commands the host understands.
-- struct `bindings::exports::enco::plugin::channel::Content` — The text and attachments of a message.
+- enum `bindings::exports::enco::plugin::channel::CommandKind` — same as `channel::CommandKind`
+- struct `bindings::exports::enco::plugin::channel::Content` — same as `channel::Content`
 - struct `bindings::exports::enco::plugin::channel::Fault` — What a protocol answer means for the host's settlement and retries.
 - enum `bindings::exports::enco::plugin::channel::FetchStep` — The next step of fetching an attachment.
 - struct `bindings::exports::enco::plugin::channel::FileData` — File bytes for one outgoing message.
 - struct `bindings::exports::enco::plugin::channel::Identity` — The account a connection reaches.
 - struct `bindings::exports::enco::plugin::channel::Inbound` — A message that arrived, as the protocol describes it.
 - struct `bindings::exports::enco::plugin::channel::Outgoing` — Markdown text with at most one file to send.
+- struct `bindings::exports::enco::plugin::channel::PacingGap` — The time the host leaves before each message it sends through one connection.
 - enum `bindings::exports::enco::plugin::channel::ReadStep` — How the host reads the protocol next.
 - struct `bindings::exports::enco::plugin::channel::Reading` — What the mapper asks of the host after one arrival.
 - struct `bindings::exports::enco::plugin::channel::Request` — A request for the host to send.
@@ -1228,38 +1393,6 @@ The host records each external input before handing it over, and carries out wha
 - type `bindings::exports::enco::plugin::channel::Failure` — (no summary)
 - type `bindings::exports::enco::plugin::channel::Json` — (no summary)
 - type `bindings::exports::enco::plugin::channel::Unviewable` — (no summary)
-
-## enum `bindings::exports::enco::plugin::channel::Action`
-
-`src/lib.rs`
-
-```rust
-pub enum Action {
-    Message(Content),
-    Sessions,
-    SelectSession(String),
-    Cancel,
-    Backtrack,
-    Everyone(::core::option::Option<bool>),
-}
-```
-
-What an incoming message asks for, whatever the protocol's command syntax.
-
-- `Message` — A message for the conversation's Session.
-- `Sessions` — List the Sessions to choose from.
-- `SelectSession` — Route this conversation to the named Session.
-- `Cancel` — Stop the work the conversation's Session is doing.
-- `Backtrack` — Take the conversation back to the message `reply-to` names.
-- `Everyone` — Open this group to everyone or close it to the owner only; absent reports which.
-
-Implements:
-
-```rust
-impl Clone for Action
-impl Debug for Action
-impl PartialEq for Action
-```
 
 ## enum `bindings::exports::enco::plugin::channel::Arrival`
 
@@ -1287,30 +1420,6 @@ Implements:
 impl Clone for Arrival
 impl Debug for Arrival
 impl PartialEq for Arrival
-```
-
-## struct `bindings::exports::enco::plugin::channel::Attachment`
-
-`src/lib.rs`
-
-```rust
-pub struct Attachment {
-    pub what: String,
-    pub locator: String,
-}
-```
-
-An image attachment described by its protocol locator.
-
-- `what` — What the attachment is, for a message that cannot show it.
-- `locator` — The opaque locator passed to `fetch`.
-
-Implements:
-
-```rust
-impl Clone for Attachment
-impl Debug for Attachment
-impl PartialEq for Attachment
 ```
 
 ## struct `bindings::exports::enco::plugin::channel::Closure`
@@ -1365,64 +1474,6 @@ impl Debug for Command
 impl PartialEq for Command
 ```
 
-## enum `bindings::exports::enco::plugin::channel::CommandKind`
-
-`src/lib.rs`
-
-```rust
-pub enum CommandKind {
-    Session,
-    Cancel,
-    Backtrack,
-    Everyone,
-}
-```
-
-The commands the host understands.
-
-- `Session` — List the Sessions, or switch to the one named after it.
-- `Cancel` — Stop the work of the conversation's Session.
-- `Backtrack` — Go back to the message the command replies to.
-- `Everyone` — Open the group to everyone, or close it to the owner only.
-
-Implements:
-
-```rust
-impl Clone for CommandKind
-impl Copy for CommandKind
-impl Debug for CommandKind
-impl Eq for CommandKind
-impl Ord for CommandKind
-impl PartialEq for CommandKind
-impl PartialOrd for CommandKind
-```
-
-## struct `bindings::exports::enco::plugin::channel::Content`
-
-`src/lib.rs`
-
-```rust
-pub struct Content {
-    pub text: String,
-    pub images: Vec<Attachment>,
-    pub unviewable: Vec<Unviewable>,
-}
-```
-
-The text and attachments of a message.
-
-- `text` — What the sender wrote.
-- `images` — Images, by the protocol's locator for fetching them.
-- `unviewable` — Attachments that cannot be images, and why.
-
-Implements:
-
-```rust
-impl Clone for Content
-impl Debug for Content
-impl PartialEq for Content
-```
-
 ## struct `bindings::exports::enco::plugin::channel::Fault`
 
 `src/lib.rs`
@@ -1460,6 +1511,7 @@ impl PartialEq for Fault
 ```rust
 pub enum FetchStep {
     Request(Request),
+    Download(String),
     Image(Vec<u8>),
     Unavailable(String),
 }
@@ -1468,6 +1520,12 @@ pub enum FetchStep {
 The next step of fetching an attachment.
 
 - `Request` — Send this request and call again with its response.
+- `Download` — Get this absolute URL taken from the protocol's content and call again with its
+  response.
+
+  The host sends it without credentials and only to one of the mapper's `origins`, so
+  content never chooses a path on the service; an address elsewhere makes the attachment
+  unavailable.
 - `Image` — The attachment's bytes.
 - `Unavailable` — The protocol refused it for good; the text says why.
 
@@ -1592,6 +1650,34 @@ Implements:
 impl Clone for Outgoing
 impl Debug for Outgoing
 impl PartialEq for Outgoing
+```
+
+## struct `bindings::exports::enco::plugin::channel::PacingGap`
+
+`src/lib.rs`
+
+```rust
+pub struct PacingGap {
+    pub minimum_ms: u32,
+    pub jitter_ms: u32,
+}
+```
+
+The time the host leaves before each message it sends through one connection.
+
+Each field is at most the limit the manual lists for channel `pacing`; a larger gap fails
+loading, because stopping a connection waits out a started gap.
+
+- `minimum_ms` — The least milliseconds from one message finishing to the next one starting.
+- `jitter_ms` — Up to this many more milliseconds before each message, chosen at random.
+
+Implements:
+
+```rust
+impl Clone for PacingGap
+impl Copy for PacingGap
+impl Debug for PacingGap
+impl PartialEq for PacingGap
 ```
 
 ## enum `bindings::exports::enco::plugin::channel::ReadStep`
@@ -1726,7 +1812,11 @@ pub struct Socket {
 A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection
 stops.
 
-- `url` — An absolute `ws` or `wss` URL at one of the mapper's `origins`.
+- `url` — Where to open the socket: a path on the base URL, or an absolute `ws` or `wss` URL.
+
+  A path starts with `/` and joins the base URL with `http` turned into `ws` and `https`
+  into `wss`. An absolute URL must be on the base URL's host and port, or at one of the
+  mapper's `origins`.
 - `close_code` — The code the host closes the socket with; a protocol that resumes sessions across
   reconnects may need one other than 1000.
 
@@ -1752,7 +1842,17 @@ pub trait Guest
 fn origins() -> Vec<String>
 ```
 
-Additional origins for requests and sockets; `*.` before a host covers its subdomains. Read when the generation loads.
+Additional origins for requests and sockets; `*.` before a host covers its subdomains. Read
+when the generation loads.
+
+### `bindings::exports::enco::plugin::channel::Guest::pacing`
+
+```rust
+fn pacing() -> ::core::option::Option<PacingGap>
+```
+
+The gap before each message `send` builds; absent sends each as soon as it is ready. Read
+when the generation loads.
 
 ### `bindings::exports::enco::plugin::channel::Guest::identify`
 
@@ -1799,13 +1899,17 @@ fn fetch(locator: String, responses: Vec<Response>) -> ::core::result::Result<Fe
 
 The next step of fetching the attachment at `locator`, given the responses so far.
 
+Asking for more requests than the manual's limit for channel `fetch` is a contract
+failure.
+
 ### `bindings::exports::enco::plugin::channel::Guest::split`
 
 ```rust
 fn split(message: Outgoing) -> Vec<Outgoing>
 ```
 
-The parts an outgoing message is sent as, keeping all of its text.
+The protocol messages to send, in order; at least one, none empty. Together they carry all
+of the message's text and its file, laid out as the protocol needs.
 
 ### `bindings::exports::enco::plugin::channel::Guest::send`
 
@@ -1954,7 +2058,7 @@ Describes and checks the component without assigning its registry identity.
 - struct `bindings::exports::enco::plugin::lifecycle::Credential` — A secret the host writes into the plugin's requests or frames; the plugin never sees it.
 - struct `bindings::exports::enco::plugin::lifecycle::Description` — Plugin-wide facts and requirements.
 - struct `bindings::exports::enco::plugin::lifecycle::HeaderPlacement` — A request header that carries a credential.
-- enum `bindings::exports::enco::plugin::lifecycle::Location` — Where the host writes a credential.
+- enum `bindings::exports::enco::plugin::lifecycle::Location` — Where the host writes a credential; a socket's opening handshake is a request like any other.
 - struct `bindings::exports::enco::plugin::lifecycle::Placement` — One place a credential goes, and the only origin that receives it there.
 - trait `bindings::exports::enco::plugin::lifecycle::Guest` — (no summary)
 - type `bindings::exports::enco::plugin::lifecycle::Failure` — (no summary)
@@ -2048,7 +2152,8 @@ pub enum Location {
 }
 ```
 
-Where the host writes a credential.
+Where the host writes a credential; a socket's opening handshake is a request like any
+other.
 
 - `Header` — A request header set to its prefix followed by the value.
 - `Path` — Right after whichever of these prefixes the request path starts with.
@@ -2075,7 +2180,8 @@ pub struct Placement {
 
 One place a credential goes, and the only origin that receives it there.
 
-- `origin` — The destination origin; `*.` covers subdomains. Absent means the caller-selected service, such as a channel's base URL.
+- `origin` — The destination origin; `*.` covers subdomains. Absent means the service the caller
+  selects, such as a channel's base URL, by HTTP or WebSocket.
 - `location` — Where in a request or frame to that origin.
 
 Implements:

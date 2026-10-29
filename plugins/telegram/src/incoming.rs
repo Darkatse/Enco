@@ -1,10 +1,9 @@
 //! Updates, addressing and attachments translated at the protocol boundary.
 use crate::{
-    channel::{
-        Action, Attachment, CommandKind, Content, Fault, Identity, Inbound, Reading, Response,
-    },
+    channel::{Fault, Identity, Inbound, Reading, Response},
     wire::{answer, invalid_response},
 };
+use enco_sdk::channel::{Action, Attachment, CommandKind, Content};
 use enco_sdk::types::{Failure, Unviewable, UnviewableReason};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -247,16 +246,6 @@ fn inbound(
     }))
 }
 
-/// The name Telegram shows and parses for each command, without its leading `/`.
-pub(super) fn command_name(kind: CommandKind) -> &'static str {
-    match kind {
-        CommandKind::Session => "session",
-        CommandKind::Cancel => "cancel",
-        CommandKind::Backtrack => "backtrack",
-        CommandKind::Everyone => "everyone",
-    }
-}
-
 /// The bot a leading `/command` is for.
 enum CommandTarget {
     /// Another bot, named after `@`.
@@ -269,38 +258,15 @@ enum CommandTarget {
 /// The bot `text` commands; absent when it starts with no command, or with one that names no bot
 /// and that this bot does not understand.
 fn command(text: &str, username: &str) -> Option<CommandTarget> {
-    let text = text.trim();
-    let (head, argument) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    let (head, argument) = enco_sdk::channel::typed_command(text)?;
     let (name, target) = head
         .split_once('@')
         .map_or((head, None), |(name, target)| (name, Some(target)));
-    let name = name.strip_prefix('/')?;
     if target.is_some_and(|target| !target.eq_ignore_ascii_case(username)) {
         return Some(CommandTarget::OtherBot);
     }
-    let action = [
-        CommandKind::Session,
-        CommandKind::Cancel,
-        CommandKind::Backtrack,
-        CommandKind::Everyone,
-    ]
-    .into_iter()
-    .find(|&kind| command_name(kind) == name)
-    .and_then(|kind| action(kind, argument.trim()));
+    let action = CommandKind::from_name(name).and_then(|kind| kind.action(argument));
     (action.is_some() || target.is_some()).then_some(CommandTarget::ThisBot(action))
-}
-
-fn action(kind: CommandKind, argument: &str) -> Option<Action> {
-    match (kind, argument) {
-        (CommandKind::Session, "") => Some(Action::Sessions),
-        (CommandKind::Session, name) => Some(Action::SelectSession(name.into())),
-        (CommandKind::Cancel, "") => Some(Action::Cancel),
-        (CommandKind::Backtrack, "") => Some(Action::Backtrack),
-        (CommandKind::Everyone, "") => Some(Action::Everyone(None)),
-        (CommandKind::Everyone, "on") => Some(Action::Everyone(Some(true))),
-        (CommandKind::Everyone, "off") => Some(Action::Everyone(Some(false))),
-        _ => None,
-    }
 }
 
 fn mentioned(

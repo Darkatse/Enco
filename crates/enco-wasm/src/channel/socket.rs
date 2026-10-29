@@ -10,7 +10,9 @@ use std::time::Duration;
 use tokio::{net::TcpStream, time::Instant};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
-    tungstenite::{Message, protocol::CloseFrame},
+    tungstenite::{
+        Message, client::IntoClientRequest, handshake::client::Request, protocol::CloseFrame,
+    },
 };
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -24,9 +26,11 @@ pub(super) async fn receive(
         .destinations
         .socket(&settings.url)
         .map_err(|failure| super::convert::failure(failure, false, None))?;
+    let request = opening_request(&receiver.transport.credentials, &url)
+        .map_err(|failure| super::convert::failure(failure, false, None))?;
     let opened = tokio::select! {
         () = receiver.stop.cancelled() => return Ok(()),
-        result = tokio::time::timeout(crate::limits::HTTP_DEFAULT_TIMEOUT, tokio_tungstenite::connect_async(url.as_str())) => result,
+        result = tokio::time::timeout(crate::limits::HTTP_DEFAULT_TIMEOUT, tokio_tungstenite::connect_async(request)) => result,
     };
     let (mut socket, _) = opened
         .map_err(|_| network_error("channel socket connection timed out".into()))?
@@ -55,6 +59,27 @@ pub(super) async fn receive(
         Err(_) => tracing::warn!("channel socket close timed out"),
     }
     result
+}
+
+fn opening_request(
+    credentials: &[credentials::CallCredential],
+    url: &reqwest::Url,
+) -> Result<Request, enco_core::Failure> {
+    let mut request = reqwest::Request::new(reqwest::Method::GET, url.clone());
+    for credential in credentials {
+        credential.attach(&mut request);
+    }
+    let mut opening = request
+        .url()
+        .as_str()
+        .into_client_request()
+        .map_err(|error| {
+            crate::convert::bad(credentials::redact_text(credentials, &error.to_string()))
+        })?;
+    opening
+        .headers_mut()
+        .extend(std::mem::take(request.headers_mut()));
+    Ok(opening)
 }
 
 async fn run(

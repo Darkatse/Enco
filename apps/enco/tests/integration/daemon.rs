@@ -691,3 +691,21 @@ async fn completion_imports_are_rejected_before_linking_a_plugin() {
         .unwrap();
     assert!(error.to_string().contains("Attempts by the kernel"));
 }
+
+#[tokio::test]
+async fn a_pure_channel_built_against_the_previous_contract_requests_a_rebuild() {
+    let runtime = WasmRuntime::new().unwrap();
+    let error = runtime
+        .load(
+            br#"(component (instance $old) (export "enco:plugin/channel@0.9.0" (instance $old)))"#,
+            &PluginSettings::default(),
+        )
+        .await
+        .err()
+        .unwrap();
+    let reason = error.to_string();
+    assert!(
+        reason.contains("0.9.0") && reason.contains("rebuild"),
+        "{reason}"
+    );
+}

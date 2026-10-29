@@ -414,7 +414,7 @@ async fn switch_bot(fail_settlement: bool) {
         .await
         .unwrap();
     let channel = &status["node"]["channels"][0];
-    assert_eq!(channel["running"], true);
+    assert_eq!(channel["state"]["kind"], "running");
     let failures = channel["recent_failures"].as_array().unwrap();
     if fail_settlement {
         // The unsettled send is recovered as interrupted and never resent.
@@ -505,7 +505,7 @@ async fn restart_restores_registered_configuration_without_credentials() {
             .is_empty()
     );
     assert!(
-        status["node"]["channels"][0]["stopped"]
+        status["node"]["channels"][0]["state"]["failure"]["reason"]
             .as_str()
             .unwrap()
             .contains("ENCO_TEST_TELEGRAM_TOKEN")

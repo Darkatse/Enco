@@ -1,7 +1,9 @@
 //! Runs one protocol state machine and hands readings to the connection without waiting for preparation.
 use super::{Connection, Transport, convert, wire};
 use enco_core::{Failure, MappingOrigin, code};
-use enco_kernel::{ChannelCallError, ChannelFault, ChannelReading};
+use enco_kernel::{
+    CHANNEL_MAX_BACKOFF, ChannelBackoff, ChannelCallError, ChannelFault, ChannelReading,
+};
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -54,20 +56,19 @@ impl Receiver {
     /// a doubling backoff first, so a peer that keeps closing at once is not reconnected in a tight
     /// loop.
     async fn run(&mut self) -> Result<(), ChannelCallError> {
-        let max = super::super::limits::CHANNEL_RECONNECT_MAX_BACKOFF;
-        let mut backoff = Duration::from_secs(1);
+        let mut backoff = ChannelBackoff::default();
         while !self.stop.is_cancelled() {
             let delay = match self.read().await {
-                Ok(Some(lived)) if lived < max => backoff,
+                Ok(Some(lived)) if lived < CHANNEL_MAX_BACKOFF => backoff.next(None),
                 Ok(_) => {
-                    backoff = Duration::from_secs(1);
+                    backoff = ChannelBackoff::default();
                     continue;
                 }
                 Err(ChannelCallError::Protocol(error))
                     if !error.fatal && error.failure.retryable =>
                 {
                     tracing::warn!(%error, "channel receive will retry");
-                    error.retry_after.unwrap_or(backoff)
+                    backoff.next(error.retry_after)
                 }
                 Err(error) => return Err(error),
             };
@@ -75,7 +76,6 @@ impl Receiver {
                 () = self.stop.cancelled() => break,
                 () = tokio::time::sleep(delay) => {}
             }
-            backoff = (backoff * 2).min(max);
         }
         Ok(())
     }

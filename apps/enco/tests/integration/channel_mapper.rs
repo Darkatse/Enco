@@ -119,7 +119,12 @@ async fn attachment_exchange_records_each_complete_mapper_input() {
         )
         .mount(&server)
         .await;
-    let (root, store, adapter) = channel::open(&format!("{}/gateway", server.uri())).await;
+    let (root, store, adapter) = channel::open(
+        channel::TELEGRAM,
+        "token",
+        &format!("{}/gateway", server.uri()),
+    )
+    .await;
     Mock::given(path("/gateway/bot42:test-secret/getFile"))
         .respond_with(
             ResponseTemplate::new(200)

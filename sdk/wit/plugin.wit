@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.9.0;
+package enco:plugin@0.10.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -365,13 +365,15 @@ interface lifecycle {
 
     /// One place a credential goes, and the only origin that receives it there.
     record placement {
-        /// The destination origin; `*.` covers subdomains. Absent means the caller-selected service, such as a channel's base URL.
+        /// The destination origin; `*.` covers subdomains. Absent means the service the caller
+        /// selects, such as a channel's base URL, by HTTP or WebSocket.
         origin: option<string>,
         /// Where in a request or frame to that origin.
         location: location,
     }
 
-    /// Where the host writes a credential.
+    /// Where the host writes a credential; a socket's opening handshake is a request like any
+    /// other.
     variant location {
         /// A request header set to its prefix followed by the value.
         header(header-placement),
@@ -956,11 +958,26 @@ interface channel {
     /// A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection
     /// stops.
     record socket {
-        /// An absolute `ws` or `wss` URL at one of the mapper's `origins`.
+        /// Where to open the socket: a path on the base URL, or an absolute `ws` or `wss` URL.
+        ///
+        /// A path starts with `/` and joins the base URL with `http` turned into `ws` and `https`
+        /// into `wss`. An absolute URL must be on the base URL's host and port, or at one of the
+        /// mapper's `origins`.
         url: string,
         /// The code the host closes the socket with; a protocol that resumes sessions across
         /// reconnects may need one other than 1000.
         close-code: u16,
+    }
+
+    /// The time the host leaves before each message it sends through one connection.
+    ///
+    /// Each field is at most the limit the manual lists for channel `pacing`; a larger gap fails
+    /// loading, because stopping a connection waits out a started gap.
+    record pacing-gap {
+        /// The least milliseconds from one message finishing to the next one starting.
+        minimum-ms: u32,
+        /// Up to this many more milliseconds before each message, chosen at random.
+        jitter-ms: u32,
     }
 
     /// How the host reads the protocol next.
@@ -1137,6 +1154,13 @@ interface channel {
     variant fetch-step {
         /// Send this request and call again with its response.
         request(request),
+        /// Get this absolute URL taken from the protocol's content and call again with its
+        /// response.
+        ///
+        /// The host sends it without credentials and only to one of the mapper's `origins`, so
+        /// content never chooses a path on the service; an address elsewhere makes the attachment
+        /// unavailable.
+        download(string),
         /// The attachment's bytes.
         image(list<u8>),
         /// The protocol refused it for good; the text says why.
@@ -1171,8 +1195,12 @@ interface channel {
         unknown,
     }
 
-    /// Additional origins for requests and sockets; `*.` before a host covers its subdomains. Read when the generation loads.
+    /// Additional origins for requests and sockets; `*.` before a host covers its subdomains. Read
+    /// when the generation loads.
     origins: func() -> list<string>;
+    /// The gap before each message `send` builds; absent sends each as soon as it is ready. Read
+    /// when the generation loads.
+    pacing: func() -> option<pacing-gap>;
     /// The request that reads which account the connection reaches.
     identify: func() -> request;
     /// The account in that request's response.
@@ -1191,8 +1219,12 @@ interface channel {
         arrival: arrival,
     ) -> result<reading, fault>;
     /// The next step of fetching the attachment at `locator`, given the responses so far.
+    ///
+    /// Asking for more requests than the manual's limit for channel `fetch` is a contract
+    /// failure.
     fetch: func(locator: string, responses: list<response>) -> result<fetch-step, fault>;
-    /// The parts an outgoing message is sent as, keeping all of its text.
+    /// The protocol messages to send, in order; at least one, none empty. Together they carry all
+    /// of the message's text and its file, laid out as the protocol needs.
     split: func(message: outgoing) -> list<outgoing>;
     /// The request that sends one part to a conversation.
     send: func(conversation: string, part: outgoing) -> result<request, fault>;

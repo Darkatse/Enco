@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use enco_core::*;
 use enco_host::{
     SqliteStore,
-    channel::{Channel, ConnectionSettings},
+    channel::{Channel, ChannelState, ConnectionSettings},
 };
 use enco_kernel::{
     AttachmentContent, ChannelAction as Action, ChannelActivity, ChannelAdapter as Adapter,
@@ -64,8 +64,10 @@ struct ControlledChannel {
     sends: mpsc::UnboundedSender<Send>,
     fetches: mpsc::UnboundedSender<Fetch>,
     sent: AtomicU32,
+    pacing: std::sync::Mutex<Option<enco_kernel::ChannelPacingGap>>,
     invalid_state: Mutex<Option<Option<Value>>>,
     split_failure: AtomicBool,
+    split_lines: AtomicBool,
     split_called: tokio::sync::Notify,
     menu_failure: AtomicBool,
     menu_scopes: Mutex<Vec<(bool, bool)>>,
@@ -86,6 +88,9 @@ impl Adapter for ControlledChannel {
             account: "bot".into(),
             facts: Value::Null,
         }
+    }
+    fn pacing(&self) -> Option<enco_kernel::ChannelPacingGap> {
+        *self.pacing.lock().unwrap()
     }
     async fn receive(
         &self,
@@ -182,7 +187,18 @@ impl Adapter for ControlledChannel {
             }
             .into());
         }
-        Ok(vec![message])
+        if self.split_lines.load(Ordering::SeqCst) && message.file.is_none() {
+            Ok(message
+                .text
+                .lines()
+                .map(|text| Outgoing {
+                    text: text.into(),
+                    file: None,
+                })
+                .collect())
+        } else {
+            Ok(vec![message])
+        }
     }
     async fn send(
         &self,
@@ -294,8 +310,10 @@ fn traffic() -> Traffic {
         sends,
         fetches,
         sent: AtomicU32::new(0),
+        pacing: std::sync::Mutex::new(None),
         invalid_state: Mutex::new(None),
         split_failure: AtomicBool::new(false),
+        split_lines: AtomicBool::new(false),
         split_called: tokio::sync::Notify::new(),
         menu_failure: AtomicBool::new(false),
         menu_scopes: Mutex::new(Vec::new()),
@@ -641,8 +659,10 @@ async fn a_fatal_send_failure_stops_the_connection_as_status() {
         .unwrap();
     channel.shutdown().await.unwrap();
     let status = channel.status().await.unwrap();
-    assert!(!status.running);
-    assert!(status.stopped.unwrap().contains("channel.http.401"));
+    assert!(matches!(
+        status.state,
+        ChannelState::Stopped { failure: Some(failure) } if failure.reason.contains("channel.http.401")
+    ));
     assert!(status.recent_failures.is_empty()); // Command receipts never become Log deliveries.
     kernel.shutdown().await.unwrap();
 }
@@ -794,8 +814,11 @@ async fn a_receiver_failure_keeps_its_protocol_reason_when_the_preparation_queue
     updates.send(Vec::new()).await.unwrap();
     adapter.receive_failed.notified().await;
     channel.shutdown().await.unwrap();
-    let stopped = channel.status().await.unwrap().stopped.unwrap();
-    assert!(stopped.contains("gateway.4014"));
-    assert!(stopped.contains("Message Content intent is disabled"));
+    assert!(matches!(
+        channel.status().await.unwrap().state,
+        ChannelState::Stopped { failure: Some(failure) }
+            if failure.reason.contains("gateway.4014")
+                && failure.reason.contains("Message Content intent is disabled")
+    ));
     kernel.shutdown().await.unwrap();
 }

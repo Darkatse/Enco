@@ -1,9 +1,10 @@
 //! Ordered preparation, authorized attachment reads and bounded sends. The connection alone commits state.
 use super::{Action, Adapter, ChannelCallError, ChannelError, Fault};
-use crate::limits::{CHANNEL_ATTEMPTS, CHANNEL_MAX_BACKOFF};
+use crate::limits::CHANNEL_ATTEMPTS;
 use enco_core::*;
 use enco_kernel::{
-    AttachmentContent, ChannelAction, ChannelContent, ChannelInput, ImageError, Kernel,
+    AttachmentContent, ChannelAction, ChannelBackoff, ChannelContent, ChannelInput,
+    ChannelPacingGap, ImageError, Kernel,
 };
 use serde_json::Value;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
@@ -243,7 +244,7 @@ async fn fetch(
         unviewable: message.unviewable,
     };
     for attachment in message.images {
-        let mut delay = Duration::from_secs(1);
+        let mut backoff = ChannelBackoff::default();
         let mut attempt = 1;
         // A transient failure that persists makes the image unavailable rather than holding up
         // every message behind it.
@@ -257,8 +258,7 @@ async fn fetch(
                         break AttachmentContent::Unavailable(error.failure.message);
                     }
                     attempt += 1;
-                    tokio::time::sleep(error.retry_after.unwrap_or(delay)).await;
-                    delay = (delay * 2).min(CHANNEL_MAX_BACKOFF);
+                    tokio::time::sleep(backoff.next(error.retry_after)).await;
                 }
                 result => break result?,
             }
@@ -297,6 +297,38 @@ pub(super) struct Sent {
     pub fatal: Option<Fault>,
 }
 
+/// Serializes paced sends across deliveries and command receipts, outside the connection owner.
+pub(super) struct PacingGate {
+    gap: Option<ChannelPacingGap>,
+    finished: tokio::sync::Mutex<Option<tokio::time::Instant>>,
+}
+
+impl PacingGate {
+    pub fn new(gap: Option<ChannelPacingGap>) -> Self {
+        Self {
+            gap,
+            finished: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// Run `send` in turn, after the gap since the previous one finished.
+    async fn paced<T>(&self, send: impl Future<Output = T>) -> T {
+        let Some(gap) = self.gap else {
+            return send.await;
+        };
+        let mut finished = self.finished.lock().await;
+        let now = tokio::time::Instant::now();
+        let earliest = finished.map_or(now, |last| {
+            last + Duration::from_millis(u64::from(gap.minimum_ms))
+        });
+        let jitter = Duration::from_millis(u64::from(rand::random_range(0..=gap.jitter_ms)));
+        tokio::time::sleep_until(earliest.max(now) + jitter).await;
+        let result = send.await;
+        *finished = Some(tokio::time::Instant::now());
+        result
+    }
+}
+
 /// Each successful part leaves this loop permanently; unknown effects are never retried.
 pub(super) async fn send(
     adapter: Arc<dyn Adapter>,
@@ -305,6 +337,7 @@ pub(super) async fn send(
     target: String,
     message: Outgoing<FileData>,
     stop: CancellationToken,
+    pacing: Arc<PacingGate>,
 ) -> Result<Sent, ChannelError> {
     let parts = match super::health::call(&kernel, generation, adapter.split(message)).await {
         Ok(parts) => parts,
@@ -323,10 +356,11 @@ pub(super) async fn send(
     let mut origins = Vec::new();
     let mut messages = Vec::with_capacity(parts.len());
     for (part, message) in parts.iter().enumerate() {
-        let mut delay = Duration::from_secs(1);
+        let mut backoff = ChannelBackoff::default();
         for attempt in 1..=CHANNEL_ATTEMPTS {
-            // A send future has effects: await it even after cancellation.
-            match super::health::call(&kernel, generation, adapter.send(&target, message)).await {
+            // A send future has effects: await it, and its gap, even after cancellation.
+            let sent = super::health::call(&kernel, generation, adapter.send(&target, message));
+            match pacing.paced(sent).await {
                 Ok(sent) => {
                     if let Some(id) = sent.message {
                         messages.push(id);
@@ -342,9 +376,8 @@ pub(super) async fn send(
                         && !error.fatal
                         && error.failure.retryable
                         && attempt < CHANNEL_ATTEMPTS
-                        && !wait(error.retry_after.unwrap_or(delay), &stop).await
+                        && !wait(backoff.next(error.retry_after), &stop).await
                     {
-                        delay = (delay * 2).min(CHANNEL_MAX_BACKOFF);
                         continue;
                     }
                     if error.unknown {

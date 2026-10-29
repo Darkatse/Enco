@@ -237,7 +237,7 @@ impl CallCredential {
             .map(|placement| {
                 let origin = match &placement.origin {
                     Some(origin) => origin.clone(),
-                    None => Origin::exact(base.ok_or_else(|| {
+                    None => Origin::service(base.ok_or_else(|| {
                         failure(
                             code::PLUGIN_CONTRACT,
                             "caller-selected credential requires a service URL",

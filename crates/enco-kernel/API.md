@@ -21,6 +21,7 @@ Session execution through explicit ports.
 - enum `ChannelAction` — The meaning of an incoming message, independent of protocol command syntax.
 - struct `ChannelActivity` — A Run's current progress, containing only public tool names and outcomes.
 - struct `ChannelAttachment` — An image still held by the protocol.
+- struct `ChannelBackoff` — Doubling waits between attempts of one channel operation, from one second up to `CHANNEL_MAX_BACKOFF`.
 - enum `ChannelCallError` — A mapper or protocol failure, distinct from failing to record its evidence.
 - struct `ChannelCommand` — A command offered by the host in protocol menus.
 - enum `ChannelCommandKind` — The commands understood by the connection owner.
@@ -29,6 +30,7 @@ Session execution through explicit ports.
 - struct `ChannelIdentity` — Stable account identity declared by a mapper.
 - struct `ChannelInput` — An incoming message, before host authorization or attachment fetching.
 - struct `ChannelMessage` — One protocol message, its acceptance key and recorded origin.
+- struct `ChannelPacingGap` — The time the host leaves before each protocol message sent through one connection.
 - enum `ChannelReading` — One arrival's messages and protocol checkpoint, delivered in receive order.
 - struct `ChannelSent` — The confirmed result of sending one part.
 - struct `ChannelSettings` — The service and secret names chosen for one connection; values remain in transport.
@@ -149,6 +151,7 @@ Session execution through explicit ports.
 - fn `parse_table` — Parse one owner's table without interpreting other tables.
 - fn `plugin_settings` — Parse plugin settings using the same ownership boundary as registration.
 - type `ComposerOptions` — A profile's composer options: a JSON object whose shape the composer's schema declares.
+- const `CHANNEL_MAX_BACKOFF` — The longest wait between attempts of a channel operation, and how long a socket must stay open before its reconnect skips the wait.
 - const `ENDPOINT_TABLE` — Named endpoint entries: `[endpoint.<name>]`.
 - const `IMAGE_MAX_BYTES` — Maximum original bytes accepted for one image.
 - const `PLUGIN_SETTINGS_TABLE` — The registry owns the named settings sections of plugins.
@@ -625,6 +628,32 @@ An image still held by the protocol.
 - `what` — A description, such as a file name and media type.
 - `locator` — The mapper's opaque locator for fetching it.
 
+## struct `ChannelBackoff`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelBackoff(/* private field */);
+```
+
+Doubling waits between attempts of one channel operation, from one second up to
+`CHANNEL_MAX_BACKOFF`.
+
+### `ChannelBackoff::next`
+
+```rust
+pub fn next(&mut self, asked: Option<Duration>) -> Duration
+```
+
+The wait before the next attempt: the one the protocol asked for, or else the current
+backoff. Either way the backoff then doubles.
+
+Implements:
+
+```rust
+impl Default for ChannelBackoff
+```
+
 ## enum `ChannelCallError`
 
 `src/ports/channel.rs`
@@ -826,6 +855,29 @@ One protocol message, its acceptance key and recorded origin.
 - `key` — Protocol key accepted at most once, including for commands.
 - `input` — What this message asks the host to consider.
 - `origin` — The recorded mapper call and this message's position in its result.
+
+## struct `ChannelPacingGap`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelPacingGap {
+    pub minimum_ms: u32,
+    pub jitter_ms: u32,
+}
+```
+
+The time the host leaves before each protocol message sent through one connection.
+
+- `minimum_ms` — Minimum milliseconds between the previous send finishing and the next send starting.
+- `jitter_ms` — Maximum extra milliseconds, chosen randomly before every send, including the first.
+
+Implements:
+
+```rust
+impl Clone for ChannelPacingGap
+impl Copy for ChannelPacingGap
+```
 
 ## enum `ChannelReading`
 
@@ -4301,6 +4353,14 @@ fn identity(&self) -> ChannelIdentity
 
 The stable account reached by this connection.
 
+### `ChannelAdapter::pacing`
+
+```rust
+fn pacing(&self) -> Option<ChannelPacingGap>
+```
+
+The generation's declared gap before each send; absent sends each as soon as it is ready.
+
 ### `ChannelAdapter::receive`
 
 ```rust
@@ -4315,7 +4375,8 @@ Receive arrivals without waiting for preparation; drain receipt acknowledgments 
 async fn fetch(&self, locator: &str) -> Result<AttachmentContent, ChannelCallError>
 ```
 
-Fetch an authorized attachment; reads have no external effects.
+Fetch an attachment; one whose address from content is outside the mapper's origins is
+unavailable. Reads have no external effects.
 
 ### `ChannelAdapter::split`
 
@@ -4323,7 +4384,7 @@ Fetch an authorized attachment; reads have no external effects.
 async fn split(&self, message: Outgoing<FileData>) -> Result<Vec<Outgoing<FileData>>, ChannelCallError>
 ```
 
-Preserve all text and attach a file once, propagating mapper invocation failures.
+Lay out all content as ordered protocol messages; at least one, none empty.
 
 ### `ChannelAdapter::send`
 
@@ -4879,6 +4940,17 @@ pub type ComposerOptions = serde_json::Map<String, serde_json::Value>;
 ```
 
 A profile's composer options: a JSON object whose shape the composer's schema declares.
+
+## const `CHANNEL_MAX_BACKOFF`
+
+`src/limits.rs`
+
+```rust
+pub const CHANNEL_MAX_BACKOFF: std::time::Duration = _;
+```
+
+The longest wait between attempts of a channel operation, and how long a socket must stay open
+before its reconnect skips the wait.
 
 ## const `ENDPOINT_TABLE`
 

@@ -7,9 +7,13 @@ pub(crate) const HTTP_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const HTTP_MAX_REDIRECTS: usize = 10;
 /// The contract's allowance for service rounding (`decision.answer`).
 pub(crate) const DECISION_SUM_TOLERANCE: f64 = 0.01;
+// Stopping waits out a started send's gap, so this bounds how long one can hold up a replacement.
+pub(crate) const CHANNEL_PACING_MAX: Duration = Duration::from_secs(10);
+// The host runs the fetch loop, so a mapper that never finishes is stopped here.
+pub(crate) const CHANNEL_FETCH_REQUESTS: usize = 4;
 
-/// What every plugin call may use, each as a description and its limit, for the manual.
-pub fn call_limits() -> Vec<(String, String)> {
+/// The limits plugins run within, each as a description and its limit, for the manual.
+pub fn plugin_limits() -> Vec<(String, String)> {
     const MIB: usize = 1024 * 1024;
     [
         (
@@ -19,7 +23,10 @@ pub fn call_limits() -> Vec<(String, String)> {
                 WASM_MEMORY_LIMIT / MIB
             ),
         ),
-        ("Time", format!("{} s", PLUGIN_CALL_TIMEOUT.as_secs())),
+        (
+            "Time per call",
+            format!("{} s", PLUGIN_CALL_TIMEOUT.as_secs()),
+        ),
         (
             "HTTP timeout when a request sets none",
             format!("{} s", HTTP_DEFAULT_TIMEOUT.as_secs()),
@@ -29,10 +36,19 @@ pub fn call_limits() -> Vec<(String, String)> {
             format!("{} MiB", HTTP_MAX_BODY_BYTES / MIB),
         ),
         ("HTTP redirects followed", HTTP_MAX_REDIRECTS.to_string()),
+        (
+            "Channel `fetch` requests per attachment",
+            format!("{CHANNEL_FETCH_REQUESTS}; asking for another is a contract failure"),
+        ),
+        (
+            "Channel `pacing`, for each of the minimum and the jitter",
+            format!(
+                "{} s; a larger gap fails loading",
+                CHANNEL_PACING_MAX.as_secs()
+            ),
+        ),
     ]
     .into_iter()
     .map(|(what, limit)| (what.to_owned(), limit))
     .collect()
 }
-
-pub(crate) const CHANNEL_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);

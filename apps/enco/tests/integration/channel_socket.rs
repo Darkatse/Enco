@@ -69,6 +69,11 @@ async fn socket_frames_timers_and_resume_continue_while_receipt_acknowledgment_w
             .headers
             .contains_key("authorization")
     );
+    // A mapper that never finishes a fetch fails its generation's contract.
+    assert!(matches!(
+        adapter.fetch("endless").await,
+        Err(enco_kernel::ChannelCallError::Protocol(fault)) if fault.failure.code == enco_core::code::PLUGIN_CONTRACT
+    ));
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(10), socket.task)
         .await

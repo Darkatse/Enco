@@ -10,6 +10,7 @@
 | `typesafe/src/lib.rs`、`protocol.rs` | TypeSafe 入口与 System One 协议：只导出 decision |
 | `web/src/lib.rs`、`config.rs` | web 工具声明、配置与服务声明 |
 | `web/src/fetch.rs`、`search.rs`、`http.rs` | 网页读取、搜索与 HTTP 传输 |
+| `telegram/`、`discord/`、`onebot/` | Telegram、Discord 与 QQ OneBot 的纯协议映射器，传输与凭证由宿主持有 |
 | `test-fixture/` | 应用与评测共用的源码夹具，参与门禁，不内嵌到宿主 |
 | `../sdk/src/lib.rs`、`../sdk/src/protocol.rs` | 共用的类型绑定与 Chat Completions / Embeddings 转换 |
 | `../sdk/src/http.rs` | 共用的 JSON 传输、options 合并与 HTTP 错误分类 |

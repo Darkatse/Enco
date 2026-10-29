@@ -153,7 +153,10 @@ async fn restart_delivers_recorded_files_and_continues_after_missing_blobs() {
     reply.result.send(Ok(())).unwrap();
     channel.shutdown().await.unwrap();
     let status = channel.status().await.unwrap();
-    assert!(status.stopped.is_none());
+    assert!(matches!(
+        status.state,
+        enco_host::channel::ChannelState::Stopped { failure: None }
+    ));
     assert_eq!(status.recent_failures.len(), 1);
     assert!(matches!(
         status.recent_failures[0].settlement.outcome,
@@ -189,5 +192,73 @@ async fn a_split_failure_settles_as_failed_before_any_send_instead_of_recovering
         matches!(&failures[0].settlement.outcome, Settlement::Failed { failure } if failure.code == code::PLUGIN_TRAP)
     );
     assert!(kernel.connection("controlled:bot").await.unwrap().unwrap()["sending"].is_null());
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn deliveries_and_receipts_share_pacing_and_started_waits_finish_on_stop() {
+    use std::{future::Future, task::Poll};
+    let dir = tempfile::tempdir().unwrap();
+    let Harness {
+        kernel,
+        adapter,
+        updates,
+        mut polling,
+        mut sending,
+        ..
+    } = harness(
+        dir.path(),
+        ScriptedProvider::new(vec![reply("first\nsecond")]),
+    )
+    .await;
+    *adapter.pacing.lock().unwrap() = Some(enco_kernel::ChannelPacingGap {
+        minimum_ms: 1500,
+        jitter_ms: 0,
+    });
+    adapter.split_lines.store(true, Ordering::SeqCst);
+    let channel = start(&kernel, &adapter);
+    receive(&mut polling).await;
+    updates
+        .send(vec![update(1, Action::Message("start".into()))])
+        .await
+        .unwrap();
+    receive(&mut polling).await;
+    let first = receive(&mut sending).await;
+    assert_eq!(first.text, "first");
+    // Consume the delivery's split, so the next notification is the receipt's.
+    adapter.split_called.notified().await;
+    // The owner accepts a command while delivery holds the send gate.
+    updates
+        .send(vec![update(2, Action::Sessions)])
+        .await
+        .unwrap();
+    receive(&mut polling).await;
+    adapter.split_called.notified().await;
+    assert!(sending.try_recv().is_err());
+
+    // Polled once, shutdown signals stop and then waits for the started sends.
+    let mut shutdown = std::pin::pin!(channel.shutdown());
+    std::future::poll_fn(|cx| {
+        assert!(shutdown.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    // The first part takes longer than the gap, so a gap counted from its start would be over.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let finished = tokio::time::Instant::now();
+    first.result.send(Ok(())).unwrap();
+    // This receipt already started; its gate wait and send survive cancellation.
+    let receipt = receive(&mut sending).await;
+    assert_eq!(finished.elapsed(), Duration::from_millis(1500));
+    assert_ne!(receipt.text, "second");
+    receipt.result.send(Ok(())).unwrap();
+    shutdown.await.unwrap();
+    assert!(sending.try_recv().is_err());
+    let failures = channel.status().await.unwrap().recent_failures;
+    assert_eq!(failures.len(), 1);
+    assert!(
+        matches!(&failures[0].settlement.outcome, Settlement::Failed { failure } if failure.code == code::CANCELLED)
+    );
+    assert_eq!(failures[0].settlement.messages, vec![first.id]);
     kernel.shutdown().await.unwrap();
 }

@@ -94,7 +94,7 @@ impl Runtime for WasmRuntime {
             .await
             .map_err(load_error)?
             .map_err(load_error)?;
-        check_imports(&component, &self.engine.engine)?;
+        check_contract(&component, &self.engine.engine)?;
         let mut linker = Linker::new(&self.engine.engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(load_error)?;
         host::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |s| s).map_err(load_error)?;
@@ -188,22 +188,22 @@ async fn describe(
         .collect::<Vec<_>>();
     plugin.credentials = credentials::declarations(&declared_credentials)?;
     let unavailable = credentials::resolve(&plugin.credentials, &plugin.settings, None).err();
-    let channel_origins = match &channel {
+    let (channel_origins, channel_pacing) = match &channel {
         Some(pre) => plugin
             .invoke(
                 crate::call_world::CallWorld::Mapper,
                 Default::default(),
                 async |mut store| {
                     let instance = pre.instantiate_async(&mut store).await?;
-                    Ok(Ok(instance
-                        .enco_plugin_channel()
-                        .call_origins(&mut store)
-                        .await?))
+                    let channel = instance.enco_plugin_channel();
+                    let origins = channel.call_origins(&mut store).await?;
+                    let pacing = channel.call_pacing(&mut store).await?;
+                    Ok(Ok((origins, pacing)))
                 },
             )
             .await
             .map_err(LoadError::Plugin)?,
-        None => Vec::new(),
+        None => (Vec::new(), None),
     };
     plugin.channel_origins = channel_origins
         .iter()
@@ -212,6 +212,10 @@ async fn describe(
                 .map_err(|error| LoadError::Component(format!("channel origin {origin}: {error}")))
         })
         .collect::<Result<_, _>>()?;
+    let channel_pacing = channel_pacing
+        .map(crate::channel_convert::pacing)
+        .transpose()
+        .map_err(LoadError::Component)?;
     let plugin = Arc::new(plugin);
     let tools = match tools {
         Some(pre) => Some(
@@ -238,7 +242,11 @@ async fn describe(
         tools,
         composer,
         channel: channel.map(|pre| {
-            Arc::new(crate::channel::WasmChannel::new(plugin.clone(), pre)) as Arc<dyn Channel>
+            Arc::new(crate::channel::WasmChannel::new(
+                plugin.clone(),
+                pre,
+                channel_pacing,
+            )) as Arc<dyn Channel>
         }),
         lifecycle: plugin.clone(),
         completion: plugin
@@ -300,7 +308,15 @@ fn load_error(error: impl std::fmt::Display) -> LoadError {
     LoadError::Component(error.to_string())
 }
 
-fn check_imports(component: &Component, engine: &wasmtime::Engine) -> Result<(), LoadError> {
+fn check_contract(component: &Component, engine: &wasmtime::Engine) -> Result<(), LoadError> {
+    for (name, _) in component.component_type().exports(engine) {
+        if let Some((_, version)) = name
+            .strip_prefix("enco:plugin/")
+            .and_then(|name| name.rsplit_once('@'))
+        {
+            check_version(version)?;
+        }
+    }
     for (name, _) in component.component_type().imports(engine) {
         if name.starts_with("enco:plugin/completion@") {
             return Err(LoadError::Component("plugins cannot import completion; model calls must be recorded as Attempts by the kernel".into()));
@@ -309,11 +325,7 @@ fn check_imports(component: &Component, engine: &wasmtime::Engine) -> Result<(),
             .strip_prefix("enco:plugin/host@")
             .or_else(|| name.strip_prefix("enco:plugin/types@"))
         {
-            if !same_major(version) {
-                return Err(LoadError::Component(format!(
-                    "built against enco:plugin@{version}; this host links enco:plugin@{CONTRACT_VERSION}, rebuild the plugin"
-                )));
-            }
+            check_version(version)?;
         } else if !name.starts_with("wasi:") {
             return Err(LoadError::Component(format!(
                 "unsupported plugin import {name}; only host interfaces are available"
@@ -321,4 +333,14 @@ fn check_imports(component: &Component, engine: &wasmtime::Engine) -> Result<(),
         }
     }
     Ok(())
+}
+
+fn check_version(version: &str) -> Result<(), LoadError> {
+    if same_major(version) {
+        Ok(())
+    } else {
+        Err(LoadError::Component(format!(
+            "built against enco:plugin@{version}; this host links enco:plugin@{CONTRACT_VERSION}, rebuild the plugin"
+        )))
+    }
 }

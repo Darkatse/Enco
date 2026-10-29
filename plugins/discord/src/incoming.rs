@@ -1,8 +1,9 @@
 //! Discord messages and native interactions translated once at the external boundary.
 use crate::{
-    channel::{Action, Attachment, Command, CommandKind, Content, Fault, Inbound, Request},
+    channel::{Command, Fault, Inbound, Request},
     wire,
 };
+use enco_sdk::channel::{Action, Attachment, CommandKind, Content};
 use enco_sdk::types::{Unviewable, UnviewableReason};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -174,30 +175,24 @@ pub(super) fn interaction(value: Value) -> Result<Option<(Inbound, Request)>, Fa
         interaction.data.custom_id.as_deref(),
     ) {
         (3, _, Some("cancel")) => Action::Cancel,
-        (2, Some("cancel"), _) => Action::Cancel,
         (2, Some("Backtrack here"), _) => Action::Backtrack,
-        (2, Some("session"), _) => match interaction
-            .data
-            .options
-            .iter()
-            .find(|option| option.name == "name")
-        {
-            Some(option) => Action::SelectSession(option.value.clone()),
-            None => Action::Sessions,
-        },
-        (2, Some("everyone"), _) => {
-            let open = interaction
+        (2, Some(name), _) => {
+            let Some(kind) = CommandKind::from_name(name) else {
+                return Ok(None);
+            };
+            let option = match kind {
+                CommandKind::Session => "name",
+                CommandKind::Everyone => "open",
+                CommandKind::Cancel | CommandKind::Backtrack => "",
+            };
+            let argument = interaction
                 .data
                 .options
                 .iter()
-                .find(|option| option.name == "open")
-                .map(|option| match option.value.as_str() {
-                    "on" => Ok(true),
-                    "off" => Ok(false),
-                    _ => Err(wire::invalid("everyone option")),
-                })
-                .transpose()?;
-            Action::Everyone(open)
+                .find(|value| value.name == option)
+                .map_or("", |value| value.value.as_str());
+            kind.action(argument)
+                .ok_or_else(|| wire::invalid("command option"))?
         }
         _ => return Ok(None),
     };
@@ -274,9 +269,9 @@ fn command(command: Command) -> Value {
                 "description": "Session to switch to",
                 "required": false,
             });
-            ("session", 1, json!([name]))
+            (command.kind.name(), 1, json!([name]))
         }
-        CommandKind::Cancel => ("cancel", 1, json!([])),
+        CommandKind::Cancel => (command.kind.name(), 1, json!([])),
         CommandKind::Backtrack => ("Backtrack here", 3, json!([])),
         CommandKind::Everyone => {
             let choices = json!([{"name": "on", "value": "on"}, {"name": "off", "value": "off"}]);
@@ -287,7 +282,7 @@ fn command(command: Command) -> Value {
                 "required": false,
                 "choices": choices,
             });
-            ("everyone", 1, json!([open]))
+            (command.kind.name(), 1, json!([open]))
         }
     };
     let mut value = json!({

@@ -55,7 +55,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
     let manual = Manual::new(
         &paths.home,
         MANUAL_FILES,
-        enco_wasm::call_limits(),
+        enco_wasm::plugin_limits(),
         store.clone(),
     )?;
     let development = Development::new(

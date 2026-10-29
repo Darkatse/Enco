@@ -6,9 +6,32 @@ use crate::{
 use enco_core::{Failure, FileData, MappingOrigin, Outgoing, Unviewable, UnviewableReason};
 use enco_kernel::{
     ChannelAction, ChannelAttachment, ChannelCommand, ChannelCommandKind, ChannelContent,
-    ChannelFault, ChannelIdentity, ChannelInput, ChannelMessage,
+    ChannelFault, ChannelIdentity, ChannelInput, ChannelMessage, ChannelPacingGap,
 };
 use std::time::Duration;
+
+/// The declared gap; each part above [`CHANNEL_PACING_MAX`](crate::limits::CHANNEL_PACING_MAX)
+/// fails loading.
+pub(super) fn pacing(value: wire::PacingGap) -> Result<ChannelPacingGap, String> {
+    let wire::PacingGap {
+        minimum_ms,
+        jitter_ms,
+    } = value;
+    let max = crate::limits::CHANNEL_PACING_MAX;
+    if [minimum_ms, jitter_ms]
+        .into_iter()
+        .any(|part| Duration::from_millis(part.into()) > max)
+    {
+        return Err(format!(
+            "channel pacing gap exceeds {} s for its minimum or jitter",
+            max.as_secs()
+        ));
+    }
+    Ok(ChannelPacingGap {
+        minimum_ms,
+        jitter_ms,
+    })
+}
 
 pub(super) fn identity(value: &ChannelIdentity) -> wire::Identity {
     let ChannelIdentity {
@@ -136,25 +159,15 @@ fn part(value: wire::Outgoing) -> Outgoing<FileData> {
     }
 }
 
-pub(super) fn parts(
-    values: Vec<wire::Outgoing>,
-    message: &Outgoing<FileData>,
-) -> Result<Vec<Outgoing<FileData>>, Failure> {
+pub(super) fn parts(values: Vec<wire::Outgoing>) -> Result<Vec<Outgoing<FileData>>, Failure> {
     let parts: Vec<_> = values.into_iter().map(part).collect();
-    if parts
-        .iter()
-        .any(|part| part.text.is_empty() && part.file.is_none())
-        || !parts
+    if parts.is_empty()
+        || parts
             .iter()
-            .flat_map(|part| part.text.bytes())
-            .eq(message.text.bytes())
-        || !parts
-            .iter()
-            .filter_map(|part| part.file.as_ref())
-            .eq(message.file.iter())
+            .any(|part| part.text.is_empty() && part.file.is_none())
     {
         return Err(convert::bad(
-            "channel split must preserve all text and exactly the original file, without empty parts",
+            "channel split requires at least one part and no empty parts",
         ));
     }
     Ok(parts)
@@ -239,32 +252,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_parts_reject_lost_or_duplicated_content_at_the_guest_boundary() {
-        let message = Outgoing {
-            text: "hello世界".into(),
-            file: Some(FileData {
+    fn split_requires_one_part_and_no_empty_part() {
+        let part = |text: &str, file: bool| wire::Outgoing {
+            text: text.into(),
+            file: file.then(|| wire::FileData {
                 name: "a.txt".into(),
                 data: b"data".to_vec(),
             }),
         };
-        let first = wire::Outgoing {
-            text: "hello".into(),
-            file: None,
+        assert!(parts(vec![part("", true)]).is_ok());
+        assert!(parts(vec![]).is_err());
+        assert!(parts(vec![part("text", false), part("", false)]).is_err());
+    }
+
+    #[test]
+    fn a_pacing_gap_beyond_the_limit_fails_loading() {
+        let limit = u32::try_from(crate::limits::CHANNEL_PACING_MAX.as_millis()).unwrap();
+        let gap = |minimum_ms, jitter_ms| wire::PacingGap {
+            minimum_ms,
+            jitter_ms,
         };
-        let last = wire::Outgoing {
-            text: "世界".into(),
-            file: Some(wire::FileData {
-                name: "a.txt".into(),
-                data: b"data".to_vec(),
-            }),
-        };
-        assert_eq!(
-            parts(vec![first.clone(), last.clone()], &message)
-                .unwrap()
-                .len(),
-            2
-        );
-        assert!(parts(vec![first.clone()], &message).is_err());
-        assert!(parts(vec![first, last.clone(), last], &message).is_err());
+        assert!(pacing(gap(limit, limit)).is_ok());
+        assert!(pacing(gap(limit + 1, 0)).is_err());
+        assert!(pacing(gap(0, limit + 1)).is_err());
     }
 }

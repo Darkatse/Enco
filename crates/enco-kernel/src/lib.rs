@@ -26,7 +26,7 @@ pub use builtin::builtin_tool_specs;
 pub use image::ImageError;
 pub use inspect::Inspection;
 pub use kernel::*;
-pub use limits::{IMAGE_MAX_BYTES, TRIAL_CALLS};
+pub use limits::{CHANNEL_MAX_BACKOFF, IMAGE_MAX_BYTES, TRIAL_CALLS};
 pub use ports::*;
 pub use profile::*;
 pub use registry::*;

@@ -6,6 +6,8 @@ use serde_json::json;
 use std::sync::Arc;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
 
+pub const TELEGRAM: &[u8] = include_bytes!(env!("ENCO_FACTORY_TELEGRAM"));
+
 pub fn child(test: &str) -> bool {
     if std::env::var_os("ENCO_CHANNEL_TEST_CHILD").is_some() {
         return false;
@@ -30,10 +32,15 @@ pub async fn telegram(
         )
         .mount(server)
         .await;
-    open(&server.uri()).await
+    open(TELEGRAM, "token", &server.uri()).await
 }
 
-pub async fn open(base: &str) -> (tempfile::TempDir, Arc<SqliteStore>, Arc<dyn ChannelAdapter>) {
+/// Open the factory `plugin` at `base`, filling its `secret` with the fixture token.
+pub async fn open(
+    plugin: &[u8],
+    secret: &str,
+    base: &str,
+) -> (tempfile::TempDir, Arc<SqliteStore>, Arc<dyn ChannelAdapter>) {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(
         SqliteStore::open(StorePaths {
@@ -46,10 +53,7 @@ pub async fn open(base: &str) -> (tempfile::TempDir, Arc<SqliteStore>, Arc<dyn C
     );
     let loaded = enco_wasm::WasmRuntime::new()
         .unwrap()
-        .load(
-            include_bytes!(env!("ENCO_FACTORY_TELEGRAM")),
-            &PluginSettings::default(),
-        )
+        .load(plugin, &PluginSettings::default())
         .await
         .unwrap();
     let adapter = loaded
@@ -58,7 +62,7 @@ pub async fn open(base: &str) -> (tempfile::TempDir, Arc<SqliteStore>, Arc<dyn C
         .open(
             &ChannelSettings {
                 base_url: base.into(),
-                secrets: [("token".into(), "ENCO_CHANNEL_FIXTURE_TOKEN".into())].into(),
+                secrets: [(secret.into(), "ENCO_CHANNEL_FIXTURE_TOKEN".into())].into(),
             },
             GenerationId(31),
             store.clone(),

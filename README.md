@@ -29,7 +29,7 @@ The entire system follows one baseline rule: no change or migration submitted th
 
 Every capability lives in a WebAssembly plugin. Enco can rewrite or replace any of them while running.
 
-Model providers (OpenAI-Compatible, Gemini, DeepSeek), relevance decisions (TypeSafe), web search and fetch tools, the policy that assembles each model request (`composer`), and chat channels (Telegram, Discord) are all standalone WebAssembly components. The kernel only records facts, determines which code serves each round, validates requests and schedules execution. If you dislike how a plugin works, fork it, or ask your Enco to write a new one.
+Model providers (OpenAI-Compatible, Gemini, DeepSeek), relevance decisions (TypeSafe), web search and fetch tools, the policy that assembles each model request (`composer`), and chat channels (Telegram, Discord, QQ OneBot) are all standalone WebAssembly components. The kernel only records facts, determines which code serves each round, validates requests and schedules execution. If you dislike how a plugin works, fork it, or ask your Enco to write a new one.
 
 A plugin can only call what the [WIT contract](sdk/wit/CONTRACT.md) exposes, while the kernel enforces type and rollback safety, eliminating plugin dependency hell at the root.
 
@@ -89,7 +89,7 @@ Each phase has acceptance criteria, listed in [docs/Roadmap.md](docs/Roadmap.md)
 
 ## AI-assisted setup
 
-Hand the [Enco setup and usage skill](skills/enco-installation/SKILL.md) to your coding agent (such as Claude Code or Codex) to walk through building from source, initializing `~/.enco`, configuring models and memory, connecting Telegram and Discord, and verifying `enco status`. Tools that support skills can load the `skills/enco-installation` directory directly, or you can ask your assistant to read the file.
+Hand the [Enco setup and usage skill](skills/enco-installation/SKILL.md) to your coding agent (such as Claude Code or Codex) to walk through building from source, initializing `~/.enco`, configuring models and memory, connecting Telegram, Discord and QQ, and verifying `enco status`. Tools that support skills can load the `skills/enco-installation` directory directly, or you can ask your assistant to read the file.
 
 ## Installation and development
 
@@ -138,7 +138,7 @@ cargo run -p enco -- chat      # in another terminal
 cargo run -p enco -- send --image photo.png "Describe this image"
 ```
 
-Standing instructions live in `~/.enco/AGENTS.md` and runtime data lives in `~/.enco/.data/`; set `ENCO_HOME` to use a directory other than `~/.enco`. For day-to-day commands, image and file messages, conversation backtracking, plugin management, and Telegram or Discord setup, see the [usage and channel guide](docs/Usage.md) and [plugins/README.md](plugins/README.md) (in Chinese).
+Standing instructions live in `~/.enco/AGENTS.md` and runtime data lives in `~/.enco/.data/`; set `ENCO_HOME` to use a directory other than `~/.enco`. For day-to-day commands, image and file messages, conversation backtracking, plugin management, and Telegram, Discord or QQ setup, see the [usage and channel guide](docs/Usage.md) and [plugins/README.md](plugins/README.md) (in Chinese).
 
 Before sending repository changes, run the offline gate:
 
@@ -148,7 +148,7 @@ cargo xtask check
 
 ## Documentation
 
-- [docs/Usage.md](docs/Usage.md): CLI commands, multimodal messages, plugin management, and Telegram / Discord setup (Chinese)
+- [docs/Usage.md](docs/Usage.md): CLI commands, multimodal messages, plugin management, and Telegram / Discord / QQ setup (Chinese)
 - [skills/enco-installation/SKILL.md](skills/enco-installation/SKILL.md): installation and configuration skill for coding agents (Chinese)
 - [docs/design/](docs/design/README.md): the design outline and the judgments behind each area (Chinese)
 - [docs/Roadmap.md](docs/Roadmap.md): phases and their acceptance criteria (Chinese)

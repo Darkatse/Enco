@@ -70,6 +70,10 @@ impl channel::Guest for Plugin {
         vec![]
     }
 
+    fn pacing() -> Option<channel::PacingGap> {
+        None
+    }
+
     fn identify() -> Request {
         request("getMe", json!({}), READ_TIMEOUT_MS)
     }
@@ -144,7 +148,7 @@ impl channel::Guest for Plugin {
                     })
                     .map(|command| {
                         json!({
-                            "command": incoming::command_name(command.kind),
+                            "command": command.kind.name(),
                             "description": command.description,
                         })
                     })

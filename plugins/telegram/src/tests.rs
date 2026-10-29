@@ -1,11 +1,11 @@
 use super::{
     Plugin,
     channel::{
-        Action, Arrival, Command, CommandKind, FetchStep, FileData, Guest, Identity, Outgoing,
-        ReadStep, Response,
+        Arrival, Command, FetchStep, FileData, Guest, Identity, Outgoing, ReadStep, Response,
     },
 };
 use enco_sdk::channel::ActivityView;
+use enco_sdk::channel::{Action, CommandKind};
 use serde_json::{Value, json};
 
 fn response(status: u16, body: &[u8]) -> Response {

@@ -64,3 +64,13 @@ max_rounds = 24
 # secrets = { token = "DISCORD_BOT_TOKEN" }
 # context = 0
 # group_profile = "group"
+
+# Optional QQ connection through SnowLuma's HTTP service with enableWebSocket enabled.
+# Use a secondary QQ account and messageFormat = "array".
+# [channel.qq]
+# plugin = "onebot"
+# base_url = "http://127.0.0.1:3000"
+# owner = "123456789"
+# secrets = { access_token = "ONEBOT_ACCESS_TOKEN" }
+# context = 0
+# group_profile = "group"

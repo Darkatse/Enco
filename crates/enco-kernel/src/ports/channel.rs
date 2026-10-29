@@ -254,11 +254,42 @@ pub enum ChannelToolState {
     Unknown,
 }
 
+/// The time the host leaves before each protocol message sent through one connection.
+#[derive(Clone, Copy)]
+pub struct ChannelPacingGap {
+    /// Minimum milliseconds between the previous send finishing and the next send starting.
+    pub minimum_ms: u32,
+    /// Maximum extra milliseconds, chosen randomly before every send, including the first.
+    pub jitter_ms: u32,
+}
+
+/// Doubling waits between attempts of one channel operation, from one second up to
+/// [`CHANNEL_MAX_BACKOFF`](crate::CHANNEL_MAX_BACKOFF).
+pub struct ChannelBackoff(Duration);
+
+impl Default for ChannelBackoff {
+    fn default() -> Self {
+        Self(Duration::from_secs(1))
+    }
+}
+
+impl ChannelBackoff {
+    /// The wait before the next attempt: the one the protocol asked for, or else the current
+    /// backoff. Either way the backoff then doubles.
+    pub fn next(&mut self, asked: Option<Duration>) -> Duration {
+        let wait = asked.unwrap_or(self.0);
+        self.0 = (self.0 * 2).min(crate::CHANNEL_MAX_BACKOFF);
+        wait
+    }
+}
+
 /// One identified account, using the same generation until it is stopped.
 #[async_trait]
 pub trait ChannelAdapter: Send + Sync {
     /// The stable account reached by this connection.
     fn identity(&self) -> ChannelIdentity;
+    /// The generation's declared gap before each send; absent sends each as soon as it is ready.
+    fn pacing(&self) -> Option<ChannelPacingGap>;
     /// Receive arrivals without waiting for preparation; drain receipt acknowledgments on stop.
     async fn receive(
         &self,
@@ -266,9 +297,10 @@ pub trait ChannelAdapter: Send + Sync {
         readings: mpsc::UnboundedSender<ChannelReading>,
         stop: CancellationToken,
     ) -> Result<(), ChannelCallError>;
-    /// Fetch an authorized attachment; reads have no external effects.
+    /// Fetch an attachment; one whose address from content is outside the mapper's origins is
+    /// unavailable. Reads have no external effects.
     async fn fetch(&self, locator: &str) -> Result<AttachmentContent, ChannelCallError>;
-    /// Preserve all text and attach a file once, propagating mapper invocation failures.
+    /// Lay out all content as ordered protocol messages; at least one, none empty.
     async fn split(
         &self,
         message: Outgoing<FileData>,

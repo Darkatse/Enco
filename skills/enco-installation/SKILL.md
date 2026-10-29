@@ -1,6 +1,6 @@
 ---
 name: enco-installation
-description: "帮助用户安装、配置和使用 Enco，完成源码构建、home 初始化、模型与记忆配置、Telegram 与 Discord 渠道接入以及运行验证。面向用户侧部署与日常操作。"
+description: "帮助用户安装、配置和使用 Enco，完成源码构建、home 初始化、模型与记忆配置、Telegram、Discord 与 QQ 渠道接入以及运行验证。面向用户侧部署与日常操作。"
 ---
 
 # Enco 安装与使用
@@ -16,9 +16,9 @@ description: "帮助用户安装、配置和使用 Enco，完成源码构建、h
 | 主目录 | 默认 `~/.enco`，可通过环境变量 `ENCO_HOME` 改用其他路径 |
 | 模型服务 | 回复与压缩使用的服务商（`deepseek`、`gemini` 或 `openai-compatible`）、模型名、窗口与输出上限，以及对应的 API Key 环境变量名 |
 | 记忆召回 | `[memory] embedding` 使用的向量模型 endpoint；是否启用可选的 `typesafe` 相关性过滤 |
-| 接入方式 | 仅使用本地 CLI（`enco chat` / `enco send`），还是同时接入 Telegram 或 Discord（私聊或群聊） |
+| 接入方式 | 仅使用本地 CLI（`enco chat` / `enco send`），还是同时接入 Telegram、Discord 或 QQ（私聊或群聊） |
 
-已有 `~/.enco` 时先执行 `enco status` 或检查现有文件。数据库模式版本 14 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据；遇到旧库版本报错时，先向用户说明并确认备份或重建方案，不要直接删除 `~/.enco/.data/`。
+已有 `~/.enco` 时先执行 `enco status` 或检查现有文件。数据库模式版本 16 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据；遇到旧库版本报错时，先向用户说明并确认备份或重建方案，不要直接删除 `~/.enco/.data/`。
 
 ## 构建与初始化
 
@@ -55,12 +55,13 @@ cargo run -p enco -- init
 - 主人的常驻说明写在 `$ENCO_HOME/AGENTS.md` 中，每轮对话开始时由宿主读取。
 - 需要配置网页搜索与读取插件时，参照 [plugins/README.md](../../plugins/README.md) 添加 `[plugin.web.config]` 与 `[plugin.web.secrets]`。
 
-## 接入 Telegram 与 Discord
+## 接入 Telegram、Discord 与 QQ
 
 需要接入聊天渠道时，按 [使用与渠道指南](../../docs/Usage.md) 填写配置并准备平台权限：
 
 - Telegram：配置 `[channel.telegram]`，将用户的数字 ID 作为字符串填入 `owner`，在 `secrets = { token = "TELEGRAM_BOT_TOKEN" }` 中绑定环境变量。
 - Discord：配置 `[channel.discord]`，将用户的 Discord ID 字符串填入 `owner`，绑定 `secrets = { token = "DISCORD_BOT_TOKEN" }`。提醒用户在 [Discord 开发者后台](https://discord.com/developers/applications)的 Bot 页面开启 **Message Content Intent**，使用 `bot` 与 `applications.commands` 作用域邀请 bot（私聊需与用户同在一个服务器），并仅在需要服务的频道授予查看频道、发送消息、在线程中发送消息、读取消息历史、附加文件与嵌入链接权限。
+- QQ：主人自行部署 SnowLuma 并扫码登录小号；在 HTTP 服务打开 `enableWebSocket`、设置 `accessToken`、将 `messageFormat` 设为 `array`。配置 `[channel.qq]`，`plugin = "onebot"`，`base_url` 指向该 HTTP 服务，`owner` 为主人的 QQ 号，`secrets = { access_token = "ONEBOT_ACCESS_TOKEN" }`。同机部署时只监听本机。说明非官方接入的账号风控风险，发送带间隔，断线期间消息需重发；文字命令与手机私聊的正在输入见使用指南。
 - 群聊与服务器频道隔离：仅当连接配置了 `group_profile` 时才服务群聊。该 profile 必须设置 `owner_context = false`、`requires_lifeline = false`，并显式列出不含记忆、文件与 shell 工具的安全白名单（如 `tools = ["web_search", "web_fetch"]`）。
 
 ## 启动、变更登记与验证

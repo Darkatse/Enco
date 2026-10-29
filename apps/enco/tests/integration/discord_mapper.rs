@@ -1,10 +1,8 @@
 //! Factory Discord rendering exercises the same host contract used by live deliveries.
 use crate::support::channel;
-use enco_core::{GenerationId, Outgoing, PluginSettings};
-use enco_host::{SqliteStore, StorePaths};
-use enco_kernel::{ChannelCallError, ChannelSettings, Runtime};
+use enco_core::Outgoing;
+use enco_kernel::ChannelCallError;
 use serde_json::{Value, json};
-use std::sync::Arc;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
@@ -29,37 +27,12 @@ async fn discord_preserves_split_text_and_renders_it_after_the_host_boundary() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"sent"})))
         .mount(&server)
         .await;
-    let root = tempfile::tempdir().unwrap();
-    let store = Arc::new(
-        SqliteStore::open(StorePaths {
-            db: root.path().join("enco.db"),
-            blobs: root.path().join("blobs"),
-            artifacts: root.path().join("artifacts"),
-        })
-        .await
-        .unwrap(),
-    );
-    let loaded = enco_wasm::WasmRuntime::new()
-        .unwrap()
-        .load(
-            include_bytes!(env!("ENCO_FACTORY_DISCORD")),
-            &PluginSettings::default(),
-        )
-        .await
-        .unwrap();
-    let adapter = loaded
-        .channel
-        .unwrap()
-        .open(
-            &ChannelSettings {
-                base_url: format!("{}/api/v10", server.uri()),
-                secrets: [("token".into(), "ENCO_CHANNEL_FIXTURE_TOKEN".into())].into(),
-            },
-            GenerationId(32),
-            store,
-        )
-        .await
-        .unwrap();
+    let (_root, _store, adapter) = channel::open(
+        include_bytes!(env!("ENCO_FACTORY_DISCORD")),
+        "token",
+        &format!("{}/api/v10", server.uri()),
+    )
+    .await;
     assert_eq!(adapter.identity().key(), "discord:42");
     let text = "| Name | Value |\n| --- | --- |\n| one | two |\n\n---\n```rust\nlet x = 1;\n```\n";
     let parts = adapter

@@ -17,6 +17,10 @@ pub const TRIAL_CALLS: u32 = 5;
 /// Maximum original bytes accepted for one image.
 pub const IMAGE_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
+/// The longest wait between attempts of a channel operation, and how long a socket must stay open
+/// before its reconnect skips the wait.
+pub const CHANNEL_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
 pub(crate) const CONFIG_PROBE_IMAGE: &[u8] = include_bytes!("image/probe.png");
 
 pub(crate) const CONFIG_PROBE_PROMPT: &str = "Reply with the single word OK.";

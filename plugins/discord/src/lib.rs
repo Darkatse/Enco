@@ -64,6 +64,10 @@ impl channel::Guest for Plugin {
             .to_vec()
     }
 
+    fn pacing() -> Option<channel::PacingGap> {
+        None
+    }
+
     fn identify() -> Request {
         wire::request("GET", "/applications/@me".into(), None)
     }
@@ -94,7 +98,7 @@ impl channel::Guest for Plugin {
 
     fn fetch(locator: String, responses: Vec<Response>) -> Result<FetchStep, Fault> {
         let Some(response) = responses.into_iter().next() else {
-            return Ok(FetchStep::Request(wire::request("GET", locator, None)));
+            return Ok(FetchStep::Download(locator));
         };
         match wire::checked(&response) {
             Ok(()) => Ok(FetchStep::Image(response.body)),

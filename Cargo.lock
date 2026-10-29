@@ -990,6 +990,7 @@ dependencies = [
  "enco-kernel",
  "enco-manual",
  "ignore",
+ "rand",
  "reqwest",
  "rusqlite",
  "schemars",

@@ -4,6 +4,7 @@ use super::{
     cell, code, comparison, generation_state, history, next, path, situations, step, time,
 };
 use crate::{
+    channel::ChannelState,
     development::PluginUnit,
     status::{CallStep, Status, Step},
 };
@@ -161,23 +162,37 @@ fn node(out: &mut String, status: &Status, timezone: Tz) {
         .channels
         .iter()
         .map(|channel| {
-            format!(
-                "{} {}",
-                code(&channel.name),
-                if channel.running {
-                    "running"
-                } else {
-                    "stopped"
-                }
-            )
+            let state = match channel.state {
+                ChannelState::Opening { .. } => "opening",
+                ChannelState::Running => "running",
+                ChannelState::Stopped { .. } => "stopped",
+                ChannelState::Duplicate { .. } => "duplicate",
+            };
+            format!("{} {state}", code(&channel.name))
         })
         .collect();
     if !channels.is_empty() {
         out.push_str(&format!("Channels: {}\n", channels.join(" · ")));
     }
     for channel in &node.channels {
-        if let Some(reason) = &channel.stopped {
-            out.push_str(&format!("- {} stopped: {reason}\n", code(&channel.name)));
+        let name = code(&channel.name);
+        match &channel.state {
+            ChannelState::Opening {
+                retrying: Some(failure),
+            } => out.push_str(&format!(
+                "- {name} retries opening after: {}\n",
+                failure.reason
+            )),
+            ChannelState::Stopped {
+                failure: Some(failure),
+            } => out.push_str(&format!("- {name} stopped: {}\n", failure.reason)),
+            ChannelState::Duplicate { owner } => out.push_str(&format!(
+                "- {name}: its account is already owned by channel {}\n",
+                code(owner)
+            )),
+            ChannelState::Opening { retrying: None }
+            | ChannelState::Running
+            | ChannelState::Stopped { failure: None } => {}
         }
         for status in &channel.recent_failures {
             let failure = &status.settlement;

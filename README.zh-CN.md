@@ -29,7 +29,7 @@ Enco 整个系统设计遵循一个原则：Agent 经正式路径提交的任何
 
 一切的能力都来自于 WebAssembly 插件。所有的插件都可以被 Enco 在运行过程中进行实时改写与替换。
 
-模型服务商（OpenAI-Compatible、Gemini、DeepSeek）、相关性决策（TypeSafe）、网页搜索与抓取工具、每次模型请求的组装策略（`composer`），以及聊天渠道（Telegram、Discord），全部是独立的 WebAssembly 组件。内核只负责记录事实、确定每个 Round 由哪份代码服务、校验请求和调度执行。不喜欢某个插件的做法，可以 fork 它，也可以直接让你的 Enco 写一个新的。
+模型服务商（OpenAI-Compatible、Gemini、DeepSeek）、相关性决策（TypeSafe）、网页搜索与抓取工具、每次模型请求的组装策略（`composer`），以及聊天渠道（Telegram、Discord、QQ OneBot），全部是独立的 WebAssembly 组件。内核只负责记录事实、确定每个 Round 由哪份代码服务、校验请求和调度执行。不喜欢某个插件的做法，可以 fork 它，也可以直接让你的 Enco 写一个新的。
 
 插件只能调用 [WIT 契约](sdk/wit/CONTRACT.md) 提供的能力，内核保证类型与回退安全。顺带从根源上解决插件依赖地狱。
 
@@ -89,7 +89,7 @@ Agent 被定位为 Enco 的使用者，也是它长期的维护者。Enco 会自
 
 ## 使用 AI 协助安装
 
-可以将 [Enco 安装与使用 Skill](skills/enco-installation/SKILL.md) 交给你的工作 Agent（如 Claude Code、Codex），按指南完成源码构建、`~/.enco` 初始化、模型与记忆配置、Telegram 与 Discord 渠道接入以及运行验证。支持技能的工具可加载 `skills/enco-installation` 目录，也可以直接让 AI 阅读该文件。
+可以将 [Enco 安装与使用 Skill](skills/enco-installation/SKILL.md) 交给你的工作 Agent（如 Claude Code、Codex），按指南完成源码构建、`~/.enco` 初始化、模型与记忆配置、Telegram、Discord 与 QQ 渠道接入以及运行验证。支持技能的工具可加载 `skills/enco-installation` 目录，也可以直接让 AI 阅读该文件。
 
 ## 安装与开发
 
@@ -138,7 +138,7 @@ cargo run -p enco -- chat      # 在另一个终端中
 cargo run -p enco -- send --image photo.png "Describe this image"
 ```
 
-常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`，设置 `ENCO_HOME` 可以使用 `~/.enco` 以外的目录。日常命令、多模态收发、对话回溯、插件开发管理以及 Telegram 与 Discord 渠道接入，见 [使用与渠道指南](docs/Usage.md) 与 [插件说明](plugins/README.md)。
+常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`，设置 `ENCO_HOME` 可以使用 `~/.enco` 以外的目录。日常命令、多模态收发、对话回溯、插件开发管理以及 Telegram、Discord 与 QQ 渠道接入，见 [使用与渠道指南](docs/Usage.md) 与 [插件说明](plugins/README.md)。
 
 开发与提交改动前请运行离线门禁：
 
@@ -148,7 +148,7 @@ cargo xtask check
 
 ## 文档
 
-- [docs/Usage.md](docs/Usage.md)：日常命令、多模态、插件管理与 Telegram / Discord 渠道接入指南
+- [docs/Usage.md](docs/Usage.md)：日常命令、多模态、插件管理与 Telegram / Discord / QQ 渠道接入指南
 - [skills/enco-installation/SKILL.md](skills/enco-installation/SKILL.md)：供工作 Agent 使用的安装与配置 Skill
 - [docs/design/](docs/design/README.md)：设计总纲与各领域的判断
 - [docs/Roadmap.md](docs/Roadmap.md)：各阶段的计划与验收标准

@@ -17,6 +17,7 @@ use tokio::{
 struct Connection {
     kernel: Arc<Kernel>,
     adapter: Arc<dyn Adapter>,
+    pacing: Arc<transport::PacingGate>,
     identity: Identity,
     settings: ConnectionSettings,
     generation: GenerationId,
@@ -86,6 +87,7 @@ pub(super) async fn run(
     let (wake, wakes) = mpsc::channel(crate::limits::CHANNEL_WAKE_CAPACITY);
     let mut connection = Connection {
         identity: adapter.identity(),
+        pacing: Arc::new(transport::PacingGate::new(adapter.pacing())),
         kernel,
         adapter,
         settings,

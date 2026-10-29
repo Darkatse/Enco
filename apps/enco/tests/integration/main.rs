@@ -12,6 +12,7 @@ mod discord_mapper;
 mod gemini;
 mod live;
 mod memory;
+mod onebot;
 mod process;
 #[path = "../../src/protocol.rs"]
 mod protocol;

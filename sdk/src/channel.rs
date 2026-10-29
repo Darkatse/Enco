@@ -1,9 +1,56 @@
-//! What every channel mapper shares: the activity card's wording and `multipart/form-data` uploads.
+//! What every channel mapper shares: commands, the activity card's wording and `multipart/form-data` uploads.
 //!
-//! Each protocol lays the card out with its own components; the words on it are the same
-//! everywhere. [`export!`](crate::export) gives a channel plugin's `activity` these same types, so
+//! Each protocol marks commands and lays the card out its own way; the names, meanings and words
+//! are the same everywhere. [`export!`](crate::export) gives a channel plugin these same types, so
 //! name them from here.
-pub use crate::bindings::exports::enco::plugin::channel::{ActivityView, ToolActivity, ToolState};
+pub use crate::bindings::exports::enco::plugin::channel::{
+    Action, ActivityView, Attachment, CommandKind, Content, ToolActivity, ToolState,
+};
+
+impl CommandKind {
+    /// The shared name, without a leading `/` or a protocol's decoration.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Cancel => "cancel",
+            Self::Backtrack => "backtrack",
+            Self::Everyone => "everyone",
+        }
+    }
+
+    /// The command with this exact, case-sensitive name; unknown names are ordinary text.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Session, Self::Cancel, Self::Backtrack, Self::Everyone]
+            .into_iter()
+            .find(|kind| kind.name() == name)
+    }
+
+    /// What the command asks for with `argument`, compared without surrounding whitespace;
+    /// unknown arguments are ordinary text.
+    pub fn action(self, argument: &str) -> Option<Action> {
+        match (self, argument.trim()) {
+            (Self::Session, "") => Some(Action::Sessions),
+            (Self::Session, name) => Some(Action::SelectSession(name.into())),
+            (Self::Cancel, "") => Some(Action::Cancel),
+            (Self::Backtrack, "") => Some(Action::Backtrack),
+            (Self::Everyone, "") => Some(Action::Everyone(None)),
+            (Self::Everyone, "on") => Some(Action::Everyone(Some(true))),
+            (Self::Everyone, "off") => Some(Action::Everyone(Some(false))),
+            _ => None,
+        }
+    }
+}
+
+/// The command typed at the start of `text`, as its name and the rest as its argument; absent
+/// when `text` starts otherwise.
+///
+/// The name follows a half-width `/` up to the first whitespace and keeps any decoration the
+/// protocol adds, such as Telegram's `@bot`.
+pub fn typed_command(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim();
+    let (head, argument) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    Some((head.strip_prefix('/')?, argument))
+}
 
 /// The label of the activity card's button that cancels the Run.
 pub const CANCEL_LABEL: &str = "Cancel";

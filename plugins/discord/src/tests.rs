@@ -1,10 +1,11 @@
 use super::{
     Plugin,
     channel::{
-        Action, Arrival, Closure, Command, CommandKind, FileData, Guest, Identity, Outgoing,
-        ReadStep, Reading, Request, Response,
+        Arrival, Closure, Command, FileData, Guest, Identity, Outgoing, ReadStep, Reading, Request,
+        Response,
     },
 };
+use enco_sdk::channel::{Action, CommandKind};
 use enco_sdk::channel::{ActivityView, ToolActivity, ToolState};
 use serde_json::{Value, json};
 

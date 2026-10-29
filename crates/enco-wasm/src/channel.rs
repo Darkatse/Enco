@@ -5,6 +5,7 @@ use crate::{
     channel_convert as convert,
     credentials::{self, CallCredential},
     host_imports::{self, HostState},
+    limits::CHANNEL_FETCH_REQUESTS,
     origins::Destinations,
     plugin::WasmPlugin,
 };
@@ -14,7 +15,8 @@ use enco_core::{
 };
 use enco_kernel::{
     AttachmentContent, Channel, ChannelAdapter, ChannelCallError, ChannelCommand, ChannelFault,
-    ChannelIdentity, ChannelReading, ChannelSent, ChannelSettings, Store, StoreError,
+    ChannelIdentity, ChannelPacingGap, ChannelReading, ChannelSent, ChannelSettings, Store,
+    StoreError,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -29,11 +31,20 @@ mod socket;
 pub(super) struct WasmChannel {
     pre: ChannelPluginPre<HostState>,
     plugin: Arc<WasmPlugin>,
+    pacing: Option<ChannelPacingGap>,
 }
 
 impl WasmChannel {
-    pub(super) fn new(plugin: Arc<WasmPlugin>, pre: ChannelPluginPre<HostState>) -> Self {
-        Self { pre, plugin }
+    pub(super) fn new(
+        plugin: Arc<WasmPlugin>,
+        pre: ChannelPluginPre<HostState>,
+        pacing: Option<ChannelPacingGap>,
+    ) -> Self {
+        Self {
+            pre,
+            plugin,
+            pacing,
+        }
     }
 
     /// Call one export on a fresh instance, without network, clocks or randomness that vary.
@@ -142,7 +153,16 @@ impl Transport {
     async fn http(&self, request: wire::Request) -> Result<wire::Response, ChannelFault> {
         let request = request_for(&self.destinations, request)
             .map_err(|failure| convert::failure(failure, false, None))?;
-        let response = host_imports::http(&self.mapper.plugin.http, &self.credentials, request)
+        self.exchange(request, &self.credentials).await
+    }
+
+    /// Send a request whose destination is already allowed, with these credentials.
+    async fn exchange(
+        &self,
+        request: host::HttpRequest,
+        credentials: &[CallCredential],
+    ) -> Result<wire::Response, ChannelFault> {
+        let response = host_imports::http(&self.mapper.plugin.http, credentials, request)
             .await
             .map_err(|failure| {
                 let invalid = matches!(failure.kind, host::HttpErrorKind::InvalidRequest);
@@ -198,6 +218,10 @@ impl ChannelAdapter for Connection {
         self.identity.clone()
     }
 
+    fn pacing(&self) -> Option<ChannelPacingGap> {
+        self.transport.mapper.pacing
+    }
+
     async fn receive(
         &self,
         protocol: Option<Value>,
@@ -222,17 +246,39 @@ impl ChannelAdapter for Connection {
                 .await
                 .map_err(|failure| convert::failure(failure, false, Some(origin)))?
                 .map_err(|fault| convert::fault(fault, Some(origin)))?;
-            match step {
-                wire::FetchStep::Request(request) => {
-                    let response = self.transport.http(request).await?;
-                    recorded.push(self.transport.response_record(&response).await?);
-                    responses.push(response);
+            let response = match step {
+                wire::FetchStep::Request(_) | wire::FetchStep::Download(_)
+                    if responses.len() == CHANNEL_FETCH_REQUESTS =>
+                {
+                    let failure = crate::convert::bad(format!(
+                        "channel fetch asked for more than {CHANNEL_FETCH_REQUESTS} requests"
+                    ));
+                    return Err(convert::failure(failure, false, Some(origin)).into());
+                }
+                wire::FetchStep::Request(request) => self.transport.http(request).await?,
+                wire::FetchStep::Download(url) => {
+                    // Content chose this address: outside the mapper's origins it only leaves
+                    // the attachment unviewable, and it never carries the service's credentials.
+                    let url = match self.transport.destinations.download(&url) {
+                        Ok(url) => url,
+                        Err(refused) => return Ok(AttachmentContent::Unavailable(refused.message)),
+                    };
+                    let request = host::HttpRequest {
+                        method: "GET".into(),
+                        url: url.into(),
+                        headers: Vec::new(),
+                        body: None,
+                        timeout_ms: None,
+                    };
+                    self.transport.exchange(request, &[]).await?
                 }
                 wire::FetchStep::Image(bytes) => return Ok(AttachmentContent::Image(bytes)),
                 wire::FetchStep::Unavailable(reason) => {
                     return Ok(AttachmentContent::Unavailable(reason));
                 }
-            }
+            };
+            recorded.push(self.transport.response_record(&response).await?);
+            responses.push(response);
         }
     }
 
@@ -247,8 +293,7 @@ impl ChannelAdapter for Connection {
             .call(async |guest, store| guest.call_split(store, &input).await)
             .await
             .map_err(|failure| convert::failure(failure, false, None))?;
-        convert::parts(parts, &message)
-            .map_err(|failure| convert::failure(failure, false, None).into())
+        convert::parts(parts).map_err(|failure| convert::failure(failure, false, None).into())
     }
 
     async fn send(

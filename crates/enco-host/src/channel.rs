@@ -73,33 +73,60 @@ struct Cursor {
     target: Option<String>,
 }
 
-/// A connection's health, and the deliveries that failed for good.
+/// A connection's state, and the deliveries that failed for good.
 #[derive(Serialize)]
 pub struct ChannelStatus {
     /// The connection's name in the `channel` table.
     pub name: String,
     /// The account's state key, `<protocol>:<account>`, once the mapper identified it.
     pub key: Option<String>,
-    /// Whether the connection is working now.
-    pub running: bool,
-    /// Why it stopped, when it stopped on a failure.
-    pub stopped: Option<String>,
-    /// Recorded mapper call responsible for the stopped connection, when one exists.
-    pub failure_origin: Option<MappingOrigin>,
+    /// Where the connection is in its life.
+    pub state: ChannelState,
     /// Why publishing the protocol command menu failed; the connection continues running.
     pub menu_failure: Option<String>,
     /// The latest deliveries that failed for good.
     pub recent_failures: Vec<enco_kernel::DeliveryStatus>,
 }
 
-#[derive(Clone)]
-enum Health {
-    Running,
-    Stopped,
-    Failed {
-        reason: String,
-        origin: Option<MappingOrigin>,
+/// Where a configured connection is in its life.
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChannelState {
+    /// Identifying the account; while it retries, the latest retryable failure.
+    Opening {
+        /// The failure the next attempt follows, absent before any failed.
+        retrying: Option<ChannelFailure>,
     },
+    /// Receiving and delivering.
+    Running,
+    /// Stopped by shutdown or a change, or on a failure that needs the owner.
+    Stopped {
+        /// Why it stopped, when it stopped on a failure.
+        failure: Option<ChannelFailure>,
+    },
+    /// Not started, because another connection already owns the account.
+    Duplicate {
+        /// The connection that owns the account.
+        owner: String,
+    },
+}
+
+/// Why a connection failed, and the recorded mapper call responsible, when one exists.
+#[derive(Clone, Serialize)]
+pub struct ChannelFailure {
+    /// The failure as the owner reads it.
+    pub reason: String,
+    /// The recorded mapper call responsible, when one exists.
+    pub origin: Option<MappingOrigin>,
+}
+
+impl From<&ChannelError> for ChannelFailure {
+    fn from(error: &ChannelError) -> Self {
+        Self {
+            reason: error.to_string(),
+            origin: error.origin(),
+        }
+    }
 }
 
 /// A running connection.
@@ -110,7 +137,7 @@ pub struct Channel {
     key: String,
     kernel: Arc<Kernel>,
     stop: CancellationToken,
-    health: Arc<Mutex<Health>>,
+    state: Arc<Mutex<ChannelState>>,
     menu_failure: Arc<Mutex<Option<String>>>,
     task: Mutex<Option<JoinHandle<Result<(), ChannelError>>>>,
 }
@@ -134,12 +161,12 @@ impl Channel {
         let name = settings.name.clone();
         let key = adapter.identity().key();
         let stop = CancellationToken::new();
-        let health = Arc::new(Mutex::new(Health::Running));
+        let state = Arc::new(Mutex::new(ChannelState::Running));
         let menu_failure = Arc::new(Mutex::new(None));
         let task = tokio::spawn({
             let kernel = kernel.clone();
             let stop = stop.clone();
-            let health = health.clone();
+            let state = state.clone();
             let key = key.clone();
             let menu_failure = menu_failure.clone();
             async move {
@@ -153,18 +180,15 @@ impl Channel {
                     menu_failure,
                 )
                 .await;
-                let reason = exit
+                let failure = exit
                     .stopped
                     .as_ref()
                     .or(exit.shutdown.as_ref().err())
-                    .map(|error| (error.to_string(), error.origin()));
-                *lock(&health) = match reason {
-                    Some((reason, origin)) => {
-                        tracing::error!(%key, error = %reason, "channel stopped");
-                        Health::Failed { reason, origin }
-                    }
-                    None => Health::Stopped,
-                };
+                    .map(ChannelFailure::from);
+                if let Some(failure) = &failure {
+                    tracing::error!(%key, error = %failure.reason, "channel stopped");
+                }
+                *lock(&state) = ChannelState::Stopped { failure };
                 exit.shutdown
             }
         });
@@ -173,26 +197,20 @@ impl Channel {
             key,
             kernel,
             stop,
-            health,
+            state,
             menu_failure,
             task: Mutex::new(Some(task)),
         }
     }
 
-    /// The connection's health and its latest failed deliveries.
+    /// The connection's state and its latest failed deliveries.
     pub async fn status(&self) -> Result<ChannelStatus, KernelError> {
-        let (running, stopped, failure_origin) = match &*lock(&self.health) {
-            Health::Running => (true, None, None),
-            Health::Stopped => (false, None, None),
-            Health::Failed { reason, origin } => (false, Some(reason.clone()), *origin),
-        };
+        let state = lock(&self.state).clone();
         let menu_failure = lock(&self.menu_failure).clone();
         Ok(ChannelStatus {
             name: self.name.clone(),
             key: Some(self.key.clone()),
-            running,
-            stopped,
-            failure_origin,
+            state,
             menu_failure,
             recent_failures: self.kernel.delivery_failures(&self.key).await?,
         })

@@ -11,6 +11,7 @@ impl Connection {
         let kernel = self.kernel.clone();
         let generation = self.generation;
         let stop = self.stop.clone();
+        let pacing = self.pacing.clone();
         self.replies.spawn(async move {
             if acknowledged.await.is_err() {
                 tracing::warn!("receipt acknowledgment task stopped before answers could be sent");
@@ -26,7 +27,7 @@ impl Connection {
                         }
                     }
                     Receipt::Say { target, text } => {
-                        let sent = transport::send(adapter.clone(), kernel.clone(), generation, target, Outgoing { text, file: None }, stop.clone()).await?;
+                        let sent = transport::send(adapter.clone(), kernel.clone(), generation, target, Outgoing { text, file: None }, stop.clone(), pacing.clone()).await?;
                         if let Some(error) = sent.fatal { return Err(ChannelCallError::from(error).into()); }
                         if !matches!(sent.outcome, Settlement::Ok) { tracing::warn!(outcome = ?sent.outcome, "command receipt was not delivered"); }
                     }

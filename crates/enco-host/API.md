@@ -419,7 +419,9 @@ A connection owns its routing state; adapters own only protocol interpretation.
 
 - struct `channel::Channel` — A running connection.
 - enum `channel::ChannelError` — Why a connection stopped or could not start.
-- struct `channel::ChannelStatus` — A connection's health, and the deliveries that failed for good.
+- struct `channel::ChannelFailure` — Why a connection failed, and the recorded mapper call responsible, when one exists.
+- enum `channel::ChannelState` — Where a configured connection is in its life.
+- struct `channel::ChannelStatus` — A connection's state, and the deliveries that failed for good.
 - struct `channel::ChannelSupervisor` — Maintains the configured connections and joins each old owner before replacing it.
 - struct `channel::ConnectionSettings` — One configured account and its host routing policy.
 - const `channel::TABLE_OWNER` — Named connection tables, interpreted by the host and admitted by the registry.
@@ -453,7 +455,7 @@ until shutdown.
 pub async fn status(&self) -> Result<ChannelStatus, KernelError>
 ```
 
-The connection's health and its latest failed deliveries.
+The connection's state and its latest failed deliveries.
 
 ### `channel::Channel::shutdown`
 
@@ -499,9 +501,70 @@ Implements:
 impl Debug for ChannelError
 impl Display for ChannelError
 impl Error for ChannelError
+impl From<&ChannelError> for ChannelFailure
 impl From<ChannelCallError> for ChannelError
 impl From<Error> for ChannelError
 impl From<KernelError> for ChannelError
+```
+
+## struct `channel::ChannelFailure`
+
+`src/channel.rs`
+
+```rust
+pub struct ChannelFailure {
+    pub reason: String,
+    pub origin: Option<MappingOrigin>,
+}
+```
+
+Why a connection failed, and the recorded mapper call responsible, when one exists.
+
+- `reason` — The failure as the owner reads it.
+- `origin` — The recorded mapper call responsible, when one exists.
+
+Implements:
+
+```rust
+impl Clone for ChannelFailure
+impl From<&ChannelError> for ChannelFailure
+impl Serialize for ChannelFailure
+```
+
+## enum `channel::ChannelState`
+
+`src/channel.rs`
+
+```rust
+pub enum ChannelState {
+    Opening {
+        retrying: Option<ChannelFailure>,
+    },
+    Running,
+    Stopped {
+        failure: Option<ChannelFailure>,
+    },
+    Duplicate {
+        owner: String,
+    },
+}
+```
+
+Where a configured connection is in its life.
+
+- `Opening` — Identifying the account; while it retries, the latest retryable failure.
+  - `retrying` — The failure the next attempt follows, absent before any failed.
+- `Running` — Receiving and delivering.
+- `Stopped` — Stopped by shutdown or a change, or on a failure that needs the owner.
+  - `failure` — Why it stopped, when it stopped on a failure.
+- `Duplicate` — Not started, because another connection already owns the account.
+  - `owner` — The connection that owns the account.
+
+Implements:
+
+```rust
+impl Clone for ChannelState
+impl Serialize for ChannelState
 ```
 
 ## struct `channel::ChannelStatus`
@@ -512,21 +575,17 @@ impl From<KernelError> for ChannelError
 pub struct ChannelStatus {
     pub name: String,
     pub key: Option<String>,
-    pub running: bool,
-    pub stopped: Option<String>,
-    pub failure_origin: Option<MappingOrigin>,
+    pub state: ChannelState,
     pub menu_failure: Option<String>,
     pub recent_failures: Vec<enco_kernel::DeliveryStatus>,
 }
 ```
 
-A connection's health, and the deliveries that failed for good.
+A connection's state, and the deliveries that failed for good.
 
 - `name` — The connection's name in the `channel` table.
 - `key` — The account's state key, `<protocol>:<account>`, once the mapper identified it.
-- `running` — Whether the connection is working now.
-- `stopped` — Why it stopped, when it stopped on a failure.
-- `failure_origin` — Recorded mapper call responsible for the stopped connection, when one exists.
+- `state` — Where the connection is in its life.
 - `menu_failure` — Why publishing the protocol command menu failed; the connection continues running.
 - `recent_failures` — The latest deliveries that failed for good.
 
@@ -1824,7 +1883,7 @@ pub fn new(home: &Path, host: &[(&str, &[u8])], limits: Vec<(String, String)>, s
 ```
 
 Bind the manual of `home` to the documents the host ships, keyed by their path under
-`manual/`, and to the limits every plugin call runs within.
+`manual/`, and to the limits plugins run within.
 
 ### `development::Manual::write`
 

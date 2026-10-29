@@ -92,6 +92,7 @@ impl Connection {
             target,
             message,
             self.stop.clone(),
+            self.pacing.clone(),
         ))
     }
 

@@ -11,6 +11,7 @@ enco-manual = { workspace = true }
 schemars = { workspace = true }
 rusqlite = { workspace = true }
 reqwest = { workspace = true }
+rand = { workspace = true }
 triviumdb = { workspace = true }
 zstd = { workspace = true }
 tokio = { workspace = true, features = ["rt", "fs", "process", "io-util", "time", "sync", "macros"] }

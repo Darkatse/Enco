@@ -9,7 +9,7 @@ Nothing here depends on which plugin or service is behind a component.
 
 - enum `WasmError` — Why the plugin runtime could not start.
 - struct `WasmRuntime` — The host's plugin runtime: one engine and one HTTP client shared by every loaded plugin.
-- fn `call_limits` — What every plugin call may use, each as a description and its limit, for the manual.
+- fn `plugin_limits` — The limits plugins run within, each as a description and its limit, for the manual.
 
 ## enum `WasmError`
 
@@ -66,12 +66,12 @@ Implements:
 impl Runtime for WasmRuntime
 ```
 
-## fn `call_limits`
+## fn `plugin_limits`
 
 `src/limits.rs`
 
 ```rust
-pub fn call_limits() -> Vec<(String, String)>
+pub fn plugin_limits() -> Vec<(String, String)>
 ```
 
-What every plugin call may use, each as a description and its limit, for the manual.
+The limits plugins run within, each as a description and its limit, for the manual.

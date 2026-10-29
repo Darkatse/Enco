@@ -21,5 +21,5 @@ mod origins;
 mod plugin;
 mod runtime;
 mod tools;
-pub use limits::call_limits;
+pub use limits::plugin_limits;
 pub use runtime::{WasmError, WasmRuntime};

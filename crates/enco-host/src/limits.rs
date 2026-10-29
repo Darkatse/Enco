@@ -15,7 +15,6 @@ pub(crate) const EMBED_BATCH: usize = 64;
 
 // A destination that stays unavailable must not starve later logical deliveries.
 pub(crate) const CHANNEL_ATTEMPTS: u32 = 4;
-pub(crate) const CHANNEL_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 pub(crate) const CHANNEL_WAKE_CAPACITY: usize = 32;
 pub(crate) const CHANNEL_ACTIVITY_TOOLS: usize = 5;
 pub(crate) const CHANNEL_ACTIVITY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);

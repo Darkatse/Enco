@@ -1,6 +1,6 @@
 //! A pure test protocol whose network origins are fixed before its generation loads.
 use bindings::exports::enco::plugin::{channel, lifecycle};
-use enco_sdk::types;
+use enco_sdk::{types, channel::{Action, Content}};
 use serde_json::{Value, json};
 
 enco_sdk::export!(channel, Fixture);
@@ -31,6 +31,7 @@ impl lifecycle::Guest for Fixture {
 }
 
 impl channel::Guest for Fixture {
+    fn pacing() -> Option<channel::PacingGap> { None }
     fn origins() -> Vec<String> { vec![SOCKET.into(), CDN.into()] }
     fn identify() -> channel::Request { request("GET", "/identify") }
     fn identified(response: channel::Response) -> Result<channel::Identity, channel::Fault> {
@@ -49,7 +50,7 @@ impl channel::Guest for Fixture {
                 result.messages.push(channel::Inbound {
                     key: seq.to_string(), conversation: "one".into(), message: seq.to_string(), sender: Some("owner".into()), sender_name: None,
                     direct: true, addressed: true, reply_to: None, respond: Some(seq.to_string()),
-                    action: channel::Action::Message(channel::Content { text: frame, images: Vec::new(), unviewable: Vec::new() }),
+                    action: Action::Message(Content { text: frame, images: Vec::new(), unviewable: Vec::new() }),
                 });
                 if seq == 1 {
                     result.frames.push(json!({"op":"identify","token":null}).to_string());
@@ -63,10 +64,10 @@ impl channel::Guest for Fixture {
         }
         Ok(result)
     }
-    fn fetch(_locator: String, responses: Vec<channel::Response>) -> Result<channel::FetchStep, channel::Fault> {
+    fn fetch(locator: String, responses: Vec<channel::Response>) -> Result<channel::FetchStep, channel::Fault> {
         Ok(match responses.last() {
-            None => channel::FetchStep::Request(request("GET", &format!("{CDN}/file"))),
-            Some(response) => channel::FetchStep::Image(response.body.clone()),
+            Some(response) if locator != "endless" => channel::FetchStep::Image(response.body.clone()),
+            _ => channel::FetchStep::Download(format!("{CDN}/file")),
         })
     }
     fn split(message: channel::Outgoing) -> Vec<channel::Outgoing> { vec![message] }
