@@ -956,6 +956,7 @@ impl Clone for ChannelSettings
 pub struct ChannelToolActivity {
     pub name: String,
     pub state: ChannelToolState,
+    pub summary: String,
 }
 ```
 
@@ -963,6 +964,8 @@ One tool call visible in a Run's progress view.
 
 - `name` — The tool's model-visible name, without its arguments.
 - `state` — The call's current outcome.
+- `summary` — The values of the call's required arguments in its schema's order, on one line the host
+  shortens; empty when it has none.
 
 Implements:
 
@@ -2110,6 +2113,14 @@ pub async fn log(&self, session: SessionId, after: Option<LogPos>) -> Result<Vec
 ```
 
 Read immutable facts in structural order.
+
+### `Kernel::plan`
+
+```rust
+pub async fn plan(&self, hash: &ContentHash) -> Result<ContextPlan, KernelError>
+```
+
+The frozen plan an Attempt recorded at `hash`, including the tools it disclosed.
 
 ### `Kernel::registry`
 

@@ -17,6 +17,7 @@ pub(crate) const EMBED_BATCH: usize = 64;
 pub(crate) const CHANNEL_ATTEMPTS: u32 = 4;
 pub(crate) const CHANNEL_WAKE_CAPACITY: usize = 32;
 pub(crate) const CHANNEL_ACTIVITY_TOOLS: usize = 5;
+pub(crate) const CHANNEL_ACTIVITY_SUMMARY_CHARS: usize = 60;
 pub(crate) const CHANNEL_ACTIVITY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
 pub(crate) const RECENT_DELIVERY_FAILURES: u32 = 10;
 pub(crate) const BUILD_DIAGNOSTICS: usize = 12;

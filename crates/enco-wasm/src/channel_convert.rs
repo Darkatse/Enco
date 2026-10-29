@@ -203,8 +203,13 @@ pub(super) fn activity(value: &enco_kernel::ChannelActivity) -> wire::ActivityVi
         tools: tools
             .iter()
             .map(
-                |enco_kernel::ChannelToolActivity { name, state }| wire::ToolActivity {
+                |enco_kernel::ChannelToolActivity {
+                     name,
+                     state,
+                     summary,
+                 }| wire::ToolActivity {
                     name: name.clone(),
+                    summary: summary.clone(),
                     state: match state {
                         enco_kernel::ChannelToolState::Running => wire::ToolState::Running,
                         enco_kernel::ChannelToolState::Ok => wire::ToolState::Ok,

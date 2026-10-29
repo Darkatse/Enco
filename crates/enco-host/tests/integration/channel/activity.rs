@@ -47,10 +47,18 @@ async fn progress_tracks_tools_and_shows_presence_until_the_reply_deletes_the_ca
     let progress = receive(&mut sending).await;
     assert_eq!(progress.text, "working");
     tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(4)).await;
-    let refreshed = receive(&mut activity).await;
-    assert_eq!(refreshed.shown.as_deref(), Some("card"));
-    assert_eq!(receive(&mut presence).await, "chat");
+    // The connection observes the shell call on its own cursor; refresh until the card shows it.
+    let refreshed = loop {
+        tokio::time::advance(Duration::from_secs(4)).await;
+        let refreshed = receive(&mut activity).await;
+        assert_eq!(refreshed.shown.as_deref(), Some("card"));
+        assert_eq!(receive(&mut presence).await, "chat");
+        let tools = &refreshed.view.as_ref().unwrap().tools;
+        if tools.iter().any(|tool| tool.name == "shell_exec") {
+            break refreshed;
+        }
+        refreshed.result.send(Ok(None)).unwrap();
+    };
     assert!(
         refreshed
             .view
@@ -58,6 +66,7 @@ async fn progress_tracks_tools_and_shows_presence_until_the_reply_deletes_the_ca
             .tools
             .iter()
             .any(|tool| tool.name == "shell_exec"
+                && tool.summary == "read line < gate"
                 && matches!(tool.state, enco_kernel::ChannelToolState::Running))
     );
     tokio::time::resume();

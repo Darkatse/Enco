@@ -374,8 +374,9 @@ fn runs_show_typing_and_a_card_created_edited_and_deleted_with_cancel() -> Resul
         elapsed_seconds: 125,
         tools: (2..7)
             .map(|index| ToolActivity {
-                name: format!("tool-{index}"),
+                name: format!("tool_{index}"),
                 state: ToolState::Running,
+                summary: format!("*.rs {index}"),
             })
             .collect(),
     };
@@ -386,8 +387,9 @@ fn runs_show_typing_and_a_card_created_edited_and_deleted_with_cancel() -> Resul
         .as_str()
         .ok_or("text")?;
     assert!(content.starts_with("Working 2:05"));
-    assert!(content.contains("… tool-2"));
-    assert!(content.contains("… tool-6"));
+    // Arguments may hold Markdown; the card shows them as written.
+    assert!(content.contains(r"… tool\_2 · \*.rs 2"));
+    assert!(content.contains(r"… tool\_6 · \*.rs 6"));
     assert_eq!(
         body["components"][0]["components"][1]["components"][0]["custom_id"],
         "cancel"

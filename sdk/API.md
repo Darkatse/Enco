@@ -192,8 +192,8 @@ pub fn text(&self) -> String
 
 The activity card's text: `Working` and the elapsed `m:ss`, then a line per tool.
 
-Each tool line is a mark and the tool's name; the marks are `…` running, `✓` ok,
-`✗` failed and `?` unknown.
+Each tool line is a mark, the tool's name and, after ` · `, its argument summary when it
+has one; the marks are `…` running, `✓` ok, `✗` failed and `?` unknown.
 
 Implements:
 
@@ -345,6 +345,7 @@ One part of a `multipart/form-data` body.
 pub struct ToolActivity {
     pub name: String,
     pub state: ToolState,
+    pub summary: String,
 }
 ```
 
@@ -352,6 +353,8 @@ One tool call shown in an activity view.
 
 - `name` — The tool's name, as the model calls it.
 - `state` — Where the call stands.
+- `summary` — The values of the call's required arguments in its schema's order, on one line the host
+  shortens; empty when it has none.
 
 Implements:
 

@@ -354,6 +354,11 @@ impl Kernel {
         Ok(self.deps.store.log(session, after).await?)
     }
 
+    /// The frozen plan an Attempt recorded at `hash`, including the tools it disclosed.
+    pub async fn plan(&self, hash: &ContentHash) -> Result<ContextPlan, KernelError> {
+        Ok(self.deps.store.plan(hash).await?)
+    }
+
     /// Plugin commands share the registry used by completion and embedding callers.
     pub fn registry(&self) -> &Arc<Registry> {
         &self.deps.registry

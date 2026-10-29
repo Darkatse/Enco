@@ -2,6 +2,8 @@
 //! creation and cleanup, while presence keeps nothing.
 use super::*;
 use enco_kernel::{ChannelActivity, ChannelSent, ChannelToolActivity, ChannelToolState};
+use serde_json::Map;
+use std::collections::{HashMap, hash_map::Entry};
 
 #[derive(Default)]
 pub(super) struct Observation {
@@ -14,8 +16,18 @@ pub(super) struct Observation {
 struct ObservedRun {
     id: RunId,
     started: DateTime<Utc>,
-    tools: Vec<(CallId, ChannelToolActivity)>,
+    /// The latest reply Attempt's plan, whose tools its calls were checked against.
+    plan: Option<ContentHash>,
+    /// The latest reply's calls, until each starts.
+    proposed: BTreeMap<CallId, Map<String, Value>>,
+    tools: Vec<ObservedTool>,
     ended: bool,
+}
+struct ObservedTool {
+    call: CallId,
+    activity: ChannelToolActivity,
+    /// Its arguments and the plan whose schema orders them, until a view needs their summary.
+    arguments: Option<(ContentHash, Map<String, Value>)>,
 }
 /// The one creation attempt a Run's card gets, handed over when the connection is replaced.
 #[derive(Clone, Serialize, Deserialize)]
@@ -61,6 +73,8 @@ impl Connection {
                     observation.run = Some(ObservedRun {
                         id: run,
                         started: entry.at,
+                        plan: None,
+                        proposed: BTreeMap::new(),
                         tools: Vec::new(),
                         ended: false,
                     })
@@ -75,17 +89,44 @@ impl Connection {
                         observation.ended.insert(run, entry.pos);
                     }
                 }
+                EntryBody::AttemptStarted {
+                    purpose: AttemptPurpose::Reply,
+                    plan,
+                    ..
+                } => {
+                    if let Some(run) = &mut observation.run {
+                        run.plan = Some(plan);
+                    }
+                }
+                EntryBody::AttemptSettled {
+                    result: AttemptResult::Completed { message, .. },
+                    ..
+                } => {
+                    if let Some(run) = &mut observation.run {
+                        // Only calls that parse as objects can start.
+                        run.proposed = message
+                            .tool_calls()
+                            .filter_map(|call| match Arguments::parse(&call.arguments) {
+                                Arguments::Object(arguments) => Some((call.id, arguments)),
+                                Arguments::Invalid { .. } => None,
+                            })
+                            .collect();
+                    }
+                }
                 EntryBody::ToolCallStarted {
                     call, capability, ..
                 } => {
                     if let Some(run) = &mut observation.run {
-                        run.tools.push((
+                        let arguments = run.plan.zip(run.proposed.remove(&call));
+                        run.tools.push(ObservedTool {
                             call,
-                            ChannelToolActivity {
+                            activity: ChannelToolActivity {
                                 name: capability.name,
                                 state: ChannelToolState::Running,
+                                summary: String::new(),
                             },
-                        ));
+                            arguments,
+                        });
                         let excess = run
                             .tools
                             .len()
@@ -95,9 +136,9 @@ impl Connection {
                 }
                 EntryBody::ToolCallSettled { call, outcome, .. } => {
                     if let Some(run) = &mut observation.run
-                        && let Some((_, tool)) = run.tools.iter_mut().find(|(id, _)| *id == call)
+                        && let Some(tool) = run.tools.iter_mut().find(|tool| tool.call == call)
                     {
-                        tool.state = match outcome {
+                        tool.activity.state = match outcome {
                             Settlement::Ok => ChannelToolState::Ok,
                             Settlement::Failed { .. } => ChannelToolState::Failed,
                             Settlement::Unknown { .. } => ChannelToolState::Unknown,
@@ -115,8 +156,9 @@ impl Connection {
     pub(super) async fn refresh_activity(&mut self, refresh: bool) -> Result<(), ChannelError> {
         self.send_presence(refresh);
         let mut requests = Vec::new();
-        for (session, observation) in &self.observations {
-            let Some(run) = &observation.run else {
+        let mut plans = HashMap::new();
+        for (session, observation) in &mut self.observations {
+            let Some(run) = &mut observation.run else {
                 continue;
             };
             if run.ended || self.activity_busy.contains(&run.id) {
@@ -134,12 +176,13 @@ impl Connection {
                 }) if refresh => (Operation::Refresh, target, Some(shown.clone())),
                 Some(_) => continue,
             };
+            summarize(&self.kernel, &mut plans, run).await?;
             let view = ChannelActivity {
                 elapsed_seconds: u32::try_from(
                     (self.clock.now() - run.started).num_seconds().max(0),
                 )
                 .unwrap_or(u32::MAX),
-                tools: run.tools.iter().map(|(_, tool)| tool.clone()).collect(),
+                tools: run.tools.iter().map(|tool| tool.activity.clone()).collect(),
             };
             requests.push((run.id, operation, target.clone(), shown, Some(view)));
         }
@@ -290,5 +333,82 @@ impl Connection {
         if let Some(observation) = self.observations.get_mut(&session) {
             observation.ended.remove(&run);
         }
+    }
+}
+
+/// Summarize the Run's tools that still hold their arguments, just before a view shows them;
+/// `plans` keeps each plan read once per refresh.
+async fn summarize(
+    kernel: &Kernel,
+    plans: &mut HashMap<ContentHash, ContextPlan>,
+    run: &mut ObservedRun,
+) -> Result<(), ChannelError> {
+    for tool in &mut run.tools {
+        let Some((hash, arguments)) = tool.arguments.take() else {
+            continue;
+        };
+        let plan = match plans.entry(hash) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(kernel.plan(&hash).await?),
+        };
+        tool.activity.summary = summary(&arguments, &required(plan, &tool.activity.name));
+    }
+    Ok(())
+}
+
+/// The arguments `tool` must be given, in the order its disclosed schema lists them.
+fn required<'a>(plan: &'a ContextPlan, tool: &str) -> Vec<&'a str> {
+    plan.tools
+        .iter()
+        .find(|(_, spec)| spec.name == tool)
+        .and_then(|(_, spec)| spec.input_schema.get("required")?.as_array())
+        .map_or_else(Vec::new, |names| {
+            names.iter().filter_map(Value::as_str).collect()
+        })
+}
+
+/// The values of a call's `required` arguments on one line of at most
+/// `CHANNEL_ACTIVITY_SUMMARY_CHARS` characters; optional arguments are left out.
+fn summary(arguments: &Map<String, Value>, required: &[&str]) -> String {
+    let values: Vec<_> = required
+        .iter()
+        .filter_map(|name| arguments.get(*name))
+        .map(|value| match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        })
+        .collect();
+    let line = values
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let limit = crate::limits::CHANNEL_ACTIVITY_SUMMARY_CHARS;
+    if line.chars().count() <= limit {
+        return line;
+    }
+    let mut shortened: String = line.chars().take(limit - 1).collect();
+    shortened.push('…');
+    shortened
+}
+
+#[cfg(test)]
+mod tests {
+    use super::summary;
+    use serde_json::json;
+
+    #[test]
+    fn summaries_follow_the_required_order_and_leave_optional_arguments_out() {
+        let arguments = json!({
+            "content": "fn main() {}\n".repeat(10),
+            "path": "src/main.rs",
+            "timeout_ms": 5,
+        });
+        let arguments = arguments.as_object().unwrap();
+        let written = summary(arguments, &["path", "content"]);
+        assert!(written.starts_with("src/main.rs fn main() {} fn main"));
+        assert_eq!(written.chars().count(), 60);
+        assert!(written.ends_with('…'));
+        assert_eq!(summary(arguments, &[]), "");
     }
 }

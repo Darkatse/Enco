@@ -239,6 +239,9 @@ pub struct ChannelToolActivity {
     pub name: String,
     /// The call's current outcome.
     pub state: ChannelToolState,
+    /// The values of the call's required arguments in its schema's order, on one line the host
+    /// shortens; empty when it has none.
+    pub summary: String,
 }
 
 /// A tool's current state in a progress view.

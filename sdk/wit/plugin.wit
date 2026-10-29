@@ -1181,6 +1181,9 @@ interface channel {
         name: string,
         /// Where the call stands.
         state: tool-state,
+        /// The values of the call's required arguments in its schema's order, on one line the host
+        /// shortens; empty when it has none.
+        summary: string,
     }
 
     /// Where a tool call stands.

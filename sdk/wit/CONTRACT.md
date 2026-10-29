@@ -1226,6 +1226,7 @@ One tool call shown in an activity view.
 |---|---|---|
 | `name` | `string` | The tool's name, as the model calls it. |
 | `state` | `tool-state` | Where the call stands. |
+| `summary` | `string` | The values of the call's required arguments in its schema's order, on one line the host shortens; empty when it has none. |
 
 #### record `activity-view`
 

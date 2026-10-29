@@ -149,6 +149,19 @@ fn text_components(text: &str) -> Vec<Value> {
     components
 }
 
+/// `text` shown as written in Discord's Markdown, as tool arguments may contain its inline syntax:
+/// emphasis, code, spoilers, mentions and masked links.
+fn literal(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        if matches!(character, '\\' | '*' | '_' | '~' | '`' | '|' | '<' | '[') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
 /// A message body showing `components` in the accent container, mentioning no one.
 fn components_v2(components: Vec<Value>) -> Value {
     let container = json!({"type": 17, "accent_color": ACCENT_COLOR, "components": components});
@@ -223,7 +236,7 @@ pub(super) fn activity(
                 "custom_id": "cancel",
             });
             let body = components_v2(vec![
-                json!({"type": 10, "content": activity.text()}),
+                json!({"type": 10, "content": literal(&activity.text())}),
                 json!({"type": 1, "components": [cancel]}),
             ]);
             Some(match shown {

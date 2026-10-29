@@ -58,8 +58,8 @@ pub const CANCEL_LABEL: &str = "Cancel";
 impl ActivityView {
     /// The activity card's text: `Working` and the elapsed `m:ss`, then a line per tool.
     ///
-    /// Each tool line is a mark and the tool's name; the marks are `…` running, `✓` ok,
-    /// `✗` failed and `?` unknown.
+    /// Each tool line is a mark, the tool's name and, after ` · `, its argument summary when it
+    /// has one; the marks are `…` running, `✓` ok, `✗` failed and `?` unknown.
     pub fn text(&self) -> String {
         let mut text = format!(
             "Working {}:{:02}",
@@ -74,6 +74,9 @@ impl ActivityView {
                 ToolState::Unknown => "?",
             };
             text.push_str(&format!("\n{mark} {}", tool.name));
+            if !tool.summary.is_empty() {
+                text.push_str(&format!(" · {}", tool.summary));
+            }
         }
         text
     }
