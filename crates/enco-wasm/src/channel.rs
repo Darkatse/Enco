@@ -5,7 +5,6 @@ use crate::{
     channel_convert as convert,
     credentials::{self, CallCredential},
     host_imports::{self, HostState},
-    limits::CHANNEL_FETCH_REQUESTS,
     origins::Destinations,
     plugin::WasmPlugin,
 };
@@ -14,9 +13,9 @@ use enco_core::{
     ContentHash, Failure, FileData, GenerationId, MappingOrigin, MappingRecord, Outgoing, code,
 };
 use enco_kernel::{
-    AttachmentContent, Channel, ChannelAdapter, ChannelCallError, ChannelCommand, ChannelFault,
-    ChannelIdentity, ChannelPacingGap, ChannelReading, ChannelSent, ChannelSettings, Store,
-    StoreError,
+    Channel, ChannelAdapter, ChannelCallError, ChannelCommand, ChannelFault, ChannelIdentity,
+    ChannelPacingGap, ChannelQuotedMessage, ChannelReading, ChannelSent, ChannelSettings, Fetched,
+    Store, StoreError,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -24,6 +23,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use wasmtime::Store as WasmStore;
 
+mod fetch;
 mod receiver;
 mod socket;
 
@@ -231,55 +231,15 @@ impl ChannelAdapter for Connection {
         receiver::receive(self, protocol, readings, stop).await
     }
 
-    async fn fetch(&self, locator: &str) -> Result<AttachmentContent, ChannelCallError> {
-        let mut responses = Vec::new();
-        let mut recorded = Vec::new();
-        loop {
-            let origin = self
-                .transport
-                .record("fetch", json!({"locator": locator, "responses": recorded}))
-                .await?;
-            let step = self
-                .transport
-                .mapper
-                .call(async |guest, store| guest.call_fetch(store, locator, &responses).await)
-                .await
-                .map_err(|failure| convert::failure(failure, false, Some(origin)))?
-                .map_err(|fault| convert::fault(fault, Some(origin)))?;
-            let response = match step {
-                wire::FetchStep::Request(_) | wire::FetchStep::Download(_)
-                    if responses.len() == CHANNEL_FETCH_REQUESTS =>
-                {
-                    let failure = crate::convert::bad(format!(
-                        "channel fetch asked for more than {CHANNEL_FETCH_REQUESTS} requests"
-                    ));
-                    return Err(convert::failure(failure, false, Some(origin)).into());
-                }
-                wire::FetchStep::Request(request) => self.transport.http(request).await?,
-                wire::FetchStep::Download(url) => {
-                    // Content chose this address: outside the mapper's origins it only leaves
-                    // the attachment unviewable, and it never carries the service's credentials.
-                    let url = match self.transport.destinations.download(&url) {
-                        Ok(url) => url,
-                        Err(refused) => return Ok(AttachmentContent::Unavailable(refused.message)),
-                    };
-                    let request = host::HttpRequest {
-                        method: "GET".into(),
-                        url: url.into(),
-                        headers: Vec::new(),
-                        body: None,
-                        timeout_ms: None,
-                    };
-                    self.transport.exchange(request, &[]).await?
-                }
-                wire::FetchStep::Image(bytes) => return Ok(AttachmentContent::Image(bytes)),
-                wire::FetchStep::Unavailable(reason) => {
-                    return Ok(AttachmentContent::Unavailable(reason));
-                }
-            };
-            recorded.push(self.transport.response_record(&response).await?);
-            responses.push(response);
-        }
+    async fn fetch_image(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError> {
+        self.image(locator).await
+    }
+
+    async fn fetch_quote(
+        &self,
+        locator: &str,
+    ) -> Result<Fetched<Vec<ChannelQuotedMessage>>, ChannelCallError> {
+        self.quote(locator).await
     }
 
     async fn split(

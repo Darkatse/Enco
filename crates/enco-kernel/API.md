@@ -13,7 +13,6 @@ Session execution through explicit ports.
 - struct `ActiveConfig` — The active configuration generation: registered content plus the declarations derived from it.
 - enum `Answer` — Finite probabilities in [0, 1], or a refusal for this question. Choice and score distributions follow label order and sum to one, allowing rounding.
 - enum `ArtifactSource` — Newly built bytes or a content address already known to the store.
-- enum `AttachmentContent` — The result of reading an attachment.
 - struct `BoundComposer` — A composer generation paired with options accepted by that generation's schema.
 - struct `Budget` — Context limits supplied by configuration.
 - struct `CallContext` — Invocation identity, cooperative cancellation and the inline result budget.
@@ -31,6 +30,9 @@ Session execution through explicit ports.
 - struct `ChannelInput` — An incoming message, before host authorization or attachment fetching.
 - struct `ChannelMessage` — One protocol message, its acceptance key and recorded origin.
 - struct `ChannelPacingGap` — The time the host leaves before each protocol message sent through one connection.
+- struct `ChannelQuote` — Messages carried by an input, or the protocol locator by which to read them.
+- enum `ChannelQuoted` — The protocol's available representation of quoted content.
+- struct `ChannelQuotedMessage` — One quoted message before the host reads images and records owner identity.
 - enum `ChannelReading` — One arrival's messages and protocol checkpoint, delivered in receive order.
 - struct `ChannelSent` — The confirmed result of sending one part.
 - struct `ChannelSettings` — The service and secret names chosen for one connection; values remain in transport.
@@ -64,6 +66,7 @@ Session execution through explicit ports.
 - struct `Exports` — Derived routing view. Holding it does not prevent the registry from publishing a new view.
 - struct `FactoryPlugin` — A plugin supplied with the host binary.
 - struct `FactoryStatus` — Current host-owned recovery code and whether registered intent needs to follow it.
+- struct `Fetched` — What a channel mapper's fetch found at a locator.
 - struct `HeaderPlacement` — A request header carrying a credential.
 - enum `ImageError` — Image ingestion either rejects its input or reports a storage failure.
 - struct `Inspection` — An Attempt reconstructed exclusively from its recorded plan and Log prefix.
@@ -353,28 +356,6 @@ pub fn hash(&self) -> ContentHash
 
 Address the offered code without loading it or changing retention.
 
-## enum `AttachmentContent`
-
-`src/ports/channel.rs`
-
-```rust
-pub enum AttachmentContent {
-    Image(Vec<u8>),
-    Unavailable(String),
-}
-```
-
-The result of reading an attachment.
-
-- `Image` — Image bytes to validate and store.
-- `Unavailable` — Why the protocol cannot provide a usable image.
-
-Implements:
-
-```rust
-impl Debug for AttachmentContent
-```
-
 ## struct `BoundComposer`
 
 `src/registry/exports.rs`
@@ -572,8 +553,8 @@ impl Serialize for Cause
 `src/ports/channel.rs`
 
 ```rust
-pub enum ChannelAction<T = ChannelAttachment> {
-    Message(ChannelContent<T>),
+pub enum ChannelAction<T = ChannelAttachment, Q = ChannelQuote> {
+    Message(ChannelContent<T, Q>),
     Sessions,
     SelectSession(String),
     Cancel,
@@ -628,6 +609,12 @@ An image still held by the protocol.
 
 - `what` — A description, such as a file name and media type.
 - `locator` — The mapper's opaque locator for fetching it.
+
+Implements:
+
+```rust
+impl Debug for ChannelAttachment
+```
 
 ## struct `ChannelBackoff`
 
@@ -726,10 +713,11 @@ The commands understood by the connection owner.
 `src/ports/channel.rs`
 
 ```rust
-pub struct ChannelContent<T> {
+pub struct ChannelContent<T, Q = ChannelQuote> {
     pub text: String,
     pub images: Vec<T>,
     pub unviewable: Vec<enco_core::Unviewable>,
+    pub quote: Option<Q>,
 }
 ```
 
@@ -738,12 +726,13 @@ Text and attachments before or after fetching.
 - `text` — The message's text.
 - `images` — Images in protocol order, before or after attachment fetching.
 - `unviewable` — Other attachments and why they cannot be viewed.
+- `quote` — The messages this input replies to or forwards.
 
 Implements:
 
 ```rust
-impl<T> From<&str> for ChannelContent<T>
-impl<T> From<String> for ChannelContent<T>
+impl<T, Q> From<&str> for ChannelContent<T, Q>
+impl<T, Q> From<String> for ChannelContent<T, Q>
 ```
 
 ## struct `ChannelFault`
@@ -878,6 +867,86 @@ Implements:
 ```rust
 impl Clone for ChannelPacingGap
 impl Copy for ChannelPacingGap
+```
+
+## struct `ChannelQuote`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelQuote {
+    pub kind: enco_core::QuoteKind,
+    pub messages: ChannelQuoted,
+}
+```
+
+Messages carried by an input, or the protocol locator by which to read them.
+
+- `kind` — Whether the input replies to the messages or forwards them.
+- `messages` — Content supplied by the protocol or waiting for preparation.
+
+Implements:
+
+```rust
+impl Debug for ChannelQuote
+```
+
+## enum `ChannelQuoted`
+
+`src/ports/channel.rs`
+
+```rust
+pub enum ChannelQuoted {
+    Messages(Vec<ChannelQuotedMessage>),
+    Fetch(String),
+    Unavailable(String),
+}
+```
+
+The protocol's available representation of quoted content.
+
+- `Messages` — Already carried by this input.
+- `Fetch` — An opaque locator passed to the same mapper's fetch function.
+- `Unavailable` — Why the protocol cannot supply the messages.
+
+Implements:
+
+```rust
+impl Debug for ChannelQuoted
+```
+
+## struct `ChannelQuotedMessage`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelQuotedMessage {
+    pub depth: u8,
+    pub sender: Option<String>,
+    pub sender_name: Option<String>,
+    pub conversation_name: Option<String>,
+    pub sent_at: Option<enco_core::DateTime<enco_core::Utc>>,
+    pub text: String,
+    pub images: Vec<ChannelAttachment>,
+    pub unviewable: Vec<enco_core::Unviewable>,
+}
+```
+
+One quoted message before the host reads images and records owner identity.
+
+- `depth` — Nesting depth; nested forwards follow their parent one level deeper.
+- `sender` — The sender's protocol ID, when reported.
+- `sender_name` — The sender's display name, when reported.
+- `conversation_name` — The named original conversation, when it was elsewhere.
+- `sent_at` — When the message was first sent, when reported.
+- `text` — The protocol's readable message text.
+- `images` — Images still held by the protocol, in message order.
+- `unviewable` — Content that could not be shown, and why.
+
+Implements:
+
+```rust
+impl Debug for ChannelQuotedMessage
 ```
 
 ## enum `ChannelReading`
@@ -1772,6 +1841,29 @@ Implements:
 ```rust
 impl Clone for FactoryStatus
 impl Serialize for FactoryStatus
+```
+
+## struct `Fetched`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct Fetched<T> {
+    pub content: Result<T, String>,
+    pub origin: Option<enco_core::MappingOrigin>,
+}
+```
+
+What a channel mapper's fetch found at a locator.
+
+- `content` — The content, or why the protocol cannot provide it.
+- `origin` — The last recorded fetch call, which holds every response the mapper read; absent only
+  when a failure carried none.
+
+Implements:
+
+```rust
+impl<T: Debug> Debug for Fetched<T>
 ```
 
 ## struct `HeaderPlacement`
@@ -4404,14 +4496,22 @@ async fn receive(&self, protocol: Option<Value>, readings: mpsc::UnboundedSender
 
 Receive arrivals without waiting for preparation; drain receipt acknowledgments on stop.
 
-### `ChannelAdapter::fetch`
+### `ChannelAdapter::fetch_image`
 
 ```rust
-async fn fetch(&self, locator: &str) -> Result<AttachmentContent, ChannelCallError>
+async fn fetch_image(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError>
 ```
 
-Fetch an attachment; one whose address from content is outside the mapper's origins is
-unavailable. Reads have no external effects.
+Fetch the image at an attachment's locator; an address from content outside the mapper's
+origins is unavailable. Reads have no external effects.
+
+### `ChannelAdapter::fetch_quote`
+
+```rust
+async fn fetch_quote(&self, locator: &str) -> Result<Fetched<Vec<ChannelQuotedMessage>>, ChannelCallError>
+```
+
+Fetch the messages at a quote's locator, in protocol order. Reads have no external effects.
 
 ### `ChannelAdapter::split`
 

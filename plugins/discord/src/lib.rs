@@ -1,4 +1,5 @@
 //! Discord Gateway and Components V2 translation; the host owns all I/O and state.
+mod content;
 mod gateway;
 mod incoming;
 mod outgoing;
@@ -96,7 +97,7 @@ impl channel::Guest for Plugin {
         gateway::received(identity, state.as_deref(), arrival)
     }
 
-    fn fetch(locator: String, responses: Vec<Response>) -> Result<FetchStep, Fault> {
+    fn fetch(locator: String, responses: Vec<Response>, _limit: u32) -> Result<FetchStep, Fault> {
         let Some(response) = responses.into_iter().next() else {
             return Ok(FetchStep::Download(locator));
         };

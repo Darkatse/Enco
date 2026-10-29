@@ -13,11 +13,11 @@ use enco_host::{
     channel::{Channel, ChannelState, ConnectionSettings},
 };
 use enco_kernel::{
-    AttachmentContent, ChannelAction as Action, ChannelActivity, ChannelAdapter as Adapter,
+    ChannelAction as Action, ChannelActivity, ChannelAdapter as Adapter,
     ChannelAttachment as Attachment, ChannelCallError, ChannelCommand,
     ChannelContent as MessageContent, ChannelFault as Fault, ChannelIdentity as Identity,
-    ChannelInput as Input, ChannelMessage, ChannelReading, ChannelSent, ConnectionWrite, Kernel,
-    Store,
+    ChannelInput as Input, ChannelMessage, ChannelQuotedMessage, ChannelReading, ChannelSent,
+    ConnectionWrite, Fetched, Kernel, Store,
 };
 use serde_json::{Value, json};
 use std::{
@@ -53,16 +53,40 @@ struct Send {
     result: oneshot::Sender<Result<(), Fault>>,
 }
 
-struct Fetch {
+struct Fetch<T> {
     locator: String,
-    result: oneshot::Sender<Result<AttachmentContent, Fault>>,
+    result: oneshot::Sender<Result<Fetched<T>, Fault>>,
+}
+
+impl<T> Fetch<T> {
+    async fn ask(
+        requests: &mpsc::UnboundedSender<Self>,
+        locator: &str,
+    ) -> Result<Fetched<T>, ChannelCallError> {
+        let (result, receive) = oneshot::channel();
+        requests
+            .send(Fetch {
+                locator: locator.into(),
+                result,
+            })
+            .unwrap();
+        receive.await.unwrap().map_err(Into::into)
+    }
+}
+
+fn fetched<T>(content: Result<T, &str>) -> Fetched<T> {
+    Fetched {
+        content: content.map_err(str::to_owned),
+        origin: None,
+    }
 }
 
 struct ControlledChannel {
     updates: Mutex<mpsc::Receiver<Vec<Update>>>,
     polls: mpsc::UnboundedSender<Value>,
     sends: mpsc::UnboundedSender<Send>,
-    fetches: mpsc::UnboundedSender<Fetch>,
+    fetches: mpsc::UnboundedSender<Fetch<Vec<u8>>>,
+    quotes: mpsc::UnboundedSender<Fetch<Vec<ChannelQuotedMessage>>>,
     sent: AtomicU32,
     pacing: std::sync::Mutex<Option<enco_kernel::ChannelPacingGap>>,
     invalid_state: Mutex<Option<Option<Value>>>,
@@ -159,15 +183,14 @@ impl Adapter for ControlledChannel {
             tokio::select! { _ = stop.cancelled() => return Ok(()), _ = done => {} }
         }
     }
-    async fn fetch(&self, locator: &str) -> Result<AttachmentContent, ChannelCallError> {
-        let (result, receive) = oneshot::channel();
-        self.fetches
-            .send(Fetch {
-                locator: locator.into(),
-                result,
-            })
-            .unwrap();
-        receive.await.unwrap().map_err(Into::into)
+    async fn fetch_image(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError> {
+        Fetch::ask(&self.fetches, locator).await
+    }
+    async fn fetch_quote(
+        &self,
+        locator: &str,
+    ) -> Result<Fetched<Vec<ChannelQuotedMessage>>, ChannelCallError> {
+        Fetch::ask(&self.quotes, locator).await
     }
     async fn split(
         &self,
@@ -287,7 +310,8 @@ struct Harness {
     updates: mpsc::Sender<Vec<Update>>,
     polling: mpsc::UnboundedReceiver<Value>,
     sending: mpsc::UnboundedReceiver<Send>,
-    fetching: mpsc::UnboundedReceiver<Fetch>,
+    fetching: mpsc::UnboundedReceiver<Fetch<Vec<u8>>>,
+    quoting: mpsc::UnboundedReceiver<Fetch<Vec<ChannelQuotedMessage>>>,
     activity: mpsc::UnboundedReceiver<Activity>,
     presence: mpsc::UnboundedReceiver<String>,
 }
@@ -302,7 +326,8 @@ struct Traffic {
     updates: mpsc::Sender<Vec<Update>>,
     polling: mpsc::UnboundedReceiver<Value>,
     sending: mpsc::UnboundedReceiver<Send>,
-    fetching: mpsc::UnboundedReceiver<Fetch>,
+    fetching: mpsc::UnboundedReceiver<Fetch<Vec<u8>>>,
+    quoting: mpsc::UnboundedReceiver<Fetch<Vec<ChannelQuotedMessage>>>,
     activity: mpsc::UnboundedReceiver<Activity>,
     presence: mpsc::UnboundedReceiver<String>,
 }
@@ -311,6 +336,7 @@ fn traffic() -> Traffic {
     let (polls, polling) = mpsc::unbounded_channel();
     let (sends, sending) = mpsc::unbounded_channel();
     let (fetches, fetching) = mpsc::unbounded_channel();
+    let (quotes, quoting) = mpsc::unbounded_channel();
     let (activities, activity) = mpsc::unbounded_channel();
     let (presences, presence) = mpsc::unbounded_channel();
     let adapter = Arc::new(ControlledChannel {
@@ -318,6 +344,7 @@ fn traffic() -> Traffic {
         polls,
         sends,
         fetches,
+        quotes,
         sent: AtomicU32::new(0),
         pacing: std::sync::Mutex::new(None),
         invalid_state: Mutex::new(None),
@@ -341,6 +368,7 @@ fn traffic() -> Traffic {
         polling,
         sending,
         fetching,
+        quoting,
         activity,
         presence,
     }
@@ -353,6 +381,7 @@ fn controlled(kernel: Kernel, store: Arc<SqliteStore>) -> Harness {
         polling,
         sending,
         fetching,
+        quoting,
         activity,
         presence,
     } = traffic();
@@ -364,6 +393,7 @@ fn controlled(kernel: Kernel, store: Arc<SqliteStore>) -> Harness {
         polling,
         sending,
         fetching,
+        quoting,
         activity,
         presence,
     }
@@ -688,6 +718,7 @@ const PNG: &[u8] = &[
 
 fn photo() -> Action {
     Action::Message(MessageContent {
+        quote: None,
         text: "caption".into(),
         images: vec![Attachment {
             what: "photo".into(),
@@ -747,7 +778,7 @@ async fn attachments_are_authorized_before_fetch_and_retry_after_the_committed_p
     receive(&mut fetching)
         .await
         .result
-        .send(Ok(AttachmentContent::Image(bytes.clone())))
+        .send(Ok(fetched(Ok(bytes.clone()))))
         .unwrap();
     assert_eq!(receive(&mut polling).await, json!(3));
     receive(&mut sending).await.result.send(Ok(())).unwrap();
@@ -756,9 +787,7 @@ async fn attachments_are_authorized_before_fetch_and_retry_after_the_committed_p
     receive(&mut fetching)
         .await
         .result
-        .send(Ok(AttachmentContent::Unavailable(
-            "getFile returned HTTP 403".into(),
-        )))
+        .send(Ok(fetched(Err("getFile returned HTTP 403"))))
         .unwrap();
     assert_eq!(receive(&mut polling).await, json!(4));
     receive(&mut sending).await.result.send(Ok(())).unwrap();
@@ -833,5 +862,126 @@ async fn a_receiver_failure_keeps_its_protocol_reason_when_the_preparation_queue
             if failure.reason.contains("gateway.4014")
                 && failure.reason.contains("Message Content intent is disabled")
     ));
+    kernel.shutdown().await.unwrap();
+}
+
+fn quoted_message(
+    sender: &str,
+    name: &str,
+    text: &str,
+    images: Vec<Attachment>,
+) -> ChannelQuotedMessage {
+    ChannelQuotedMessage {
+        depth: 0,
+        sender: Some(sender.into()),
+        sender_name: Some(name.into()),
+        conversation_name: None,
+        sent_at: None,
+        text: text.into(),
+        images,
+        unviewable: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn fetched_quotes_record_identity_images_and_fetch_origin_with_the_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let Harness {
+        kernel,
+        store,
+        adapter,
+        updates,
+        mut polling,
+        mut sending,
+        mut fetching,
+        mut quoting,
+        ..
+    } = harness(dir.path(), ScriptedProvider::new(vec![reply("done")])).await;
+    let channel = start(&kernel, &adapter);
+    receive(&mut polling).await;
+    let content = MessageContent {
+        text: "what is in this picture?".into(),
+        images: Vec::new(),
+        unviewable: Vec::new(),
+        quote: Some(enco_kernel::ChannelQuote {
+            kind: QuoteKind::Reply,
+            messages: enco_kernel::ChannelQuoted::Fetch("replied-message".into()),
+        }),
+    };
+    updates
+        .send(vec![update(1, Action::Message(content))])
+        .await
+        .unwrap();
+    let quote_read = receive(&mut quoting).await;
+    assert_eq!(quote_read.locator, "replied-message");
+    let origin = MappingOrigin {
+        call: ContentHash::of(b"quoted response"),
+        index: 0,
+    };
+    quote_read
+        .result
+        .send(Ok(Fetched {
+            origin: Some(origin),
+            content: Ok(vec![
+                quoted_message(
+                    "owner",
+                    "Original owner name",
+                    "a picture",
+                    vec![Attachment {
+                        what: "photo".into(),
+                        locator: "quoted-image".into(),
+                    }],
+                ),
+                quoted_message("bot", "Bot", "my earlier answer", Vec::new()),
+            ]),
+        }))
+        .unwrap();
+    let image_read = receive(&mut fetching).await;
+    assert_eq!(image_read.locator, "quoted-image");
+    image_read
+        .result
+        .send(Ok(fetched(Ok(PNG.to_vec()))))
+        .unwrap();
+    assert_eq!(receive(&mut polling).await, json!(1));
+    receive(&mut sending).await.result.send(Ok(())).unwrap();
+    channel.shutdown().await.unwrap();
+    let session = kernel.open_session("main").await.unwrap();
+    let event = kernel
+        .log(session.id, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry.body {
+            EntryBody::EventConsumed { event } => Some(event),
+            _ => None,
+        })
+        .unwrap();
+    let EventBody::UserMessage {
+        quote: Some(quote), ..
+    } = &event.body
+    else {
+        panic!("quoted input expected")
+    };
+    assert_eq!(quote.fetched, Some(origin));
+    let Quoted::Messages(messages) = &quote.messages else {
+        panic!("quoted messages expected")
+    };
+    assert!(messages[0].owner && !messages[0].yours);
+    assert!(!messages[1].owner && messages[1].yours);
+    assert_eq!(messages[0].text, "a picture");
+    assert_eq!(
+        store
+            .get_blob(&messages[0].images[0].content)
+            .await
+            .unwrap(),
+        PNG
+    );
+    assert!(
+        event
+            .canonical_message()
+            .parts
+            .iter()
+            .any(|part| matches!(part, Part::Image(image) if image == &messages[0].images[0]))
+    );
     kernel.shutdown().await.unwrap();
 }

@@ -226,7 +226,7 @@ async fn shutdown_cancels_an_attachment_read_and_groups_without_a_profile_explai
     receive(&mut fetching)
         .await
         .result
-        .send(Ok(AttachmentContent::Unavailable("not needed".into())))
+        .send(Ok(fetched(Err("not needed"))))
         .unwrap();
     receive(&mut polling).await;
     let receipt = receive(&mut sending).await;

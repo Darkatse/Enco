@@ -1,7 +1,10 @@
-//! OneBot conversations, request envelopes and delivery evidence; no transport or credentials
-//! live here.
+//! OneBot conversations, locators, request envelopes and delivery evidence; no transport or
+//! credentials live here.
 use crate::channel::{Fault, Request, Response};
-use enco_sdk::types::Failure;
+use enco_sdk::{
+    channel::{Quote, Quoted},
+    types::{Failure, QuoteKind},
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -39,6 +42,66 @@ impl std::fmt::Display for Conversation {
         match self {
             Self::Private(user) => write!(formatter, "private:{user}"),
             Self::Group(group) => write!(formatter, "group:{group}"),
+        }
+    }
+}
+
+/// What a locator handed to the host names; its text is `onebot:image:<URL>`,
+/// `onebot:reply:<message ID>` or `onebot:forward:<forward ID>`.
+pub(super) enum Locator {
+    /// An image, at the address its segment gave.
+    Image(String),
+    /// The messages a quote shows.
+    Quote(Target),
+}
+
+/// The messages a reply or merged-forward segment names.
+pub(super) enum Target {
+    /// The message a reply answers, by its message ID.
+    Reply(i32),
+    /// A merged forward, by its resource ID.
+    Forward(String),
+}
+
+impl Locator {
+    /// What `text`, a locator this mapper wrote, names.
+    pub(super) fn parse(text: &str) -> Result<Self, Fault> {
+        let (kind, id) = text
+            .strip_prefix("onebot:")
+            .and_then(|rest| rest.split_once(':'))
+            .ok_or_else(|| invalid("locator"))?;
+        match kind {
+            "image" => Ok(Self::Image(id.into())),
+            "reply" => id
+                .parse()
+                .map(|id| Self::Quote(Target::Reply(id)))
+                .map_err(|_| invalid("reply locator message ID")),
+            "forward" => Ok(Self::Quote(Target::Forward(id.into()))),
+            _ => Err(invalid("locator kind")),
+        }
+    }
+}
+
+impl std::fmt::Display for Locator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Image(url) => write!(formatter, "onebot:image:{url}"),
+            Self::Quote(Target::Reply(id)) => write!(formatter, "onebot:reply:{id}"),
+            Self::Quote(Target::Forward(id)) => write!(formatter, "onebot:forward:{id}"),
+        }
+    }
+}
+
+impl Target {
+    /// The quote of these messages, which the host fetches through their locator.
+    pub(super) fn quote(self) -> Quote {
+        let kind = match self {
+            Self::Reply(_) => QuoteKind::Reply,
+            Self::Forward(_) => QuoteKind::Forward,
+        };
+        Quote {
+            kind,
+            messages: Quoted::Fetch(Locator::Quote(self).to_string()),
         }
     }
 }

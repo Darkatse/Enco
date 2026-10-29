@@ -177,7 +177,7 @@ impl Connection {
         key: String,
         source: EventSource,
         (target, direct): (&str, bool),
-        content: enco_kernel::ChannelContent<Image>,
+        content: enco_kernel::ChannelContent<Image, Quote>,
     ) -> Result<Option<String>, ChannelError> {
         let group_profile = match (direct, &self.settings.group_profile) {
             (true, _) => None,
@@ -204,6 +204,7 @@ impl Connection {
             images: content.images,
             unviewable: content.unviewable,
             earlier,
+            quote: content.quote,
         };
         self.submit(state, session, source, body, key, created)
             .await?;

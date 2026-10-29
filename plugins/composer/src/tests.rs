@@ -1,7 +1,7 @@
 use super::*;
 mod channel;
 use crate::composer::*;
-use enco_sdk::types::{ImageFormat, Role, Unviewable, UnviewableReason};
+use enco_sdk::types::{Datetime, ImageFormat, QuoteKind, Role, Unviewable, UnviewableReason};
 
 fn pos(seq: u64) -> LogPos {
     LogPos { epoch: 1, seq }
@@ -82,6 +82,7 @@ fn incoming(seq: u64, at: &str, text: &str) -> TranscriptItem {
                 images: vec![],
                 unviewable: vec![],
                 earlier: vec![],
+                quote: None,
             }),
         }),
     }
@@ -287,11 +288,31 @@ fn compaction_carries_circumstances_and_attachments_without_pinned_memory_or_too
         owner: false,
         text: "We were discussing the deadline".into(),
         attachments: vec!["photo".into()],
+        quote: None,
     });
     message.unviewable.push(Unviewable {
         what: "voice message".into(),
         reason: UnviewableReason::Unsupported,
     });
+    message.quote = Some(Quote {
+        kind: QuoteKind::Reply,
+        messages: Quoted::Messages(vec![QuotedMessage {
+            depth: 0,
+            sender: None,
+            sender_name: Some("Bob".into()),
+            owner: false,
+            yours: false,
+            conversation_name: None,
+            sent_at: None,
+            text: "The deadline is tomorrow".into(),
+            images: vec![image(12)],
+            unviewable: vec![],
+        }]),
+    });
+    input.transcript.items[0]
+        .message
+        .parts
+        .push(Part::Image(image(12)));
     input.transcript.round_ends.push(pos(4));
     let Composition::Compact(compaction) = Plugin::compose("{}".into(), input).unwrap() else {
         panic!("expected compaction")
@@ -299,12 +320,13 @@ fn compaction_carries_circumstances_and_attachments_without_pinned_memory_or_too
     let text = text(&compaction.plan);
     assert!(text.contains("2026-10-02 10:03"));
     assert!(text.contains("provider.bad_request: request rejected"));
-    assert!(text.contains("voice message: unsupported"));
-    assert!(text.contains("Earlier messages in this chat, quoted for context."));
+    assert!(text.contains("voice message; Enco cannot read this kind of content"));
+    assert!(text.contains("Earlier messages in this chat, not addressed to you:"));
     assert!(text.contains("55: We were discussing the deadline"));
-    assert!(text.contains("55: [attachment: photo]"));
-    assert!(text.contains("The next message is from Ada, a member of this group, not the owner."));
+    assert!(text.contains("> [attachment: photo]"));
+    assert!(text.contains("This message is from Ada, a member of this group, not the owner."));
     assert!(text.contains("Ada: context"));
+    assert!(text.contains("Ada replies to this message:\n> Bob: The deadline is tomorrow\n> [image: image/png, 12 bytes; file: /images/12.png]"));
     assert!(!text.contains("Owner is River"));
     assert!(compaction.plan.tools.is_empty());
 }

@@ -1,6 +1,6 @@
 use crate::{
-    DateTime, EventId, Image, LogPos, MappingOrigin, Message, Part, Role, RolledBack, ScheduleId,
-    SessionId, Unviewable, Utc,
+    DateTime, EarlierQuote, EventId, Image, LogPos, MappingOrigin, Message, Part, Quote, Role,
+    RolledBack, ScheduleId, SessionId, Unviewable, Utc,
 };
 use serde::{Deserialize, Serialize};
 
@@ -72,6 +72,9 @@ pub enum EventBody {
         unviewable: Vec<Unviewable>,
         /// Earlier messages quoted for context; excluded from the canonical message.
         earlier: Vec<EarlierMessage>,
+        /// Messages this input replies to or forwards, with their stored images.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quote: Option<Quote>,
     },
     /// A reminder reaching its scheduled time.
     Reminder {
@@ -111,27 +114,42 @@ pub struct EarlierMessage {
     pub attachments: Vec<String>,
     /// The recorded protocol translation that produced this message.
     pub origin: MappingOrigin,
+    /// Messages this earlier input quoted; images remain descriptions and no reads are made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<EarlierQuote>,
 }
 
 impl Event {
-    /// The sole mapping from Inbox input to a model message: the content its producer supplied.
+    /// The sole mapping from input to a model message: its own text, quoted pictures, then its own pictures.
     ///
     /// The composer narrates the circumstances, such as arrival and planned times. Input without
     /// text, such as a photo alone or a backtrack, has no text part.
     pub fn canonical_message(&self) -> Message {
-        let (text, images) = match &self.body {
-            EventBody::UserMessage { text, images, .. } => (text.as_str(), images.as_slice()),
+        let (text, quote, images) = match &self.body {
+            EventBody::UserMessage {
+                text,
+                quote,
+                images,
+                ..
+            } => (text.as_str(), quote.as_ref(), images.as_slice()),
             EventBody::GenerationRolledBack { text, .. } | EventBody::Reminder { text, .. } => {
-                (text.as_str(), &[][..])
+                (text.as_str(), None, &[][..])
             }
-            EventBody::Backtrack { .. } => ("", &[][..]),
+            EventBody::Backtrack { .. } => ("", None, &[][..]),
         };
         let text = (!text.is_empty()).then(|| Part::Text { text: text.into() });
         Message {
             role: Role::User,
             parts: text
                 .into_iter()
-                .chain(images.iter().cloned().map(Part::Image))
+                .chain(
+                    quote
+                        .into_iter()
+                        .flat_map(Quote::images)
+                        .chain(images)
+                        .cloned()
+                        .map(Part::Image),
+                )
                 .collect(),
         }
     }

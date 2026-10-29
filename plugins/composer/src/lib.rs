@@ -5,6 +5,7 @@ mod context;
 mod history;
 mod images;
 mod limits;
+mod quotes;
 mod recovery;
 
 use bindings::exports::enco::plugin::{composer, lifecycle};

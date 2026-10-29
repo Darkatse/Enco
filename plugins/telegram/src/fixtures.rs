@@ -101,10 +101,18 @@ pub(super) const UPDATES: &str = r#"{
         "text": "reply",
         "reply_to_message": {
           "message_id": 9,
+          "date": 1793275200,
+          "chat": {
+            "id": -100,
+            "type": "supergroup"
+          },
           "from": {
             "id": 42,
-            "first_name": "Helper"
-          }
+            "is_bot": true,
+            "first_name": "Helper",
+            "username": "HelperBot"
+          },
+          "text": "Earlier answer"
         }
       }
     },

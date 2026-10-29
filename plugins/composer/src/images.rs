@@ -1,7 +1,7 @@
 //! Chooses whole image entries newest first and describes every owner attachment.
 use crate::composer::*;
 use crate::{key, limits::*, tokens};
-use enco_sdk::types::UnviewableReason;
+use enco_sdk::types::{Unviewable, UnviewableReason};
 use std::collections::BTreeSet;
 
 pub(super) fn selected(input: &ComposeInput, omitted: &mut Vec<Omission>) -> BTreeSet<(u64, u64)> {
@@ -45,24 +45,32 @@ pub(super) fn attachments(body: &EventBody) -> Option<String> {
     let EventBody::UserMessage(message) = body else {
         return None;
     };
-    let images = message.images.iter().map(|image| {
-        format!(
-            "[image: {}, {} bytes; file: {}]",
-            image.format.mime(),
-            image.size,
-            image.path
-        )
-    });
-    let unviewable = message.unviewable.iter().map(|attachment| {
-        let reason = match &attachment.reason {
-            UnviewableReason::Unsupported => "unsupported attachment format".into(),
-            UnviewableReason::TooLarge => "too large to view as an image".into(),
-            UnviewableReason::Unavailable(message) => message.clone(),
-        };
-        format!("[attachment unavailable: {}: {reason}]", attachment.what)
-    });
-    let lines: Vec<_> = images.chain(unviewable).collect();
+    let lines = descriptions(&message.images, &message.unviewable);
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+pub(super) fn descriptions(images: &[ImageRef], unviewable: &[Unviewable]) -> Vec<String> {
+    images
+        .iter()
+        .map(|image| {
+            format!(
+                "[image: {}, {} bytes; file: {}]",
+                image.format.mime(),
+                image.size,
+                image.path
+            )
+        })
+        .chain(unviewable.iter().map(self::unviewable))
+        .collect()
+}
+
+pub(super) fn unviewable(attachment: &Unviewable) -> String {
+    let reason = match &attachment.reason {
+        UnviewableReason::Unsupported => "Enco cannot read this kind of content",
+        UnviewableReason::TooLarge => "too large to view as an image",
+        UnviewableReason::Unavailable(message) => message,
+    };
+    format!("[not shown: {}; {reason}]", attachment.what)
 }
 
 /// A recorded message's text bytes and envelope, plus a fixed cost for each image it sends.

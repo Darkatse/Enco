@@ -1,10 +1,12 @@
 //! Ordered preparation, authorized attachment reads and bounded sends. The connection alone commits state.
+mod content;
+
 use super::{Action, Adapter, ChannelCallError, ChannelError, Fault};
 use crate::limits::CHANNEL_ATTEMPTS;
 use enco_core::*;
 use enco_kernel::{
-    AttachmentContent, ChannelAction, ChannelBackoff, ChannelContent, ChannelInput,
-    ChannelPacingGap, ImageError, Kernel,
+    ChannelAction, ChannelBackoff, ChannelContent, ChannelInput, ChannelPacingGap, ImageError,
+    Kernel,
 };
 use serde_json::Value;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
@@ -57,7 +59,7 @@ pub(super) struct Input {
     pub direct: bool,
     pub reply_to: Option<String>,
     pub respond: Option<String>,
-    pub action: Action<Image>,
+    pub action: Action<Image, Quote>,
 }
 
 pub(super) struct Reader {
@@ -99,7 +101,7 @@ impl Reader {
                     for message in messages {
                         let prepared = tokio::select! {
                             _ = stop.cancelled() => return Ok(()),
-                            result = prepare(self.adapter.as_ref(), &self.kernel, &self.settings, &policy, self.clock.as_ref(), self.generation, message) => result?,
+                            result = self.prepare_message(&policy, message) => result?,
                         };
                         let Some(next) =
                             handover(Change::Message(Box::new(prepared)), &batches, &stop).await?
@@ -146,149 +148,99 @@ async fn handover(
     }
 }
 
-async fn prepare(
-    adapter: &dyn Adapter,
-    kernel: &Kernel,
-    settings: &super::ConnectionSettings,
-    policy: &Policy,
-    clock: &dyn enco_kernel::Clock,
-    generation: GenerationId,
-    message: enco_kernel::ChannelMessage,
-) -> Result<Prepared, ChannelError> {
-    let enco_kernel::ChannelMessage { key, input, origin } = message;
-    let disposition = if kernel
-        .connection_update_seen(&adapter.identity().key(), &key)
-        .await?
-    {
-        Disposition::Duplicate
-    } else {
-        let owner = input.sender.as_deref() == Some(&settings.owner);
-        // Members of a group open to everyone may ask, but never command.
-        let member = !input.direct
-            && policy.everyone.contains(&input.conversation)
-            && matches!(input.action, Action::Message(_));
-        match (input.sender.clone(), input.respond.clone()) {
-            (Some(sender), _) if input.addressed && (owner || member) => Disposition::Input(
-                prepare_input(adapter, kernel, input, sender, owner, generation).await?,
-            ),
-            (_, Some(handle)) => Disposition::Refused { handle },
-            _ => match input.action {
-                Action::Message(content) if !input.direct => Disposition::Earlier {
-                    conversation: input.conversation,
-                    message: EarlierMessage {
-                        received_at: clock.now(),
-                        sender: input.sender,
-                        sender_name: input.sender_name,
-                        owner,
-                        text: content.text,
-                        attachments: content
-                            .images
-                            .into_iter()
-                            .map(|image| image.what)
-                            .chain(content.unviewable.into_iter().map(|item| item.what))
-                            .collect(),
-                        origin,
-                    },
-                },
-                _ => Disposition::Ignored,
-            },
-        }
-    };
-    Ok(Prepared {
-        key,
-        origin,
-        disposition,
-    })
-}
-
-async fn prepare_input(
-    adapter: &dyn Adapter,
-    kernel: &Kernel,
-    input: ChannelInput,
-    sender: String,
-    owner: bool,
-    generation: GenerationId,
-) -> Result<Input, ChannelError> {
-    let action = match input.action {
-        ChannelAction::Message(content) => {
-            Action::Message(fetch(adapter, kernel, generation, content).await?)
-        }
-        ChannelAction::Sessions => Action::Sessions,
-        ChannelAction::SelectSession(name) => Action::SelectSession(name),
-        ChannelAction::Cancel => Action::Cancel,
-        ChannelAction::Backtrack => Action::Backtrack,
-        ChannelAction::Everyone(open) => Action::Everyone(open),
-    };
-    Ok(Input {
-        conversation: input.conversation,
-        message: input.message,
-        sender,
-        sender_name: input.sender_name,
-        owner,
-        direct: input.direct,
-        reply_to: input.reply_to,
-        respond: input.respond,
-        action,
-    })
-}
-
-async fn fetch(
-    adapter: &dyn Adapter,
-    kernel: &Kernel,
-    generation: GenerationId,
-    message: ChannelContent<enco_kernel::ChannelAttachment>,
-) -> Result<ChannelContent<Image>, ChannelError> {
-    let mut prepared = ChannelContent {
-        text: message.text,
-        images: Vec::new(),
-        unviewable: message.unviewable,
-    };
-    for attachment in message.images {
-        let mut backoff = ChannelBackoff::default();
-        let mut attempt = 1;
-        // A transient failure that persists makes the image unavailable rather than holding up
-        // every message behind it.
-        let fetched = loop {
-            match super::health::call(kernel, generation, adapter.fetch(&attachment.locator)).await
-            {
-                Err(ChannelError::Protocol(ChannelCallError::Protocol(error)))
-                    if !error.fatal && error.failure.retryable =>
-                {
-                    if attempt == CHANNEL_ATTEMPTS {
-                        break AttachmentContent::Unavailable(error.failure.message);
-                    }
-                    attempt += 1;
-                    tokio::time::sleep(backoff.next(error.retry_after)).await;
+impl Reader {
+    async fn prepare_message(
+        &self,
+        policy: &Policy,
+        message: enco_kernel::ChannelMessage,
+    ) -> Result<Prepared, ChannelError> {
+        let Reader {
+            adapter,
+            kernel,
+            settings,
+            clock,
+            ..
+        } = self;
+        let enco_kernel::ChannelMessage { key, input, origin } = message;
+        let identity = adapter.identity();
+        let identities = content::Identities {
+            owner: &settings.owner,
+            account: &identity.account,
+        };
+        let disposition = if kernel.connection_update_seen(&identity.key(), &key).await? {
+            Disposition::Duplicate
+        } else {
+            let owner = identities.is_owner(input.sender.as_deref());
+            // Members of a group open to everyone may ask, but never command.
+            let member = !input.direct
+                && policy.everyone.contains(&input.conversation)
+                && matches!(input.action, Action::Message(_));
+            match (input.sender.clone(), input.respond.clone()) {
+                (Some(sender), _) if input.addressed && (owner || member) => {
+                    Disposition::Input(self.prepare_input(input, sender, owner, identities).await?)
                 }
-                result => break result?,
+                (_, Some(handle)) => Disposition::Refused { handle },
+                _ => match input.action {
+                    Action::Message(body) if !input.direct => Disposition::Earlier {
+                        conversation: input.conversation,
+                        message: EarlierMessage {
+                            received_at: clock.now(),
+                            sender: input.sender,
+                            sender_name: input.sender_name,
+                            owner,
+                            text: body.text,
+                            attachments: body
+                                .images
+                                .into_iter()
+                                .map(|image| image.what)
+                                .chain(body.unviewable.into_iter().map(|item| item.what))
+                                .collect(),
+                            origin,
+                            quote: body.quote.map(|quote| content::earlier(quote, identities)),
+                        },
+                    },
+                    _ => Disposition::Ignored,
+                },
             }
         };
-        let bytes = match fetched {
-            AttachmentContent::Image(bytes) => bytes,
-            AttachmentContent::Unavailable(reason) => {
-                prepared.unviewable.push(Unviewable {
-                    what: attachment.what,
-                    reason: UnviewableReason::Unavailable(reason),
-                });
-                continue;
-            }
-        };
-        let reason = match kernel.store_image(&bytes).await {
-            Ok(image) => {
-                prepared.images.push(image);
-                continue;
-            }
-            Err(ImageError::Unsupported) => UnviewableReason::Unsupported,
-            Err(ImageError::TooLarge { .. }) => UnviewableReason::TooLarge,
-            Err(ImageError::Store(error)) => return Err(ChannelError::Kernel(error.into())),
-        };
-        prepared.unviewable.push(Unviewable {
-            what: attachment.what,
-            reason,
-        });
+        Ok(Prepared {
+            key,
+            origin,
+            disposition,
+        })
     }
-    Ok(prepared)
+
+    async fn prepare_input(
+        &self,
+        input: ChannelInput,
+        sender: String,
+        owner: bool,
+        identities: content::Identities<'_>,
+    ) -> Result<Input, ChannelError> {
+        let action = match input.action {
+            ChannelAction::Message(message) => {
+                Action::Message(self.content(message, identities).await?)
+            }
+            ChannelAction::Sessions => Action::Sessions,
+            ChannelAction::SelectSession(name) => Action::SelectSession(name),
+            ChannelAction::Cancel => Action::Cancel,
+            ChannelAction::Backtrack => Action::Backtrack,
+            ChannelAction::Everyone(open) => Action::Everyone(open),
+        };
+        Ok(Input {
+            conversation: input.conversation,
+            message: input.message,
+            sender,
+            sender_name: input.sender_name,
+            owner,
+            direct: input.direct,
+            reply_to: input.reply_to,
+            respond: input.respond,
+            action,
+        })
+    }
 }
+
 pub(super) struct Sent {
     pub outcome: Settlement,
     /// The protocol's IDs for the parts confirmed sent, in order.

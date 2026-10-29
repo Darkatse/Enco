@@ -177,7 +177,7 @@ fn transcript_item(item: &TranscriptItem<LocatedImage>) -> Result<wire::Transcri
         event: input,
     } = item;
     let message = message(recorded);
-    let images = message
+    let images: Vec<_> = message
         .parts
         .iter()
         .filter_map(|part| match part {
@@ -189,7 +189,7 @@ fn transcript_item(item: &TranscriptItem<LocatedImage>) -> Result<wire::Transcri
         pos: event::pos(*pos),
         event: input
             .as_ref()
-            .map(|value| event::event(value, images))
+            .map(|value| event::event(value, &images))
             .transpose()?,
         message,
     })

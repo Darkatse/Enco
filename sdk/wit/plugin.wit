@@ -6,6 +6,22 @@ interface types {
     /// A JSON document encoded as UTF-8 text.
     type json = string;
 
+    /// A UTC instant, shaped like `wasi:clocks/wall-clock.datetime`.
+    record datetime {
+        /// Seconds since the Unix epoch.
+        seconds: u64,
+        /// Nanoseconds past `seconds`.
+        nanoseconds: u32,
+    }
+
+    /// How a message relates to messages it quotes.
+    enum quote-kind {
+        /// It answers the message, or the messages that message forwarded.
+        reply,
+        /// It passes the messages on from elsewhere.
+        forward,
+    }
+
     /// An operation failure.
     record failure {
         /// A stable classification, such as `timeout` or `provider.auth`.
@@ -140,11 +156,14 @@ interface types {
         unavailable(string),
     }
 
-    /// An attachment kept only as a description.
+    /// Part of a message's content kept only as a description, such as an attachment.
+    ///
+    /// Facts about the message, such as who sent it, are not content: one that cannot be read is
+    /// absent instead.
     record unviewable {
-        /// The channel's description of it.
+        /// A plain description such as voice message or file report.pdf, not a protocol type name.
         what: string,
-        /// Why it is not an image.
+        /// Why it cannot be shown.
         reason: unviewable-reason,
     }
 
@@ -462,15 +481,7 @@ world tool-plugin {
 /// out a capability in `lifeline`; or when a compaction discloses any tool or stops where no Round
 /// ends.
 interface composer {
-    use types.{failure, image-format, json, role, tool-spec, unviewable};
-
-    /// A UTC instant, shaped like `wasi:clocks/wall-clock.datetime`.
-    record datetime {
-        /// Seconds since the Unix epoch.
-        seconds: u64,
-        /// Nanoseconds past `seconds`.
-        nanoseconds: u32,
-    }
+    use types.{datetime, failure, image-format, json, quote-kind, role, tool-spec, unviewable};
 
     /// The position of an entry in this Session's Log.
     record log-pos {
@@ -502,6 +513,87 @@ interface composer {
         content: string,
         /// The file that holds the bytes.
         path: string,
+    }
+
+    /// Messages quoted by an input, with their stored pictures.
+    record quote {
+        /// Whether the input replies to these messages or forwards them.
+        kind: quote-kind,
+        /// The content or its recorded unavailability.
+        messages: quoted,
+    }
+
+    /// What the input records about quoted content.
+    variant quoted {
+        /// The messages, in their recorded order.
+        messages(list<quoted-message>),
+        /// Why the messages could not be obtained.
+        unavailable(string),
+    }
+
+    /// A message inside an input's reply or forward.
+    record quoted-message {
+        /// Nesting depth; a nested forward follows the message that forwards it, one level deeper.
+        depth: u8,
+        /// The sender's protocol ID, when reported.
+        sender: option<string>,
+        /// The sender's display name, when reported.
+        sender-name: option<string>,
+        /// Whether the sender was the owner when the input arrived.
+        owner: bool,
+        /// Whether this account sent the quoted message.
+        yours: bool,
+        /// The named original conversation, when it was elsewhere.
+        conversation-name: option<string>,
+        /// When the message was first sent, when reported.
+        sent-at: option<datetime>,
+        /// What the sender wrote.
+        text: string,
+        /// The quoted images in their recorded order.
+        images: list<image-ref>,
+        /// Content that could not be shown, and why.
+        unviewable: list<unviewable>,
+    }
+
+    /// Messages quoted by group context, with attachment descriptions only.
+    record earlier-quote {
+        /// Whether the earlier message replies to these messages or forwards them.
+        kind: quote-kind,
+        /// The content carried by the protocol, or why it is not shown; absent when it needed a
+        /// request, which earlier context does not make.
+        messages: option<earlier-quoted>,
+    }
+
+    /// What an earlier message carries about quoted content.
+    variant earlier-quoted {
+        /// The messages carried by the protocol.
+        messages(list<earlier-quoted-message>),
+        /// Why the protocol could not supply them.
+        unavailable(string),
+    }
+
+    /// A quoted message in earlier context; images remain descriptions.
+    record earlier-quoted-message {
+        /// Nesting depth; a nested forward follows its parent one level deeper.
+        depth: u8,
+        /// The sender's protocol ID, when reported.
+        sender: option<string>,
+        /// The sender's display name, when reported.
+        sender-name: option<string>,
+        /// Whether the sender was the owner when the earlier message arrived.
+        owner: bool,
+        /// Whether this account sent the quoted message.
+        yours: bool,
+        /// The named original conversation, when it was elsewhere.
+        conversation-name: option<string>,
+        /// When the message was first sent, when reported.
+        sent-at: option<datetime>,
+        /// What the sender wrote.
+        text: string,
+        /// Descriptions of images; their content was not fetched.
+        images: list<string>,
+        /// Content that could not be shown, and why.
+        unviewable: list<unviewable>,
     }
 
     /// A tool call that a reply proposed.
@@ -589,6 +681,8 @@ interface composer {
         text: string,
         /// Descriptions of attachments; their bytes are not fetched for context.
         attachments: list<string>,
+        /// Messages this earlier message replied to or forwarded.
+        quote: option<earlier-quote>,
     }
 
     /// A message that drove the Session.
@@ -601,6 +695,8 @@ interface composer {
         unviewable: list<unviewable>,
         /// Earlier messages quoted for context; the canonical message excludes them.
         earlier: list<earlier-message>,
+        /// Messages this input replies to or forwards.
+        quote: option<quote>,
     }
 
     /// A schedule reaching its time.
@@ -928,7 +1024,7 @@ world composer-plugin {
 ///
 /// The host records each external input before handing it over, and carries out what the mapper asks.
 interface channel {
-    use types.{failure, json, unviewable};
+    use types.{datetime, failure, json, quote-kind, unviewable};
 
     /// A request for the host to send.
     record request {
@@ -1094,11 +1190,53 @@ interface channel {
 
     /// The text and attachments of a message.
     record content {
-        /// What the sender wrote.
+        /// What the sender wrote as people in the chat see it; mentions use names where the
+        /// protocol supplies them, and a leading mention of this bot is left out.
         text: string,
         /// Images, by the protocol's locator for fetching them.
         images: list<attachment>,
-        /// Attachments that cannot be images, and why.
+        /// Parts of the content that cannot be shown, and why.
+        unviewable: list<unviewable>,
+        /// The messages it replies to or forwards, when it does.
+        quote: option<quote>,
+    }
+
+    /// Messages shown inside another message.
+    record quote {
+        /// Whether the message replies to them or forwards them.
+        kind: quote-kind,
+        /// The messages, or how to get them.
+        messages: quoted,
+    }
+
+    /// The quoted content, as far as the protocol carries it.
+    variant quoted {
+        /// Carried in the message itself: at least one, the first at depth 0, each nested at most
+        /// one level below the one before.
+        messages(list<quoted-message>),
+        /// Fetch this locator to obtain the messages.
+        fetch(string),
+        /// Why the protocol cannot give the messages.
+        unavailable(string),
+    }
+
+    /// A message shown inside another, as the protocol showed it.
+    record quoted-message {
+        /// Nesting depth, starting at zero; nested forwards follow their parent one level deeper.
+        depth: u8,
+        /// The sender's ID, when the protocol reports one.
+        sender: option<string>,
+        /// The sender's display name, when reported.
+        sender-name: option<string>,
+        /// The name of the original conversation, when it was elsewhere and the protocol names it.
+        conversation-name: option<string>,
+        /// When it was first sent, when reported.
+        sent-at: option<datetime>,
+        /// What the sender wrote as people in the chat see it, mentions of this bot included.
+        text: string,
+        /// Images, by their protocol locators.
+        images: list<attachment>,
+        /// Content that could not be shown, and why.
         unviewable: list<unviewable>,
     }
 
@@ -1150,7 +1288,7 @@ interface channel {
         everyone,
     }
 
-    /// The next step of fetching an attachment.
+    /// The next step of fetching the content a locator names.
     variant fetch-step {
         /// Send this request and call again with its response.
         request(request),
@@ -1163,6 +1301,8 @@ interface channel {
         download(string),
         /// The attachment's bytes.
         image(list<u8>),
+        /// The messages a quote's locator names, listed as `quoted.messages` is.
+        messages(list<quoted-message>),
         /// The protocol refused it for good; the text says why.
         unavailable(string),
     }
@@ -1221,11 +1361,11 @@ interface channel {
         state: option<json>,
         arrival: arrival,
     ) -> result<reading, fault>;
-    /// The next step of fetching the attachment at `locator`, given the responses so far.
+    /// The next step of fetching the content at `locator`, given the responses so far.
     ///
-    /// Asking for more requests than the manual's limit for channel `fetch` is a contract
-    /// failure.
-    fetch: func(locator: string, responses: list<response>) -> result<fetch-step, fault>;
+    /// One fetch may send at most `limit` requests and downloads in all; asking for more is a
+    /// contract failure.
+    fetch: func(locator: string, responses: list<response>, limit: u32) -> result<fetch-step, fault>;
     /// The protocol messages to send, in order; at least one, none empty. Together they carry all
     /// of the message's text and its file, laid out as the protocol needs.
     split: func(message: outgoing) -> list<outgoing>;

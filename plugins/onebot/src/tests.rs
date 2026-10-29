@@ -21,6 +21,9 @@ fn status(status: u16) -> Response {
     }
 }
 
+/// The most requests and downloads the host lets one fetch send.
+const LIMIT: u32 = 8;
+
 fn identity() -> Result<Identity, String> {
     Plugin::identified(response(fixtures::IDENTITY)).map_err(|error| error.failure.message)
 }
@@ -148,6 +151,7 @@ fn images_and_unsupported_segments_preserve_attachment_evidence() -> Result<(), 
             {"type":"text","data":{"text":"look"}},
             {"type":"at","data":{"qq":"all"}},
             {"type":"face","data":{"id":"14"}},
+            {"type":"face","data":{"id":"4294967295"}},
             {"type":"image","data":{"url":"https://multimedia.nt.qq.com.cn/download?fileid=x"}},
             {"type":"record","data":{"file":"voice"}},
             {"type":"video","data":{"file":"video"}},
@@ -158,33 +162,34 @@ fn images_and_unsupported_segments_preserve_attachment_evidence() -> Result<(), 
     let Action::Message(content) = &reading.messages[0].action else {
         return Err("message".into());
     };
-    assert_eq!(content.text, "look@all[face:14]");
+    // A face the pinned table does not name is still text.
+    assert_eq!(content.text, "look@all[face: 微笑][face 4294967295]");
     assert_eq!(content.images.len(), 1);
     assert_eq!(content.unviewable.len(), 3);
     let locator = content.images[0].locator.clone();
     // The address came from the message, so the host reaches it as content, without credentials.
     assert!(
-        matches!(Plugin::fetch(locator.clone(), vec![]).map_err(|e| e.failure.message)?, FetchStep::Download(url) if url == locator)
+        matches!(Plugin::fetch(locator.clone(), vec![], LIMIT).map_err(|e| e.failure.message)?, FetchStep::Download(url) if url == "https://multimedia.nt.qq.com.cn/download?fileid=x")
     );
     assert!(
-        matches!(Plugin::fetch(locator, vec![response("image bytes")]).map_err(|e| e.failure.message)?, FetchStep::Image(bytes) if bytes == b"image bytes")
+        matches!(Plugin::fetch(locator, vec![response("image bytes")], LIMIT).map_err(|e| e.failure.message)?, FetchStep::Image(bytes) if bytes == b"image bytes")
     );
     Ok(())
 }
 
 #[test]
 fn image_download_status_never_judges_the_connection() -> Result<(), String> {
-    let locator = "https://multimedia.nt.qq.com.cn/download?fileid=x";
+    let locator = "onebot:image:https://multimedia.nt.qq.com.cn/download?fileid=x";
     for code in [400, 401, 403, 404, 410] {
-        let step =
-            Plugin::fetch(locator.into(), vec![status(code)]).map_err(|e| e.failure.message)?;
+        let step = Plugin::fetch(locator.into(), vec![status(code)], LIMIT)
+            .map_err(|e| e.failure.message)?;
         assert!(
             matches!(&step, FetchStep::Unavailable(reason) if reason.contains(&code.to_string())),
             "HTTP {code}"
         );
     }
     for code in [429, 500, 503] {
-        let fault = Plugin::fetch(locator.into(), vec![status(code)])
+        let fault = Plugin::fetch(locator.into(), vec![status(code)], LIMIT)
             .err()
             .ok_or("retryable download")?;
         assert!(
@@ -217,7 +222,8 @@ fn api_status_separates_token_rejection_retries_and_unknown_delivery() -> Result
 }
 
 #[test]
-fn required_external_fields_and_array_configuration_fail_with_context() -> Result<(), String> {
+fn malformed_segments_are_local_while_identity_and_format_fail_the_read() -> Result<(), String> {
+    // A string message means the deployment sends every message so: the read fails.
     let string_message = frame(json!("[CQ:at,qq=10001] hello"), true);
     assert!(
         received(string_message)
@@ -236,11 +242,10 @@ fn required_external_fields_and_array_configuration_fail_with_context() -> Resul
             "at segment data.qq",
         ),
     ] {
+        let reading = received(frame(segments, true))?;
         assert!(
-            received(frame(segments, true))
-                .err()
-                .ok_or("error")?
-                .contains(context)
+            matches!(&reading.messages[0].action, Action::Message(content)
+            if matches!(&content.unviewable[0].reason, enco_sdk::types::UnviewableReason::Unavailable(reason) if reason.contains(context)))
         );
     }
     let mut malformed = frame(json!([]), false);
@@ -366,5 +371,18 @@ fn uploaded_files_and_typing_settle_without_a_message_id() -> Result<(), String>
         tools: vec![],
     };
     assert!(Plugin::activity("private:10002".into(), None, Some(activity)).is_none());
+    Ok(())
+}
+
+mod quotes;
+
+#[test]
+fn a_sender_without_a_name_still_commands() -> Result<(), String> {
+    // OneBot gives sender fields only when it can; a missing name is not a broken message.
+    let mut nameless = frame(json!([{"type":"text","data":{"text":"/cancel"}}]), true);
+    nameless["sender"] = json!({"user_id":10002});
+    let reading = received(nameless)?;
+    assert_eq!(reading.messages[0].sender_name, None);
+    assert!(matches!(reading.messages[0].action, Action::Cancel));
     Ok(())
 }

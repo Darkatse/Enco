@@ -1,11 +1,97 @@
-//! What every channel mapper shares: commands, the activity card's wording and `multipart/form-data` uploads.
+//! What every channel mapper shares: commands, decoded content, the activity card's wording and
+//! `multipart/form-data` uploads.
 //!
 //! Each protocol marks commands and lays the card out its own way; the names, meanings and words
 //! are the same everywhere. [`export!`](crate::export) gives a channel plugin these same types, so
 //! name them from here.
 pub use crate::bindings::exports::enco::plugin::channel::{
-    Action, ActivityView, Attachment, CommandKind, Content, ToolActivity, ToolState,
+    Action, ActivityView, Attachment, CommandKind, Content, Quote, Quoted, QuotedMessage,
+    ToolActivity, ToolState,
 };
+use crate::types::{Unviewable, UnviewableReason};
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+use std::fmt::Display;
+
+impl Default for Content {
+    /// No text, attachments or quote.
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            images: vec![],
+            unviewable: vec![],
+            quote: None,
+        }
+    }
+}
+
+impl Content {
+    /// Whether it shows nothing: no text, attachments or quote.
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+            && self.images.is_empty()
+            && self.unviewable.is_empty()
+            && self.quote.is_none()
+    }
+}
+
+impl QuotedMessage {
+    /// `content` shown `depth` forwards deep, with no sender, conversation or time yet.
+    ///
+    /// A quote inside `content` is left out: a quoted message's own quotes are not shown.
+    pub fn new(depth: u8, content: Content) -> Self {
+        Self {
+            depth,
+            sender: None,
+            sender_name: None,
+            conversation_name: None,
+            sent_at: None,
+            text: content.text,
+            images: content.images,
+            unviewable: content.unviewable,
+        }
+    }
+
+    /// A message `depth` forwards deep that could not be decoded, showing only `why`.
+    pub fn invalid(depth: u8, why: Unviewable) -> Self {
+        Self::new(
+            depth,
+            Content {
+                unviewable: vec![why],
+                ..Content::default()
+            },
+        )
+    }
+}
+
+impl Unviewable {
+    /// `what`, which could not be retrieved for `reason`.
+    pub fn unavailable(what: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            what: what.into(),
+            reason: UnviewableReason::Unavailable(reason.into()),
+        }
+    }
+}
+
+/// A part of a message that breaks `protocol`'s rules, such as `Discord`, kept as `what` and
+/// unavailable because of `error`; the rest of the message stays.
+pub fn invalid_part(protocol: &str, what: &str, error: impl Display) -> Unviewable {
+    Unviewable::unavailable(what, format!("invalid {protocol} {what}: {error}"))
+}
+
+/// `value` decoded as a `T`; absent when it is not one, and `unviewable` gains `what` as an
+/// [`invalid_part`] of `protocol`.
+pub fn decode_part<T: DeserializeOwned>(
+    protocol: &str,
+    what: &str,
+    value: &Value,
+    unviewable: &mut Vec<Unviewable>,
+) -> Option<T> {
+    T::deserialize(value)
+        .map_err(|error| unviewable.push(invalid_part(protocol, what, error)))
+        .ok()
+}
 
 impl CommandKind {
     /// The shared name, without a leading `/` or a protocol's decoration.

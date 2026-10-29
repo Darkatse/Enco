@@ -10,8 +10,8 @@ pub(super) fn pos(pos: LogPos) -> wire::LogPos {
     }
 }
 
-pub(super) fn datetime(time: DateTime<Utc>) -> Result<wire::Datetime, Failure> {
-    Ok(wire::Datetime {
+pub(super) fn datetime(time: DateTime<Utc>) -> Result<types::Datetime, Failure> {
+    Ok(types::Datetime {
         seconds: time
             .timestamp()
             .try_into()
@@ -33,7 +33,7 @@ pub(super) fn failure(failure: &Failure) -> types::Failure {
     }
 }
 
-pub(super) fn event(event: &Event, images: Vec<wire::ImageRef>) -> Result<wire::Event, Failure> {
+pub(super) fn event(event: &Event, located: &[wire::ImageRef]) -> Result<wire::Event, Failure> {
     // The Event belongs to the Session being composed, which the input already names.
     let Event {
         id,
@@ -67,20 +67,24 @@ pub(super) fn event(event: &Event, images: Vec<wire::ImageRef>) -> Result<wire::
         EventSource::Registry => wire::EventSource::Registry,
     };
     let body = match body {
-        // The stored images arrive located, with the recorded message that carries them.
         EventBody::UserMessage {
             text,
-            images: _,
+            images,
             unviewable,
             earlier,
+            quote,
         } => wire::EventBody::UserMessage(wire::UserMessage {
             text: text.clone(),
-            images,
+            images: locate(images, located)?,
             unviewable: unviewable.iter().map(self::unviewable).collect(),
             earlier: earlier
                 .iter()
                 .map(earlier_message)
                 .collect::<Result<_, _>>()?,
+            quote: quote
+                .as_ref()
+                .map(|quote| quote_record(quote, located))
+                .transpose()?,
         }),
         EventBody::Reminder {
             schedule,
@@ -127,6 +131,7 @@ fn earlier_message(item: &EarlierMessage) -> Result<wire::EarlierMessage, Failur
         owner,
         text,
         attachments,
+        quote,
         origin: _,
     } = item;
     Ok(wire::EarlierMessage {
@@ -136,7 +141,122 @@ fn earlier_message(item: &EarlierMessage) -> Result<wire::EarlierMessage, Failur
         owner: *owner,
         text: text.clone(),
         attachments: attachments.clone(),
+        quote: quote.as_ref().map(earlier_quote).transpose()?,
     })
+}
+
+/// The stored images arrive located in the recorded message that carries them.
+fn locate(images: &[Image], located: &[wire::ImageRef]) -> Result<Vec<wire::ImageRef>, Failure> {
+    images
+        .iter()
+        .map(|image| {
+            let content = image.content.to_string();
+            located
+                .iter()
+                .find(|located| located.content == content)
+                .cloned()
+                .ok_or_else(|| crate::convert::bad("a recorded image is missing from its message"))
+        })
+        .collect()
+}
+
+fn quote_record(quote: &Quote, located: &[wire::ImageRef]) -> Result<wire::Quote, Failure> {
+    // Retrieval evidence is a host concern, like an input's mapping origin.
+    let Quote {
+        kind,
+        messages,
+        fetched: _,
+    } = quote;
+    let messages = match messages {
+        Quoted::Messages(messages) => wire::Quoted::Messages(
+            messages
+                .iter()
+                .map(|message| {
+                    let QuotedMessage {
+                        depth,
+                        sender,
+                        sender_name,
+                        owner,
+                        yours,
+                        conversation_name,
+                        sent_at,
+                        text,
+                        images,
+                        unviewable,
+                    } = message;
+                    Ok(wire::QuotedMessage {
+                        depth: *depth,
+                        sender: sender.clone(),
+                        sender_name: sender_name.clone(),
+                        owner: *owner,
+                        yours: *yours,
+                        conversation_name: conversation_name.clone(),
+                        sent_at: sent_at.map(datetime).transpose()?,
+                        text: text.clone(),
+                        images: locate(images, located)?,
+                        unviewable: unviewable.iter().map(self::unviewable).collect(),
+                    })
+                })
+                .collect::<Result<_, Failure>>()?,
+        ),
+        Quoted::Unavailable(reason) => wire::Quoted::Unavailable(reason.clone()),
+    };
+    Ok(wire::Quote {
+        kind: quote_kind(*kind),
+        messages,
+    })
+}
+
+fn earlier_quote(quote: &EarlierQuote) -> Result<wire::EarlierQuote, Failure> {
+    let EarlierQuote { kind, messages } = quote;
+    Ok(wire::EarlierQuote {
+        kind: quote_kind(*kind),
+        messages: messages.as_ref().map(earlier_quoted).transpose()?,
+    })
+}
+
+fn earlier_quoted(quoted: &Quoted<String>) -> Result<wire::EarlierQuoted, Failure> {
+    Ok(match quoted {
+        Quoted::Messages(messages) => wire::EarlierQuoted::Messages(
+            messages
+                .iter()
+                .map(|message| {
+                    let QuotedMessage {
+                        depth,
+                        sender,
+                        sender_name,
+                        owner,
+                        yours,
+                        conversation_name,
+                        sent_at,
+                        text,
+                        images,
+                        unviewable,
+                    } = message;
+                    Ok(wire::EarlierQuotedMessage {
+                        depth: *depth,
+                        sender: sender.clone(),
+                        sender_name: sender_name.clone(),
+                        owner: *owner,
+                        yours: *yours,
+                        conversation_name: conversation_name.clone(),
+                        sent_at: sent_at.map(datetime).transpose()?,
+                        text: text.clone(),
+                        images: images.clone(),
+                        unviewable: unviewable.iter().map(self::unviewable).collect(),
+                    })
+                })
+                .collect::<Result<_, Failure>>()?,
+        ),
+        Quoted::Unavailable(reason) => wire::EarlierQuoted::Unavailable(reason.clone()),
+    })
+}
+
+fn quote_kind(kind: QuoteKind) -> types::QuoteKind {
+    match kind {
+        QuoteKind::Reply => types::QuoteKind::Reply,
+        QuoteKind::Forward => types::QuoteKind::Forward,
+    }
 }
 
 fn unviewable(item: &Unviewable) -> types::Unviewable {

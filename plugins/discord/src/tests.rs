@@ -5,7 +5,7 @@ use super::{
         Response,
     },
 };
-use enco_sdk::channel::{Action, CommandKind};
+use enco_sdk::channel::{Action, CommandKind, Quote, Quoted};
 use enco_sdk::channel::{ActivityView, ToolActivity, ToolState};
 use serde_json::{Value, json};
 
@@ -46,8 +46,11 @@ fn message() -> Value {
         "type": 0,
         "author": {"id": "7", "username": "ada", "global_name": "Ada"},
         "content": "hello",
+        "timestamp": "2026-10-29T12:00:00.000000+00:00",
         "mentions": [],
         "attachments": [],
+        "embeds": [],
+        "components": [],
     })
 }
 
@@ -164,9 +167,22 @@ fn messages_keep_native_text_commands_addressing_threads_and_attachments() -> Re
     assert_eq!(inbound.conversation, "thread");
     assert!(!inbound.addressed);
     assert!(matches!(&inbound.action, Action::Message(content) if content.text == "/cancel"));
+    // This bot writes in Components V2: its text is in text displays, and `content` is empty.
+    let mut answer = message();
+    answer["id"] = json!("8");
+    answer["author"] = json!({"id": "42", "username": "Helper", "bot": true});
+    answer["content"] = json!("");
+    answer["flags"] = json!(32768);
+    answer["components"] = json!([{"type": 17, "id": 1, "accent_color": 5793266, "components": [
+        {"type": 10, "id": 2, "content": "First part"},
+        {"type": 14, "id": 3, "divider": true, "spacing": 1},
+        {"type": 10, "id": 4, "content": "Second part"},
+    ]}]);
     let mut reply = message();
-    reply["referenced_message"] =
-        json!({"id": "8", "author": {"id": "42", "username": "Helper", "bot": true}});
+    reply["type"] = json!(19);
+    reply["message_reference"] =
+        json!({"type": 0, "message_id": "8", "channel_id": "thread", "guild_id": "guild"});
+    reply["referenced_message"] = answer;
     reply["attachments"] = json!([
         {
             "filename": "image.webp",
@@ -191,7 +207,15 @@ fn messages_keep_native_text_commands_addressing_threads_and_attachments() -> Re
         content.images[0].locator,
         "https://cdn.discordapp.com/attachments/a.webp"
     );
-    assert_eq!(content.unviewable[0].what, "voice.ogg");
+    assert_eq!(content.unviewable[0].what, "file voice.ogg");
+    let Some(Quote {
+        messages: Quoted::Messages(quoted),
+        ..
+    }) = &content.quote
+    else {
+        return Err("expected the replied message".into());
+    };
+    assert_eq!(quoted[0].text, "First part\nSecond part");
     let mut direct = message();
     direct
         .as_object_mut()
@@ -205,29 +229,39 @@ fn messages_keep_native_text_commands_addressing_threads_and_attachments() -> Re
 }
 
 #[test]
-fn contentless_messages_are_not_input_and_forwards_are_not_replies() -> Result<(), String> {
+fn only_contentless_messages_are_ignored_and_forwards_are_not_replies() -> Result<(), String> {
     let mut sticker = message();
     sticker["content"] = json!("");
+    assert!(created(1, sticker.clone())?.messages.is_empty());
     sticker["sticker_items"] = json!([{"id": "1", "name": "wave", "format_type": 1}]);
-    assert!(created(1, sticker)?.messages.is_empty());
-    let forward = json!({"type": 1, "message_id": "8", "channel_id": "elsewhere"});
+    // A link preview repeats a URL from the text; only the rich embed is something the sender wrote.
+    sticker["embeds"] = json!([
+        {"type": "link", "url": "https://example.com/trip"},
+        {"type": "rich", "title": "Trip plan", "description": "Saturday at eight"},
+    ]);
+    let reading = created(1, sticker)?;
+    let Action::Message(content) = &reading.messages[0].action else {
+        return Err("expected content".into());
+    };
+    assert_eq!(
+        content
+            .unviewable
+            .iter()
+            .map(|part| part.what.as_str())
+            .collect::<Vec<_>>(),
+        ["sticker", "card"]
+    );
     let mut forwarded = message();
     forwarded["content"] = json!("");
-    forwarded["message_reference"] = forward.clone();
-    forwarded["message_snapshots"] = json!([{"message": {"content": "hello", "attachments": []}}]);
-    assert!(created(2, forwarded)?.messages.is_empty());
-    let mut annotated = message();
-    annotated["message_reference"] = forward;
-    assert_eq!(created(3, annotated)?.messages[0].reply_to, None);
-    // A reply whose message was deleted still names it.
-    let mut orphan = message();
-    orphan["type"] = json!(19);
-    orphan["referenced_message"] = Value::Null;
-    orphan["message_reference"] = json!({"message_id": "8", "channel_id": "thread"});
-    assert_eq!(
-        created(4, orphan)?.messages[0].reply_to.as_deref(),
-        Some("8")
-    );
+    forwarded["message_reference"] =
+        json!({"type": 1, "message_id": "8", "channel_id": "elsewhere", "guild_id": "guild"});
+    forwarded["message_snapshots"] = json!([{"message": {
+        "type": 0, "content": "hello", "timestamp": "2026-10-28T12:00:00.000000+00:00",
+        "mentions": [], "attachments": [], "embeds": [], "components": [], "flags": 0,
+    }}]);
+    let inbound = &created(2, forwarded)?.messages[0];
+    assert!(matches!(&inbound.action, Action::Message(content) if content.quote.is_some()));
+    assert_eq!(inbound.reply_to, None);
     Ok(())
 }
 
@@ -455,3 +489,5 @@ fn menus_have_native_contexts_and_http_errors_preserve_evidence() -> Result<(), 
     }
     Ok(())
 }
+
+mod quotes;

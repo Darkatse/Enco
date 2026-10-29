@@ -76,6 +76,22 @@ A JSON document encoded as UTF-8 text.
 type json = string;
 ```
 
+#### record `datetime`
+
+A UTC instant, shaped like `wasi:clocks/wall-clock.datetime`.
+
+| Field | Type | Description |
+|---|---|---|
+| `seconds` | `u64` | Seconds since the Unix epoch. |
+| `nanoseconds` | `u32` | Nanoseconds past `seconds`. |
+
+#### enum `quote-kind`
+
+How a message relates to messages it quotes.
+
+- `reply`: It answers the message, or the messages that message forwarded.
+- `forward`: It passes the messages on from elsewhere.
+
 #### record `failure`
 
 An operation failure.
@@ -219,12 +235,15 @@ Why an attachment did not become an image.
 
 #### record `unviewable`
 
-An attachment kept only as a description.
+Part of a message's content kept only as a description, such as an attachment.
+
+Facts about the message, such as who sent it, are not content: one that cannot be read is
+absent instead.
 
 | Field | Type | Description |
 |---|---|---|
-| `what` | `string` | The channel's description of it. |
-| `reason` | `unviewable-reason` | Why it is not an image. |
+| `what` | `string` | A plain description such as voice message or file report.pdf, not a protocol type name. |
+| `reason` | `unviewable-reason` | Why it cannot be shown. |
 
 #### record `settings`
 
@@ -570,15 +589,6 @@ the transcript, or sends images to a model that does not accept them; when a rep
 out a capability in `lifeline`; or when a compaction discloses any tool or stops where no Round
 ends.
 
-#### record `datetime`
-
-A UTC instant, shaped like `wasi:clocks/wall-clock.datetime`.
-
-| Field | Type | Description |
-|---|---|---|
-| `seconds` | `u64` | Seconds since the Unix epoch. |
-| `nanoseconds` | `u32` | Nanoseconds past `seconds`. |
-
 #### record `log-pos`
 
 The position of an entry in this Session's Log.
@@ -609,6 +619,76 @@ A recorded image, by reference rather than by its bytes.
 | `size` | `u64` | The size of the bytes. |
 | `content` | `string` | The BLAKE3 digest of the bytes, in lowercase hex. |
 | `path` | `string` | The file that holds the bytes. |
+
+#### record `quoted-message`
+
+A message inside an input's reply or forward.
+
+| Field | Type | Description |
+|---|---|---|
+| `depth` | `u8` | Nesting depth; a nested forward follows the message that forwards it, one level deeper. |
+| `sender` | `option<string>` | The sender's protocol ID, when reported. |
+| `sender-name` | `option<string>` | The sender's display name, when reported. |
+| `owner` | `bool` | Whether the sender was the owner when the input arrived. |
+| `yours` | `bool` | Whether this account sent the quoted message. |
+| `conversation-name` | `option<string>` | The named original conversation, when it was elsewhere. |
+| `sent-at` | `option<datetime>` | When the message was first sent, when reported. |
+| `text` | `string` | What the sender wrote. |
+| `images` | `list<image-ref>` | The quoted images in their recorded order. |
+| `unviewable` | `list<unviewable>` | Content that could not be shown, and why. |
+
+#### variant `quoted`
+
+What the input records about quoted content.
+
+| Case | Type | Description |
+|---|---|---|
+| `messages` | `list<quoted-message>` | The messages, in their recorded order. |
+| `unavailable` | `string` | Why the messages could not be obtained. |
+
+#### record `quote`
+
+Messages quoted by an input, with their stored pictures.
+
+| Field | Type | Description |
+|---|---|---|
+| `kind` | `quote-kind` | Whether the input replies to these messages or forwards them. |
+| `messages` | `quoted` | The content or its recorded unavailability. |
+
+#### record `earlier-quoted-message`
+
+A quoted message in earlier context; images remain descriptions.
+
+| Field | Type | Description |
+|---|---|---|
+| `depth` | `u8` | Nesting depth; a nested forward follows its parent one level deeper. |
+| `sender` | `option<string>` | The sender's protocol ID, when reported. |
+| `sender-name` | `option<string>` | The sender's display name, when reported. |
+| `owner` | `bool` | Whether the sender was the owner when the earlier message arrived. |
+| `yours` | `bool` | Whether this account sent the quoted message. |
+| `conversation-name` | `option<string>` | The named original conversation, when it was elsewhere. |
+| `sent-at` | `option<datetime>` | When the message was first sent, when reported. |
+| `text` | `string` | What the sender wrote. |
+| `images` | `list<string>` | Descriptions of images; their content was not fetched. |
+| `unviewable` | `list<unviewable>` | Content that could not be shown, and why. |
+
+#### variant `earlier-quoted`
+
+What an earlier message carries about quoted content.
+
+| Case | Type | Description |
+|---|---|---|
+| `messages` | `list<earlier-quoted-message>` | The messages carried by the protocol. |
+| `unavailable` | `string` | Why the protocol could not supply them. |
+
+#### record `earlier-quote`
+
+Messages quoted by group context, with attachment descriptions only.
+
+| Field | Type | Description |
+|---|---|---|
+| `kind` | `quote-kind` | Whether the earlier message replies to these messages or forwards them. |
+| `messages` | `option<earlier-quoted>` | The content carried by the protocol, or why it is not shown; absent when it needed a request, which earlier context does not make. |
 
 #### record `call`
 
@@ -687,6 +767,7 @@ A prior message quoted for context; it did not drive the Session.
 | `owner` | `bool` | Whether the sender was the owner when the message was accepted. |
 | `text` | `string` | What the sender wrote. |
 | `attachments` | `list<string>` | Descriptions of attachments; their bytes are not fetched for context. |
+| `quote` | `option<earlier-quote>` | Messages this earlier message replied to or forwarded. |
 
 #### record `user-message`
 
@@ -698,6 +779,7 @@ A message that drove the Session.
 | `images` | `list<image-ref>` | The images sent with it. |
 | `unviewable` | `list<unviewable>` | The attachments that are not images. |
 | `earlier` | `list<earlier-message>` | Earlier messages quoted for context; the canonical message excludes them. |
+| `quote` | `option<quote>` | Messages this input replies to or forwards. |
 
 #### record `reminder`
 
@@ -1107,15 +1189,50 @@ An image attachment described by its protocol locator.
 | `what` | `string` | What the attachment is, for a message that cannot show it. |
 | `locator` | `string` | The opaque locator passed to `fetch`. |
 
+#### record `quoted-message`
+
+A message shown inside another, as the protocol showed it.
+
+| Field | Type | Description |
+|---|---|---|
+| `depth` | `u8` | Nesting depth, starting at zero; nested forwards follow their parent one level deeper. |
+| `sender` | `option<string>` | The sender's ID, when the protocol reports one. |
+| `sender-name` | `option<string>` | The sender's display name, when reported. |
+| `conversation-name` | `option<string>` | The name of the original conversation, when it was elsewhere and the protocol names it. |
+| `sent-at` | `option<datetime>` | When it was first sent, when reported. |
+| `text` | `string` | What the sender wrote as people in the chat see it, mentions of this bot included. |
+| `images` | `list<attachment>` | Images, by their protocol locators. |
+| `unviewable` | `list<unviewable>` | Content that could not be shown, and why. |
+
+#### variant `quoted`
+
+The quoted content, as far as the protocol carries it.
+
+| Case | Type | Description |
+|---|---|---|
+| `messages` | `list<quoted-message>` | Carried in the message itself: at least one, the first at depth 0, each nested at most one level below the one before. |
+| `fetch` | `string` | Fetch this locator to obtain the messages. |
+| `unavailable` | `string` | Why the protocol cannot give the messages. |
+
+#### record `quote`
+
+Messages shown inside another message.
+
+| Field | Type | Description |
+|---|---|---|
+| `kind` | `quote-kind` | Whether the message replies to them or forwards them. |
+| `messages` | `quoted` | The messages, or how to get them. |
+
 #### record `content`
 
 The text and attachments of a message.
 
 | Field | Type | Description |
 |---|---|---|
-| `text` | `string` | What the sender wrote. |
+| `text` | `string` | What the sender wrote as people in the chat see it; mentions use names where the protocol supplies them, and a leading mention of this bot is left out. |
 | `images` | `list<attachment>` | Images, by the protocol's locator for fetching them. |
-| `unviewable` | `list<unviewable>` | Attachments that cannot be images, and why. |
+| `unviewable` | `list<unviewable>` | Parts of the content that cannot be shown, and why. |
+| `quote` | `option<quote>` | The messages it replies to or forwards, when it does. |
 
 #### variant `action`
 
@@ -1200,13 +1317,14 @@ A command the host understands, as it should appear in the protocol's menus.
 
 #### variant `fetch-step`
 
-The next step of fetching an attachment.
+The next step of fetching the content a locator names.
 
 | Case | Type | Description |
 |---|---|---|
 | `request` | `request` | Send this request and call again with its response. |
 | `download` | `string` | Get this absolute URL taken from the protocol's content and call again with its response.  The host sends it without credentials and only to one of the mapper's `origins`, so content never chooses a path on the service; an address elsewhere makes the attachment unavailable. |
 | `image` | `list<u8>` | The attachment's bytes. |
+| `messages` | `list<quoted-message>` | The messages a quote's locator names, listed as `quoted.messages` is. |
 | `unavailable` | `string` | The protocol refused it for good; the text says why. |
 
 #### enum `tool-state`
@@ -1295,13 +1413,13 @@ What an arrival means, given the latest protocol state.
 #### func `fetch`
 
 ```wit
-fetch: func(locator: string, responses: list<response>) -> result<fetch-step, fault>;
+fetch: func(locator: string, responses: list<response>, limit: u32) -> result<fetch-step, fault>;
 ```
 
-The next step of fetching the attachment at `locator`, given the responses so far.
+The next step of fetching the content at `locator`, given the responses so far.
 
-Asking for more requests than the manual's limit for channel `fetch` is a contract
-failure.
+One fetch may send at most `limit` requests and downloads in all; asking for more is a
+contract failure.
 
 #### func `split`
 

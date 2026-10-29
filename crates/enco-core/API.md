@@ -24,6 +24,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `DeliverySettlement` — Final outcome, committed atomically with the connection's outbound progress.
 - struct `DisclosedTool` — A tool as a plan disclosed it to the model, kept verbatim.
 - struct `EarlierMessage` — A prior chat message quoted as context, without starting a Session Run.
+- struct `EarlierQuote` — Messages that an earlier message quoted; images stay descriptions and nothing is fetched.
 - enum `Effect` — Describes external effects so recovery can settle an interrupted invocation honestly.
 - struct `Entry` — One immutable fact at a structurally ordered position.
 - enum `EntryBody` — Facts accepted by the Session owner.
@@ -69,6 +70,10 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `PluginRecord` — Mutable references owned exclusively by the registry.
 - struct `PluginSettings` — The complete `[plugin.<name>]` table. Only `config` is visible to the plugin.
 - struct `ProviderSettings` — Per-call provider settings recorded before invocation. Credential values belong only to the host transport.
+- struct `Quote` — Messages that an input replies to or forwards, with their stored images.
+- enum `QuoteKind` — How a message relates to the messages it quotes.
+- enum `Quoted` — Quoted content, or why the protocol could not supply it.
+- struct `QuotedMessage` — One message inside a reply or forward, with the identity facts recorded at acceptance.
 - struct `Reason` — A nonempty, bounded line explaining an intentional change.
 - struct `RegisteredCode` — One accepted code activation.
 - struct `RegisteredName` — One accepted name change.
@@ -676,6 +681,7 @@ pub struct EarlierMessage {
     pub text: String,
     pub attachments: Vec<String>,
     pub origin: crate::MappingOrigin,
+    pub quote: Option<crate::EarlierQuote>,
 }
 ```
 
@@ -688,6 +694,7 @@ A prior chat message quoted as context, without starting a Session Run.
 - `text` — Quoted text, never an instruction from the owner on another sender's behalf.
 - `attachments` — Attachment descriptions; their content is not fetched for context.
 - `origin` — The recorded protocol translation that produced this message.
+- `quote` — Messages this earlier input quoted; images remain descriptions and no reads are made.
 
 Implements:
 
@@ -697,6 +704,32 @@ impl Debug for EarlierMessage
 impl<'de> Deserialize<'de> for EarlierMessage
 impl PartialEq for EarlierMessage
 impl Serialize for EarlierMessage
+```
+
+## struct `EarlierQuote`
+
+`src/quote.rs`
+
+```rust
+pub struct EarlierQuote {
+    pub kind: QuoteKind,
+    pub messages: Option<Quoted<String>>,
+}
+```
+
+Messages that an earlier message quoted; images stay descriptions and nothing is fetched.
+
+- `kind` — How the earlier message relates to these messages.
+- `messages` — The content the protocol carried, or why it could not; absent when it needed a request.
+
+Implements:
+
+```rust
+impl Clone for EarlierQuote
+impl Debug for EarlierQuote
+impl<'de> Deserialize<'de> for EarlierQuote
+impl PartialEq for EarlierQuote
+impl Serialize for EarlierQuote
 ```
 
 ## enum `Effect`
@@ -935,7 +968,7 @@ A deduplicated input delivered through the Inbox.
 pub fn canonical_message(&self) -> Message
 ```
 
-The sole mapping from Inbox input to a model message: the content its producer supplied.
+The sole mapping from input to a model message: its own text, quoted pictures, then its own pictures.
 
 The composer narrates the circumstances, such as arrival and planned times. Input without
 text, such as a photo alone or a backtrack, has no text part.
@@ -965,6 +998,7 @@ pub enum EventBody {
         images: Vec<crate::Image>,
         unviewable: Vec<crate::Unviewable>,
         earlier: Vec<EarlierMessage>,
+        quote: Option<crate::Quote>,
     },
     Reminder {
         schedule: crate::ScheduleId,
@@ -988,6 +1022,7 @@ Input to a Session, consumed in Inbox order.
   - `images` — Images stored before this Event was accepted.
   - `unviewable` — Attachments whose content could not be accepted as images.
   - `earlier` — Earlier messages quoted for context; excluded from the canonical message.
+  - `quote` — Messages this input replies to or forwards, with their stored images.
 - `Reminder` — A reminder reaching its scheduled time.
   - `schedule` — The Schedule which produced this input.
   - `due_at` — Planned time in UTC; this occurrence's identity together with the schedule.
@@ -2326,6 +2361,138 @@ impl Debug for ProviderSettings
 impl<'de> Deserialize<'de> for ProviderSettings
 impl PartialEq for ProviderSettings
 impl Serialize for ProviderSettings
+```
+
+## struct `Quote`
+
+`src/quote.rs`
+
+```rust
+pub struct Quote {
+    pub kind: QuoteKind,
+    pub messages: Quoted<crate::Image>,
+    pub fetched: Option<crate::MappingOrigin>,
+}
+```
+
+Messages that an input replies to or forwards, with their stored images.
+
+- `kind` — How the input relates to these messages.
+- `messages` — The quoted content, or why it was not obtained.
+- `fetched` — The fetch that produced this content; absent when it arrived with the input itself.
+
+### `Quote::images`
+
+```rust
+pub fn images(&self) -> impl Iterator<Item = &Image>
+```
+
+The quoted images in the order their messages are listed.
+
+Implements:
+
+```rust
+impl Clone for Quote
+impl Debug for Quote
+impl<'de> Deserialize<'de> for Quote
+impl PartialEq for Quote
+impl Serialize for Quote
+```
+
+## enum `QuoteKind`
+
+`src/quote.rs`
+
+```rust
+pub enum QuoteKind {
+    Reply,
+    Forward,
+}
+```
+
+How a message relates to the messages it quotes.
+
+- `Reply` — It answers the message, or the messages that message forwarded.
+- `Forward` — It passes the messages on from elsewhere.
+
+Implements:
+
+```rust
+impl Clone for QuoteKind
+impl Copy for QuoteKind
+impl Debug for QuoteKind
+impl<'de> Deserialize<'de> for QuoteKind
+impl Eq for QuoteKind
+impl PartialEq for QuoteKind
+impl Serialize for QuoteKind
+```
+
+## enum `Quoted`
+
+`src/quote.rs`
+
+```rust
+pub enum Quoted<A> {
+    Messages(Vec<QuotedMessage<A>>),
+    Unavailable(String),
+}
+```
+
+Quoted content, or why the protocol could not supply it.
+
+- `Messages` — Messages in protocol order, with nested forwards immediately after their parent.
+- `Unavailable` — Why the protocol could not supply the content.
+
+Implements:
+
+```rust
+impl<A: Clone> Clone for Quoted<A>
+impl<A: Debug> Debug for Quoted<A>
+impl<'de, A> Deserialize<'de> for Quoted<A> where A: Deserialize<'de>
+impl<A: PartialEq> PartialEq for Quoted<A>
+impl<A> Serialize for Quoted<A> where A: Serialize
+```
+
+## struct `QuotedMessage`
+
+`src/quote.rs`
+
+```rust
+pub struct QuotedMessage<A> {
+    pub depth: u8,
+    pub sender: Option<String>,
+    pub sender_name: Option<String>,
+    pub owner: bool,
+    pub yours: bool,
+    pub conversation_name: Option<String>,
+    pub sent_at: Option<crate::DateTime<crate::Utc>>,
+    pub text: String,
+    pub images: Vec<A>,
+    pub unviewable: Vec<crate::Unviewable>,
+}
+```
+
+One message inside a reply or forward, with the identity facts recorded at acceptance.
+
+- `depth` — Nesting depth, starting at zero; a nested forward follows its parent one level deeper.
+- `sender` — The sender's protocol ID, when reported.
+- `sender_name` — The sender's display name, when reported.
+- `owner` — Whether the sender was the owner when the quoting message arrived.
+- `yours` — Whether this account sent the quoted message.
+- `conversation_name` — The named original conversation, when it was elsewhere.
+- `sent_at` — When the message was first sent, when reported.
+- `text` — What the sender wrote, in the protocol's readable form.
+- `images` — Stored images for an input, or image descriptions for an earlier message.
+- `unviewable` — Content that could not be shown, and why.
+
+Implements:
+
+```rust
+impl<A: Clone> Clone for QuotedMessage<A>
+impl<A: Debug> Debug for QuotedMessage<A>
+impl<'de, A> Deserialize<'de> for QuotedMessage<A> where A: Deserialize<'de>
+impl<A: PartialEq> PartialEq for QuotedMessage<A>
+impl<A> Serialize for QuotedMessage<A> where A: Serialize
 ```
 
 ## struct `Reason`

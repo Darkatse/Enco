@@ -1,6 +1,6 @@
 use crate::support::channel;
 use enco_core::UnviewableReason;
-use enco_kernel::{AttachmentContent, ChannelAction as Action};
+use enco_kernel::ChannelAction as Action;
 use serde_json::json;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -65,8 +65,14 @@ async fn telegram_photos_documents_and_unsupported_attachments_keep_their_messag
         .expect(1)
         .mount(&server)
         .await;
-    assert!(
-        matches!(telegram.fetch(&photo.images[0].locator).await.unwrap(), AttachmentContent::Image(bytes) if bytes == b"image bytes")
+    assert_eq!(
+        telegram
+            .fetch_image(&photo.images[0].locator)
+            .await
+            .unwrap()
+            .content
+            .unwrap(),
+        b"image bytes"
     );
 }
 
@@ -92,10 +98,10 @@ async fn telegram_attachment_failures_keep_retry_evidence_without_download_urls(
             .expect(1)
             .mount_as_scoped(&server)
             .await;
-        let result = telegram.fetch("file-id").await;
+        let result = telegram.fetch_image("file-id").await;
         if status == 403 {
             assert!(
-                matches!(result.unwrap(), AttachmentContent::Unavailable(reason) if reason.contains("403") && !reason.contains("secret"))
+                matches!(result.unwrap().content, Err(reason) if reason.contains("403") && !reason.contains("secret"))
             );
             drop(download);
             continue;

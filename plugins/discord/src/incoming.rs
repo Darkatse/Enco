@@ -3,14 +3,10 @@ use crate::{
     channel::{Command, Fault, Inbound, Request},
     wire,
 };
-use enco_sdk::channel::{Action, Attachment, CommandKind, Content};
-use enco_sdk::types::{Unviewable, UnviewableReason};
+use enco_sdk::channel::{Action, CommandKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// Discord's `DEFAULT` message reference type, which replies use; a forward's reference names the
-/// message it copies, not one it answers.
-const REPLY_REFERENCE: u8 = 0;
 /// The interaction message flag that shows a response only to the user who invoked it.
 const EPHEMERAL: u32 = 1 << 6;
 
@@ -25,7 +21,7 @@ pub(super) struct User {
 
 impl User {
     /// The name Discord shows for this user: the display name, or the username without one.
-    fn name(&self) -> String {
+    pub(super) fn name(&self) -> String {
         self.global_name
             .clone()
             .unwrap_or_else(|| self.username.clone())
@@ -38,34 +34,10 @@ struct Message {
     channel_id: String,
     guild_id: Option<String>,
     author: User,
-    content: String,
-    #[serde(default)]
-    mentions: Vec<User>,
-    #[serde(default)]
-    attachments: Vec<File>,
-    referenced_message: Option<Reference>,
-    message_reference: Option<MessageReference>,
+    #[serde(flatten)]
+    body: serde_json::Map<String, Value>,
     #[serde(rename = "type")]
     kind: u8,
-}
-
-#[derive(Deserialize)]
-struct Reference {
-    id: String,
-    author: User,
-}
-#[derive(Deserialize)]
-struct MessageReference {
-    // Discord omits the type for its default.
-    #[serde(rename = "type", default)]
-    kind: u8,
-    message_id: Option<String>,
-}
-#[derive(Deserialize)]
-struct File {
-    filename: String,
-    url: String,
-    content_type: Option<String>,
 }
 
 pub(super) fn message(value: Value, account: &str) -> Result<Option<Inbound>, Fault> {
@@ -75,44 +47,8 @@ pub(super) fn message(value: Value, account: &str) -> Result<Option<Inbound>, Fa
         return Ok(None);
     }
     let direct = message.guild_id.is_none();
-    let addressed = direct
-        || message.mentions.iter().any(|user| user.id == account)
-        || message
-            .referenced_message
-            .as_ref()
-            .is_some_and(|reply| reply.author.id == account);
-    let reply_to = message
-        .referenced_message
-        .map(|reply| reply.id)
-        .or_else(|| {
-            message
-                .message_reference
-                .filter(|reference| reference.kind == REPLY_REFERENCE)
-                .and_then(|reference| reference.message_id)
-        });
-    let mut content = Content {
-        text: message.content,
-        images: vec![],
-        unviewable: vec![],
-    };
-    for file in message.attachments {
-        if file
-            .content_type
-            .as_deref()
-            .is_some_and(|mime| mime.starts_with("image/"))
-        {
-            content.images.push(Attachment {
-                what: file.filename,
-                locator: file.url,
-            });
-        } else {
-            content.unviewable.push(Unviewable {
-                what: file.filename,
-                reason: UnviewableReason::Unsupported,
-            });
-        }
-    }
-    if content.text.is_empty() && content.images.is_empty() && content.unviewable.is_empty() {
+    let decoded = crate::content::decode(&message.body, account);
+    if decoded.content.is_empty() {
         return Ok(None);
     }
     Ok(Some(Inbound {
@@ -122,10 +58,10 @@ pub(super) fn message(value: Value, account: &str) -> Result<Option<Inbound>, Fa
         sender_name: Some(message.author.name()),
         sender: Some(message.author.id),
         direct,
-        addressed,
-        reply_to,
+        addressed: direct || decoded.addressed,
+        reply_to: decoded.reply_to,
         respond: None,
-        action: Action::Message(content),
+        action: Action::Message(decoded.content),
     }))
 }
 

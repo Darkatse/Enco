@@ -9,7 +9,7 @@ The host writes this crate to `sdk/` in every home, replacing any edits there; p
 it by path.
 
 - module `bindings` — Types and host functions generated from the WIT.
-- module `channel` — What every channel mapper shares: commands, the activity card's wording and `multipart/form-data` uploads.
+- module `channel` — What every channel mapper shares: commands, decoded content, the activity card's wording and `multipart/form-data` uploads.
 - module `host` — Host-owned logging and transport available to plugins.
 - module `protocol` — Helpers for plugins that call model services through the host's `http` import, including OpenAI-compatible Chat Completions and embeddings.
 - module `types` — Canonical data exchanged between the host and plugins.
@@ -116,7 +116,8 @@ Plugins built with `export!` use these same types, so values pass between a plug
 
 `src/channel.rs`
 
-What every channel mapper shares: commands, the activity card's wording and `multipart/form-data` uploads.
+What every channel mapper shares: commands, decoded content, the activity card's wording and
+`multipart/form-data` uploads.
 
 Each protocol marks commands and lays the card out its own way; the names, meanings and words
 are the same everywhere. `export!` gives a channel plugin these same types, so
@@ -128,8 +129,13 @@ name them from here.
 - enum `channel::CommandKind` — The commands the host understands.
 - struct `channel::Content` — The text and attachments of a message.
 - struct `channel::FormPart` — One part of a `multipart/form-data` body.
+- struct `channel::Quote` — Messages shown inside another message.
+- enum `channel::Quoted` — The quoted content, as far as the protocol carries it.
+- struct `channel::QuotedMessage` — A message shown inside another, as the protocol showed it.
 - struct `channel::ToolActivity` — One tool call shown in an activity view.
 - enum `channel::ToolState` — Where a tool call stands.
+- fn `channel::decode_part` — `value` decoded as a `T`; absent when it is not one, and `unviewable` gains `what` as an `invalid_part` of `protocol`.
+- fn `channel::invalid_part` — A part of a message that breaks `protocol`'s rules, such as `Discord`, kept as `what` and unavailable because of `error`; the rest of the message stays.
 - fn `channel::multipart` — Encode `parts` in order as `multipart/form-data`, returning the `content-type` header value and the body.
 - fn `channel::typed_command` — The command typed at the start of `text`, as its name and the rest as its argument; absent when `text` starts otherwise.
 - const `channel::CANCEL_LABEL` — The label of the activity card's button that cancels the Run.
@@ -299,20 +305,34 @@ pub struct Content {
     pub text: String,
     pub images: Vec<Attachment>,
     pub unviewable: Vec<Unviewable>,
+    pub quote: ::core::option::Option<Quote>,
 }
 ```
 
 The text and attachments of a message.
 
-- `text` — What the sender wrote.
+- `text` — What the sender wrote as people in the chat see it; mentions use names where the
+  protocol supplies them, and a leading mention of this bot is left out.
 - `images` — Images, by the protocol's locator for fetching them.
-- `unviewable` — Attachments that cannot be images, and why.
+- `unviewable` — Parts of the content that cannot be shown, and why.
+- `quote` — The messages it replies to or forwards, when it does.
+
+### `channel::Content::is_empty`
+
+`src/channel.rs`
+
+```rust
+pub fn is_empty(&self) -> bool
+```
+
+Whether it shows nothing: no text, attachments or quote.
 
 Implements:
 
 ```rust
 impl Clone for Content
 impl Debug for Content
+impl Default for Content
 impl PartialEq for Content
 ```
 
@@ -336,6 +356,115 @@ One part of a `multipart/form-data` body.
   that is not a file.
 - `content_type` — The part's `Content-Type`; absent leaves the receiver's default, `text/plain`.
 - `data` — The part's bytes, sent as they are.
+
+## struct `channel::Quote`
+
+`src/lib.rs`
+
+```rust
+pub struct Quote {
+    pub kind: QuoteKind,
+    pub messages: Quoted,
+}
+```
+
+Messages shown inside another message.
+
+- `kind` — Whether the message replies to them or forwards them.
+- `messages` — The messages, or how to get them.
+
+Implements:
+
+```rust
+impl Clone for Quote
+impl Debug for Quote
+impl PartialEq for Quote
+```
+
+## enum `channel::Quoted`
+
+`src/lib.rs`
+
+```rust
+pub enum Quoted {
+    Messages(Vec<QuotedMessage>),
+    Fetch(String),
+    Unavailable(String),
+}
+```
+
+The quoted content, as far as the protocol carries it.
+
+- `Messages` — Carried in the message itself: at least one, the first at depth 0, each nested at most
+  one level below the one before.
+- `Fetch` — Fetch this locator to obtain the messages.
+- `Unavailable` — Why the protocol cannot give the messages.
+
+Implements:
+
+```rust
+impl Clone for Quoted
+impl Debug for Quoted
+impl PartialEq for Quoted
+```
+
+## struct `channel::QuotedMessage`
+
+`src/lib.rs`
+
+```rust
+pub struct QuotedMessage {
+    pub depth: u8,
+    pub sender: ::core::option::Option<String>,
+    pub sender_name: ::core::option::Option<String>,
+    pub conversation_name: ::core::option::Option<String>,
+    pub sent_at: ::core::option::Option<Datetime>,
+    pub text: String,
+    pub images: Vec<Attachment>,
+    pub unviewable: Vec<Unviewable>,
+}
+```
+
+A message shown inside another, as the protocol showed it.
+
+- `depth` — Nesting depth, starting at zero; nested forwards follow their parent one level deeper.
+- `sender` — The sender's ID, when the protocol reports one.
+- `sender_name` — The sender's display name, when reported.
+- `conversation_name` — The name of the original conversation, when it was elsewhere and the protocol names it.
+- `sent_at` — When it was first sent, when reported.
+- `text` — What the sender wrote as people in the chat see it, mentions of this bot included.
+- `images` — Images, by their protocol locators.
+- `unviewable` — Content that could not be shown, and why.
+
+### `channel::QuotedMessage::new`
+
+`src/channel.rs`
+
+```rust
+pub fn new(depth: u8, content: Content) -> Self
+```
+
+`content` shown `depth` forwards deep, with no sender, conversation or time yet.
+
+A quote inside `content` is left out: a quoted message's own quotes are not shown.
+
+### `channel::QuotedMessage::invalid`
+
+`src/channel.rs`
+
+```rust
+pub fn invalid(depth: u8, why: Unviewable) -> Self
+```
+
+A message `depth` forwards deep that could not be decoded, showing only `why`.
+
+Implements:
+
+```rust
+impl Clone for QuotedMessage
+impl Debug for QuotedMessage
+impl PartialEq for QuotedMessage
+```
 
 ## struct `channel::ToolActivity`
 
@@ -395,6 +524,28 @@ impl Ord for ToolState
 impl PartialEq for ToolState
 impl PartialOrd for ToolState
 ```
+
+## fn `channel::decode_part`
+
+`src/channel.rs`
+
+```rust
+pub fn decode_part<T: DeserializeOwned>(protocol: &str, what: &str, value: &serde_json::Value, unviewable: &mut Vec<crate::types::Unviewable>) -> Option<T>
+```
+
+`value` decoded as a `T`; absent when it is not one, and `unviewable` gains `what` as an
+`invalid_part` of `protocol`.
+
+## fn `channel::invalid_part`
+
+`src/channel.rs`
+
+```rust
+pub fn invalid_part(protocol: &str, what: &str, error: impl Display) -> crate::types::Unviewable
+```
+
+A part of a message that breaks `protocol`'s rules, such as `Discord`, kept as `what` and
+unavailable because of `error`; the rest of the message stays.
 
 ## fn `channel::multipart`
 
@@ -873,6 +1024,7 @@ pub type Json = super::super::super::enco::plugin::types::Json;
 
 Canonical data exchanged between the host and plugins.
 
+- struct `types::Datetime` — A UTC instant, shaped like `wasi:clocks/wall-clock.datetime`.
 - enum `types::Effect` — Mutation semantics used to order calls and settle interrupted work.
 - struct `types::Extension` — Opaque adapter fields. The host replays them only to their originating plugin identity.
 - struct `types::Failure` — An operation failure.
@@ -881,14 +1033,40 @@ Canonical data exchanged between the host and plugins.
 - struct `types::Message` — A canonical message sent to or returned by the model.
 - enum `types::Outcome` — A known result, a known failure, or an external effect that cannot be confirmed.
 - enum `types::Part` — Ordered text, images, tool interactions and opaque extensions within a message.
+- enum `types::QuoteKind` — How a message relates to messages it quotes.
 - enum `types::Role` — Identifies the speaker of a canonical model message.
 - struct `types::Settings` — Endpoint, model and adapter options supplied by the caller for this call.
 - struct `types::ToolCall` — A proposed tool invocation.
 - struct `types::ToolResult` — A tool settlement.
 - struct `types::ToolSpec` — A tool disclosed to the model.
-- struct `types::Unviewable` — An attachment kept only as a description.
+- struct `types::Unviewable` — Part of a message's content kept only as a description, such as an attachment.
 - enum `types::UnviewableReason` — Why an attachment did not become an image.
 - type `types::Json` — A JSON document encoded as UTF-8 text.
+
+## struct `types::Datetime`
+
+`src/lib.rs`
+
+```rust
+pub struct Datetime {
+    pub seconds: u64,
+    pub nanoseconds: u32,
+}
+```
+
+A UTC instant, shaped like `wasi:clocks/wall-clock.datetime`.
+
+- `seconds` — Seconds since the Unix epoch.
+- `nanoseconds` — Nanoseconds past `seconds`.
+
+Implements:
+
+```rust
+impl Clone for Datetime
+impl Copy for Datetime
+impl Debug for Datetime
+impl PartialEq for Datetime
+```
 
 ## enum `types::Effect`
 
@@ -1120,6 +1298,34 @@ impl Debug for Part
 impl PartialEq for Part
 ```
 
+## enum `types::QuoteKind`
+
+`src/lib.rs`
+
+```rust
+pub enum QuoteKind {
+    Reply,
+    Forward,
+}
+```
+
+How a message relates to messages it quotes.
+
+- `Reply` — It answers the message, or the messages that message forwarded.
+- `Forward` — It passes the messages on from elsewhere.
+
+Implements:
+
+```rust
+impl Clone for QuoteKind
+impl Copy for QuoteKind
+impl Debug for QuoteKind
+impl Eq for QuoteKind
+impl Ord for QuoteKind
+impl PartialEq for QuoteKind
+impl PartialOrd for QuoteKind
+```
+
 ## enum `types::Role`
 
 `src/lib.rs`
@@ -1280,10 +1486,23 @@ pub struct Unviewable {
 }
 ```
 
-An attachment kept only as a description.
+Part of a message's content kept only as a description, such as an attachment.
 
-- `what` — The channel's description of it.
-- `reason` — Why it is not an image.
+Facts about the message, such as who sent it, are not content: one that cannot be read is
+absent instead.
+
+- `what` — A plain description such as voice message or file report.pdf, not a protocol type name.
+- `reason` — Why it cannot be shown.
+
+### `types::Unviewable::unavailable`
+
+`src/channel.rs`
+
+```rust
+pub fn unavailable(what: impl Into<String>, reason: impl Into<String>) -> Self
+```
+
+`what`, which could not be retrieved for `reason`.
 
 Implements:
 
@@ -1379,12 +1598,15 @@ The host records each external input before handing it over, and carries out wha
 - enum `bindings::exports::enco::plugin::channel::CommandKind` — same as `channel::CommandKind`
 - struct `bindings::exports::enco::plugin::channel::Content` — same as `channel::Content`
 - struct `bindings::exports::enco::plugin::channel::Fault` — What a protocol answer means for the host's settlement and retries.
-- enum `bindings::exports::enco::plugin::channel::FetchStep` — The next step of fetching an attachment.
+- enum `bindings::exports::enco::plugin::channel::FetchStep` — The next step of fetching the content a locator names.
 - struct `bindings::exports::enco::plugin::channel::FileData` — File bytes for one outgoing message.
 - struct `bindings::exports::enco::plugin::channel::Identity` — The account a connection reaches.
 - struct `bindings::exports::enco::plugin::channel::Inbound` — A message that arrived, as the protocol describes it.
 - struct `bindings::exports::enco::plugin::channel::Outgoing` — Markdown text with at most one file to send.
 - struct `bindings::exports::enco::plugin::channel::PacingGap` — The time the host leaves before each message it sends through one connection.
+- struct `bindings::exports::enco::plugin::channel::Quote` — same as `channel::Quote`
+- enum `bindings::exports::enco::plugin::channel::Quoted` — same as `channel::Quoted`
+- struct `bindings::exports::enco::plugin::channel::QuotedMessage` — same as `channel::QuotedMessage`
 - enum `bindings::exports::enco::plugin::channel::ReadStep` — How the host reads the protocol next.
 - struct `bindings::exports::enco::plugin::channel::Reading` — What the mapper asks of the host after one arrival.
 - struct `bindings::exports::enco::plugin::channel::Request` — A request for the host to send.
@@ -1393,8 +1615,10 @@ The host records each external input before handing it over, and carries out wha
 - struct `bindings::exports::enco::plugin::channel::ToolActivity` — same as `channel::ToolActivity`
 - enum `bindings::exports::enco::plugin::channel::ToolState` — same as `channel::ToolState`
 - trait `bindings::exports::enco::plugin::channel::Guest` — (no summary)
+- type `bindings::exports::enco::plugin::channel::Datetime` — (no summary)
 - type `bindings::exports::enco::plugin::channel::Failure` — (no summary)
 - type `bindings::exports::enco::plugin::channel::Json` — (no summary)
+- type `bindings::exports::enco::plugin::channel::QuoteKind` — (no summary)
 - type `bindings::exports::enco::plugin::channel::Unviewable` — (no summary)
 
 ## enum `bindings::exports::enco::plugin::channel::Arrival`
@@ -1516,11 +1740,12 @@ pub enum FetchStep {
     Request(Request),
     Download(String),
     Image(Vec<u8>),
+    Messages(Vec<QuotedMessage>),
     Unavailable(String),
 }
 ```
 
-The next step of fetching an attachment.
+The next step of fetching the content a locator names.
 
 - `Request` — Send this request and call again with its response.
 - `Download` — Get this absolute URL taken from the protocol's content and call again with its
@@ -1530,6 +1755,7 @@ The next step of fetching an attachment.
   content never chooses a path on the service; an address elsewhere makes the attachment
   unavailable.
 - `Image` — The attachment's bytes.
+- `Messages` — The messages a quote's locator names, listed as `quoted.messages` is.
 - `Unavailable` — The protocol refused it for good; the text says why.
 
 Implements:
@@ -1897,13 +2123,13 @@ What an arrival means, given the latest protocol state.
 ### `bindings::exports::enco::plugin::channel::Guest::fetch`
 
 ```rust
-fn fetch(locator: String, responses: Vec<Response>) -> ::core::result::Result<FetchStep, Fault>
+fn fetch(locator: String, responses: Vec<Response>, limit: u32) -> ::core::result::Result<FetchStep, Fault>
 ```
 
-The next step of fetching the attachment at `locator`, given the responses so far.
+The next step of fetching the content at `locator`, given the responses so far.
 
-Asking for more requests than the manual's limit for channel `fetch` is a contract
-failure.
+One fetch may send at most `limit` requests and downloads in all; asking for more is a
+contract failure.
 
 ### `bindings::exports::enco::plugin::channel::Guest::split`
 
@@ -1973,6 +2199,14 @@ the protocol has none.
 The host sends it when a Run starts and at each refresh until the Run ends, keeps nothing
 of it, and reads its response with `answered`.
 
+## type `bindings::exports::enco::plugin::channel::Datetime`
+
+`src/lib.rs`
+
+```rust
+pub type Datetime = super::super::super::super::enco::plugin::types::Datetime;
+```
+
 ## type `bindings::exports::enco::plugin::channel::Failure`
 
 `src/lib.rs`
@@ -1987,6 +2221,14 @@ pub type Failure = super::super::super::super::enco::plugin::types::Failure;
 
 ```rust
 pub type Json = super::super::super::super::enco::plugin::types::Json;
+```
+
+## type `bindings::exports::enco::plugin::channel::QuoteKind`
+
+`src/lib.rs`
+
+```rust
+pub type QuoteKind = super::super::super::super::enco::plugin::types::QuoteKind;
 ```
 
 ## type `bindings::exports::enco::plugin::channel::Unviewable`

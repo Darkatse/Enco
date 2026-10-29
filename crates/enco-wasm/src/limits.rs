@@ -10,7 +10,7 @@ pub(crate) const DECISION_SUM_TOLERANCE: f64 = 0.01;
 // Stopping waits out a started send's gap, so this bounds how long one can hold up a replacement.
 pub(crate) const CHANNEL_PACING_MAX: Duration = Duration::from_secs(10);
 // The host runs the fetch loop, so a mapper that never finishes is stopped here.
-pub(crate) const CHANNEL_FETCH_REQUESTS: usize = 4;
+pub(crate) const CHANNEL_FETCH_REQUESTS: u32 = 8;
 
 /// The limits plugins run within, each as a description and its limit, for the manual.
 pub fn plugin_limits() -> Vec<(String, String)> {
@@ -37,7 +37,7 @@ pub fn plugin_limits() -> Vec<(String, String)> {
         ),
         ("HTTP redirects followed", HTTP_MAX_REDIRECTS.to_string()),
         (
-            "Channel `fetch` requests per attachment",
+            "Channel `fetch` requests and downloads, passed as `limit`",
             format!("{CHANNEL_FETCH_REQUESTS}; asking for another is a contract failure"),
         ),
         (

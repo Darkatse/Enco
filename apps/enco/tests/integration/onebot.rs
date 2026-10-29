@@ -6,7 +6,7 @@
 //! The factory OneBot mapper uses the selected service for both HTTP and authenticated WebSocket.
 use crate::support::channel;
 use enco_core::{FileData, Outgoing};
-use enco_kernel::{AttachmentContent, ChannelAction, ChannelAdapter, ChannelReading};
+use enco_kernel::{ChannelAction, ChannelAdapter, ChannelReading};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -36,20 +36,6 @@ async fn onebot_receives_and_sends_through_the_shared_host_contract() {
     .await;
     assert_eq!(adapter.identity().key(), "onebot:42");
     assert!(adapter.pacing().is_some());
-    // An image link from a message may point anywhere. Outside the mapper's origins, the API
-    // included, it leaves only that image unviewable; the server fails on any request it gets.
-    for link in [
-        "https://images.example.com/a.png".to_owned(),
-        format!("{}/send_private_msg?user_id=9&message=x", server.url),
-    ] {
-        assert!(
-            matches!(
-                adapter.fetch(&link).await.unwrap(),
-                AttachmentContent::Unavailable(_)
-            ),
-            "{link}"
-        );
-    }
     receive_inputs(adapter.clone()).await;
     send_outputs(adapter.as_ref(), &mut server.requests).await;
     server.stop.cancel();
@@ -86,6 +72,20 @@ async fn receive_inputs(adapter: Arc<dyn ChannelAdapter>) {
         panic!("expected message")
     };
     assert_eq!(content.text, "hello");
+    // Read locators from mapper output: external links, including the API, stay unviewable.
+    // The server fails if any of these content links reach it as an API request.
+    assert_eq!(content.images.len(), 2);
+    for image in &content.images {
+        assert!(
+            adapter
+                .fetch_image(&image.locator)
+                .await
+                .unwrap()
+                .content
+                .is_err()
+        );
+    }
+
     assert_eq!(messages[1].input.conversation, "group:8");
     assert_eq!(messages[1].input.reply_to.as_deref(), Some("-501"));
     assert!(messages[1].input.addressed);
@@ -217,11 +217,12 @@ async fn serve(stream: TcpStream, requests: mpsc::UnboundedSender<String>) {
 }
 
 async fn events(stream: TcpStream) {
+    let service = format!("http://{}", stream.local_addr().unwrap());
     let mut socket = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
     for frame in [
         json!({"post_type":"meta_event","meta_event_type":"lifecycle","sub_type":"connect","self_id":42}),
         json!({"post_type":"message_sent","message_type":"private","self_id":42}),
-        json!({"post_type":"message","self_id":42,"message_type":"private","message_id":-7,"user_id":9,"sender":{"user_id":9,"nickname":"Owner"},"message":[{"type":"text","data":{"text":"hello"}}]}),
+        json!({"post_type":"message","self_id":42,"message_type":"private","message_id":-7,"user_id":9,"sender":{"user_id":9,"nickname":"Owner"},"message":[{"type":"text","data":{"text":"hello"}},{"type":"image","data":{"url":"https://images.example.com/a.png"}},{"type":"image","data":{"url":format!("{service}/send_private_msg?user_id=9&message=x")}}]}),
         json!({"post_type":"message","self_id":42,"message_type":"group","group_id":8,"message_id":-8,"user_id":9,"sender":{"user_id":9,"nickname":"Owner"},"message":[{"type":"reply","data":{"id":"-501"}},{"type":"at","data":{"qq":"42"}},{"type":"text","data":{"text":" /backtrack"}}]}),
     ] {
         socket.send(Message::text(frame.to_string())).await.unwrap();

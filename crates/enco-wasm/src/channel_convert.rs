@@ -3,10 +3,14 @@ use crate::{
     bindings::{channels as wire, enco::plugin::types},
     convert,
 };
-use enco_core::{Failure, FileData, MappingOrigin, Outgoing, Unviewable, UnviewableReason};
+use enco_core::{
+    DateTime, Failure, FileData, MappingOrigin, Outgoing, QuoteKind, Unviewable, UnviewableReason,
+    Utc,
+};
 use enco_kernel::{
     ChannelAction, ChannelAttachment, ChannelCommand, ChannelCommandKind, ChannelContent,
-    ChannelFault, ChannelIdentity, ChannelInput, ChannelMessage, ChannelPacingGap,
+    ChannelFault, ChannelIdentity, ChannelInput, ChannelMessage, ChannelPacingGap, ChannelQuote,
+    ChannelQuoted, ChannelQuotedMessage,
 };
 use std::time::Duration;
 
@@ -88,7 +92,7 @@ pub(super) fn message(
         return Err(convert::bad("channel message key is empty"));
     }
     let action = match action {
-        wire::Action::Message(content) => ChannelAction::Message(self::content(content)),
+        wire::Action::Message(content) => ChannelAction::Message(self::content(content)?),
         wire::Action::Sessions => ChannelAction::Sessions,
         wire::Action::SelectSession(name) => ChannelAction::SelectSession(name),
         wire::Action::Cancel => ChannelAction::Cancel,
@@ -112,32 +116,103 @@ pub(super) fn message(
     })
 }
 
-fn content(value: wire::Content) -> ChannelContent<ChannelAttachment> {
+fn content(value: wire::Content) -> Result<ChannelContent<ChannelAttachment>, Failure> {
     let wire::Content {
         text,
         images,
         unviewable,
+        quote,
     } = value;
-    ChannelContent {
+    Ok(ChannelContent {
         text,
-        images: images
-            .into_iter()
-            .map(|wire::Attachment { what, locator }| ChannelAttachment { what, locator })
-            .collect(),
-        unviewable: unviewable
-            .into_iter()
-            .map(|types::Unviewable { what, reason }| {
-                let reason = match reason {
-                    types::UnviewableReason::Unsupported => UnviewableReason::Unsupported,
-                    types::UnviewableReason::TooLarge => UnviewableReason::TooLarge,
-                    types::UnviewableReason::Unavailable(reason) => {
-                        UnviewableReason::Unavailable(reason)
-                    }
-                };
-                Unviewable { what, reason }
-            })
-            .collect(),
+        images: images.into_iter().map(attachment).collect(),
+        unviewable: unviewable.into_iter().map(self::unviewable).collect(),
+        quote: quote.map(self::quote).transpose()?,
+    })
+}
+
+fn attachment(value: wire::Attachment) -> ChannelAttachment {
+    let wire::Attachment { what, locator } = value;
+    ChannelAttachment { what, locator }
+}
+
+fn unviewable(value: types::Unviewable) -> Unviewable {
+    let types::Unviewable { what, reason } = value;
+    let reason = match reason {
+        types::UnviewableReason::Unsupported => UnviewableReason::Unsupported,
+        types::UnviewableReason::TooLarge => UnviewableReason::TooLarge,
+        types::UnviewableReason::Unavailable(reason) => UnviewableReason::Unavailable(reason),
+    };
+    Unviewable { what, reason }
+}
+
+fn quote(value: wire::Quote) -> Result<ChannelQuote, Failure> {
+    let wire::Quote { kind, messages } = value;
+    Ok(ChannelQuote {
+        kind: match kind {
+            types::QuoteKind::Reply => QuoteKind::Reply,
+            types::QuoteKind::Forward => QuoteKind::Forward,
+        },
+        messages: match messages {
+            wire::Quoted::Messages(messages) => ChannelQuoted::Messages(quoted_messages(messages)?),
+            wire::Quoted::Fetch(locator) => ChannelQuoted::Fetch(locator),
+            wire::Quoted::Unavailable(reason) => ChannelQuoted::Unavailable(reason),
+        },
+    })
+}
+
+/// At least one message, the first at depth 0, each nested at most one level below the one before.
+pub(super) fn quoted_messages(
+    values: Vec<wire::QuotedMessage>,
+) -> Result<Vec<ChannelQuotedMessage>, Failure> {
+    if values.is_empty() {
+        return Err(convert::bad("quoted messages are empty"));
     }
+    let mut deepest = 0;
+    for value in &values {
+        if value.depth > deepest {
+            return Err(convert::bad(
+                "a quoted message is nested more than one level below the message before it",
+            ));
+        }
+        deepest = value.depth.saturating_add(1);
+    }
+    values
+        .into_iter()
+        .map(|value| {
+            let wire::QuotedMessage {
+                depth,
+                sender,
+                sender_name,
+                conversation_name,
+                sent_at,
+                text,
+                images,
+                unviewable,
+            } = value;
+            Ok(ChannelQuotedMessage {
+                depth,
+                sender,
+                sender_name,
+                conversation_name,
+                sent_at: sent_at.map(datetime).transpose()?,
+                text,
+                images: images.into_iter().map(attachment).collect(),
+                unviewable: unviewable.into_iter().map(self::unviewable).collect(),
+            })
+        })
+        .collect()
+}
+
+fn datetime(value: types::Datetime) -> Result<DateTime<Utc>, Failure> {
+    let types::Datetime {
+        seconds,
+        nanoseconds,
+    } = value;
+    let seconds = i64::try_from(seconds)
+        .map_err(|_| convert::bad("quoted message time is outside the supported range"))?;
+    DateTime::from_timestamp(seconds, nanoseconds)
+        .ok_or_else(|| convert::bad("quoted message time is outside the supported range"))
 }
 
 pub(super) fn outgoing(value: &Outgoing<FileData>) -> wire::Outgoing {
@@ -268,6 +343,24 @@ mod tests {
         assert!(parts(vec![part("", true)]).is_ok());
         assert!(parts(vec![]).is_err());
         assert!(parts(vec![part("text", false), part("", false)]).is_err());
+    }
+
+    #[test]
+    fn quoted_messages_start_at_the_top_and_nest_one_level_at_a_time() {
+        let message = |depth| wire::QuotedMessage {
+            depth,
+            sender: None,
+            sender_name: None,
+            conversation_name: None,
+            sent_at: None,
+            text: "text".into(),
+            images: vec![],
+            unviewable: vec![],
+        };
+        assert!(quoted_messages(vec![message(0), message(1), message(1), message(0)]).is_ok());
+        assert!(quoted_messages(vec![]).is_err());
+        assert!(quoted_messages(vec![message(1)]).is_err());
+        assert!(quoted_messages(vec![message(0), message(2)]).is_err());
     }
 
     #[test]

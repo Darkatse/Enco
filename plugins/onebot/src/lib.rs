@@ -1,6 +1,9 @@
 //! OneBot v11 messages translated without I/O; the host owns the connection and delivery.
+mod content;
+mod faces;
 mod incoming;
 mod outgoing;
+mod quote;
 mod wire;
 
 use bindings::exports::enco::plugin::{channel, lifecycle};
@@ -110,9 +113,13 @@ impl channel::Guest for Plugin {
         })
     }
 
-    fn fetch(locator: String, responses: Vec<Response>) -> Result<FetchStep, Fault> {
+    fn fetch(locator: String, responses: Vec<Response>, limit: u32) -> Result<FetchStep, Fault> {
+        let url = match wire::Locator::parse(&locator)? {
+            wire::Locator::Image(url) => url,
+            wire::Locator::Quote(target) => return quote::fetch(target, responses, limit),
+        };
         let Some(response) = responses.into_iter().next() else {
-            return Ok(FetchStep::Download(locator));
+            return Ok(FetchStep::Download(url));
         };
         // Image links point at QQ's CDN, not the OneBot API: no status here judges the token or
         // a delivery, so a stale link leaves only this image unviewable.

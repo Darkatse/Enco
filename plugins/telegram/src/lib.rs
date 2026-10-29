@@ -1,4 +1,5 @@
 //! Telegram Bot API translation, with transport, credentials and commits owned by the host.
+mod content;
 mod incoming;
 mod limits;
 mod outgoing;
@@ -107,7 +108,7 @@ impl channel::Guest for Plugin {
         incoming::received(identity, state, response)
     }
 
-    fn fetch(locator: String, responses: Vec<Response>) -> Result<FetchStep, Fault> {
+    fn fetch(locator: String, responses: Vec<Response>, _limit: u32) -> Result<FetchStep, Fault> {
         match fetch_step(&locator, responses) {
             // Telegram rejected this file for good; the connection itself is still usable.
             Err(fault) if !fault.fatal && !fault.unknown && !fault.failure.retryable => {

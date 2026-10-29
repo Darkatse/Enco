@@ -1,6 +1,8 @@
 use crate::{Store, StoreError};
 use async_trait::async_trait;
-use enco_core::{Failure, FileData, GenerationId, MappingOrigin, Outgoing, Unviewable};
+use enco_core::{
+    DateTime, Failure, FileData, GenerationId, MappingOrigin, Outgoing, QuoteKind, Unviewable, Utc,
+};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot};
@@ -100,9 +102,9 @@ pub struct ChannelInput {
 }
 
 /// The meaning of an incoming message, independent of protocol command syntax.
-pub enum ChannelAction<T = ChannelAttachment> {
+pub enum ChannelAction<T = ChannelAttachment, Q = ChannelQuote> {
     /// Text and attachments for the conversation's Session.
-    Message(ChannelContent<T>),
+    Message(ChannelContent<T, Q>),
     /// List available Sessions.
     Sessions,
     /// Select or create the named Session.
@@ -116,6 +118,7 @@ pub enum ChannelAction<T = ChannelAttachment> {
 }
 
 /// An image still held by the protocol.
+#[derive(Debug)]
 pub struct ChannelAttachment {
     /// A description, such as a file name and media type.
     pub what: String,
@@ -123,36 +126,81 @@ pub struct ChannelAttachment {
     pub locator: String,
 }
 
-/// The result of reading an attachment.
+/// What a channel mapper's fetch found at a locator.
 #[derive(Debug)]
-pub enum AttachmentContent {
-    /// Image bytes to validate and store.
-    Image(Vec<u8>),
-    /// Why the protocol cannot provide a usable image.
+pub struct Fetched<T> {
+    /// The content, or why the protocol cannot provide it.
+    pub content: Result<T, String>,
+    /// The last recorded fetch call, which holds every response the mapper read; absent only
+    /// when a failure carried none.
+    pub origin: Option<MappingOrigin>,
+}
+
+/// Messages carried by an input, or the protocol locator by which to read them.
+#[derive(Debug)]
+pub struct ChannelQuote {
+    /// Whether the input replies to the messages or forwards them.
+    pub kind: QuoteKind,
+    /// Content supplied by the protocol or waiting for preparation.
+    pub messages: ChannelQuoted,
+}
+
+/// The protocol's available representation of quoted content.
+#[derive(Debug)]
+pub enum ChannelQuoted {
+    /// Already carried by this input.
+    Messages(Vec<ChannelQuotedMessage>),
+    /// An opaque locator passed to the same mapper's fetch function.
+    Fetch(String),
+    /// Why the protocol cannot supply the messages.
     Unavailable(String),
 }
 
+/// One quoted message before the host reads images and records owner identity.
+#[derive(Debug)]
+pub struct ChannelQuotedMessage {
+    /// Nesting depth; nested forwards follow their parent one level deeper.
+    pub depth: u8,
+    /// The sender's protocol ID, when reported.
+    pub sender: Option<String>,
+    /// The sender's display name, when reported.
+    pub sender_name: Option<String>,
+    /// The named original conversation, when it was elsewhere.
+    pub conversation_name: Option<String>,
+    /// When the message was first sent, when reported.
+    pub sent_at: Option<DateTime<Utc>>,
+    /// The protocol's readable message text.
+    pub text: String,
+    /// Images still held by the protocol, in message order.
+    pub images: Vec<ChannelAttachment>,
+    /// Content that could not be shown, and why.
+    pub unviewable: Vec<Unviewable>,
+}
+
 /// Text and attachments before or after fetching.
-pub struct ChannelContent<T> {
+pub struct ChannelContent<T, Q = ChannelQuote> {
     /// The message's text.
     pub text: String,
     /// Images in protocol order, before or after attachment fetching.
     pub images: Vec<T>,
     /// Other attachments and why they cannot be viewed.
     pub unviewable: Vec<Unviewable>,
+    /// The messages this input replies to or forwards.
+    pub quote: Option<Q>,
 }
 
-impl<T> From<String> for ChannelContent<T> {
+impl<T, Q> From<String> for ChannelContent<T, Q> {
     fn from(text: String) -> Self {
         Self {
             text,
             images: Vec::new(),
             unviewable: Vec::new(),
+            quote: None,
         }
     }
 }
 
-impl<T> From<&str> for ChannelContent<T> {
+impl<T, Q> From<&str> for ChannelContent<T, Q> {
     fn from(text: &str) -> Self {
         text.to_owned().into()
     }
@@ -300,9 +348,14 @@ pub trait ChannelAdapter: Send + Sync {
         readings: mpsc::UnboundedSender<ChannelReading>,
         stop: CancellationToken,
     ) -> Result<(), ChannelCallError>;
-    /// Fetch an attachment; one whose address from content is outside the mapper's origins is
-    /// unavailable. Reads have no external effects.
-    async fn fetch(&self, locator: &str) -> Result<AttachmentContent, ChannelCallError>;
+    /// Fetch the image at an attachment's locator; an address from content outside the mapper's
+    /// origins is unavailable. Reads have no external effects.
+    async fn fetch_image(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError>;
+    /// Fetch the messages at a quote's locator, in protocol order. Reads have no external effects.
+    async fn fetch_quote(
+        &self,
+        locator: &str,
+    ) -> Result<Fetched<Vec<ChannelQuotedMessage>>, ChannelCallError>;
     /// Lay out all content as ordered protocol messages; at least one, none empty.
     async fn split(
         &self,

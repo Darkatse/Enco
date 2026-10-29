@@ -16,6 +16,7 @@ mod onebot;
 mod process;
 #[path = "../../src/protocol.rs"]
 mod protocol;
+mod quotes;
 mod reminder;
 mod send;
 mod support;

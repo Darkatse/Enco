@@ -137,8 +137,8 @@ async fn attachment_exchange_records_each_complete_mapper_input() {
         .respond_with(ResponseTemplate::new(200).set_body_bytes(image))
         .mount(&server)
         .await;
-    let content = adapter.fetch("a-image").await.unwrap();
-    assert!(matches!(content, enco_kernel::AttachmentContent::Image(bytes) if bytes == image));
+    let fetched = adapter.fetch_image("a-image").await.unwrap();
+    assert_eq!(fetched.content.unwrap(), image);
     let mut records = Vec::new();
     for shard in std::fs::read_dir(root.path().join("blobs")).unwrap() {
         for file in std::fs::read_dir(shard.unwrap().path()).unwrap() {
@@ -164,6 +164,7 @@ async fn attachment_exchange_records_each_complete_mapper_input() {
     for (index, call) in calls.iter().enumerate() {
         assert_eq!(call.generation, GenerationId(31));
         assert_eq!(call.arguments["locator"], "a-image");
+        assert!(call.arguments["limit"].is_u64());
         let responses = call.arguments["responses"].as_array().unwrap();
         assert_eq!(responses.len(), index);
         if index == 2 {

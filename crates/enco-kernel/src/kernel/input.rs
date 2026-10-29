@@ -21,6 +21,7 @@ impl Kernel {
                         images,
                         unviewable: vec![],
                         earlier: vec![],
+                        quote: None,
                     },
                     received_at: self.deps.clock.now(),
                 }],

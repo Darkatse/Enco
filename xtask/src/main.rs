@@ -1,4 +1,5 @@
 mod docs;
+mod faces;
 mod manual;
 mod testing;
 
@@ -27,6 +28,7 @@ fn workspaces() -> Vec<String> {
 }
 
 fn main() -> Result<()> {
+    let invoked = std::env::current_dir()?;
     std::env::set_current_dir(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -40,6 +42,12 @@ fn main() -> Result<()> {
             manual::generate(&metadata()?, check)
         }
         Some("build-factory") => build_factory(),
+        Some("faces") => {
+            let catalog = std::env::args()
+                .nth(2)
+                .context("usage: cargo xtask faces <sys-face-catalog.json>")?;
+            faces::generate(&invoked.join(catalog))
+        }
         Some("check") => {
             in_workspaces(|manifest| {
                 run(
@@ -55,7 +63,9 @@ fn main() -> Result<()> {
             build_factory()?;
             testing::run(&metadata)
         }
-        _ => bail!("usage: cargo xtask <check|boundaries|docs [--check]|build-factory>"),
+        _ => bail!(
+            "usage: cargo xtask <check|boundaries|docs [--check]|build-factory|faces <catalog>>"
+        ),
     }
 }
 

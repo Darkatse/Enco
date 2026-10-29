@@ -22,6 +22,7 @@ async fn main_session(root: &Path) -> (SqliteStore, Event) {
         session: session.id,
         source: EventSource::Cli,
         body: EventBody::UserMessage {
+            quote: None,
             images: Vec::new(),
             unviewable: Vec::new(),
             earlier: Vec::new(),

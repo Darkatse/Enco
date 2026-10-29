@@ -106,6 +106,7 @@ fn run_entries(session: SessionId, event_id: EventId, run: RunId) -> [Entry; 2] 
                 session,
                 source: EventSource::Cli,
                 body: EventBody::UserMessage {
+                    quote: None,
                     images: Vec::new(),
                     unviewable: Vec::new(),
                     earlier: Vec::new(),

@@ -69,7 +69,7 @@ fn updates_translate_group_addressing_senders_and_attachment_locators() -> Resul
 #[test]
 fn fetch_drives_two_requests_and_keeps_permanent_file_rejection_local() -> Result<(), String> {
     let FetchStep::Request(first) =
-        Plugin::fetch("image-id".into(), vec![]).map_err(|fault| fault.failure.message)?
+        Plugin::fetch("image-id".into(), vec![], 2).map_err(|fault| fault.failure.message)?
     else {
         return Err("expected getFile".into());
     };
@@ -78,7 +78,7 @@ fn fetch_drives_two_requests_and_keeps_permanent_file_rejection_local() -> Resul
         200,
         br#"{"ok":true,"result":{"file_path":"photos/a b.jpg"}}"#,
     );
-    let FetchStep::Request(download) = Plugin::fetch("image-id".into(), vec![metadata.clone()])
+    let FetchStep::Request(download) = Plugin::fetch("image-id".into(), vec![metadata.clone()], 2)
         .map_err(|fault| fault.failure.message)?
     else {
         return Err("expected download".into());
@@ -87,13 +87,14 @@ fn fetch_drives_two_requests_and_keeps_permanent_file_rejection_local() -> Resul
     assert_eq!(
         Plugin::fetch(
             "image-id".into(),
-            vec![metadata, response(200, b"image bytes")]
+            vec![metadata, response(200, b"image bytes")],
+            2
         )
         .map_err(|fault| fault.failure.message)?,
         FetchStep::Image(b"image bytes".to_vec())
     );
     assert!(matches!(
-        Plugin::fetch("missing".into(), vec![response(400, b"not JSON")]),
+        Plugin::fetch("missing".into(), vec![response(400, b"not JSON")], 2),
         Ok(FetchStep::Unavailable(_))
     ));
     Ok(())
@@ -162,6 +163,20 @@ fn private_commands_and_group_commands_target_only_this_bot() -> Result<(), Stri
             _ => assert!(matches!(message.action, Action::Message(_))),
         }
     }
+    Ok(())
+}
+
+#[test]
+fn a_leading_mention_of_this_bot_can_carry_a_command() -> Result<(), String> {
+    let body = json!({"ok":true,"result":[{"update_id":5,"message":{"message_id":1,"chat":{"id":9,"type":"supergroup"},"from":{"id":7,"first_name":"Ada"},"text":"@helperbot /cancel","entities":[{"type":"mention","offset":0,"length":10}]}}]}).to_string();
+    let updates = Plugin::received(
+        identity()?,
+        None,
+        Arrival::Response(response(200, body.as_bytes())),
+    )
+    .map_err(|fault| fault.failure.message)?;
+    let message = updates.messages.first().ok_or("missing message")?;
+    assert!(message.addressed && matches!(message.action, Action::Cancel));
     Ok(())
 }
 
@@ -312,3 +327,5 @@ fn callback_cancel_requests_no_acknowledgment_at_reception() -> Result<(), Strin
     );
     Ok(())
 }
+
+mod quotes;
