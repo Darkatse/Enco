@@ -416,8 +416,9 @@ fn runs_show_typing_and_a_card_created_edited_and_deleted_with_cancel() -> Resul
     };
     let created =
         Plugin::activity("thread".into(), None, Some(activity.clone())).ok_or("create")?;
-    let body = body(&created)?;
-    let content = body["components"][0]["components"][0]["content"]
+    let payload = body(&created)?;
+    assert_eq!(payload["flags"], 32768 | (1 << 12));
+    let content = payload["components"][0]["components"][0]["content"]
         .as_str()
         .ok_or("text")?;
     assert!(content.starts_with("Working 2:05"));
@@ -425,15 +426,13 @@ fn runs_show_typing_and_a_card_created_edited_and_deleted_with_cancel() -> Resul
     assert!(content.contains(r"… tool\_2 · \*.rs 2"));
     assert!(content.contains(r"… tool\_6 · \*.rs 6"));
     assert_eq!(
-        body["components"][0]["components"][1]["components"][0]["custom_id"],
+        payload["components"][0]["components"][1]["components"][0]["custom_id"],
         "cancel"
     );
-    assert_eq!(
-        Plugin::activity("thread".into(), Some("card".into()), Some(activity))
-            .ok_or("edit")?
-            .method,
-        "PATCH"
-    );
+    let edited =
+        Plugin::activity("thread".into(), Some("card".into()), Some(activity)).ok_or("edit")?;
+    assert_eq!(edited.method, "PATCH");
+    assert_eq!(body(&edited)?["flags"], 32768);
     let deleted = Plugin::activity("thread".into(), Some("card".into()), None).ok_or("delete")?;
     assert_eq!(deleted.method, "DELETE");
     assert_eq!(deleted.url, "/channels/thread/messages/card");

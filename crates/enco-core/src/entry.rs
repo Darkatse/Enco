@@ -177,6 +177,8 @@ pub enum StopReason {
 pub enum RoundEnd {
     /// A reply without tool calls was recorded.
     Replied,
+    /// The reply ended with `reply_skip` and stays in the Log as a note.
+    ReplySkipped,
     /// All proposed tool calls have durable outcomes.
     ToolsSettled,
     /// The previous process ended before settlement.
@@ -209,6 +211,26 @@ pub enum RunEnd {
         /// Classification and details of the failure.
         failure: Failure,
     },
+}
+
+/// The latest interactive input still awaiting an answer, if any.
+///
+/// An answer ends the wait of every input consumed before it: a reply that ends a Round, or the
+/// outcome of a Run that ended without completing, delivered instead of a reply. A skipped reply
+/// and a message sent during a Run are not answers.
+pub fn unanswered_input(entries: &[Entry]) -> Option<&Event> {
+    for entry in entries.iter().rev() {
+        match &entry.body {
+            EntryBody::RoundEnded {
+                end: RoundEnd::Replied,
+                ..
+            } => return None,
+            EntryBody::RunEnded { end, .. } if !matches!(end, RunEnd::Completed) => return None,
+            EntryBody::EventConsumed { event } if event.is_interactive() => return Some(event),
+            _ => {}
+        }
+    }
+    None
 }
 
 impl EntryBody {

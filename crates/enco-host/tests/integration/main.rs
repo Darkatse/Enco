@@ -12,6 +12,7 @@ mod profiles;
 mod recovery;
 mod registrations;
 mod registry;
+mod silence;
 mod status;
 mod store;
 mod support;

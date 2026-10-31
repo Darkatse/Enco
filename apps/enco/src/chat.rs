@@ -114,6 +114,10 @@ fn render(
                 println!("{}", outgoing_text(paths, &outgoing));
             }
         }
+        EntryBody::RoundEnded {
+            end: RoundEnd::ReplySkipped,
+            ..
+        } => println!("  (reply skipped)"),
         EntryBody::Compacted { .. } => println!("  (context compacted)"),
         EntryBody::RunEnded { end, .. } if end != RunEnd::Completed => {
             eprintln!("! run ended: {end:?}")

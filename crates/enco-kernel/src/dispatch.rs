@@ -1,4 +1,9 @@
-use crate::{session::SessionActor, snapshot::Snapshot, *};
+use crate::{
+    builtin::{BuiltinCall, REPLY_SKIP},
+    session::SessionActor,
+    snapshot::Snapshot,
+    *,
+};
 use enco_core::*;
 use tokio_util::sync::CancellationToken;
 
@@ -89,6 +94,7 @@ impl SessionActor {
         calls: &[&ToolCall],
         token: &CancellationToken,
     ) -> Result<(), crate::run::RoundError> {
+        let skip = skip_allowed(calls.len(), &self.entries);
         let mut remaining = calls;
         while !remaining.is_empty() {
             let count = remaining
@@ -100,7 +106,7 @@ impl SessionActor {
                 .count()
                 .max(1);
             let (batch, rest) = remaining.split_at(count);
-            self.dispatch_batch(round, snapshot, plan, batch, token)
+            self.dispatch_batch(round, snapshot, plan, batch, &skip, token)
                 .await?;
             remaining = rest;
         }
@@ -113,13 +119,14 @@ impl SessionActor {
         snapshot: &Snapshot,
         plan: &ContextPlan,
         calls: &[&ToolCall],
+        skip: &Result<(), Failure>,
         token: &CancellationToken,
     ) -> Result<(), crate::run::RoundError> {
         let view = self.deps.registry.view();
         let mut ready = Vec::new();
         let mut outcomes = Vec::new();
         for (index, call) in calls.iter().enumerate() {
-            match prepare(snapshot, plan, call, token, &view.exports) {
+            match prepare(snapshot, plan, call, skip, token, &view.exports) {
                 Ok((tool, args)) => ready.push((index, tool, args)),
                 Err(failure) => outcomes.push((index, None, Outcome::Failed { failure })),
             }
@@ -181,6 +188,42 @@ impl SessionActor {
         }
         Ok(())
     }
+
+    /// How a Round ends once its calls are settled: a `reply_skip` that settled ok as the reply's
+    /// only call leaves the reply unsent.
+    pub(crate) fn round_end(
+        &self,
+        snapshot: &Snapshot,
+        plan: &ContextPlan,
+        calls: &[&ToolCall],
+    ) -> RoundEnd {
+        match calls {
+            [] => RoundEnd::Replied,
+            [call]
+                if disclosed(snapshot, plan, call)
+                    .is_some_and(|tool| tool.builtin == Some(BuiltinCall::ReplySkip))
+                    && self.settled_ok(call.id) =>
+            {
+                RoundEnd::ReplySkipped
+            }
+            _ => RoundEnd::ToolsSettled,
+        }
+    }
+
+    fn settled_ok(&self, call: CallId) -> bool {
+        self.entries
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.body {
+                EntryBody::ToolCallSettled {
+                    call: settled,
+                    outcome,
+                    ..
+                } if *settled == call => Some(matches!(outcome, Settlement::Ok)),
+                _ => None,
+            })
+            == Some(true)
+    }
 }
 
 fn disclosed<'a>(
@@ -196,6 +239,7 @@ fn prepare<'a>(
     snapshot: &'a Snapshot,
     plan: &ContextPlan,
     call: &ToolCall,
+    skip: &Result<(), Failure>,
     token: &CancellationToken,
     exports: &Exports,
 ) -> Result<
@@ -252,5 +296,30 @@ fn prepare<'a>(
             format!("invalid arguments for `{}`: {error}", call.name),
         )
     })?;
+    if tool.builtin == Some(BuiltinCall::ReplySkip) {
+        skip.clone()?;
+    }
     Ok((tool, args))
+}
+
+/// Whether `reply_skip` may end a reply proposing `calls` calls: only as the sole call, and while
+/// no interactive input awaits an answer.
+///
+/// Both are facts of the whole reply, known before any call runs, so a refused skip never reaches
+/// its tool.
+fn skip_allowed(calls: usize, entries: &[Entry]) -> Result<(), Failure> {
+    let message = if calls > 1 {
+        format!(
+            "not executed: {REPLY_SKIP} must be the only call in its turn; call it alone after your other work"
+        )
+    } else if unanswered_input(entries).is_some() {
+        "not executed: someone is waiting for your reply; reply instead".into()
+    } else {
+        return Ok(());
+    };
+    Err(Failure {
+        code: code::TOOL_REFUSED.into(),
+        message,
+        retryable: false,
+    })
 }

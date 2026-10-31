@@ -193,6 +193,7 @@ impl channel::Guest for Plugin {
                     body["message_id"] = json!(message);
                     "editMessageText"
                 } else {
+                    body["disable_notification"] = json!(true);
                     "sendMessage"
                 };
                 Some(request(method, body, SEND_TIMEOUT_MS))

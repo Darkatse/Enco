@@ -2184,6 +2184,9 @@ fn activity(conversation: String, shown: ::core::option::Option<String>, activit
 Creates or refreshes the activity view, or removes `shown` when `activity` is absent;
 absent when nothing needs sending.
 
+A view is not a message for the reader's attention: where the protocol allows, create it
+without a notification.
+
 The host reads the response to a request made without `shown` with `answered`, and keeps
 the message ID it gives as `shown`; without one, the Run shows no view.
 

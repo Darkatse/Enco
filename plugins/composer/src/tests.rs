@@ -1,5 +1,6 @@
 use super::*;
 mod channel;
+mod silence;
 use crate::composer::*;
 use enco_sdk::types::{Datetime, ImageFormat, QuoteKind, Role, Unviewable, UnviewableReason};
 
@@ -404,6 +405,7 @@ fn an_oversized_image_entry_is_omitted_as_a_whole() {
 fn reminders_name_their_due_time_and_missed_occurrences() {
     let mut input = input();
     let mut item = incoming(1, "2026-10-02T14:03:00Z", "briefing");
+    item.event.as_mut().unwrap().source = EventSource::Scheduler;
     item.event.as_mut().unwrap().body = EventBody::Reminder(Reminder {
         schedule: "schedule".into(),
         due_at: datetime("2026-10-01T12:00:00Z"),

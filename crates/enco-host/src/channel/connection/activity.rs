@@ -67,7 +67,7 @@ impl Connection {
             observation.cursor = Some(entry.pos);
             match entry.body {
                 EntryBody::EventConsumed { event } => {
-                    projection::route(&mut observation.target, &self.identity, event.source)
+                    projection::route(&mut observation.target, &self.identity, &event)
                 }
                 EntryBody::RunStarted { run } => {
                     observation.run = Some(ObservedRun {

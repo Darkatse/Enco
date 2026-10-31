@@ -159,11 +159,7 @@ impl SessionActor {
             self.dispatch(round, &snapshot, planned.plan.plan(), &calls, token)
                 .await?;
             cancelled(token)?;
-            return Ok(if completion.message.tool_calls().next().is_some() {
-                RoundEnd::ToolsSettled
-            } else {
-                RoundEnd::Replied
-            });
+            return Ok(self.round_end(&snapshot, planned.plan.plan(), &calls));
         }
     }
 

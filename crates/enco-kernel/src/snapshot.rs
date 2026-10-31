@@ -1,4 +1,7 @@
-use crate::{CallContext, ContextSource, Exports, KernelError, OfferedMemories, Tool, Tools};
+use crate::{
+    CallContext, ContextSource, Exports, KernelError, OfferedMemories, Tool, Tools,
+    builtin::BuiltinCall,
+};
 use enco_core::*;
 use std::{collections::HashSet, sync::Arc};
 
@@ -18,6 +21,9 @@ pub(crate) struct SnapshotTool {
     pub spec: ToolSpec,
     pub code: CodeRef,
     pub tool: Arc<dyn Tool>,
+    /// Which built-in call this is, when the Session actor checks it against its own Log; absent
+    /// for every other tool.
+    pub builtin: Option<BuiltinCall>,
 }
 
 impl Snapshot {
@@ -34,6 +40,7 @@ impl Snapshot {
                     node,
                     name: spec.name.clone(),
                 },
+                builtin: BuiltinCall::named(&spec.name),
                 spec,
                 code: tool.code(),
                 tool: tool.clone(),
@@ -84,6 +91,7 @@ impl Snapshot {
                 spec: tool.spec(),
                 code: tool.code(),
                 tool,
+                builtin: None,
             });
         }
         snapshot

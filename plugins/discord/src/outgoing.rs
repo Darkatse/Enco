@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 const TEXT_LIMIT: usize = 4000;
 const COMPONENTS_V2: u32 = 1 << 15;
+const SUPPRESS_NOTIFICATIONS: u32 = 1 << 12;
 /// Discord's limit on the components of one message, nested ones included.
 const MAX_COMPONENTS: usize = 40;
 /// The dividers one part may hold: each can add a text display and a separator, and the
@@ -162,11 +163,12 @@ fn literal(text: &str) -> String {
     escaped
 }
 
-/// A message body showing `components` in the accent container, mentioning no one.
-fn components_v2(components: Vec<Value>) -> Value {
+/// A message body showing `components` in the accent container, mentioning no one, with `flags`
+/// besides the one for components.
+fn components_v2(components: Vec<Value>, flags: u32) -> Value {
     let container = json!({"type": 17, "accent_color": ACCENT_COLOR, "components": components});
     json!({
-        "flags": COMPONENTS_V2,
+        "flags": COMPONENTS_V2 | flags,
         "allowed_mentions": {"parse": []},
         "components": [container],
     })
@@ -186,7 +188,7 @@ pub(super) fn send(conversation: String, message: Outgoing) -> Request {
             json!({"type": 13, "file": {"url": attachment}})
         });
     }
-    let mut payload = components_v2(components);
+    let mut payload = components_v2(components, 0);
     let url = format!("/channels/{}/messages", wire::path(&conversation));
     let Some(file) = message.file else {
         return wire::request("POST", url, Some(payload));
@@ -235,16 +237,19 @@ pub(super) fn activity(
                 "label": CANCEL_LABEL,
                 "custom_id": "cancel",
             });
-            let body = components_v2(vec![
-                json!({"type": 10, "content": literal(&activity.text())}),
-                json!({"type": 1, "components": [cancel]}),
-            ]);
-            Some(match shown {
-                Some(shown) => {
-                    wire::request("PATCH", format!("{url}/{}", wire::path(&shown)), Some(body))
-                }
-                None => wire::request("POST", url, Some(body)),
-            })
+            // A new view asks for no attention; edits never notify.
+            let (method, url, flags) = match shown {
+                Some(shown) => ("PATCH", format!("{url}/{}", wire::path(&shown)), 0),
+                None => ("POST", url, SUPPRESS_NOTIFICATIONS),
+            };
+            let body = components_v2(
+                vec![
+                    json!({"type": 10, "content": literal(&activity.text())}),
+                    json!({"type": 1, "components": [cancel]}),
+                ],
+                flags,
+            );
+            Some(wire::request(method, url, Some(body)))
         }
         (None, None) => None,
     }

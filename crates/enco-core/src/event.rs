@@ -120,6 +120,11 @@ pub struct EarlierMessage {
 }
 
 impl Event {
+    /// Whether this input's sender waits for a reply and moves the reply destination to itself.
+    pub fn is_interactive(&self) -> bool {
+        matches!(self.source, EventSource::Cli | EventSource::Channel { .. })
+    }
+
     /// The sole mapping from input to a model message: its own text, quoted pictures, then its own pictures.
     ///
     /// The composer narrates the circumstances, such as arrival and planned times. Input without

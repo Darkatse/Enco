@@ -271,6 +271,18 @@ fn menus_use_chat_scopes_and_runs_show_typing_and_a_card_with_cancel() -> Result
     let body: Value = serde_json::from_slice(&card.body.ok_or("missing card body")?)
         .map_err(|error| error.to_string())?;
     assert_eq!(body["text"], "Working 1:01");
+    assert_eq!(body["disable_notification"], true);
+    let sent = Plugin::send(
+        "-100".into(),
+        Outgoing {
+            text: "reply".into(),
+            file: None,
+        },
+    )
+    .map_err(|fault| fault.failure.message)?;
+    let sent: Value = serde_json::from_slice(sent.body.as_deref().ok_or("missing reply body")?)
+        .map_err(|error| error.to_string())?;
+    assert!(sent.get("disable_notification").is_none());
     assert_eq!(
         body["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
         "cancel"
@@ -319,6 +331,9 @@ fn callback_cancel_requests_no_acknowledgment_at_reception() -> Result<(), Strin
     )
     .ok_or("missing edit")?;
     assert_eq!(edit.url, "/bot/editMessageText");
+    let body: Value = serde_json::from_slice(edit.body.as_deref().ok_or("missing edit body")?)
+        .map_err(|error| error.to_string())?;
+    assert!(body.get("disable_notification").is_none());
     assert_eq!(
         Plugin::activity("9".into(), Some("4".into()), None)
             .ok_or("missing delete")?

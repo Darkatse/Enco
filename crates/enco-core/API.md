@@ -104,6 +104,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - enum `UnviewableReason` — Expected attachment failures remain part of their input Event.
 - struct `Usage` — Token counts reported by the provider.
 - fn `parse_arguments` — Parse a call's arguments into the tool's argument type.
+- fn `unanswered_input` — The latest interactive input still awaiting an answer, if any.
 - const `CONFIGURATION_FILE` — The owner's configuration file, relative to the Enco home.
 - const `DEFAULT_PROFILE` — Profile selected when a Session is created; every node configuration must define it.
 - const `PLUGINS_DIRECTORY` — The directory holding one source directory per plugin, relative to the Enco home.
@@ -961,6 +962,14 @@ A deduplicated input delivered through the Inbox.
 - `source` — Producer used to distinguish interactive input from system notices.
 - `body` — Content that needs a Session Run.
 - `received_at` — Reception time for display, not Inbox ordering.
+
+### `Event::is_interactive`
+
+```rust
+pub fn is_interactive(&self) -> bool
+```
+
+Whether this input's sender waits for a reply and moves the reply destination to itself.
 
 ### `Event::canonical_message`
 
@@ -2717,6 +2726,7 @@ impl Serialize for RolledBack
 ```rust
 pub enum RoundEnd {
     Replied,
+    ReplySkipped,
     ToolsSettled,
     Interrupted,
     Cancelled,
@@ -2730,6 +2740,7 @@ pub enum RoundEnd {
 Why this Round stopped.
 
 - `Replied` — A reply without tool calls was recorded.
+- `ReplySkipped` — The reply ended with `reply_skip` and stays in the Log as a note.
 - `ToolsSettled` — All proposed tool calls have durable outcomes.
 - `Interrupted` — The previous process ended before settlement.
 - `Cancelled` — Cancellation was requested and work has stopped.
@@ -3433,6 +3444,20 @@ Parse a call's arguments into the tool's argument type.
 Dispatch has already checked them against the declared schema, so this fails only on rules the
 type enforces itself, such as the characters allowed in a plugin name.
 
+## fn `unanswered_input`
+
+`src/entry.rs`
+
+```rust
+pub fn unanswered_input(entries: &[Entry]) -> Option<&crate::Event>
+```
+
+The latest interactive input still awaiting an answer, if any.
+
+An answer ends the wait of every input consumed before it: a reply that ends a Round, or the
+outcome of a Run that ended without completing, delivered instead of a reply. A skipped reply
+and a message sent during a Run are not answers.
+
 ## const `CONFIGURATION_FILE`
 
 `src/intent.rs`
@@ -3507,6 +3532,7 @@ Stable failure codes shared with WIT plugins.
 - const `code::TIMEOUT` — The operation exceeded its deadline.
 - const `code::TOOL_FAILED` — A dispatched tool returned a known failure.
 - const `code::TOOL_INVALID_ARGUMENTS` — The tool cannot accept the supplied argument object.
+- const `code::TOOL_REFUSED` — Dispatch refused the call before it reached its tool because a condition of the call does not hold now; the message names it.
 - const `code::TOOL_UNAVAILABLE` — The proposed tool is absent from this Round’s disclosure or snapshot.
 
 ## const `code::CANCELLED`
@@ -3788,6 +3814,17 @@ pub const TOOL_INVALID_ARGUMENTS: &str = "tool.invalid_arguments";
 ```
 
 The tool cannot accept the supplied argument object.
+
+## const `code::TOOL_REFUSED`
+
+`src/tool.rs`
+
+```rust
+pub const TOOL_REFUSED: &str = "tool.refused";
+```
+
+Dispatch refused the call before it reached its tool because a condition of the call does
+not hold now; the message names it.
 
 ## const `code::TOOL_UNAVAILABLE`
 

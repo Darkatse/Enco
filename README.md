@@ -81,7 +81,7 @@ Enco currently runs on macOS and Linux as a background service with a command-li
 | P1 | Replacing plugins and configuration at runtime with health checks and rollback | Done |
 | P2 | The agent maintains its own plugins from the generated manual and plugin source, verified by black-box evals | Done |
 | P3 | Channels as plugins: conversation backtracking (M30), Telegram (M31) and Discord (M32) mappers, QQ OneBot (M33) | In progress (M30 to M32 done) |
-| Supervision tree and scripts | Delegating work to child sessions on other models; sandboxed scripts orchestrating tool calls | Planned |
+| Delegation and scripts | Delegating work to child sessions on other models; sandboxed scripts orchestrating tool calls | Planned |
 | P4 | Multiple devices: consensus control plane, session roaming, replication | Planned |
 | P5 | Phones as nodes | Planned |
 

@@ -20,7 +20,7 @@ pub(super) fn project(
     for entry in entries {
         let outgoing = match entry.body {
             EntryBody::EventConsumed { event } => {
-                route(&mut target, identity, event.source);
+                route(&mut target, identity, &event);
                 continue;
             }
             EntryBody::RoundStarted { .. } => {
@@ -82,18 +82,19 @@ pub(super) fn project(
 }
 
 /// Interactive inputs move the reply destination; noninteractive events leave it in place.
-pub(super) fn route(target: &mut Option<String>, identity: &Identity, source: EventSource) {
-    match source {
-        EventSource::Cli => *target = None,
+pub(super) fn route(target: &mut Option<String>, identity: &Identity, event: &Event) {
+    if !event.is_interactive() {
+        return;
+    }
+    *target = match &event.source {
         EventSource::Channel {
             protocol,
             account,
             conversation,
             ..
-        } => {
-            *target = (protocol == identity.protocol && account == identity.account)
-                .then_some(conversation);
+        } if protocol == &identity.protocol && account == &identity.account => {
+            Some(conversation.clone())
         }
-        EventSource::Scheduler | EventSource::Registry => {}
-    }
+        _ => None,
+    };
 }

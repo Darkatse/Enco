@@ -62,13 +62,15 @@ impl SessionActor {
             // How the Run ends if it stops after this Round, and whether it stops now.
             let stop;
             (ending, stop) = match end {
-                RoundEnd::Replied
+                RoundEnd::Replied | RoundEnd::ReplySkipped
                     if pending.is_empty()
                         || pending.iter().any(crate::transcript::is_backtrack) =>
                 {
                     (RunEnd::Completed, true)
                 }
-                RoundEnd::Replied | RoundEnd::ToolsSettled => (RunEnd::BudgetExhausted, false),
+                RoundEnd::Replied | RoundEnd::ReplySkipped | RoundEnd::ToolsSettled => {
+                    (RunEnd::BudgetExhausted, false)
+                }
                 // A failure on the normal path gets the next Round in safe mode, if one remains.
                 RoundEnd::Failed { failure, .. } => (RunEnd::Failed { failure }, safe_mode),
                 RoundEnd::Cancelled => (RunEnd::Cancelled, true),

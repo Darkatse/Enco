@@ -3,6 +3,7 @@ mod activity;
 mod backtrack;
 mod groups;
 mod outgoing;
+mod silence;
 mod supervisor;
 use crate::support;
 

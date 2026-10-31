@@ -5,10 +5,29 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
+
+pub(crate) const REPLY_SKIP: &str = "reply_skip";
+
+/// A built-in call whose conditions the Session actor checks against its own Log; the scheduling
+/// tools only call the Scheduler and are ordinary tools.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuiltinCall {
+    /// Ends the reply without sending it.
+    ReplySkip,
+}
+
+impl BuiltinCall {
+    /// The built-in call a host tool of this name is; plugin tools cannot take host names.
+    pub(crate) fn named(name: &str) -> Option<Self> {
+        (name == REPLY_SKIP).then_some(Self::ReplySkip)
+    }
+}
+
 enum Kind {
     Create,
     List,
     Cancel,
+    ReplySkip,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -33,7 +52,7 @@ struct CancelArguments {
 }
 
 impl Kind {
-    const ALL: [Self; 3] = [Self::Create, Self::List, Self::Cancel];
+    const ALL: [Self; 4] = [Self::Create, Self::List, Self::Cancel, Self::ReplySkip];
     fn spec(&self) -> Result<ToolSpec, SchemaError> {
         match self {
             Kind::Create => ToolSpec::of::<CreateArguments>(
@@ -58,6 +77,12 @@ impl Kind {
                  Returns false when it is done, cancelled, or absent.",
                 Effect::SideEffect,
             ),
+            Kind::ReplySkip => Ok(ToolSpec {
+                name: REPLY_SKIP.into(),
+                description: "End your turn without sending a reply. Use it only when nobody is waiting for a reply, for example after a reminder; otherwise the call fails. Call it by itself, after any other work. Text you write alongside it is not sent, but stays in your history for later.".into(),
+                input_schema: InputSchema::empty(),
+                effect: Effect::ReadOnly,
+            }),
         }
     }
 }
@@ -67,7 +92,7 @@ pub fn builtin_tool_specs() -> Result<Vec<ToolSpec>, SchemaError> {
     Kind::ALL.iter().map(Kind::spec).collect()
 }
 
-struct ScheduleTool {
+struct BuiltinTool {
     schedules: Schedules,
     kind: Kind,
     spec: ToolSpec,
@@ -77,7 +102,7 @@ pub(crate) fn tools(schedules: Schedules) -> Result<Vec<Arc<dyn Tool>>, SchemaEr
     Kind::ALL
         .into_iter()
         .map(|kind| {
-            Ok(Arc::new(ScheduleTool {
+            Ok(Arc::new(BuiltinTool {
                 schedules: schedules.clone(),
                 spec: kind.spec()?,
                 kind,
@@ -87,7 +112,7 @@ pub(crate) fn tools(schedules: Schedules) -> Result<Vec<Arc<dyn Tool>>, SchemaEr
 }
 
 #[async_trait]
-impl Tool for ScheduleTool {
+impl Tool for BuiltinTool {
     fn code(&self) -> CodeRef {
         CodeRef::Native {
             name: "kernel-builtin".into(),
@@ -111,7 +136,7 @@ impl Tool for ScheduleTool {
     }
 }
 
-impl ScheduleTool {
+impl BuiltinTool {
     async fn execute(
         &self,
         session: SessionId,
@@ -141,6 +166,9 @@ impl ScheduleTool {
                 let cancelled = self.schedules.cancel(id).await.map_err(error)?;
                 Ok(json!({ "cancelled": cancelled }))
             }
+            Kind::ReplySkip => Ok(json!(
+                "Nothing was sent, including any text you wrote with this call."
+            )),
         }
     }
 }

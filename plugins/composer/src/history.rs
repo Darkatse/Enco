@@ -8,6 +8,8 @@ use enco_sdk::types::{Datetime, Failure, Role};
 use std::collections::BTreeSet;
 
 pub(super) const LOCAL_TIME: &str = "%Y-%m-%d %H:%M, %A";
+/// The kernel's tool that ends a reply unsent.
+const REPLY_SKIP: &str = "reply_skip";
 
 /// Keep the recorded presentation while its head and visible history still apply, appending only
 /// what is new, so the request shares its cached prefix with the previous one.
@@ -153,6 +155,7 @@ pub(super) fn annotated(
     input: &ComposeInput,
     timezone: Tz,
 ) -> Result<Vec<(&TranscriptItem, String)>, Failure> {
+    let can_skip = input.capabilities.iter().any(|c| c.spec.name == REPLY_SKIP);
     let mut previous_hour = None;
     let mut run_ends = input.transcript.run_ends.iter().peekable();
     input
@@ -174,9 +177,15 @@ pub(super) fn annotated(
                 while let Some(ended) = run_ends.next_if(|ended| key(&ended.pos) < key(&item.pos)) {
                     previous_end = Some(&ended.end);
                 }
+                let mut source = producer(event, &input.transcript, timezone)?;
+                if can_skip && matches!(event.source, EventSource::Scheduler | EventSource::Registry)
+                    && let Some(source) = &mut source
+                {
+                    source.push_str(&format!(" It does not ask for a reply; if there is nothing worth saying about it, you may end your turn with {REPLY_SKIP}."));
+                }
                 for part in [
                     previous_end.and_then(work_stopped),
-                    producer(event, &input.transcript, timezone)?,
+                    source,
                     images::attachments(&event.body),
                 ]
                 .into_iter()

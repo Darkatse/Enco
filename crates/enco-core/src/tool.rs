@@ -193,6 +193,9 @@ pub mod code {
     pub const TOOL_UNAVAILABLE: &str = "tool.unavailable";
     /// The tool cannot accept the supplied argument object.
     pub const TOOL_INVALID_ARGUMENTS: &str = "tool.invalid_arguments";
+    /// Dispatch refused the call before it reached its tool because a condition of the call does
+    /// not hold now; the message names it.
+    pub const TOOL_REFUSED: &str = "tool.refused";
     /// A dispatched tool returned a known failure.
     pub const TOOL_FAILED: &str = "tool.failed";
     /// The composer’s plan violates the execution contract.

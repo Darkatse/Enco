@@ -748,6 +748,10 @@ The channel conversation an input came from.
 
 Who produced an input.
 
+Input from the CLI or a channel conversation is interactive: its sender waits for a reply,
+and replies go back to it. Input from a schedule or the registry is not. A Session may
+end a Round with `reply_skip` only while no interactive input awaits an answer.
+
 | Case | Type | Description |
 |---|---|---|
 | `cli` | `_` | The owner, through Enco's own interface. |
@@ -1473,6 +1477,9 @@ activity: func(conversation: string, shown: option<string>, activity: option<act
 
 Creates or refreshes the activity view, or removes `shown` when `activity` is absent;
 absent when nothing needs sending.
+
+A view is not a message for the reader's attention: where the protocol allows, create it
+without a notification.
 
 The host reads the response to a request made without `shown` with `answered`, and keeps
 the message ID it gives as `shown`; without one, the Run shows no view.
