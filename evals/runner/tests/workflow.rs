@@ -6,6 +6,7 @@
 
 use serde_json::{Value, json};
 use std::{
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Output,
     sync::{
@@ -30,6 +31,25 @@ impl Evaluation {
             .map(PathBuf::from)
             .expect("set ENCO_BIN to the built enco binary");
         let root = std::env::temp_dir().join(format!("enco-check-{}", ulid::Ulid::generate()));
+        // The evaluator compiles through a wrapper that only its own PATH has, as with kache; a
+        // trial that borrowed this configuration could not build.
+        let wrapper = root.join("bin/evaluation-rustc-wrapper");
+        write(&wrapper, "#!/bin/sh\nexec \"$@\"\n");
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cargo_home = root.join("cargo");
+        write(
+            &cargo_home.join("config.toml"),
+            "[build]\nrustc-wrapper = \"evaluation-rustc-wrapper\"\n",
+        );
+        let evaluator = std::env::var_os("CARGO_HOME").map_or_else(
+            || PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cargo"),
+            PathBuf::from,
+        );
+        std::os::unix::fs::symlink(
+            std::path::absolute(evaluator.join("registry")).unwrap(),
+            cargo_home.join("registry"),
+        )
+        .unwrap();
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         copy(&fixture, &root.join("evals/tasks/mail"));
         write(
@@ -98,11 +118,18 @@ api_key_env = "EVAL_JUDGE_KEY"
     }
 
     async fn command(&self, args: &[&str], key: bool) -> Output {
+        let search = std::env::var_os("PATH").unwrap();
+        let search = std::env::join_paths(
+            std::iter::once(self.root.join("bin")).chain(std::env::split_paths(&search)),
+        )
+        .unwrap();
         let mut command = Command::new(env!("CARGO_BIN_EXE_eval-runner"));
         // The default variant's web settings name these; only mocks ever receive them.
         command
             .args(args)
             .current_dir(&self.root)
+            .env("CARGO_HOME", self.root.join("cargo"))
+            .env("PATH", search)
             .env("EXA_API_KEY", "test-search-key")
             .env("TINYFISH_API_KEY", "test-search-key")
             .env_remove("EVAL_JUDGE_KEY");
@@ -212,7 +239,6 @@ fn copy(source: &Path, destination: &Path) {
 
 #[tokio::test]
 async fn evidence_is_isolated_and_regrading_uses_the_saved_trial() {
-    use std::os::unix::fs::PermissionsExt;
     let evaluation = Evaluation::new().await;
     let wrapper = evaluation.root.join("enco-wrapper");
     let executable = evaluation.enco.to_str().unwrap().replace('\'', "'\\''");
@@ -432,7 +458,6 @@ async fn unreachable_providers_remain_execution_failures() {
 
 #[tokio::test]
 async fn source_fixture_is_registered_offline_before_serving() {
-    use std::os::unix::fs::PermissionsExt;
     let evaluation = Evaluation::new().await;
     let fixture = evaluation.root.join("candidate");
     copy(
@@ -491,6 +516,7 @@ async fn source_fixture_is_registered_offline_before_serving() {
         generation["registration"],
         status["configuration"]["running"]["registration"]
     );
+    assert!(!trial.join("home/.cargo").exists());
     assert!(trial.join("home/.enco/plugins/fixture/README.md").is_file());
     assert_eq!(
         std::fs::read(trial.join("home/.enco/plugins/fixture/src/lib.rs")).unwrap(),

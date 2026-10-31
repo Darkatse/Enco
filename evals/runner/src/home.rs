@@ -72,7 +72,8 @@ impl Home {
         self.install(&variant.binary).await?;
         self.initialize().await?;
         let cargo = self.toolchain()?;
-        self.prefetch(&cargo, &enco).await?;
+        prefetch(&cargo, &enco).await?;
+        self.lend_caches()?;
         self.environment.extend(model.variables.clone());
         self.environment.extend(variant.variables.clone());
         self.environment.extend(
@@ -129,13 +130,13 @@ impl Home {
         Ok(())
     }
 
+    /// Lend the evaluator's toolchain programs; the trial keeps cargo's default home under its own
+    /// `HOME`, so none of the evaluator's cargo configuration reaches it.
     fn toolchain(&mut self) -> Result<PathBuf> {
-        let owner = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
-        for (key, default) in [("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup")] {
-            let path = std::env::var_os(key).map_or_else(|| owner.join(default), PathBuf::from);
-            self.environment
-                .insert(key.into(), std::path::absolute(path)?.into_os_string());
-        }
+        self.environment.insert(
+            "RUSTUP_HOME".into(),
+            evaluator_dir("RUSTUP_HOME", ".rustup")?.into_os_string(),
+        );
         let cargo = executable("cargo")?;
         let rustc = executable("rustc")?;
         let path = self
@@ -148,38 +149,23 @@ impl Home {
             .insert("PATH".into(), std::env::join_paths(paths)?);
         self.environment
             .insert("RUSTC".into(), rustc.into_os_string());
-        self.environment
-            .insert("CARGO_NET_OFFLINE".into(), "true".into());
         Ok(cargo)
     }
 
-    /// Resolve dependencies with the evaluator's network before the subject receives its proxy.
-    async fn prefetch(&self, cargo: &Path, enco: &Path) -> Result<()> {
-        let mut manifests = vec![enco.join("sdk/Cargo.toml")];
-        let mut plugins = tokio::fs::read_dir(enco.join("plugins")).await?;
-        while let Some(entry) = plugins.next_entry().await? {
-            if entry.file_type().await?.is_dir() {
-                manifests.push(entry.path().join("Cargo.toml"));
-            }
+    /// Lend the crates the evaluator downloaded: the trial's cargo home links to the evaluator's
+    /// index and archives and extracts sources into its own directory.
+    ///
+    /// Offline, cargo neither downloads nor cleans its caches, so the trial only reads what it
+    /// borrows and the evaluator's cargo stays their sole writer, under its own lock.
+    fn lend_caches(&mut self) -> Result<()> {
+        let evaluator = evaluator_dir("CARGO_HOME", ".cargo")?.join("registry");
+        let registry = self.path.join(".cargo/registry");
+        std::fs::create_dir_all(&registry)?;
+        for part in ["index", "cache"] {
+            std::os::unix::fs::symlink(evaluator.join(part), registry.join(part))?;
         }
-        manifests.sort();
-        for manifest in manifests {
-            let output = tokio::process::Command::new(cargo)
-                .args(["fetch", "--target", "wasm32-wasip2", "--manifest-path"])
-                .arg(&manifest)
-                .env("CARGO_HOME", &self.environment["CARGO_HOME"])
-                .stdin(Stdio::null())
-                .kill_on_drop(true)
-                .output()
-                .await
-                .with_context(|| format!("prefetch {}", manifest.display()))?;
-            ensure!(
-                output.status.success(),
-                "prefetch {}: {}",
-                manifest.display(),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        self.environment
+            .insert("CARGO_NET_OFFLINE".into(), "true".into());
         Ok(())
     }
 
@@ -189,6 +175,11 @@ impl Home {
         }
         // The variant's hash identifies the executable; the archive need not hold a copy.
         match tokio::fs::remove_file(&self.enco).await {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
+        }
+        // Lent caches and the sources extracted from them are the evaluator's, not the subject's work.
+        match tokio::fs::remove_dir_all(self.path.join(".cargo")).await {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
             _ => {}
         }
@@ -230,6 +221,45 @@ async fn copy(source: &Path, destination: &Path, renderer: &Renderer) -> Result<
             .await?;
     }
     Ok(())
+}
+
+/// Resolve dependencies with the evaluator's own cargo, network and configuration, before the
+/// subject receives its proxy.
+async fn prefetch(cargo: &Path, enco: &Path) -> Result<()> {
+    let mut manifests = vec![enco.join("sdk/Cargo.toml")];
+    let mut plugins = tokio::fs::read_dir(enco.join("plugins")).await?;
+    while let Some(entry) = plugins.next_entry().await? {
+        if entry.file_type().await?.is_dir() {
+            manifests.push(entry.path().join("Cargo.toml"));
+        }
+    }
+    manifests.sort();
+    for manifest in manifests {
+        let output = tokio::process::Command::new(cargo)
+            .args(["fetch", "--target", "wasm32-wasip2", "--manifest-path"])
+            .arg(&manifest)
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output()
+            .await
+            .with_context(|| format!("prefetch {}", manifest.display()))?;
+        ensure!(
+            output.status.success(),
+            "prefetch {}: {}",
+            manifest.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// A tool's home on the evaluator: its variable when set, otherwise `default` under `HOME`.
+fn evaluator_dir(variable: &str, default: &str) -> Result<PathBuf> {
+    let directory = match std::env::var_os(variable) {
+        Some(directory) => PathBuf::from(directory),
+        None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(default),
+    };
+    Ok(std::path::absolute(directory)?)
 }
 
 fn executable(name: &str) -> Result<PathBuf> {
