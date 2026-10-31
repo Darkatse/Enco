@@ -48,9 +48,9 @@ Session 委派分里程碑实施，每个里程碑的计划在 [plan/](plan/)：
 | 里程碑 | 一句话 |
 |---|---|
 | M35 沉默 | 没有输入在等待回音时，Round 可以用 `reply_skip` 结束而不回复，提醒与注册表通知立即受益；进度卡静默发送。已验收，真实 Telegram 与 Discord 的核对（卡片不响铃，Discord 编辑卡片时送出的标志位被接受）随 M31–M33 一起在 VPS 升级后进行 |
-| M36 角色说明与工作目录 | 每个 profile 可以有 `profiles/<名字>.md` 角色说明，用法与 `AGENTS.md` 相同；每个 Session 有带节点的工作目录 |
-| M37 委派 | 子 Session、`session_send`、向父投递、权限收窄、限额、子任务状态、叫停、归档与主人直接对话 |
-| M38 渠道中的多 Session | 话题与频道对应根 Session；子 Session 有自己的话题或子区，为父工作时的活动显示在那里 |
+| [M36 角色说明与工作目录](plan/M36.md) | 每个 profile 可以有 `profiles/<名字>.md` 角色说明，用法与 `AGENTS.md` 相同；每个 Session 有带节点的工作目录 |
+| [M37 委派](plan/M37.md) | 子 Session、`session_send`、向父投递、权限收窄、限额、子任务状态、叫停、归档与主人直接对话 |
+| [M38 渠道中的多 Session](plan/M38.md) | 话题与频道对应根 Session；子 Session 有自己的话题或子区，为父工作时的活动显示在那里 |
 
 M35 已验收；M36 可以随时开始；M37 依赖 M35 与 M36；M38 依赖 M37。
 
