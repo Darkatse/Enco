@@ -9,12 +9,14 @@ Native storage, tools and context policies.
 - module `development` — Turns the plugin sources and `config.toml` in a home into registrations, and registered versions back into files.
 - module `memory` — The owner's memories: a SQLite database holds them, and a derived vector index finds them.
 - module `status` — Enco's state as `self_status` reports it, and what in it needs attention.
-- struct `InstructionsContextSource` — Supplies the owner's current standing instructions once per Round.
+- struct `InstructionsContextSource` — Supplies either the owner instructions or the current Session's profile instructions.
 - struct `Memories` — Sole entry point for memory writes and recall. The index never owns memory content.
 - struct `MemoryContextSource` — Offers the pinned memories, and the memories recalled for a new message, to each Round.
 - enum `MemoryError` — Why a memory operation failed.
 - struct `MemoryList` — Every memory, and which of them the index does not cover yet.
 - struct `MemoryPaths` — Where the memory database and its vector index live; `Memories` owns both.
+- struct `ProfileInstructionFile` — A `.md` file in `profiles`.
+- enum `ProfileInstructionFiles` — The profile-instructions files in the home, as status reports them.
 - struct `Recall` — The memories recalled for a query: those the index found, and recent ones it does not cover yet.
 - struct `SqliteStore` — Enco's store: the SQLite database, with the content files and node identity that go with it.
 - struct `StorePaths` — Files owned by the persistence adapter.
@@ -24,7 +26,8 @@ Native storage, tools and context policies.
 - fn `development_tools` — The development tools, running the same operations as the CLI.
 - fn `memory_tool_specs` — The memory tools' declarations, available before their handlers exist.
 - fn `memory_tools` — The memory tools, `memory_save`, `memory_update`, `memory_forget` and `memory_search`, acting on `memories`.
-- fn `native_tools` — The native tools: the file tools, `message_send` and `shell_exec`, with paths resolved against `workspace`.
+- fn `native_tools` — The native tools: the file tools, `message_send` and `shell_exec`, with paths resolved against each Round's working directory.
+- fn `profile_instruction_files` — List the files in this `profiles` directory, each with the profile it would serve.
 - fn `self_status_spec` — The declaration of `self_status`, whose handler belongs to the application.
 - const `LIFELINE` — The repair tools that every reply must offer, unless its profile sets `requires_lifeline = false`.
 - const `TABLE_OWNERS` — Configuration ownership for the host components assembled by the application.
@@ -39,15 +42,23 @@ pub struct InstructionsContextSource {
 }
 ```
 
-Supplies the owner's current standing instructions once per Round.
+Supplies either the owner instructions or the current Session's profile instructions.
 
-### `InstructionsContextSource::new`
+### `InstructionsContextSource::owner`
 
 ```rust
-pub fn new(path: PathBuf) -> Self
+pub fn owner(path: PathBuf) -> Self
 ```
 
-Read the standing instructions from the file at `path`.
+Read the owner instructions from this file.
+
+### `InstructionsContextSource::profile`
+
+```rust
+pub fn profile(directory: PathBuf) -> Self
+```
+
+Read the file this `profiles` directory lists for the Session's profile, if any.
 
 Implements:
 
@@ -225,6 +236,52 @@ Where the memory database and its vector index live; `Memories` owns both.
 - `db` — The memory database, which holds every memory.
 - `index` — The vector index, derived from the database.
 
+## struct `ProfileInstructionFile`
+
+`src/context.rs`
+
+```rust
+pub struct ProfileInstructionFile {
+    pub path: std::path::PathBuf,
+    pub profile: Option<enco_core::ProfileName>,
+}
+```
+
+A `.md` file in `profiles`.
+
+- `path` — Where the file is.
+- `profile` — The profile it holds instructions for; absent when its name is not a valid profile name.
+
+Implements:
+
+```rust
+impl Debug for ProfileInstructionFile
+impl Serialize for ProfileInstructionFile
+```
+
+## enum `ProfileInstructionFiles`
+
+`src/context.rs`
+
+```rust
+pub enum ProfileInstructionFiles {
+    Listed(Vec<ProfileInstructionFile>),
+    Unreadable(crate::development::EntryError),
+}
+```
+
+The profile-instructions files in the home, as status reports them.
+
+- `Listed` — The files in `profiles`, sorted; none when the directory is missing.
+- `Unreadable` — Why `profiles` cannot be listed.
+
+Implements:
+
+```rust
+impl Debug for ProfileInstructionFiles
+impl Serialize for ProfileInstructionFiles
+```
+
 ## struct `Recall`
 
 `src/memory.rs`
@@ -265,10 +322,12 @@ Enco's store: the SQLite database, with the content files and node identity that
 ### `SqliteStore::open`
 
 ```rust
-pub async fn open(paths: StorePaths) -> Result<Self, StoreError>
+pub async fn open(paths: StorePaths, workspace: PathBuf) -> Result<Self, StoreError>
 ```
 
 Open the authority, initializing the schema and node identity on first use.
+
+A Session created through this store starts in `workspace` on this node.
 
 Implements:
 
@@ -368,13 +427,23 @@ on `memories`.
 `src/tools.rs`
 
 ```rust
-pub fn native_tools(workspace: std::path::PathBuf) -> Result<Vec<std::sync::Arc<dyn Tool>>, enco_core::SchemaError>
+pub fn native_tools(node: enco_core::NodeId) -> Result<Vec<std::sync::Arc<dyn Tool>>, enco_core::SchemaError>
 ```
 
 The native tools: the file tools, `message_send` and `shell_exec`, with paths resolved against
-`workspace`.
+each Round's working directory.
 
-They share the workspace path rules and ordinary Tool dispatch.
+They share the working-directory checks and ordinary Tool dispatch.
+
+## fn `profile_instruction_files`
+
+`src/context.rs`
+
+```rust
+pub async fn profile_instruction_files(directory: &std::path::Path) -> ProfileInstructionFiles
+```
+
+List the files in this `profiles` directory, each with the profile it would serve.
 
 ## fn `self_status_spec`
 
@@ -648,7 +717,7 @@ pub struct ConnectionSettings {
     pub owner: String,
     pub secrets: std::collections::BTreeMap<String, String>,
     pub context: usize,
-    pub group_profile: Option<String>,
+    pub group_profile: Option<enco_core::ProfileName>,
     pub name: String,
 }
 ```
@@ -2564,6 +2633,12 @@ pub enum AttentionKind<'a> {
     PluginsUnreadable {
         error: &'a crate::development::EntryError,
     },
+    ProfilesUnreadable {
+        error: &'a crate::development::EntryError,
+    },
+    UnmatchedProfileInstructions {
+        path: &'a std::path::Path,
+    },
     SafeMode,
     SchedulerStopped {
         reason: &'a str,
@@ -2624,6 +2699,10 @@ Fact templates receive only this value, so they cannot infer prose from the step
   - `error` — The file or directory that failed, and why.
 - `PluginsUnreadable` — The `plugins` directory cannot be listed, so no plugin's home layer is known.
   - `error` — The file or directory that failed, and why.
+- `ProfilesUnreadable` — The `profiles` directory cannot be listed.
+  - `error` — Directory or entry that failed, and why.
+- `UnmatchedProfileInstructions` — A profile-instructions file has no matching profile in the running configuration.
+  - `path` — File that no running profile reads.
 - `SafeMode` — The owner turned safe mode on: only recovery tools are offered, and plugins with factory
   code run it.
 - `SchedulerStopped` — The Scheduler stopped after a failure, and reminders are not delivered.
@@ -2886,6 +2965,7 @@ pub struct Node {
     pub home: std::path::PathBuf,
     pub execution: enco_kernel::Status,
     pub channels: Vec<crate::channel::ChannelStatus>,
+    pub profile_instructions: crate::ProfileInstructionFiles,
 }
 ```
 
@@ -2897,6 +2977,7 @@ This host: its build, its home, and what it executes.
 - `execution` — Execution state from the kernel, such as safe mode, Sessions and the Scheduler; in JSON
   its fields sit directly in `node`.
 - `channels` — Configured channels, such as Telegram, with their health and recent delivery failures.
+- `profile_instructions` — The profile-instructions files in the home.
 
 Implements:
 

@@ -71,9 +71,13 @@ pub(crate) enum Command {
         session: String,
         attempt_id: Option<AttemptId>,
     },
+    SetWorkingDir {
+        session: String,
+        path: std::path::PathBuf,
+    },
     SetProfile {
         session: String,
-        profile: String,
+        profile: enco_core::ProfileName,
     },
     SafeMode {
         enabled: bool,

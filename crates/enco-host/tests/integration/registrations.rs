@@ -19,7 +19,7 @@ async fn open_following(
     bytes: &[u8],
     document: serde_json::Value,
 ) -> (Arc<SqliteStore>, Arc<Development>, Arc<Registry>) {
-    let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
+    let store = Arc::new(open_store(root).await);
     let (development, registry) = open_home(
         root,
         store.clone(),
@@ -156,13 +156,16 @@ async fn rejected_follow_keeps_running_state_and_a_configuration_repair_accepts_
         matches!(follow_rejection.as_slice(), [cause @ Cause::Load { candidate: Proposed::Factory, .. }]
             if cause.part() == IntentPart::Settings { plugin: "fixture".parse().unwrap() })
     );
-    let kernel = Kernel::start(kernel_deps(
-        root.path(),
-        store,
-        registry.clone(),
-        None,
-        Some(development.clone()),
-    ))
+    let kernel = Kernel::start(
+        kernel_deps(
+            root.path(),
+            store,
+            registry.clone(),
+            None,
+            Some(development.clone()),
+        )
+        .await,
+    )
     .await
     .unwrap();
     let complete = current_status(root.path(), &development, &kernel).await;

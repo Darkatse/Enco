@@ -10,7 +10,9 @@ CREATE TABLE sessions (
   created_at    TEXT NOT NULL,
   binding_node  TEXT NOT NULL,
   binding_epoch INTEGER NOT NULL,
-  profile       TEXT NOT NULL            -- Selected profile name
+  profile       TEXT NOT NULL,           -- Selected profile name
+  working_dir_node TEXT NOT NULL,        -- Node owning the working directory
+  working_dir_path TEXT NOT NULL         -- Absolute UTF-8 working directory
 ) STRICT;
 
 CREATE TABLE log (
@@ -66,7 +68,7 @@ CREATE TABLE connections (
 ) STRICT;
 
 CREATE TABLE connection_updates (
-  connection TEXT NOT NULL,
+  connection TEXT NOT NULL REFERENCES connections(key),
   update_key TEXT NOT NULL,
   PRIMARY KEY (connection, update_key)
 ) STRICT;

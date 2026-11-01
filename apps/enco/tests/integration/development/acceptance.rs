@@ -34,11 +34,14 @@ async fn first_start_rejects_a_failed_source_build() {
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("cargo clippy"), "{error}");
-    let store = SqliteStore::open(StorePaths {
-        db: home.join(".data/enco.db"),
-        blobs: home.join(".data/blobs"),
-        artifacts: home.join(".data/artifacts"),
-    })
+    let store = SqliteStore::open(
+        StorePaths {
+            db: home.join(".data/enco.db"),
+            blobs: home.join(".data/blobs"),
+            artifacts: home.join(".data/artifacts"),
+        },
+        home.join("workspace"),
+    )
     .await
     .unwrap();
     let state = store.registry().await.unwrap();

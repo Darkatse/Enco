@@ -138,7 +138,7 @@ cargo run -p enco -- chat      # 在另一个终端中
 cargo run -p enco -- send --image photo.png "Describe this image"
 ```
 
-常驻指令放在 `~/.enco/AGENTS.md`，运行时数据放在 `~/.enco/.data/`，设置 `ENCO_HOME` 可以使用 `~/.enco` 以外的目录。日常命令、多模态收发、对话回溯、插件开发管理以及 Telegram、Discord 与 QQ 渠道接入，见 [使用与渠道指南](docs/Usage.md) 与 [插件说明](plugins/README.md)。
+常驻说明放在 `~/.enco/AGENTS.md` 与 `~/.enco/profiles/<名字>.md`，运行时数据放在 `~/.enco/.data/`，设置 `ENCO_HOME` 可以使用 `~/.enco` 以外的目录。日常命令、多模态收发、对话回溯、插件开发管理以及 Telegram、Discord 与 QQ 渠道接入，见 [使用与渠道指南](docs/Usage.md) 与 [插件说明](plugins/README.md)。
 
 开发与提交改动前请运行离线门禁：
 

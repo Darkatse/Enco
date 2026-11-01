@@ -138,7 +138,7 @@ cargo run -p enco -- chat      # in another terminal
 cargo run -p enco -- send --image photo.png "Describe this image"
 ```
 
-Standing instructions live in `~/.enco/AGENTS.md` and runtime data lives in `~/.enco/.data/`; set `ENCO_HOME` to use a directory other than `~/.enco`. For day-to-day commands, image and file messages, conversation backtracking, plugin management, and Telegram, Discord or QQ setup, see the [usage and channel guide](docs/Usage.md) and [plugins/README.md](plugins/README.md) (in Chinese).
+Standing instructions live in `~/.enco/AGENTS.md` and `~/.enco/profiles/<name>.md`, and runtime data lives in `~/.enco/.data/`; set `ENCO_HOME` to use a directory other than `~/.enco`. For day-to-day commands, image and file messages, conversation backtracking, plugin management, and Telegram, Discord or QQ setup, see the [usage and channel guide](docs/Usage.md) and [plugins/README.md](plugins/README.md) (in Chinese).
 
 Before sending repository changes, run the offline gate:
 

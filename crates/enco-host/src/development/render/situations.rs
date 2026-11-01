@@ -57,18 +57,7 @@ pub(super) fn facts(kind: &AttentionKind<'_>) -> String {
             path: target,
             causes: rejected,
             running,
-        } => {
-            let mut out = format!(
-                "**{} — host update not applied.** Registering this host's factory code was rejected: {}.",
-                path(target),
-                causes(rejected)
-            );
-            if let Some(running) = running {
-                out.push_str(&format!(" The plugin keeps running {}.", generation(*running)));
-            }
-            out.push_str(" Every registration retries the update.");
-            out
-        }
+        } => follow_rejected(target, rejected, *running),
         AttentionKind::UnservedUse { usage } => format!(
             "**{} — cannot be served.** Cause: {}.",
             code(&usage.user),
@@ -94,6 +83,13 @@ pub(super) fn facts(kind: &AttentionKind<'_>) -> String {
             location(&error.path),
             error.problem
         ),
+        AttentionKind::ProfilesUnreadable { error } => format!(
+            "**Profile instructions cannot be listed.** {} {}.", location(&error.path), error.problem
+        ),
+        AttentionKind::UnmatchedProfileInstructions { path } => format!(
+            "**{} — no matching profile.** The running configuration has no profile for this file, so it is not read.",
+            location(path)
+        ),
         AttentionKind::SafeMode => "**Safe mode is on.** The owner turned it on. Only recovery tools are offered, and plugins that have factory code run it.".into(),
         AttentionKind::SchedulerStopped { reason } => {
             format!("**Scheduler stopped.** Cause: {reason}. Reminders are not delivered.")
@@ -104,6 +100,26 @@ pub(super) fn facts(kind: &AttentionKind<'_>) -> String {
             reason
         ),
     }
+}
+
+fn follow_rejected(
+    target: &IntentPath,
+    rejected: &[enco_kernel::Cause],
+    running: Option<PluginActivation>,
+) -> String {
+    let mut out = format!(
+        "**{} — host update not applied.** Registering this host's factory code was rejected: {}.",
+        path(target),
+        causes(rejected)
+    );
+    if let Some(running) = running {
+        out.push_str(&format!(
+            " The plugin keeps running {}.",
+            generation(running)
+        ));
+    }
+    out.push_str(" Every registration retries the update.");
+    out
 }
 
 fn removed(

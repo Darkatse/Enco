@@ -33,7 +33,7 @@ async fn groups_quote_bounded_context_and_keep_a_fresh_session_across_creation_p
     } = group_harness(dir.path(), provider).await;
     let private = kernel.open_session("controlled:chat").await.unwrap();
     let mut policy = settings();
-    policy.group_profile = Some("group".into());
+    policy.group_profile = Some("group".parse().unwrap());
     policy.context = 2;
     let channel = start_with(&kernel, &adapter, policy.clone());
     receive(&mut polling).await;
@@ -56,7 +56,7 @@ async fn groups_quote_bounded_context_and_keep_a_fresh_session_across_creation_p
         .iter()
         .find(|session| session.id != private.id)
         .unwrap();
-    assert_eq!(session.profile, "group");
+    assert_eq!(session.profile.as_str(), "group");
     assert!(session.name.starts_with("controlled:chat"));
     assert_eq!(kernel.log(private.id, None).await.unwrap().len(), 0);
     let session_id = session.id;
@@ -85,7 +85,7 @@ async fn groups_quote_bounded_context_and_keep_a_fresh_session_across_creation_p
     channel.shutdown().await.unwrap();
 
     // Changing the creation profile does not replace an already routed Session.
-    policy.group_profile = Some("second".into());
+    policy.group_profile = Some("second".parse().unwrap());
     let channel = start_with(&kernel, &adapter, policy);
     receive(&mut polling).await;
     updates
@@ -107,7 +107,8 @@ async fn groups_quote_bounded_context_and_keep_a_fresh_session_across_creation_p
             .iter()
             .find(|session| session.id == session_id)
             .unwrap()
-            .profile,
+            .profile
+            .as_str(),
         "group"
     );
     channel.shutdown().await.unwrap();
@@ -127,7 +128,7 @@ async fn only_new_owner_commands_open_groups_and_member_sources_survive_backtrac
         ..
     } = group_harness(dir.path(), provider.clone()).await;
     let mut policy = settings();
-    policy.group_profile = Some("group".into());
+    policy.group_profile = Some("group".parse().unwrap());
     let channel = start_with(&kernel, &adapter, policy);
     receive(&mut polling).await;
     let mut open = group(5, "owner", true, Action::Everyone(Some(true)));

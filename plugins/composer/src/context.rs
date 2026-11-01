@@ -6,6 +6,9 @@ use chrono_tz::Tz;
 use enco_sdk::types::Role;
 use std::path::Path;
 
+/// The owner instructions, relative to the home.
+const OWNER_FILE: &str = "AGENTS.md";
+
 pub(super) fn system(
     input: &ComposeInput,
     timezone: Tz,
@@ -20,9 +23,19 @@ pub(super) fn system(
     .trim()
     .to_string();
     let home = Path::new(&input.home);
+    let profile_file = format!("profiles/{}.md", input.session.profile);
+    // Without the owner's context the owner instructions are not this Session's to read or edit.
+    let owner_line = if input.owner_context {
+        format!(
+            "\n- Owner instructions: {}",
+            home.join(OWNER_FILE).display()
+        )
+    } else {
+        String::new()
+    };
     text.push_str(&format!(
-        "\n\n## Environment\n- Home: {} (config.toml and plugins/)\n- Manual: {} (start with README.md; generated, so edits are lost)\n- Workspace: {}\n- Standing instructions: {}\n- Session: {}\n- Time zone: {} (UTC{})",
-        home.display(), home.join("manual").display(), home.join("workspace").display(), home.join("AGENTS.md").display(), input.session.name,
+        "\n\n## Environment\n- Home: {} (config.toml, profiles/ and plugins/)\n- Manual: {} (start with README.md; generated, so edits are lost)\n- Working directory: {}{owner_line}\n- Profile instructions: {}\n- Session: {}\n- Time zone: {} (UTC{})",
+        home.display(), home.join("manual").display(), input.session.working_dir.path, home.join(&profile_file).display(), input.session.name,
         input.timezone, Utc::now().with_timezone(&timezone).format("%:z")
     ));
     let mut sources = Vec::new();
@@ -37,24 +50,30 @@ pub(super) fn system(
     {
         text.push_str("\n\nThis reply model cannot view images. Their descriptions include file paths; use tools to work with those files when needed.");
     }
-    if let Some(instructions) = &input.instructions {
-        let budget = input
-            .reply
-            .budget
-            .context_tokens
-            .saturating_mul(INSTRUCTION_PERCENT)
-            / 100;
-        if estimate_tokens(instructions) <= budget {
-            section(&mut text, "Standing instructions (AGENTS.md)", instructions);
-            sources.push(Source {
-                id: "instructions:AGENTS.md".into(),
-                hash: enco_sdk::source_hash(instructions),
-            });
-        } else {
-            omitted.push(Omission {
-                source: "instructions:AGENTS.md".into(),
-                reason: format!("instructions exceed {INSTRUCTION_PERCENT}% of the context window"),
-            });
+    let budget = input
+        .reply
+        .budget
+        .context_tokens
+        .saturating_mul(INSTRUCTION_PERCENT)
+        / 100;
+    for (label, file, instructions) in [
+        ("Owner instructions", OWNER_FILE, &input.owner_instructions),
+        (
+            "Profile instructions",
+            profile_file.as_str(),
+            &input.profile_instructions,
+        ),
+    ] {
+        if let Some(instructions) = instructions {
+            append_instructions(
+                &mut text,
+                &mut sources,
+                omitted,
+                budget,
+                label,
+                file,
+                instructions,
+            );
         }
     }
     append_memories(&mut text, &mut sources, pinned, "## Your pinned memories");
@@ -122,5 +141,30 @@ pub(super) fn append_memories(
 fn section(text: &mut String, title: &str, body: &str) {
     if !body.is_empty() {
         text.push_str(&format!("\n\n## {title}\n{body}"));
+    }
+}
+
+/// Renders one file of standing instructions within its own budget, or records why it is left out.
+fn append_instructions(
+    text: &mut String,
+    sources: &mut Vec<Source>,
+    omitted: &mut Vec<Omission>,
+    budget: u32,
+    label: &str,
+    file: &str,
+    instructions: &str,
+) {
+    let source = format!("instructions:{file}");
+    if estimate_tokens(instructions) <= budget {
+        section(text, &format!("{label} ({file})"), instructions);
+        sources.push(Source {
+            id: source,
+            hash: enco_sdk::source_hash(instructions),
+        });
+    } else {
+        omitted.push(Omission {
+            source,
+            reason: format!("instructions exceed {INSTRUCTION_PERCENT}% of the context window"),
+        });
     }
 }

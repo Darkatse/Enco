@@ -26,7 +26,7 @@ pub struct ConnectionSettings {
     pub context: usize,
     /// Profile for the Sessions this connection creates for groups; absent, it serves private
     /// chats only.
-    pub group_profile: Option<String>,
+    pub group_profile: Option<enco_core::ProfileName>,
     /// Configuration name used to name new group Sessions.
     #[serde(skip)]
     pub name: String,

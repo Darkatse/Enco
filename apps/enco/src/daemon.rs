@@ -406,6 +406,14 @@ async fn process(
             let session = existing_session(kernel, &name).await?;
             json!(kernel.inspect(session.id, attempt_id).await?)
         }
+        Command::SetWorkingDir {
+            session: name,
+            path,
+        } => {
+            let session = existing_session(kernel, &name).await?;
+            let working_dir = kernel.set_working_dir(session.id, path).await?;
+            json!({ "working_dir": working_dir })
+        }
         Command::SetProfile {
             session: name,
             profile,

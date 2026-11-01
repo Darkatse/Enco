@@ -26,7 +26,7 @@ pub struct Profile {
     pub requires_lifeline: bool,
     /// Allowed tool names; absent exposes all available tools, including future additions.
     pub tools: Option<std::collections::BTreeSet<String>>,
-    /// Whether composition receives the owner's standing instructions and memories.
+    /// Whether composition receives the owner instructions and memories.
     pub owner_context: bool,
 }
 

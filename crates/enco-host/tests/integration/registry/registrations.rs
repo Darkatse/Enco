@@ -11,7 +11,7 @@ async fn open(
     bytes: &[u8],
     document: serde_json::Value,
 ) -> (Arc<SqliteStore>, Arc<Registry>) {
-    let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
+    let store = Arc::new(open_store(root).await);
     let registry = open_registry(
         registry_deps(store.clone(), runtime, bytes),
         configuration_request(document),

@@ -38,6 +38,8 @@ pub enum EntryBody {
         round: RoundId,
         /// Whether this Round uses only the lifeline.
         safe_mode: bool,
+        /// Working directory pinned for this Round.
+        working_dir: crate::WorkingDir,
     },
     /// Committed before calling the Provider; `plan` addresses the recorded ContextPlan.
     AttemptStarted {

@@ -8,6 +8,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 pub(super) fn accept(
     connection: &mut Connection,
     node: NodeId,
+    working_dir: &WorkingDir,
     events: &[Event],
     write: Option<&ConnectionWrite>,
 ) -> Result<Acceptance, StoreError> {
@@ -27,10 +28,14 @@ pub(super) fn accept(
         .map_err(backend)?;
     let session = write
         .and_then(|write| write.session.as_ref())
-        .map(|new| sessions::insert_new(&tx, node, new))
+        .map(|new| sessions::insert_new(&tx, node, working_dir, new))
         .transpose()?;
     let events = events_in(&tx, &events)?;
     if let Some((write, state, settlement)) = prepared {
+        tx.execute(
+            "INSERT INTO connections(key,state) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET state=excluded.state",
+            params![write.key, state],
+        ).map_err(backend)?;
         if let Some(update) = &write.update {
             tx.execute(
                 "INSERT INTO connection_updates(connection,update_key) VALUES (?,?)",
@@ -38,10 +43,6 @@ pub(super) fn accept(
             )
             .map_err(backend)?;
         }
-        tx.execute(
-            "INSERT INTO connections(key,state) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET state=excluded.state",
-            params![write.key, state],
-        ).map_err(backend)?;
         if let Some((delivery, body)) = settlement {
             tx.execute(
                 "INSERT INTO deliveries(connection,session_id,epoch,seq,body) VALUES (?,?,?,?,?)",

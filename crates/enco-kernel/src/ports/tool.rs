@@ -25,6 +25,8 @@ pub trait Tool: Send + Sync {
 pub struct CallContext {
     /// Session which proposed the call.
     pub session: SessionId,
+    /// Working directory pinned for this Round.
+    pub working_dir: WorkingDir,
     /// Host-assigned identity used for durable settlement.
     pub call: CallId,
     /// Child of the Run cancellation token.

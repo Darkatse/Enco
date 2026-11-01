@@ -151,6 +151,7 @@ impl SessionActor {
             let tool = tool.tool.clone();
             let ctx = CallContext {
                 session: self.session.id,
+                working_dir: self.session.working_dir.clone(),
                 call: calls[index].id,
                 cancel: batch_cancel.child_token(),
                 result_budget: limits::TOOL_RESULT_INLINE_BYTES,

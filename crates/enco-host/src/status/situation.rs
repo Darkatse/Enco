@@ -124,6 +124,16 @@ pub enum AttentionKind<'a> {
         /// The file or directory that failed, and why.
         error: &'a EntryError,
     },
+    /// The `profiles` directory cannot be listed.
+    ProfilesUnreadable {
+        /// Directory or entry that failed, and why.
+        error: &'a EntryError,
+    },
+    /// A profile-instructions file has no matching profile in the running configuration.
+    UnmatchedProfileInstructions {
+        /// File that no running profile reads.
+        path: &'a std::path::Path,
+    },
     /// The owner turned safe mode on: only recovery tools are offered, and plugins with factory
     /// code run it.
     SafeMode,

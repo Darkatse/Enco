@@ -3,7 +3,7 @@ use crate::support;
 
 use enco_core::*;
 use enco_host::{
-    SqliteStore,
+    ProfileInstructionFiles, SqliteStore,
     development::*,
     status::{AttentionKind, CallStep, Divergence, FixTarget, Status, Step, Steps},
 };
@@ -29,13 +29,16 @@ impl Node {
         }
         let (development, registry, store) =
             scripted_home(root, runtime, configuration(), vec![]).await;
-        let kernel = Kernel::start(kernel_deps(
-            root,
-            store.clone(),
-            registry.clone(),
-            None,
-            Some(development.clone()),
-        ))
+        let kernel = Kernel::start(
+            kernel_deps(
+                root,
+                store.clone(),
+                registry.clone(),
+                None,
+                Some(development.clone()),
+            )
+            .await,
+        )
         .await
         .unwrap();
         Self {
@@ -250,13 +253,16 @@ async fn owner_switch_and_stopped_owners_are_reported_from_execution_facts() {
         })
         .await
         .unwrap();
-    let kernel = Kernel::start(kernel_deps(
-        root.path(),
-        store,
-        registry,
-        None,
-        Some(development.clone()),
-    ))
+    let kernel = Kernel::start(
+        kernel_deps(
+            root.path(),
+            store,
+            registry,
+            None,
+            Some(development.clone()),
+        )
+        .await,
+    )
     .await
     .unwrap();
     kernel.set_safe_mode(true).await.unwrap();
@@ -447,13 +453,16 @@ async fn fallback_to_factory_exposes_an_unserved_use_without_inventing_source_to
         )
         .await
         .unwrap();
-    let kernel = Kernel::start(kernel_deps(
-        root.path(),
-        store,
-        registry,
-        None,
-        Some(development.clone()),
-    ))
+    let kernel = Kernel::start(
+        kernel_deps(
+            root.path(),
+            store,
+            registry,
+            None,
+            Some(development.clone()),
+        )
+        .await,
+    )
     .await
     .unwrap();
     let status = current_status(root.path(), &development, &kernel).await;
@@ -476,7 +485,7 @@ async fn a_table_the_current_host_cannot_read_is_reported_at_its_owner() {
         ScriptedProvider::new(vec![]),
         ScriptedProvider::new(vec![]),
     ));
-    let store = Arc::new(SqliteStore::open(store_paths(root.path())).await.unwrap());
+    let store = Arc::new(open_store(root.path()).await);
     let mut old = registry_deps(store.clone(), runtime.clone(), FACTORY_BYTES);
     old.owners
         .iter_mut()
@@ -495,13 +504,16 @@ async fn a_table_the_current_host_cannot_read_is_reported_at_its_owner() {
         document,
     )
     .await;
-    let kernel = Kernel::start(kernel_deps(
-        root.path(),
-        store,
-        registry,
-        None,
-        Some(development.clone()),
-    ))
+    let kernel = Kernel::start(
+        kernel_deps(
+            root.path(),
+            store,
+            registry,
+            None,
+            Some(development.clone()),
+        )
+        .await,
+    )
     .await
     .unwrap();
     let status = current_status(root.path(), &development, &kernel).await;
@@ -658,6 +670,7 @@ async fn rename_precheck_rejection_keeps_its_plugin_error_code() {
         .call(
             CallContext {
                 session: session.id,
+                working_dir: session.working_dir.clone(),
                 call: CallId::new(),
                 cancel: CancellationToken::new(),
                 result_budget: 10000,
@@ -671,5 +684,60 @@ async fn rename_precheck_rejection_keeps_its_plugin_error_code() {
     assert!(
         matches!(outcome, Outcome::Failed { failure } if failure.code == code::PLUGIN_REJECTED)
     );
+    node.kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn profile_instruction_status_compares_files_to_running_profiles() {
+    let root = tempfile::tempdir().unwrap();
+    let node = Node::start(root.path()).await;
+    assert!(matches!(
+        node.status(root.path()).await.node.profile_instructions,
+        ProfileInstructionFiles::Listed(files) if files.is_empty()
+    ));
+    let directory = root.path().join("profiles");
+    std::fs::create_dir(&directory).unwrap();
+    for file in [
+        "default.md",
+        "research.md",
+        "bad name.md",
+        ".DS_Store",
+        "backup.md~",
+    ] {
+        std::fs::write(directory.join(file), "instructions").unwrap();
+    }
+    std::os::unix::fs::symlink("research.md", directory.join("linked.md")).unwrap();
+    let status = node.status(root.path()).await;
+    let attention = status.attention();
+    let unused: Vec<_> = attention
+        .iter()
+        .filter_map(|item| match item.kind {
+            AttentionKind::UnmatchedProfileInstructions { path } => Some((path, &item.next)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unused.len(), 3);
+    for (path, next) in unused {
+        assert!(
+            matches!(next.first.as_slice(), [Step::Fix(FixTarget::Entry { path: target }), Step::Call(CallStep::Recheck)] if target == path)
+        );
+        if path.file_name().unwrap() != "bad name.md" {
+            let expected = if path.file_name().unwrap() == "research.md" {
+                "profile.research"
+            } else {
+                "profile.linked"
+            };
+            assert!(
+                matches!(next.alternative.as_deref(), Some([Step::Fix(FixTarget::Table { name }), Step::Call(CallStep::Register)]) if name == expected)
+            );
+        } else {
+            assert!(next.alternative.is_none());
+        }
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
+    std::fs::write(&directory, "not a directory").unwrap();
+    let status = node.status(root.path()).await;
+    assert!(status.attention().iter().any(|item| matches!(&item.kind,
+        AttentionKind::ProfilesUnreadable { error } if error.path == directory)));
     node.kernel.shutdown().await.unwrap();
 }

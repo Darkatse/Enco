@@ -1,7 +1,6 @@
 use crate::support;
 
 use enco_core::*;
-use enco_host::SqliteStore;
 use enco_kernel::{Kernel, Store};
 use std::sync::Arc;
 use support::*;
@@ -345,7 +344,7 @@ async fn capabilities_outside_the_round_are_rejected_before_any_provider_request
 async fn startup_requires_host_tool_declarations_to_match_handlers() {
     for missing in [true, false] {
         let root = tempfile::tempdir().unwrap();
-        let store = Arc::new(SqliteStore::open(store_paths(root.path())).await.unwrap());
+        let store = Arc::new(open_store(root.path()).await);
         let runtime = Arc::new(ScriptedRuntime::default());
         let provider = ScriptedProvider::new(vec![]);
         runtime.insert(FACTORY_BYTES, fixture(provider.clone(), provider));
@@ -358,7 +357,7 @@ async fn startup_requires_host_tool_declarations_to_match_handlers() {
         let registry = open_registry(declared, configuration_request(configuration()))
             .await
             .unwrap();
-        let error = Kernel::start(kernel_deps(root.path(), store, registry, None, None))
+        let error = Kernel::start(kernel_deps(root.path(), store, registry, None, None).await)
             .await
             .err()
             .unwrap();

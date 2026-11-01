@@ -8,7 +8,7 @@ use enco_kernel::{CallContext, Tool};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tokio::io::AsyncReadExt;
 
 #[derive(Deserialize, JsonSchema)]
@@ -17,21 +17,21 @@ struct MessageArguments {
     /// The message in Markdown.
     text: Option<String>,
     #[schemars(description = format!(
-        "A file to send, relative to the workspace or absolute; at most {} MB.",
+        "A file to send, relative to the working directory or absolute; at most {} MB.",
         MESSAGE_FILE_MAX_BYTES / 1_000_000
     ))]
     file: Option<String>,
 }
 
 pub(super) struct MessageSend {
-    workspace: PathBuf,
+    node: NodeId,
     spec: ToolSpec,
 }
 
 impl MessageSend {
-    pub(super) fn new(workspace: PathBuf) -> Result<Self, SchemaError> {
+    pub(super) fn new(node: NodeId) -> Result<Self, SchemaError> {
         Ok(Self {
-            workspace,
+            node,
             spec: ToolSpec::of::<MessageArguments>(
                 "message_send",
                 "Send the owner a message now, with Markdown text, one file, or both. \
@@ -55,8 +55,8 @@ impl Tool for MessageSend {
         self.spec.clone()
     }
 
-    async fn call(&self, _ctx: CallContext, args: Map<String, Value>) -> Outcome {
-        match self.prepare(args).await {
+    async fn call(&self, ctx: CallContext, args: Map<String, Value>) -> Outcome {
+        match self.prepare(&ctx, args).await {
             Ok(outgoing) => Outcome::Ok {
                 value: "Message recorded for delivery to the owner.".into(),
                 images: Vec::new(),
@@ -68,14 +68,20 @@ impl Tool for MessageSend {
 }
 
 impl MessageSend {
-    async fn prepare(&self, args: Map<String, Value>) -> Result<Outgoing<FileData>, Failure> {
+    async fn prepare(
+        &self,
+        ctx: &CallContext,
+        args: Map<String, Value>,
+    ) -> Result<Outgoing<FileData>, Failure> {
         let MessageArguments { text, file } = parse_arguments(args)?;
         let text = text.unwrap_or_default();
         if text.trim().is_empty() && file.is_none() {
             return Err(invalid("provide nonempty text or a file"));
         }
         let file = match file {
-            Some(file) => Some(read(&resolve_path(&self.workspace, &file)).await?),
+            Some(file) => {
+                Some(read(&resolve_path(self.node, &ctx.working_dir, &file).await?).await?)
+            }
             None => None,
         };
         Ok(Outgoing { text, file })

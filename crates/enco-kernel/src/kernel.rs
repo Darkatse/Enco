@@ -21,8 +21,10 @@ pub struct KernelDeps {
     pub registry: Arc<Registry>,
     /// Absolute home location supplied to context policies.
     pub home: std::path::PathBuf,
-    /// The owner's standing instructions, read once per Round.
-    pub instructions: Arc<dyn ContextSource<Supply = Option<String>>>,
+    /// The owner instructions, read once per Round.
+    pub owner_instructions: Arc<dyn ContextSource<Supply = Option<String>>>,
+    /// The selected profile's instructions, read once per Round.
+    pub profile_instructions: Arc<dyn ContextSource<Supply = Option<String>>>,
     /// The memories offered once per Round.
     pub memories: Arc<dyn ContextSource<Supply = OfferedMemories>>,
     /// Host capabilities exposed through the ordinary Tool port.
@@ -49,7 +51,7 @@ pub struct Status {
     /// Policy observed at the next Round boundary.
     pub safe_mode: bool,
     /// Available profile names; endpoint credentials are never exposed.
-    pub profiles: Vec<String>,
+    pub profiles: Vec<ProfileName>,
     /// State of every registered Session actor.
     pub sessions: Vec<SessionStatus>,
     /// Failure that stopped the Scheduler, if any.
@@ -107,7 +109,10 @@ pub enum KernelError {
     UnknownSession(SessionId),
     /// The requested profile is absent from the node configuration.
     #[error("unknown profile {0}")]
-    UnknownProfile(String),
+    UnknownProfile(ProfileName),
+    /// The requested working directory is not an absolute UTF-8 path.
+    #[error(transparent)]
+    InvalidWorkingDir(#[from] InvalidWorkingDir),
     /// A backtrack must point at a position that this Session's conversation has recorded.
     #[error("session {session} cannot go back to {to:?}: {reason}")]
     Backtrack {
@@ -300,8 +305,27 @@ impl Kernel {
         Ok(self.deps.store.set_safe_mode(enabled).await?)
     }
 
+    /// Point the Session at `path` on this node from its next Round, without checking the directory.
+    pub async fn set_working_dir(
+        &self,
+        session: SessionId,
+        path: std::path::PathBuf,
+    ) -> Result<WorkingDir, KernelError> {
+        self.handle(session)?;
+        let working_dir = WorkingDir::new(self.deps.store.node().await?.id, path)?;
+        self.deps
+            .store
+            .set_working_dir(session, &working_dir)
+            .await?;
+        Ok(working_dir)
+    }
+
     /// Persist a profile choice; the current Round keeps its sampled policy.
-    pub async fn set_profile(&self, session: SessionId, profile: &str) -> Result<(), KernelError> {
+    pub async fn set_profile(
+        &self,
+        session: SessionId,
+        profile: &ProfileName,
+    ) -> Result<(), KernelError> {
         self.handle(session)?;
         self.deps
             .registry

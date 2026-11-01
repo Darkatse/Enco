@@ -7,34 +7,8 @@ use crate::support;
 use async_trait::async_trait;
 use enco_core::*;
 use enco_kernel::*;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 use support::*;
-use tokio::sync::Notify;
-
-struct PausedCompaction {
-    provider: Arc<ScriptedProvider>,
-    pause: AtomicBool,
-    entered: Notify,
-    resume: Notify,
-}
-
-#[async_trait]
-impl Provider for PausedCompaction {
-    async fn complete(
-        &self,
-        settings: &ProviderSettings,
-        request: ProviderRequest,
-    ) -> Result<Completion, Failure> {
-        if settings.model == "old-compaction" && self.pause.swap(false, Ordering::SeqCst) {
-            self.entered.notify_one();
-            self.resume.notified().await;
-        }
-        self.provider.complete(settings, request).await
-    }
-}
 
 fn configured() -> serde_json::Value {
     let mut document = configuration();
@@ -56,7 +30,7 @@ fn configured() -> serde_json::Value {
 /// assigns `main` the alternate profile or redefines its default one; returns that Round.
 async fn change_profile_during_compaction(
     kernel: &Kernel,
-    provider: &PausedCompaction,
+    provider: &PausedProvider,
     main: SessionId,
     update_definition: bool,
 ) -> RoundId {
@@ -94,7 +68,10 @@ async fn change_profile_during_compaction(
                 .await
                 .unwrap();
         } else {
-            kernel.set_profile(main, "alternate").await.unwrap();
+            kernel
+                .set_profile(main, &"alternate".parse().unwrap())
+                .await
+                .unwrap();
         }
         let status = kernel.status().await.unwrap();
         assert_eq!(
@@ -104,7 +81,8 @@ async fn change_profile_during_compaction(
                 .find(|s| s.session.id == main)
                 .unwrap()
                 .session
-                .profile,
+                .profile
+                .as_str(),
             if update_definition {
                 "default"
             } else {
@@ -132,12 +110,11 @@ async fn profile_changes_bind_at_round_boundaries() {
             .lock()
             .unwrap()
             .push_front(calls(vec![call("fs_list", r#"{"path":"."}"#)]));
-        let provider = Arc::new(PausedCompaction {
-            provider: scripted.clone(),
-            pause: AtomicBool::new(true),
-            entered: Notify::new(),
-            resume: Notify::new(),
-        });
+        let provider = Arc::new(PausedProvider::new(
+            scripted.clone(),
+            Some("old-compaction"),
+            true,
+        ));
         let (kernel, _) = kernel_configured_composer(
             dir.path(),
             provider.clone(),
@@ -214,7 +191,10 @@ async fn a_session_whose_profile_was_rolled_back_away_remains_recoverable() {
         .unwrap();
     let main = kernel.open_session("main").await.unwrap();
     let other = kernel.open_session("other").await.unwrap();
-    kernel.set_profile(main.id, "alternate").await.unwrap();
+    kernel
+        .set_profile(main.id, &"alternate".parse().unwrap())
+        .await
+        .unwrap();
     kernel.registry().rollback().await.unwrap();
     kernel.shutdown().await.unwrap();
     drop(kernel);
@@ -241,10 +221,15 @@ async fn a_session_whose_profile_was_rolled_back_away_remains_recoverable() {
         }
     ));
     assert!(matches!(
-        kernel.set_profile(main.id, "missing").await,
+        kernel
+            .set_profile(main.id, &"missing".parse().unwrap())
+            .await,
         Err(KernelError::UnknownProfile(_))
     ));
-    kernel.set_profile(main.id, "default").await.unwrap();
+    kernel
+        .set_profile(main.id, &"default".parse().unwrap())
+        .await
+        .unwrap();
     kernel
         .submit(main.id, EventId::new(), "recovered".into(), Vec::new())
         .await
@@ -262,12 +247,11 @@ async fn a_session_whose_profile_was_rolled_back_away_remains_recoverable() {
 #[tokio::test]
 async fn configuration_admission_observes_profile_assignments_made_during_probing() {
     let dir = tempfile::tempdir().unwrap();
-    let provider = Arc::new(PausedCompaction {
-        provider: ScriptedProvider::new(vec![reply("OK"), reply("OK")]),
-        pause: AtomicBool::new(true),
-        entered: Notify::new(),
-        resume: Notify::new(),
-    });
+    let provider = Arc::new(PausedProvider::new(
+        ScriptedProvider::new(vec![reply("OK"), reply("OK")]),
+        Some("old-compaction"),
+        true,
+    ));
     let (kernel, _) =
         kernel_configured(dir.path(), provider.clone(), configured(), vec![], |_| {}).await;
     let session = kernel.open_session("main").await.unwrap();
@@ -281,7 +265,10 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
     let apply = submit(kernel.registry(), configuration_request(document.clone()));
     let assign = async {
         provider.entered.notified().await;
-        kernel.set_profile(session.id, "alternate").await.unwrap();
+        kernel
+            .set_profile(session.id, &"alternate".parse().unwrap())
+            .await
+            .unwrap();
         provider.resume.notify_one();
     };
     let (result, ()) = tokio::join!(apply, assign);
@@ -290,16 +277,21 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
     };
     assert!(
         matches!(causes.as_slice(), [Cause::ProfileInUse { profile, sessions }]
-            if profile == "alternate" && sessions.iter().eq([&session.name])),
+            if profile.as_str() == "alternate" && sessions.iter().eq([&session.name])),
         "{causes:?}"
     );
     assert_eq!(kernel.registry().view().config.generation, before);
-    kernel.set_profile(session.id, "default").await.unwrap();
+    kernel
+        .set_profile(session.id, &"default".parse().unwrap())
+        .await
+        .unwrap();
     submit(kernel.registry(), configuration_request(document))
         .await
         .unwrap();
     assert!(matches!(
-        kernel.set_profile(session.id, "alternate").await,
+        kernel
+            .set_profile(session.id, &"alternate".parse().unwrap())
+            .await,
         Err(KernelError::UnknownProfile(_))
     ));
     kernel.shutdown().await.unwrap();
@@ -309,12 +301,11 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
 async fn configuration_probes_conflict_with_registration_but_not_trial_promotion() {
     for promote in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let provider = Arc::new(PausedCompaction {
-            provider: ScriptedProvider::new(vec![reply("OK")]),
-            pause: AtomicBool::new(true),
-            entered: Notify::new(),
-            resume: Notify::new(),
-        });
+        let provider = Arc::new(PausedProvider::new(
+            ScriptedProvider::new(vec![reply("OK")]),
+            Some("old-compaction"),
+            true,
+        ));
         let (kernel, _) =
             kernel_configured(dir.path(), provider.clone(), configured(), vec![], |_| {}).await;
         let registry = kernel.registry();
@@ -364,6 +355,19 @@ impl ContextSource for PrivateMemories {
     }
 }
 
+struct PrivateInstructions;
+
+#[async_trait]
+impl ContextSource for PrivateInstructions {
+    type Supply = Option<String>;
+
+    async fn contribute(&self, _: &ContextQuery) -> Result<Option<String>, ContextError> {
+        Err(ContextError(
+            "private instructions must not be queried".into(),
+        ))
+    }
+}
+
 struct PublicComposer;
 
 #[async_trait]
@@ -373,7 +377,15 @@ impl Composer for PublicComposer {
         _: &ComposerOptions,
         input: &ComposeInput,
     ) -> Result<Composition, Failure> {
-        assert!(input.instructions.is_none());
+        assert!(input.owner_instructions.is_none());
+        assert_eq!(
+            input.profile_instructions.as_deref(),
+            if input.safe_mode.is_some() {
+                None
+            } else {
+                Some("Public role")
+            }
+        );
         assert!(input.memories.is_empty());
         Ok(Composition::Plan(reply_plan(input)))
     }
@@ -388,6 +400,8 @@ async fn restricted_profiles_filter_requests_and_dispatch_in_both_modes() {
             "Private standing instructions",
         )
         .unwrap();
+        std::fs::create_dir(dir.path().join("profiles")).unwrap();
+        std::fs::write(dir.path().join("profiles/group.md"), "Public role").unwrap();
         let provider = ScriptedProvider::new(vec![
             calls(vec![call(
                 "fs_write",
@@ -406,12 +420,21 @@ async fn restricted_profiles_filter_requests_and_dispatch_in_both_modes() {
             document,
             vec![],
             Arc::new(PublicComposer),
-            |deps| deps.memories = Arc::new(PrivateMemories),
+            |deps| {
+                deps.memories = Arc::new(PrivateMemories);
+                deps.owner_instructions = Arc::new(PrivateInstructions);
+                if safe {
+                    deps.profile_instructions = Arc::new(PrivateInstructions);
+                }
+            },
         )
         .await;
         kernel.set_safe_mode(safe).await.unwrap();
         let session = kernel.open_session("group").await.unwrap();
-        kernel.set_profile(session.id, "group").await.unwrap();
+        kernel
+            .set_profile(session.id, &"group".parse().unwrap())
+            .await
+            .unwrap();
         let mut rx = kernel.subscribe(session.id).unwrap();
         kernel
             .submit(
@@ -454,5 +477,28 @@ async fn profiles_requiring_the_lifeline_cannot_exclude_its_tools() {
     assert!(matches!(result, Err(RegistryError::Rejected(causes))
         if matches!(causes.as_slice(), [Cause::Table(error)]
             if error.table == "profile.default" && error.message.contains("lifeline"))));
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_profile_names_are_rejected_at_their_configuration_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let (kernel, _) = support::kernel(dir.path(), ScriptedProvider::new(vec![])).await;
+    for name in [
+        "",
+        ".",
+        "..",
+        "../escape",
+        "has space",
+        "tab\tname",
+        "control\u{7}",
+        "unicode\u{2003}space",
+    ] {
+        let mut document = configuration();
+        document["profile"][name] = document["profile"]["default"].clone();
+        let result = submit(kernel.registry(), configuration_request(document)).await;
+        assert!(matches!(result, Err(RegistryError::Rejected(causes))
+            if matches!(causes.as_slice(), [Cause::Table(error)] if error.table == format!("profile.{name}"))));
+    }
     kernel.shutdown().await.unwrap();
 }

@@ -32,13 +32,13 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 
 **模型可见 ⟺ 已记录。** 进入模型请求的一切，都先成为 Log 中的记录。请求只有一个构造者，即本 Session 的 composer：它把组装结果冻结为 ContextPlan，按内容寻址记录，此后重试、查看与审计都只解析这份记录，不重新组装。所以 Session 可以只凭 Log 重建，换代码、换机器、崩溃之后都能继续。
 
-**运行中的行为 ⟺ 已登记的代际。** Agent 对自身的每一种修改，不论是插件的代码、插件的配置，还是接线与内核配置，都先经校验登记为代际，再由注册表这一个提交者生效、回退与恢复；重启只恢复，不读取新的意图。所以 Agent 本身可以只凭注册表重建。常驻指令与 Skill 是文本，在使用时记入计划，由前一条不变式约束。
+**运行中的行为 ⟺ 已登记的代际。** Agent 对自身的每一种修改，不论是插件的代码、插件的配置，还是接线与内核配置，都先经校验登记为代际，再由注册表这一个提交者生效、回退与恢复；重启只恢复，不读取新的意图。所以 Agent 本身可以只凭注册表重建。常驻说明（主人的 `AGENTS.md` 与角色说明）与 Skill 是文本，在使用时记入计划，由前一条不变式约束。
 
 这两条互为对偶：前者让 Session 可以重建，后者让 Agent 可以重建。
 
 **归属与转移。** 每份可变状态有唯一的归属者，由它按顺序处理变更，插件代码只在归属者的边界上替换，即 Erlang 的 gen_server。回调把写入作为返回值交出，归属者把这些写入与接纳事实一起原子提交。丢失更新、重投重复、游标倒退、并发登记互相覆盖、迟到的健康结果，都由这两条消解。派生状态是它的权威的函数，可以随时丢弃、从权威重建。
 
-**Round 边界是唯一的安全点。** 模型可见的世界（能力目录、profile、时区）在这里换代，漫游在这里提交，执行权在这里检查，压缩与 Brief 在这里生成，崩溃后也从这里恢复。一个 Round 内模型看到的世界不变，所以每一步都能只凭记录解释。Provider 的代际在每次 Attempt 时选取并不违背这一点：请求已经记录，换的只是翻译协议的代码。
+**Round 边界是唯一的安全点。** 模型可见的世界（能力目录、profile、工作目录、时区）在这里换代，漫游在这里提交，执行权在这里检查，压缩与 Brief 在这里生成，崩溃后也从这里恢复。一个 Round 内模型看到的世界不变，所以每一步都能只凭记录解释。Provider 的代际在每次 Attempt 时选取并不违背这一点：请求已经记录，换的只是翻译协议的代码。
 
 **双向不泄露。** 插件只看得到 WIT，这由 Wasm 物理保证；内核与宿主不按插件或服务的身份写业务分支，服务之间的差异由插件声明的能力表达，这由依赖方向与公开契约保证；插件之间只经导入的接口交互，由内核转发。宿主按操作系统平台做适配是它的正常职责。
 
@@ -87,7 +87,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | 概念 | 定义 |
 |---|---|
 | Event | 送给某个归属者（Session、连接、Observer）的一件事，带全局唯一 ID，可以去重 |
-| Session | 身份 + Log + 工作区 + 配置（composer、按 Attempt 用途选用的 endpoint，可以取自命名的 profile）；单写者；可以有父 Session |
+| Session | 身份 + Log + 工作目录 + 配置（composer、按 Attempt 用途选用的 endpoint，可以取自命名的 profile）；单写者；可以有父 Session |
 | Round | 一次模型请求及其全部工具调用与结果确认；一个 Event 唤醒的连续多个 Round 是一次 Run |
 | Log | 追加式事实，键为 `(epoch, seq)`；模型上下文的唯一来源 |
 | Capability | Tool、Provider、Channel、Context、Observer、Mapper；ID 为 `(节点, 插件名, 名称)` |
@@ -97,7 +97,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | Space | 主人全部节点的集合；控制平面（成员、Binding、期望状态）由共识维护 |
 | Binding | `key → (node, epoch)`，单写者资源的所有权：Session 是粘滞所有权，渠道与定时是租约 |
 
-其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief、回音；ContextPlan、Composer、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store；外部、Mapper（映射器）、MappingRecord（映射记录）、MappingOrigin（映射出处）、定本；Connection（连接）、Account（账号）。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
+其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief、回音、工作目录、常驻说明、角色说明；ContextPlan、Composer、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store；外部、Mapper（映射器）、MappingRecord（映射记录）、MappingOrigin（映射出处）、定本；Connection（连接）、Account（账号）。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
 
 扩展只有两种形态：
 
@@ -149,7 +149,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | 注册表、内核的配置表与 profile | `crates/enco-kernel/src/` 的 `registry/`、`settings`、`profile` |
 | 内核与外界的边界（端口）、上限常量 | `crates/enco-kernel/src/ports/`、各 crate 的 `limits.rs` |
 | SQLite、blob、制品库 | `crates/enco-host/src/store/`，模式在 `schema.sql` |
-| 主人的常驻说明、原生工具 | `crates/enco-host/src/` 的 `context`、`tools/` |
+| 常驻说明、原生工具 | `crates/enco-host/src/` 的 `context`、`tools/` |
 | 记忆与渠道连接 | `crates/enco-host/src/` 的 `memory/`、`channel/` |
 | 插件运行时、宿主导入、凭证 | `crates/enco-wasm` |
 | 组合根、守护进程、本地协议与 CLI | `apps/enco/src` |

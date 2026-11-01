@@ -131,7 +131,7 @@ pub enum UseTarget {
     /// A profile's pure composer invocation.
     Composer {
         /// Profile owning these options, used to attribute repair.
-        profile: String,
+        profile: ProfileName,
         /// Plugin and invocation options.
         settings: ComposerSettings,
     },
@@ -154,7 +154,7 @@ pub enum UseRef {
     /// A profile's composer selection and options.
     Composer {
         /// Name in the profile table.
-        profile: String,
+        profile: ProfileName,
     },
 }
 
@@ -300,7 +300,7 @@ pub enum RegistryError {
     },
     /// The active configuration does not define this profile.
     #[error("unknown profile {0}")]
-    UnknownProfile(String),
+    UnknownProfile(ProfileName),
     /// Registered kernel settings cannot be interpreted by this host.
     #[error("configuration: {0}")]
     Config(SettingsError),

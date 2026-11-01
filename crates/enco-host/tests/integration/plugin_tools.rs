@@ -109,7 +109,7 @@ fn fault() -> Failure {
 async fn tool_kernel(root: &Path, loaded: Loaded) -> Kernel {
     let (development, registry, store) =
         scripted_home(root, factory_runtime(loaded), configuration(), vec![]).await;
-    Kernel::start(kernel_deps(root, store, registry, None, Some(development)))
+    Kernel::start(kernel_deps(root, store, registry, None, Some(development)).await)
         .await
         .unwrap()
 }
@@ -167,15 +167,15 @@ async fn configuration_changes_tools_at_the_next_round_and_rewind_restores_setti
         toml::to_string(&document).unwrap(),
     )
     .unwrap();
-    let kernel = Kernel::start(kernel_deps(
+    let deps = kernel_deps(
         root.path(),
         store,
         registry.clone(),
         None,
         Some(development.clone()),
-    ))
-    .await
-    .unwrap();
+    )
+    .await;
+    let kernel = Kernel::start(deps).await.unwrap();
     let log = send(&kernel).await;
     let new = plugin_generation(&registry);
     assert_ne!(old, new);
@@ -291,13 +291,16 @@ async fn failed_bound_code_stops_later_calls_until_the_next_round() {
     .generations
     .remove(0)
     .id;
-    let kernel = Kernel::start(kernel_deps(
-        root.path(),
-        store,
-        registry.clone(),
-        None,
-        Some(development),
-    ))
+    let kernel = Kernel::start(
+        kernel_deps(
+            root.path(),
+            store,
+            registry.clone(),
+            None,
+            Some(development),
+        )
+        .await,
+    )
     .await
     .unwrap();
     let log = send(&kernel).await;
@@ -486,7 +489,7 @@ async fn registrations_and_configuration_reject_native_and_plugin_tool_name_conf
     let runtime = Arc::new(ConfiguredRuntime {
         provider: ScriptedProvider::new(vec![]),
     });
-    let store = Arc::new(SqliteStore::open(store_paths(root.path())).await.unwrap());
+    let store = Arc::new(open_store(root.path()).await);
     let registry = open_registry(
         registry_deps(store.clone(), runtime, FACTORY_BYTES),
         configuration_request(configuration()),
@@ -625,15 +628,10 @@ async fn mechanical_rollback_excludes_both_conflicts_and_keeps_native_tools_runn
             if tool == "shared_read" && others.iter().map(PluginName::as_str).eq([other])));
         assert_eq!(activation.generation.id, generation);
     }
-    let kernel = Kernel::start(kernel_deps(
-        root.path(),
-        store,
-        registry,
-        None,
-        Some(development),
-    ))
-    .await
-    .unwrap();
+    let kernel =
+        Kernel::start(kernel_deps(root.path(), store, registry, None, Some(development)).await)
+            .await
+            .unwrap();
     std::fs::write(root.path().join("workspace/repair.txt"), "repair available").unwrap();
     let log = send(&kernel).await;
     assert!(log.iter().any(|entry| matches!(&entry.body, EntryBody::ToolCallSettled { outcome: Settlement::Ok, content, .. } if content.contains("repair available"))));
@@ -685,13 +683,16 @@ async fn self_apply_moves_the_next_attempt_and_memory_call_to_the_restored_code(
         .endpoint
         .settings
         .clone();
-    let kernel = Kernel::start(kernel_deps(
-        root.path(),
-        store,
-        registry.clone(),
-        None,
-        Some(development),
-    ))
+    let kernel = Kernel::start(
+        kernel_deps(
+            root.path(),
+            store,
+            registry.clone(),
+            None,
+            Some(development),
+        )
+        .await,
+    )
     .await
     .unwrap();
     let memories = open_memories(root.path(), registry.clone()).await;

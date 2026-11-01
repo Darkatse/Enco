@@ -7,12 +7,13 @@
 默认主目录为 `~/.enco`（可通过环境变量 `ENCO_HOME` 修改）：
 
 - `config.toml`：模型 endpoint、profile、记忆与渠道配置
-- `AGENTS.md`：主人的常驻说明，每个 Round 开始时读取
+- `AGENTS.md`：关于主人的常驻说明，每个 Round 开始时读取，只给启用主人上下文的 Session
+- `profiles/<名字>.md`：对应 profile 的角色说明，每个 Round 开始时读取，不需要登记
 - `plugins/<名字>/`：本地源码插件目录
 - `sdk/`：随宿主分发的插件 SDK
 - `manual/`：由宿主根据当前运行代际自动生成的只读手册
-- `workspace/`：默认工作区
-- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。数据库模式版本 16 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
+- `workspace/`：新 Session 的默认工作目录
+- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。数据库模式版本 17 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
 
 ### CLI 命令
 
@@ -31,6 +32,7 @@
 | 改名已登记的插件并保留身份与历史 | `enco plugin rename <name> <to> [--reason "..."]` |
 | 查看会话列表、日志或检视某次模型请求 | `enco sessions`、`enco log`、`enco inspect [--attempt <id>]` |
 | 将对话回溯到指定日志位置 | `enco backtrack [--session <name>] <epoch>:<seq>` |
+| 设置会话工作目录 | `enco working-dir <session> <path>` |
 | 切换会话 profile 或安全模式 | `enco profile <session> <profile>`、`enco safe-mode <on\|off>` |
 | 查看或取消定时任务、遗忘记忆 | `enco schedules [--cancel <id>]`、`enco memory [--forget <id>]` |
 
@@ -38,7 +40,9 @@
 
 ### Profile 与上下文组装
 
-每个会话使用的模型与组装策略都在 profile 中定义。默认使用宿主自带的 `composer`（空选项），也可以在 profile 中指定 `composer = { plugin = "<名字>", options = {} }`。composer 会声明自己的选项 schema，登记配置时据此校验每个 profile；它只接收已记录的历史、常驻说明与召回的记忆，没有文件或网络权限。安全模式下固定使用二进制内嵌的出厂 composer 与空选项。
+每个会话使用的模型、工具范围与组装策略在 `[profile.<名字>]` 中定义（名字为不含 `/` 与空白的一段）。默认使用宿主自带的 `composer`（空选项），也可以指定 `composer = { plugin = "<名字>", options = {} }`。composer 会声明自己的选项 schema，登记配置时据此校验每个 profile；它只接收已记录的历史、常驻说明与召回的记忆，没有文件或网络权限。安全模式下固定使用二进制内嵌的出厂 composer 与空选项。
+
+关于主人的偏好与全局规矩写在 `AGENTS.md`，只给 `owner_context` 未关闭的会话；关于某个角色做什么、怎样做写在 `profiles/<名字>.md`，与 `AGENTS.md` 叠加且更具体（`owner_context = false` 的群会话同样生效），直接编辑文件即可在下一个 Round 生效。每个会话另有自己的工作目录（新建时为 `workspace/`），文件工具、`message_send` 的相对路径与 `shell_exec` 的默认目录都以它为起点，用 `enco working-dir <session> <path>` 修改：相对路径按执行命令时的当前目录补全，设置时不检查目录，用到时目录不可用，相关的调用才失败。
 
 ### 图片输入与文件发送
 

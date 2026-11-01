@@ -8,13 +8,14 @@ use enco_kernel::{CallContext, Tool};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
-async fn call(tool: &dyn Tool, args: serde_json::Value) -> Outcome {
+async fn call(working_dir: &WorkingDir, tool: &dyn Tool, args: serde_json::Value) -> Outcome {
     let serde_json::Value::Object(args) = args else {
         panic!("test arguments must be an object");
     };
     tool.call(
         CallContext {
             session: SessionId::new(),
+            working_dir: working_dir.clone(),
             call: CallId::new(),
             cancel: CancellationToken::new(),
             result_budget: 16 * 1024,
@@ -35,12 +36,14 @@ fn find(tools: &[Arc<dyn Tool>], name: &str) -> Arc<dyn Tool> {
 #[tokio::test]
 async fn edits_require_unique_matches_and_reads_observe_line_ranges() {
     let dir = tempfile::tempdir().unwrap();
-    let tools = native_tools(dir.path().to_owned()).unwrap();
+    let working_dir = WorkingDir::new(NodeId::new(), dir.path().to_owned()).unwrap();
+    let tools = native_tools(working_dir.node).unwrap();
     let edit = find(&tools, "fs_edit");
     let read = find(&tools, "fs_read");
     let path = dir.path().join("note");
     std::fs::write(&path, "first\nsame\nsame\nlast\n").unwrap();
     let result = call(
+        &working_dir,
         &*edit,
         serde_json::json!({ "path": "note", "old_string": "same", "new_string": "changed" }),
     )
@@ -51,6 +54,7 @@ async fn edits_require_unique_matches_and_reads_observe_line_ranges() {
         "first\nsame\nsame\nlast\n"
     );
     let replaced = call(
+        &working_dir,
         &*edit,
         serde_json::json!({
             "path": "note",
@@ -62,6 +66,7 @@ async fn edits_require_unique_matches_and_reads_observe_line_ranges() {
     .await;
     assert!(matches!(replaced, Outcome::Ok { .. }));
     let Outcome::Ok { value, .. } = call(
+        &working_dir,
         &*read,
         serde_json::json!({ "path": "note", "offset": 3, "limit": 1 }),
     )
@@ -78,8 +83,10 @@ async fn edits_require_unique_matches_and_reads_observe_line_ranges() {
 #[tokio::test]
 async fn shell_drains_both_pipes_preserves_exit_status_and_reports_timeout() {
     let dir = tempfile::tempdir().unwrap();
-    let shell = find(&native_tools(dir.path().to_owned()).unwrap(), "shell_exec");
+    let working_dir = WorkingDir::new(NodeId::new(), dir.path().to_owned()).unwrap();
+    let shell = find(&native_tools(working_dir.node).unwrap(), "shell_exec");
     let Outcome::Ok { value, .. } = call(
+        &working_dir,
         &*shell,
         serde_json::json!({ "command": "printf out; printf err >&2; exit 7" }),
     )
@@ -94,6 +101,7 @@ async fn shell_drains_both_pipes_preserves_exit_status_and_reports_timeout() {
     let result = tokio::time::timeout(
         Duration::from_secs(5),
         call(
+            &working_dir,
             &*shell,
             serde_json::json!({ "command": "exec sleep 60", "timeout_ms": 20 }),
         ),
@@ -106,10 +114,12 @@ async fn shell_drains_both_pipes_preserves_exit_status_and_reports_timeout() {
 #[tokio::test]
 async fn background_command_returns_collected_output_after_shell_exit() {
     let dir = tempfile::tempdir().unwrap();
-    let shell = find(&native_tools(dir.path().to_owned()).unwrap(), "shell_exec");
+    let working_dir = WorkingDir::new(NodeId::new(), dir.path().to_owned()).unwrap();
+    let shell = find(&native_tools(working_dir.node).unwrap(), "shell_exec");
     let result = tokio::time::timeout(
         Duration::from_secs(2),
         call(
+            &working_dir,
             &*shell,
             serde_json::json!({
                 "command": "sleep 30 & echo $! > background.pid; echo started",
@@ -137,7 +147,8 @@ async fn background_command_returns_collected_output_after_shell_exit() {
 async fn replacing_an_existing_file_preserves_executable_permissions() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    let tools = native_tools(dir.path().to_owned()).unwrap();
+    let working_dir = WorkingDir::new(NodeId::new(), dir.path().to_owned()).unwrap();
+    let tools = native_tools(working_dir.node).unwrap();
     let path = dir.path().join("script.sh");
     std::fs::write(&path, "echo old\n").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -153,7 +164,7 @@ async fn replacing_an_existing_file_preserves_executable_permissions() {
         ),
     ] {
         assert!(matches!(
-            call(&*find(&tools, name), args).await,
+            call(&working_dir, &*find(&tools, name), args).await,
             Outcome::Ok { .. }
         ));
         assert_eq!(
@@ -166,7 +177,8 @@ async fn replacing_an_existing_file_preserves_executable_permissions() {
 #[tokio::test]
 async fn writes_through_symlinks_preserve_the_link_and_update_its_target() {
     let dir = tempfile::tempdir().unwrap();
-    let tools = native_tools(dir.path().to_owned()).unwrap();
+    let working_dir = WorkingDir::new(NodeId::new(), dir.path().to_owned()).unwrap();
+    let tools = native_tools(working_dir.node).unwrap();
     let target = dir.path().join("target.txt");
     let link = dir.path().join("link.txt");
     std::fs::write(&target, "old").unwrap();
@@ -185,7 +197,7 @@ async fn writes_through_symlinks_preserve_the_link_and_update_its_target() {
             "edited",
         ),
     ] {
-        let Outcome::Ok { value, .. } = call(&*find(&tools, name), args).await else {
+        let Outcome::Ok { value, .. } = call(&working_dir, &*find(&tools, name), args).await else {
             panic!("write through symlink failed");
         };
         assert_eq!(value["path"], serde_json::json!(actual_path));
@@ -201,18 +213,24 @@ async fn writes_through_symlinks_preserve_the_link_and_update_its_target() {
 #[tokio::test]
 async fn file_reads_return_images_and_reject_other_binary_content() {
     let dir = tempfile::tempdir().unwrap();
-    let read = find(&native_tools(dir.path().to_owned()).unwrap(), "fs_read");
+    let working_dir = WorkingDir::new(NodeId::new(), dir.path().to_owned()).unwrap();
+    let read = find(&native_tools(working_dir.node).unwrap(), "fs_read");
     let image = b"\x89PNG\r\n\x1a\nimage bytes";
     std::fs::write(dir.path().join("image"), image).unwrap();
     let Outcome::Ok { value, images, .. } =
-        call(&*read, serde_json::json!({ "path": "image" })).await
+        call(&working_dir, &*read, serde_json::json!({ "path": "image" })).await
     else {
         panic!("image read failed");
     };
     assert_eq!(images, vec![image.to_vec()]);
     assert_eq!(value["path"], serde_json::json!(dir.path().join("image")));
     std::fs::write(dir.path().join("binary"), [0xff, 0xfe]).unwrap();
-    let Outcome::Failed { failure } = call(&*read, serde_json::json!({ "path": "binary" })).await
+    let Outcome::Failed { failure } = call(
+        &working_dir,
+        &*read,
+        serde_json::json!({ "path": "binary" }),
+    )
+    .await
     else {
         panic!("unsupported binary content was accepted");
     };
@@ -226,18 +244,16 @@ async fn file_reads_return_images_and_reject_other_binary_content() {
 #[tokio::test]
 async fn message_send_requires_content_and_reads_one_bounded_file() {
     let dir = tempfile::tempdir().unwrap();
-    let send = find(
-        &native_tools(dir.path().to_owned()).unwrap(),
-        "message_send",
-    );
+    let working_dir = WorkingDir::new(NodeId::new(), dir.path().to_owned()).unwrap();
+    let send = find(&native_tools(working_dir.node).unwrap(), "message_send");
     for args in [serde_json::json!({}), serde_json::json!({"text": " \n"})] {
         assert!(
-            matches!(call(&*send, args).await, Outcome::Failed { failure }
+            matches!(call(&working_dir, &*send, args).await, Outcome::Failed { failure }
             if failure.code == code::TOOL_INVALID_ARGUMENTS)
         );
     }
     assert!(matches!(
-        call(&*send, serde_json::json!({"file": "missing"})).await,
+        call(&working_dir, &*send, serde_json::json!({"file": "missing"})).await,
         Outcome::Failed { failure } if failure.code == code::TOOL_FAILED
     ));
 
@@ -247,6 +263,7 @@ async fn message_send_requires_content_and_reads_one_bounded_file() {
         outgoing: Some(outgoing),
         ..
     } = call(
+        &working_dir,
         &*send,
         serde_json::json!({"text": "**Report**", "file": path}),
     )
@@ -268,7 +285,82 @@ async fn message_send_requires_content_and_reads_one_bounded_file() {
         .set_len(50_000_001)
         .unwrap();
     assert!(matches!(
-        call(&*send, serde_json::json!({"file": "report.pdf"})).await,
+        call(&working_dir, &*send, serde_json::json!({"file": "report.pdf"})).await,
         Outcome::Failed { failure } if failure.code == code::TOOL_FAILED && failure.message.contains("exceeds")
     ));
+}
+
+#[tokio::test]
+async fn unavailable_working_directories_fail_relative_calls_without_blocking_absolute_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let node = NodeId::new();
+    let missing = root.path().join("missing");
+    let file = root.path().join("not-directory");
+    std::fs::write(&file, "file").unwrap();
+    let attachment = root.path().join("attachment.txt");
+    std::fs::write(&attachment, "attachment").unwrap();
+    let tools = native_tools(node).unwrap();
+    for directory in [
+        WorkingDir::new(node, missing.clone()).unwrap(),
+        WorkingDir::new(node, file).unwrap(),
+        WorkingDir::new(NodeId::new(), root.path().to_owned()).unwrap(),
+    ] {
+        for (name, args) in [
+            ("fs_read", serde_json::json!({"path": "attachment.txt"})),
+            (
+                "fs_write",
+                serde_json::json!({"path": "nested/file", "content": "must not be written"}),
+            ),
+            (
+                "fs_edit",
+                serde_json::json!({"path": "attachment.txt", "old_string": "attachment", "new_string": "changed"}),
+            ),
+            ("fs_list", serde_json::json!({"path": "."})),
+            (
+                "message_send",
+                serde_json::json!({"file": "attachment.txt"}),
+            ),
+            ("shell_exec", serde_json::json!({"command": "pwd"})),
+            (
+                "shell_exec",
+                serde_json::json!({"command": "pwd", "cwd": "."}),
+            ),
+        ] {
+            let Outcome::Failed { failure } = call(&directory, &*find(&tools, name), args).await
+            else {
+                panic!("{name} used an unavailable working directory");
+            };
+            assert_eq!(failure.code, code::TOOL_FAILED);
+            assert!(failure.message.contains(directory.path_str()));
+        }
+        assert!(
+            !missing.exists(),
+            "relative writes must not create the working directory"
+        );
+        for (name, args) in [
+            ("fs_read", serde_json::json!({"path": attachment})),
+            (
+                "fs_write",
+                serde_json::json!({"path": root.path().join("absolute.txt"), "content": "absolute"}),
+            ),
+            (
+                "fs_edit",
+                serde_json::json!({"path": root.path().join("absolute.txt"), "old_string": "absolute", "new_string": "edited"}),
+            ),
+            ("fs_list", serde_json::json!({"path": root.path()})),
+            ("message_send", serde_json::json!({"file": attachment})),
+            (
+                "shell_exec",
+                serde_json::json!({"command": "pwd", "cwd": root.path()}),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    call(&directory, &*find(&tools, name), args).await,
+                    Outcome::Ok { .. }
+                ),
+                "{name} rejected an absolute path"
+            );
+        }
+    }
 }

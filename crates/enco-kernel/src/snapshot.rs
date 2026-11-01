@@ -8,7 +8,8 @@ use std::{collections::HashSet, sync::Arc};
 #[derive(Clone)]
 pub(crate) struct Snapshot {
     node: NodeId,
-    pub instructions: Arc<dyn ContextSource<Supply = Option<String>>>,
+    pub owner_instructions: Arc<dyn ContextSource<Supply = Option<String>>>,
+    pub profile_instructions: Arc<dyn ContextSource<Supply = Option<String>>>,
     pub memories: Arc<dyn ContextSource<Supply = OfferedMemories>>,
     pub tools: Vec<SnapshotTool>,
     pub lifeline: Vec<CapabilityId>,
@@ -62,7 +63,8 @@ impl Snapshot {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             node,
-            instructions: deps.instructions.clone(),
+            owner_instructions: deps.owner_instructions.clone(),
+            profile_instructions: deps.profile_instructions.clone(),
             memories: deps.memories.clone(),
             tools,
             lifeline,

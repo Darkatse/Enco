@@ -2,7 +2,8 @@ use super::*;
 
 /// Facts gathered once per Round; a later composition changes only its targets and Transcript.
 pub(super) struct Gathered {
-    pub instructions: Option<String>,
+    pub owner_instructions: Option<String>,
+    pub profile_instructions: Option<String>,
     pub memories: Vec<Memory>,
     pub omitted: Vec<Omission>,
     pub previous_plan: Option<ContextPlan>,
@@ -34,18 +35,24 @@ impl SessionActor {
             new_input,
             cancel: token.child_token(),
         };
-        let (instructions, offered) = if safe_mode || !owner_context {
+        let profile_instructions = if safe_mode {
+            None
+        } else {
+            contribute(snapshot.profile_instructions.as_ref(), &query, token).await?
+        };
+        let (owner_instructions, offered) = if safe_mode || !owner_context {
             (None, OfferedMemories::default())
         } else {
             (
-                contribute(snapshot.instructions.as_ref(), &query, token).await?,
+                contribute(snapshot.owner_instructions.as_ref(), &query, token).await?,
                 contribute(snapshot.memories.as_ref(), &query, token).await?,
             )
         };
         let mut omitted = offered.omitted;
         let previous_plan = self.previous_plan(&conversation, &mut omitted).await?;
         Ok(Gathered {
-            instructions,
+            owner_instructions,
+            profile_instructions,
             memories: offered.memories,
             omitted,
             previous_plan,

@@ -5,7 +5,8 @@ use enco_core::*;
 use enco_kernel::{ConsumedMessage, NewSession, StoreError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
-const COLUMNS: &str = "id,name,created_at,binding_node,binding_epoch,profile";
+const COLUMNS: &str =
+    "id,name,created_at,binding_node,binding_epoch,profile,working_dir_node,working_dir_path";
 
 pub(super) fn all(connection: &Connection) -> Result<Vec<SessionRecord>, StoreError> {
     let mut query = connection
@@ -49,12 +50,12 @@ pub(super) fn get(
 pub(super) fn set_profile(
     connection: &Connection,
     id: SessionId,
-    profile: &str,
+    profile: &ProfileName,
 ) -> Result<(), StoreError> {
     let changed = connection
         .execute(
             "UPDATE sessions SET profile=? WHERE id=?",
-            params![profile, id.to_string()],
+            params![profile.as_str(), id.to_string()],
         )
         .map_err(backend)?;
     if changed == 0 {
@@ -63,10 +64,33 @@ pub(super) fn set_profile(
     Ok(())
 }
 
-/// A new Session starts on this node at the first epoch with the default profile.
+pub(super) fn set_working_dir(
+    connection: &Connection,
+    id: SessionId,
+    working_dir: &WorkingDir,
+) -> Result<(), StoreError> {
+    let changed = connection
+        .execute(
+            "UPDATE sessions SET working_dir_node=?,working_dir_path=? WHERE id=?",
+            params![
+                working_dir.node.to_string(),
+                working_dir.path_str(),
+                id.to_string()
+            ],
+        )
+        .map_err(backend)?;
+    if changed == 0 {
+        return Err(StoreError::UnknownSession(id));
+    }
+    Ok(())
+}
+
+/// A new Session starts on this node at the first epoch with the default profile, in
+/// `working_dir`.
 pub(super) fn ensure(
     connection: &mut Connection,
     node: NodeId,
+    working_dir: &WorkingDir,
     name: &str,
     created_at: DateTime<Utc>,
 ) -> Result<SessionRecord, StoreError> {
@@ -74,14 +98,16 @@ pub(super) fn ensure(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
     tx.execute(
-        "INSERT OR IGNORE INTO sessions VALUES (?,?,?,?,?,?)",
+        &format!("INSERT OR IGNORE INTO sessions({COLUMNS}) VALUES (?,?,?,?,?,?,?,?)"),
         params![
             SessionId::new().to_string(),
             name,
             timestamp(created_at),
             node.to_string(),
             1,
-            DEFAULT_PROFILE
+            DEFAULT_PROFILE,
+            working_dir.node.to_string(),
+            working_dir.path_str(),
         ],
     )
     .map_err(backend)?;
@@ -96,10 +122,12 @@ pub(super) fn ensure(
     Ok(result)
 }
 
-/// Insert a Session chosen by its creator, never adopting one with the same display name.
+/// Insert a Session chosen by its creator, never adopting one with the same display name; it
+/// starts on this node at the first epoch, in `working_dir`.
 pub(super) fn insert_new(
     tx: &Transaction<'_>,
     node: NodeId,
+    working_dir: &WorkingDir,
     new: &NewSession,
 ) -> Result<SessionRecord, StoreError> {
     let NewSession {
@@ -122,10 +150,20 @@ pub(super) fn insert_new(
         candidate = format!("{name}:{suffix}");
     }
     tx.query_row(
-        &format!("INSERT INTO sessions(id,name,created_at,binding_node,binding_epoch,profile) VALUES (?,?,?,?,?,?) RETURNING {COLUMNS}"),
-        params![id.to_string(), candidate, timestamp(*created_at), node.to_string(), 1, profile],
+        &format!("INSERT INTO sessions({COLUMNS}) VALUES (?,?,?,?,?,?,?,?) RETURNING {COLUMNS}"),
+        params![
+            id.to_string(),
+            candidate,
+            timestamp(*created_at),
+            node.to_string(),
+            1,
+            profile.as_str(),
+            working_dir.node.to_string(),
+            working_dir.path_str()
+        ],
         rows::session,
-    ).map_err(backend)
+    )
+    .map_err(backend)
 }
 
 pub(super) fn log(

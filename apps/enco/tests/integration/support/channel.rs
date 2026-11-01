@@ -43,11 +43,14 @@ pub async fn open(
 ) -> (tempfile::TempDir, Arc<SqliteStore>, Arc<dyn ChannelAdapter>) {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        SqliteStore::open(StorePaths {
-            db: root.path().join("enco.db"),
-            blobs: root.path().join("blobs"),
-            artifacts: root.path().join("artifacts"),
-        })
+        SqliteStore::open(
+            StorePaths {
+                db: root.path().join("enco.db"),
+                blobs: root.path().join("blobs"),
+                artifacts: root.path().join("artifacts"),
+            },
+            root.path().join("workspace"),
+        )
         .await
         .unwrap(),
     );

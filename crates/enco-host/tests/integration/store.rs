@@ -12,7 +12,7 @@ mod plans;
 
 /// A store holding the `main` Session, with a user message for it that is not yet accepted.
 async fn main_session(root: &Path) -> (SqliteStore, Event) {
-    let store = SqliteStore::open(support::store_paths(root)).await.unwrap();
+    let store = support::open_store(root).await;
     let session = store
         .ensure_session("main", Utc::now().trunc_subsecs(3))
         .await
@@ -100,7 +100,7 @@ async fn a_failed_acceptance_discards_its_connection_write() {
         session: Some(NewSession {
             id: SessionId::new(),
             name: "group".into(),
-            profile: "default".into(),
+            profile: "default".parse().unwrap(),
             created_at: Utc::now().trunc_subsecs(3),
         }),
         ..write.clone()
@@ -138,9 +138,7 @@ async fn accepted_update_keys_survive_restarts_and_are_never_accepted_twice() {
     };
     store.accept(&[], Some(&write)).await.unwrap();
     drop(store);
-    let store = SqliteStore::open(support::store_paths(dir.path()))
-        .await
-        .unwrap();
+    let store = support::open_store(dir.path()).await;
     assert!(
         store
             .connection_update_seen(&write.key, "command-1")
@@ -269,9 +267,7 @@ async fn committed_entries_consume_their_events_and_survive_reopening() {
     );
     let node = store.node().await.unwrap().id;
     drop(store);
-    let reopened = SqliteStore::open(support::store_paths(dir.path()))
-        .await
-        .unwrap();
+    let reopened = support::open_store(dir.path()).await;
     assert_eq!(reopened.node().await.unwrap().id, node);
     assert_eq!(
         reopened.log(event.session, None).await.unwrap(),
@@ -291,9 +287,7 @@ async fn committed_entries_consume_their_events_and_survive_reopening() {
 #[tokio::test]
 async fn blob_reads_reject_content_that_no_longer_matches_its_address() {
     let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::open(support::store_paths(dir.path()))
-        .await
-        .unwrap();
+    let store = support::open_store(dir.path()).await;
     let hash = store.put_blob(b"original").await.unwrap();
     assert_eq!(store.get_blob(&hash).await.unwrap(), b"original");
     std::fs::write(store.blob_path(&hash), b"changed").unwrap();
@@ -306,9 +300,7 @@ async fn blob_reads_reject_content_that_no_longer_matches_its_address() {
 #[tokio::test]
 async fn schedule_cursor_and_inbox_delivery_commit_together() {
     let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::open(support::store_paths(dir.path()))
-        .await
-        .unwrap();
+    let store = support::open_store(dir.path()).await;
     let now: DateTime<Utc> = "2026-10-09T00:00:00Z".parse().unwrap();
     let session = store.ensure_session("main", now).await.unwrap();
     let schedule = Schedule {

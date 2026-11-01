@@ -100,9 +100,14 @@ enum Action {
         #[arg(long)]
         attempt: Option<AttemptId>,
     },
+    /// Set a Session's working directory, effective from its next Round.
+    WorkingDir {
+        session: String,
+        path: PathBuf,
+    },
     Profile {
         session: String,
-        profile: String,
+        profile: enco_core::ProfileName,
     },
     SafeMode {
         state: Switch,
@@ -235,6 +240,10 @@ async fn main() -> Result<()> {
             Some(memory_id) => Command::ForgetMemory { memory_id },
             None => Command::Memories {},
         },
+        Action::WorkingDir { session, path } => Command::SetWorkingDir {
+            session,
+            path: std::path::absolute(path)?,
+        },
         Action::Profile { session, profile } => Command::SetProfile { session, profile },
         Action::Status { json } => Command::Status {
             output: Output::for_json(json),
@@ -280,6 +289,7 @@ async fn main() -> Result<()> {
 async fn init(paths: &Paths) -> Result<()> {
     tokio::fs::create_dir_all(paths.workspace()).await?;
     tokio::fs::create_dir_all(paths.data()).await?;
+    tokio::fs::create_dir_all(paths.profiles()).await?;
     let template = include_str!("../../../examples/deepseek-gemini.toml");
     ensure!(
         template.matches(EXAMPLE_TIMEZONE).count() == 1,
@@ -365,6 +375,7 @@ impl Command {
             | Self::PluginScaffold { .. }
             | Self::Inspect { .. }
             | Self::SetProfile { .. }
+            | Self::SetWorkingDir { .. }
             | Self::SafeMode { .. } => Output::Json,
         }
     }

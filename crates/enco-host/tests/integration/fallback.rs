@@ -240,7 +240,7 @@ async fn registry_node(
         .generations[0]
         .id;
     std::fs::remove_dir_all(root.join("plugins/fixture")).unwrap();
-    let kernel = Kernel::start(kernel_deps(root, store, registry, None, Some(development)))
+    let kernel = Kernel::start(kernel_deps(root, store, registry, None, Some(development)).await)
         .await
         .unwrap();
     (kernel, original, trial)

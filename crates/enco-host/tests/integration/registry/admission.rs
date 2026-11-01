@@ -55,7 +55,7 @@ async fn channel_declarations_require_a_public_group_profile_and_a_mapper() {
 #[tokio::test]
 async fn admission_keeps_configured_exports_connected() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let runtime = Arc::new(ScriptedRuntime::default());
     let provider = ScriptedProvider::new(vec![]);
     let mut factory = loaded(provider.clone());
@@ -130,7 +130,7 @@ async fn admission_keeps_configured_exports_connected() {
 #[tokio::test]
 async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let runtime = Arc::new(ScriptedRuntime::default());
     let provider = ScriptedProvider::new(vec![]);
     runtime.insert(FACTORY_BYTES, loaded(provider.clone()));
@@ -212,7 +212,7 @@ async fn initial_configuration_requires_registered_plugins() {
     let runtime = Arc::new(ScriptedRuntime::default());
     runtime.insert(FACTORY_BYTES, loaded(ScriptedProvider::new(vec![])));
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let mut document = configuration();
     document["endpoint"]["reply"]["plugin"] = "missing".into();
     let result = open_registry(
@@ -233,7 +233,7 @@ async fn initial_configuration_requires_registered_plugins() {
 #[tokio::test]
 async fn a_rejected_registration_writes_neither_a_generation_nor_a_name() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let runtime = Arc::new(ScriptedRuntime::default());
     let provider = ScriptedProvider::new(vec![]);
     runtime.insert(FACTORY_BYTES, loaded(provider.clone()));
@@ -259,7 +259,7 @@ async fn unrelated_unavailable_plugins_do_not_block_incremental_repairs() {
     runtime.insert(FACTORY_BYTES, available.clone());
     runtime.insert(b"optional", available.clone());
     runtime.insert(b"repair", available.clone());
-    let store = Arc::new(SqliteStore::open(store_paths(root.path())).await.unwrap());
+    let store = Arc::new(open_store(root.path()).await);
     let mut document = configuration();
     document["endpoint"]["optional"] = document["endpoint"]["reply"].clone();
     document["endpoint"]["optional"]["plugin"] = "optional".into();

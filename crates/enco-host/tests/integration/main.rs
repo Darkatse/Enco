@@ -17,3 +17,4 @@ mod status;
 mod store;
 mod support;
 mod tools;
+mod working_dir;

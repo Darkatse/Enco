@@ -1,5 +1,6 @@
 use super::*;
 mod channel;
+mod instructions;
 mod silence;
 use crate::composer::*;
 use enco_sdk::types::{Datetime, ImageFormat, QuoteKind, Role, Unviewable, UnviewableReason};
@@ -30,6 +31,10 @@ fn memory(id: &str, text: String, pinned: bool) -> Memory {
 fn input() -> ComposeInput {
     ComposeInput {
         session: Session {
+            working_dir: WorkingDir {
+                node: "node".into(),
+                path: "/enco/workspace".into(),
+            },
             id: "session".into(),
             name: "main".into(),
             profile: "default".into(),
@@ -44,7 +49,9 @@ fn input() -> ComposeInput {
             run_ends: vec![],
         },
         previous: None,
-        instructions: None,
+        owner_context: true,
+        owner_instructions: None,
+        profile_instructions: None,
         memories: vec![],
         omitted: vec![],
         capabilities: vec![],
@@ -188,14 +195,14 @@ fn recalled_memories_keep_their_original_note_and_changed_sources_appear_again()
 #[test]
 fn changed_instructions_and_compacted_history_start_a_new_prefix() {
     let mut input = input();
-    input.instructions = Some("Use short answers".into());
+    input.owner_instructions = Some("Use short answers".into());
     input
         .transcript
         .items
         .push(incoming(1, "2026-10-02T14:00:00Z", "hello"));
     let first = reply(&input);
     input.previous = Some(first.clone());
-    input.instructions = Some("Explain in detail".into());
+    input.owner_instructions = Some("Explain in detail".into());
     let changed = reply(&input);
     assert!(!changed.items.starts_with(&first.items));
     assert!(text(&changed).contains("Explain in detail"));
@@ -216,7 +223,8 @@ fn changed_instructions_and_compacted_history_start_a_new_prefix() {
 #[test]
 fn instructions_and_memories_exceeding_their_share_are_omitted_with_sources() {
     let mut input = input();
-    input.instructions = Some("x".repeat(40_000));
+    input.owner_instructions = Some("x".repeat(40_000));
+    input.profile_instructions = Some("z".repeat(40_000));
     input
         .memories
         .push(memory("large", "y".repeat(50_000), true));
@@ -225,6 +233,11 @@ fn instructions_and_memories_exceeding_their_share_are_omitted_with_sources() {
         plan.omitted
             .iter()
             .any(|omitted| omitted.source == "instructions:AGENTS.md")
+    );
+    assert!(
+        plan.omitted
+            .iter()
+            .any(|omitted| omitted.source == "instructions:profiles/default.md")
     );
     assert!(
         plan.omitted

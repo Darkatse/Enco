@@ -64,12 +64,15 @@ async fn cancelling_a_source_built_computing_plugin_settles_unknown_and_joins() 
         .unwrap()
         .parse()
         .unwrap();
-    let home = daemon.root.path();
-    let store = SqliteStore::open(StorePaths {
-        db: home.join(".data/enco.db"),
-        blobs: home.join(".data/blobs"),
-        artifacts: home.join(".data/artifacts"),
-    })
+    let home = daemon.root.path().to_owned();
+    let store = SqliteStore::open(
+        StorePaths {
+            db: home.join(".data/enco.db"),
+            blobs: home.join(".data/blobs"),
+            artifacts: home.join(".data/artifacts"),
+        },
+        home.join("workspace"),
+    )
     .await
     .unwrap();
     let bytes = store.artifact(&artifact).await.unwrap();
@@ -92,6 +95,11 @@ async fn cancelling_a_source_built_computing_plugin_settles_unknown_and_joins() 
     let cancel = CancellationToken::new();
     let context = CallContext {
         session: SessionId::new(),
+        working_dir: enco_core::WorkingDir::new(
+            store.node().await.unwrap().id,
+            home.join("workspace"),
+        )
+        .unwrap(),
         call: CallId::new(),
         cancel: cancel.clone(),
         result_budget: 1024,

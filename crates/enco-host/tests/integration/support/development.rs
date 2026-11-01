@@ -78,7 +78,7 @@ pub async fn scripted_home(
     Arc<Registry>,
     Arc<SqliteStore>,
 ) {
-    let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
+    let store = Arc::new(open_store(root).await);
     let mut deps = registry_deps(store.clone(), runtime, FACTORY_BYTES);
     deps.host_tool_names
         .extend(extra_tools.into_iter().map(|spec| spec.name));
@@ -131,6 +131,8 @@ pub async fn current_status(
             version: "test".into(),
             revision: "fixture".into(),
             home: root.into(),
+            profile_instructions: enco_host::profile_instruction_files(&root.join("profiles"))
+                .await,
             execution: kernel.status().await.unwrap(),
             channels: vec![],
         },

@@ -7,7 +7,7 @@ use enco_kernel::*;
 use std::{path::Path, sync::Arc};
 
 async fn factory_only(root: &Path) -> (Arc<SqliteStore>, Arc<ScriptedRuntime>) {
-    let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
+    let store = Arc::new(open_store(root).await);
     let runtime = Arc::new(ScriptedRuntime::default());
     runtime.insert(FACTORY_BYTES, loaded(ScriptedProvider::new(vec![])));
     (store, runtime)
@@ -150,7 +150,7 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
     };
     drop(registry);
     drop(store);
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let registry = open(&store, runtime).await;
     assert_eq!(
         registry
@@ -201,7 +201,7 @@ async fn a_failing_only_generation_leaves_its_plugin_unavailable() {
 #[tokio::test]
 async fn configuration_probes_report_trial_health_even_when_configuration_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let runtime = Arc::new(ScriptedRuntime::default());
     let provider = ScriptedProvider::new(vec![reply("OK"), Err(fault(code::PLUGIN_TRAP))]);
     runtime.insert(FACTORY_BYTES, loaded(provider));

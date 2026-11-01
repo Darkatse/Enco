@@ -30,9 +30,14 @@ pub struct ComposeInput {
     pub transcript: Transcript<LocatedImage>,
     /// Most recent reply plan; the composer decides whether to reuse it.
     pub previous_plan: Option<ContextPlan>,
-    /// The text of the owner's standing instructions; absent when there are none.
-    pub instructions: Option<String>,
-    /// Pinned memories first, then those recalled for the latest input, most relevant first.
+    /// Whether the Session's profile gives it the owner's context: owner instructions and memories.
+    pub owner_context: bool,
+    /// The owner instructions; absent when missing, in safe mode or without the owner's context.
+    pub owner_instructions: Option<String>,
+    /// The selected profile's instructions; absent when missing or in safe mode.
+    pub profile_instructions: Option<String>,
+    /// Pinned memories first, then those recalled for the latest input, most relevant first;
+    /// empty in safe mode or without the owner's context.
     pub memories: Vec<Memory>,
     /// Content the host could not supply, recorded with the plan whatever the composer returns.
     pub omitted: Vec<Omission>,

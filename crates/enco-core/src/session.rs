@@ -13,7 +13,7 @@ pub struct SessionRef {
     pub name: String,
 }
 
-/// Persistent Session identity, execution binding and selected profile.
+/// Persistent Session identity, execution binding, selected profile and working directory.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionRecord {
     /// Identity joining the Session’s Inbox, Log and execution binding.
@@ -25,7 +25,9 @@ pub struct SessionRecord {
     /// Node and generation authorized to execute this Session.
     pub binding: Binding,
     /// Name of the configuration selected at the next Round boundary.
-    pub profile: String,
+    pub profile: crate::ProfileName,
+    /// Working directory sampled at the next Round boundary.
+    pub working_dir: crate::WorkingDir,
 }
 
 /// Execution owner and fencing generation; a single node uses itself at epoch one.

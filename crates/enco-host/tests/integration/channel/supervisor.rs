@@ -126,13 +126,16 @@ async fn supervisor_follows_code_generations_after_settlement_and_has_one_owner_
     let (development, registry, store) =
         scripted_home(dir.path(), runtime, document.clone(), vec![]).await;
     let kernel = Arc::new(
-        Kernel::start(kernel_deps(
-            dir.path(),
-            store.clone(),
-            registry.clone(),
-            None,
-            Some(development.clone()),
-        ))
+        Kernel::start(
+            kernel_deps(
+                dir.path(),
+                store.clone(),
+                registry.clone(),
+                None,
+                Some(development.clone()),
+            )
+            .await,
+        )
         .await
         .unwrap(),
     );
@@ -208,13 +211,16 @@ async fn a_retrying_opening_holds_up_no_other_connection_and_connects_once_the_s
     )
     .await;
     let kernel = Arc::new(
-        Kernel::start(kernel_deps(
-            dir.path(),
-            store.clone(),
-            registry.clone(),
-            None,
-            Some(development.clone()),
-        ))
+        Kernel::start(
+            kernel_deps(
+                dir.path(),
+                store.clone(),
+                registry.clone(),
+                None,
+                Some(development.clone()),
+            )
+            .await,
+        )
         .await
         .unwrap(),
     );
@@ -275,13 +281,16 @@ async fn a_changed_connection_cancels_its_pending_identification_and_a_rejected_
     )
     .await;
     let kernel = Arc::new(
-        Kernel::start(kernel_deps(
-            dir.path(),
-            store.clone(),
-            registry.clone(),
-            None,
-            Some(development.clone()),
-        ))
+        Kernel::start(
+            kernel_deps(
+                dir.path(),
+                store.clone(),
+                registry.clone(),
+                None,
+                Some(development.clone()),
+            )
+            .await,
+        )
         .await
         .unwrap(),
     );

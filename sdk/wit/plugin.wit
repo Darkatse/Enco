@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.10.0;
+package enco:plugin@0.11.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -491,6 +491,16 @@ interface composer {
         seq: u64,
     }
 
+    /// A directory on a node.
+    ///
+    /// Nothing guarantees that it exists; a tool that needs it checks when it uses it.
+    record working-dir {
+        /// The node whose file system holds it.
+        node: string,
+        /// Its absolute path on that node.
+        path: string,
+    }
+
     /// The Session the request is for.
     record session {
         /// Its permanent ID.
@@ -501,6 +511,9 @@ interface composer {
         profile: string,
         /// When it was created.
         created-at: datetime,
+        /// Where its file tools resolve relative paths and its shell commands run by default, as
+        /// pinned for this Round.
+        working-dir: working-dir,
     }
 
     /// A recorded image, by reference rather than by its bytes.
@@ -896,9 +909,10 @@ interface composer {
         timezone: string,
         /// The home's absolute path on the node running this Round.
         ///
-        /// Its layout is part of this contract: `config.toml`, `AGENTS.md` for the standing
-        /// instructions, `plugins/<name>/`, `sdk/`, `manual/` and `workspace/`. `.data/` is Enco's
-        /// own store and not part of it.
+        /// Its layout is part of this contract: `config.toml`; the standing instructions,
+        /// `AGENTS.md` for the owner and `profiles/<name>.md` for each profile; `plugins/<name>/`,
+        /// `sdk/`, `manual/`, and `workspace/`, the working directory of a new Session. `.data/` is
+        /// Enco's own store and not part of it.
         home: string,
         /// The conversation as it stands, which a plan may refer to.
         ///
@@ -908,11 +922,23 @@ interface composer {
         /// The latest recorded reply plan in that conversation; absent at the start, or when it
         /// could not be read, which `omitted` then says.
         previous: option<plan>,
-        /// The text of `AGENTS.md`, as read at the start of this Round; absent when the file does
-        /// not exist, and in safe mode.
-        instructions: option<string>,
+        /// Whether the Session's profile gives it the owner's context: the owner instructions and
+        /// the memories.
+        owner-context: bool,
+        /// The owner instructions: the text of `AGENTS.md`, as read at the start of this Round.
+        ///
+        /// Absent when the file does not exist, when `owner-context` is false, and in safe mode.
+        owner-instructions: option<string>,
+        /// The profile instructions: the text of `profiles/<profile>.md` for this Session's
+        /// profile, as read at the start of this Round.
+        ///
+        /// Absent when the file does not exist, and in safe mode. Unlike `owner-instructions`, it
+        /// does not depend on the owner's context.
+        profile-instructions: option<string>,
         /// Memories for this Round in priority order: pinned ones first, then those recalled for
-        /// the latest input, most relevant first; empty in safe mode.
+        /// the latest input, most relevant first.
+        ///
+        /// Empty when `owner-context` is false, and in safe mode.
         memories: list<memory>,
         /// Content the host could not supply; the host records it with the plan.
         omitted: list<omission>,

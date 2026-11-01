@@ -38,6 +38,8 @@ pub struct Node {
     pub execution: enco_kernel::Status,
     /// Configured channels, such as Telegram, with their health and recent delivery failures.
     pub channels: Vec<ChannelStatus>,
+    /// The profile-instructions files in the home.
+    pub profile_instructions: crate::ProfileInstructionFiles,
 }
 
 impl Status {

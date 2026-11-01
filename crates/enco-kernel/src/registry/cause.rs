@@ -164,7 +164,7 @@ pub enum Cause {
     #[error("profile {profile} is still used by Sessions {}", .sessions.join(", "))]
     ProfileInUse {
         /// Profile missing from the configuration.
-        profile: String,
+        profile: ProfileName,
         /// Names of the Sessions using it.
         sessions: Vec<String>,
     },

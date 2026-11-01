@@ -21,12 +21,20 @@ pub trait Store: Send + Sync {
     async fn session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError>;
     /// Look up a Session without creating it.
     async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError>;
-    /// Create if absent, with local binding at epoch one and the default profile.
+    /// Create if absent, with local binding at epoch one, the default profile and this node's
+    /// default working directory.
     async fn ensure_session(
         &self,
         name: &str,
         created_at: DateTime<Utc>,
     ) -> Result<SessionRecord, StoreError>;
+
+    /// Persist the working directory for subsequent Rounds, without checking availability.
+    async fn set_working_dir(
+        &self,
+        id: SessionId,
+        working_dir: &WorkingDir,
+    ) -> Result<(), StoreError>;
 
     // ---- Log (writer: the owning Session actor)
     /// Read immutable facts in structural order after an optional position.
@@ -95,7 +103,7 @@ pub trait Store: Send + Sync {
 
     // ---- Identity, generations and wiring (writer: Registry)
     /// Select the profile under the registry committer, effective at the next Round.
-    async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError>;
+    async fn set_profile(&self, id: SessionId, profile: &ProfileName) -> Result<(), StoreError>;
     /// Read registration history and the references restored at startup.
     async fn registry(&self) -> Result<RegistryState, StoreError>;
     /// Record embedded factory content without activating it or creating a registration.
@@ -185,6 +193,9 @@ pub struct ConnectionWrite {
 }
 
 /// A Session created together with the input that first reaches it.
+///
+/// Like a Session that `ensure_session` creates, it starts bound to this node at epoch one, in
+/// this node's default working directory.
 #[derive(Clone)]
 pub struct NewSession {
     /// Identity chosen by the creator, which also records it in its own state.
@@ -192,7 +203,7 @@ pub struct NewSession {
     /// Display name; an occupied name receives a numeric suffix.
     pub name: String,
     /// Registered profile the Session starts with.
-    pub profile: String,
+    pub profile: ProfileName,
     /// Creation time for display.
     pub created_at: DateTime<Utc>,
 }

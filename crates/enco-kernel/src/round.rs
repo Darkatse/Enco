@@ -42,6 +42,7 @@ impl SessionActor {
             run,
             round,
             safe_mode,
+            working_dir: self.session.working_dir.clone(),
         });
         self.commit(prefix, None).await?;
         let end = match self.execute_round(round, &view, mode, token).await {
@@ -88,7 +89,8 @@ impl SessionActor {
         let reply = selection.reply_target()?;
         let now = self.deps.clock.now();
         let context::Gathered {
-            instructions,
+            owner_instructions,
+            profile_instructions,
             memories,
             omitted,
             previous_plan,
@@ -104,7 +106,9 @@ impl SessionActor {
             session: self.session.clone(),
             transcript,
             previous_plan,
-            instructions,
+            owner_context: profile.owner_context,
+            owner_instructions,
+            profile_instructions,
             memories,
             omitted,
             tools: snapshot

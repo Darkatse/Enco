@@ -403,6 +403,7 @@ impl Debug for Budget
 ```rust
 pub struct CallContext {
     pub session: SessionId,
+    pub working_dir: WorkingDir,
     pub call: CallId,
     pub cancel: tokio_util::sync::CancellationToken,
     pub result_budget: usize,
@@ -412,6 +413,7 @@ pub struct CallContext {
 Invocation identity, cooperative cancellation and the inline result budget.
 
 - `session` — Session which proposed the call.
+- `working_dir` — Working directory pinned for this Round.
 - `call` — Host-assigned identity used for durable settlement.
 - `cancel` — Child of the Run cancellation token.
 - `result_budget` — Maximum inline result size in bytes, including any continuation instructions.
@@ -461,7 +463,7 @@ pub enum Cause {
     },
     Table(crate::SettingsError),
     ProfileInUse {
-        profile: String,
+        profile: ProfileName,
         sessions: Vec<String>,
     },
     SettingsWithoutPlugin {
@@ -1204,7 +1206,9 @@ pub struct ComposeInput {
     pub session: SessionRecord,
     pub transcript: Transcript<LocatedImage>,
     pub previous_plan: Option<ContextPlan>,
-    pub instructions: Option<String>,
+    pub owner_context: bool,
+    pub owner_instructions: Option<String>,
+    pub profile_instructions: Option<String>,
     pub memories: Vec<Memory>,
     pub omitted: Vec<Omission>,
     pub unavailable: Vec<(String, Failure)>,
@@ -1226,8 +1230,11 @@ Fixed Round inputs, with the selected budgets and recorded recovery facts for th
 - `session` — Session metadata sampled for this Round.
 - `transcript` — Canonical history after the latest compaction.
 - `previous_plan` — Most recent reply plan; the composer decides whether to reuse it.
-- `instructions` — The text of the owner's standing instructions; absent when there are none.
-- `memories` — Pinned memories first, then those recalled for the latest input, most relevant first.
+- `owner_context` — Whether the Session's profile gives it the owner's context: owner instructions and memories.
+- `owner_instructions` — The owner instructions; absent when missing, in safe mode or without the owner's context.
+- `profile_instructions` — The selected profile's instructions; absent when missing or in safe mode.
+- `memories` — Pinned memories first, then those recalled for the latest input, most relevant first;
+  empty in safe mode or without the owner's context.
 - `omitted` — Content the host could not supply, recorded with the plan whatever the composer returns.
 - `unavailable` — Published plugins excluded from the Round's capabilities and their current reasons.
 - `tools` — All capabilities which may be disclosed this Round.
@@ -2174,10 +2181,18 @@ pub async fn set_safe_mode(&self, enabled: bool) -> Result<(), KernelError>
 
 Change the policy observed at the next Round boundary.
 
+### `Kernel::set_working_dir`
+
+```rust
+pub async fn set_working_dir(&self, session: SessionId, path: std::path::PathBuf) -> Result<WorkingDir, KernelError>
+```
+
+Point the Session at `path` on this node from its next Round, without checking the directory.
+
 ### `Kernel::set_profile`
 
 ```rust
-pub async fn set_profile(&self, session: SessionId, profile: &str) -> Result<(), KernelError>
+pub async fn set_profile(&self, session: SessionId, profile: &ProfileName) -> Result<(), KernelError>
 ```
 
 Persist a profile choice; the current Round keeps its sampled policy.
@@ -2263,7 +2278,8 @@ pub struct KernelDeps {
     pub store: std::sync::Arc<dyn Store>,
     pub registry: std::sync::Arc<Registry>,
     pub home: std::path::PathBuf,
-    pub instructions: std::sync::Arc<dyn ContextSource<Supply = Option<String>>>,
+    pub owner_instructions: std::sync::Arc<dyn ContextSource<Supply = Option<String>>>,
+    pub profile_instructions: std::sync::Arc<dyn ContextSource<Supply = Option<String>>>,
     pub memories: std::sync::Arc<dyn ContextSource<Supply = OfferedMemories>>,
     pub tools: Vec<std::sync::Arc<dyn Tool>>,
     pub clock: std::sync::Arc<dyn Clock>,
@@ -2275,7 +2291,8 @@ Ports assembled once by the application; no service locator is involved.
 - `store` — Durable authority.
 - `registry` — Sole owner of plugin generations and published exports.
 - `home` — Absolute home location supplied to context policies.
-- `instructions` — The owner's standing instructions, read once per Round.
+- `owner_instructions` — The owner instructions, read once per Round.
+- `profile_instructions` — The selected profile's instructions, read once per Round.
 - `memories` — The memories offered once per Round.
 - `tools` — Host capabilities exposed through the ordinary Tool port.
 - `clock` — Clock supplied by the host or tests.
@@ -2299,7 +2316,8 @@ pub enum KernelError {
         reason: String,
     },
     UnknownSession(SessionId),
-    UnknownProfile(String),
+    UnknownProfile(ProfileName),
+    InvalidWorkingDir(InvalidWorkingDir),
     Backtrack {
         session: SessionId,
         to: LogPos,
@@ -2323,6 +2341,7 @@ Public command failure; Round failures are recorded in the Log instead.
   - `reason` — Decoding or resolution failure.
 - `UnknownSession` — No such Session is registered.
 - `UnknownProfile` — The requested profile is absent from the node configuration.
+- `InvalidWorkingDir` — The requested working directory is not an absolute UTF-8 path.
 - `Backtrack` — A backtrack must point at a position that this Session's conversation has recorded.
   - `session` — The Session the owner addressed.
   - `to` — The position the owner pointed at.
@@ -2334,6 +2353,7 @@ Implements:
 impl Debug for KernelError
 impl Display for KernelError
 impl Error for KernelError
+impl From<InvalidWorkingDir> for KernelError
 impl From<RegistryError> for KernelError
 impl From<ScheduleError> for KernelError
 impl From<StoreError> for KernelError
@@ -2347,7 +2367,7 @@ impl From<StoreError> for KernelError
 pub struct KernelSettings {
     pub timezone: enco_core::Tz,
     pub max_rounds_per_run: std::num::NonZeroU32,
-    pub profiles: std::collections::BTreeMap<String, crate::Profile>,
+    pub profiles: std::collections::BTreeMap<enco_core::ProfileName, crate::Profile>,
     /* private fields */
 }
 ```
@@ -2628,12 +2648,15 @@ impl PartialEq for Need
 pub struct NewSession {
     pub id: SessionId,
     pub name: String,
-    pub profile: String,
+    pub profile: ProfileName,
     pub created_at: DateTime<Utc>,
 }
 ```
 
 A Session created together with the input that first reaches it.
+
+Like a Session that `ensure_session` creates, it starts bound to this node at epoch one, in
+this node's default working directory.
 
 - `id` — Identity chosen by the creator, which also records it in its own state.
 - `name` — Display name; an occupied name receives a numeric suffix.
@@ -2904,7 +2927,7 @@ Session policy sampled once at the start of a Round.
 - `compaction` — Ordered candidates for summarizing history.
 - `requires_lifeline` — Whether every reply plan must disclose all lifeline tools.
 - `tools` — Allowed tool names; absent exposes all available tools, including future additions.
-- `owner_context` — Whether composition receives the owner's standing instructions and memories.
+- `owner_context` — Whether composition receives the owner instructions and memories.
 
 Implements:
 
@@ -3354,7 +3377,7 @@ The host's repair set, also used when validating profile tool restrictions.
 `src/registry/configuration.rs`
 
 ```rust
-pub async fn set_profile(&self, session: SessionId, profile: &str) -> Result<(), RegistryError>
+pub async fn set_profile(&self, session: SessionId, profile: &ProfileName) -> Result<(), RegistryError>
 ```
 
 Profile assignments share the registry's committer with configuration changes.
@@ -3503,7 +3526,7 @@ pub enum RegistryError {
         registration: RegistrationId,
         latest: RegistrationId,
     },
-    UnknownProfile(String),
+    UnknownProfile(ProfileName),
     Config(crate::SettingsError),
     Bootstrap(String),
     TableOwner(String),
@@ -4046,7 +4069,7 @@ pub struct Status {
     pub timezone: Tz,
     pub node: NodeId,
     pub safe_mode: bool,
-    pub profiles: Vec<String>,
+    pub profiles: Vec<ProfileName>,
     pub sessions: Vec<SessionStatus>,
     pub scheduler_stopped: Option<String>,
 }
@@ -4346,7 +4369,7 @@ pub enum UseRef {
         endpoint: String,
     },
     Composer {
-        profile: String,
+        profile: ProfileName,
     },
 }
 ```
@@ -4387,7 +4410,7 @@ pub enum UseTarget {
         need: Need,
     },
     Composer {
-        profile: String,
+        profile: ProfileName,
         settings: crate::ComposerSettings,
     },
 }
@@ -4771,7 +4794,16 @@ Look up a Session without creating it.
 async fn ensure_session(&self, name: &str, created_at: DateTime<Utc>) -> Result<SessionRecord, StoreError>
 ```
 
-Create if absent, with local binding at epoch one and the default profile.
+Create if absent, with local binding at epoch one, the default profile and this node's
+default working directory.
+
+### `Store::set_working_dir`
+
+```rust
+async fn set_working_dir(&self, id: SessionId, working_dir: &WorkingDir) -> Result<(), StoreError>
+```
+
+Persist the working directory for subsequent Rounds, without checking availability.
 
 ### `Store::log`
 
@@ -4895,7 +4927,7 @@ Mark it done when no occurrence remains.
 ### `Store::set_profile`
 
 ```rust
-async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError>
+async fn set_profile(&self, id: SessionId, profile: &ProfileName) -> Result<(), StoreError>
 ```
 
 Select the profile under the registry committer, effective at the next Round.

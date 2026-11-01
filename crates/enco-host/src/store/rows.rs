@@ -11,7 +11,16 @@ pub(super) fn session(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
             node: text(row, 3)?,
             epoch: Epoch(unsigned(row, 4)?),
         },
-        profile: row.get(5)?,
+        profile: text(row, 5)?,
+        working_dir: WorkingDir::new(text(row, 6)?, row.get::<_, String>(7)?.into()).map_err(
+            |error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    7,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            },
+        )?,
     })
 }
 

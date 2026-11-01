@@ -5,7 +5,10 @@
 use super::{
     Attention, AttentionKind, CallStep, FixTarget, OwnerAction, Repair, Status, Step, Steps, repair,
 };
-use crate::development::{HistoryPoint, HistoryQuery, HomeComparison, PluginUnit, RewindArguments};
+use crate::{
+    ProfileInstructionFiles,
+    development::{HistoryPoint, HistoryQuery, HomeComparison, PluginUnit, RewindArguments},
+};
 use enco_core::{IntentPath, PluginActivation, PluginName, RegistrationId};
 use enco_kernel::{Activation, Cause, Running};
 
@@ -34,7 +37,44 @@ pub(super) fn attention(status: &Status) -> Vec<Attention<'_>> {
     }
     configuration(&facts.configuration, &mut out);
     execution(&status.node.execution, &mut out);
+    profiles(status, &mut out);
     out
+}
+
+fn profiles<'a>(status: &'a Status, out: &mut Vec<Attention<'a>>) {
+    let files = match &status.node.profile_instructions {
+        ProfileInstructionFiles::Listed(files) => files,
+        ProfileInstructionFiles::Unreadable(error) => {
+            out.push(Attention {
+                kind: AttentionKind::ProfilesUnreadable { error },
+                next: fix_then_recheck(&error.path),
+            });
+            return;
+        }
+    };
+    let running = &status.node.execution.profiles;
+    for file in files {
+        if file
+            .profile
+            .as_ref()
+            .is_some_and(|name| running.contains(name))
+        {
+            continue;
+        }
+        let mut next = fix_then_recheck(&file.path);
+        next.alternative = file.profile.as_ref().map(|name| {
+            vec![
+                Step::Fix(FixTarget::Table {
+                    name: format!("{}.{name}", enco_kernel::PROFILE_TABLE.name()),
+                }),
+                CallStep::Register.into(),
+            ]
+        });
+        out.push(Attention {
+            kind: AttentionKind::UnmatchedProfileInstructions { path: &file.path },
+            next,
+        });
+    }
 }
 
 fn plugin_home<'a>(

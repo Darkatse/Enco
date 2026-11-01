@@ -7,7 +7,7 @@ mod message;
 pub use development::{development_tool_specs, development_tools, self_status_spec};
 mod shell;
 
-use enco_core::{CodeRef, SchemaError};
+use enco_core::{CodeRef, Failure, NodeId, SchemaError, WorkingDir};
 use enco_kernel::Tool;
 use std::{
     path::{Path, PathBuf},
@@ -30,21 +30,49 @@ pub const LIFELINE: [&str; 8] = [
 ];
 
 /// The native tools: the file tools, `message_send` and `shell_exec`, with paths resolved against
-/// `workspace`.
+/// each Round's working directory.
 ///
-/// They share the workspace path rules and ordinary Tool dispatch.
-pub fn native_tools(workspace: PathBuf) -> Result<Vec<Arc<dyn Tool>>, SchemaError> {
+/// They share the working-directory checks and ordinary Tool dispatch.
+pub fn native_tools(node: NodeId) -> Result<Vec<Arc<dyn Tool>>, SchemaError> {
     let mut tools = files::kinds()
         .into_iter()
-        .map(|kind| Ok(Arc::new(files::FileTool::new(workspace.clone(), kind)?) as Arc<dyn Tool>))
+        .map(|kind| Ok(Arc::new(files::FileTool::new(node, kind)?) as Arc<dyn Tool>))
         .collect::<Result<Vec<_>, SchemaError>>()?;
-    tools.push(Arc::new(message::MessageSend::new(workspace.clone())?));
-    tools.push(Arc::new(shell::Shell::new(workspace)?));
+    tools.push(Arc::new(message::MessageSend::new(node)?));
+    tools.push(Arc::new(shell::Shell::new(node)?));
     Ok(tools)
 }
 
-pub(crate) fn resolve_path(workspace: &Path, path: &str) -> PathBuf {
-    workspace.join(path)
+/// Resolve a path argument: an absolute path stands alone, a relative one needs the working
+/// directory.
+pub(crate) async fn resolve_path(
+    node: NodeId,
+    working_dir: &WorkingDir,
+    path: &str,
+) -> Result<PathBuf, Failure> {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return Ok(path.to_owned());
+    }
+    Ok(local_working_dir(node, working_dir).await?.join(path))
+}
+
+/// The working directory as a directory on this node; nothing here creates it.
+pub(crate) async fn local_working_dir(
+    node: NodeId,
+    working_dir: &WorkingDir,
+) -> Result<&Path, Failure> {
+    let unavailable = |reason| failure::working_dir_unavailable(working_dir, reason);
+    if working_dir.node != node {
+        return Err(unavailable("it is on another node".into()));
+    }
+    let metadata = tokio::fs::metadata(working_dir.path())
+        .await
+        .map_err(|error| unavailable(error.to_string()))?;
+    if !metadata.is_dir() {
+        return Err(unavailable("not a directory".into()));
+    }
+    Ok(working_dir.path())
 }
 
 pub(crate) fn code() -> CodeRef {

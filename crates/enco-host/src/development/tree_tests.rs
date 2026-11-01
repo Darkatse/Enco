@@ -59,11 +59,14 @@ async fn plans_handle_file_directory_replacements_in_both_directions() {
 #[tokio::test]
 async fn manifest_and_file_blobs_recover_the_same_portable_value() {
     let home = tempfile::tempdir().unwrap();
-    let store = crate::SqliteStore::open(crate::StorePaths {
-        db: home.path().join("enco.db"),
-        blobs: home.path().join("blobs"),
-        artifacts: home.path().join("artifacts"),
-    })
+    let store = crate::SqliteStore::open(
+        crate::StorePaths {
+            db: home.path().join("enco.db"),
+            blobs: home.path().join("blobs"),
+            artifacts: home.path().join("artifacts"),
+        },
+        home.path().join("workspace"),
+    )
     .await
     .unwrap();
     let tree = FileTree {

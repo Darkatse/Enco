@@ -26,7 +26,7 @@ impl Node {
         registry: Arc<Registry>,
         development: Arc<development::Development>,
     ) -> Self {
-        let deps = kernel_deps(root, store, registry.clone(), None, Some(development));
+        let deps = kernel_deps(root, store, registry.clone(), None, Some(development)).await;
         let kernel = Kernel::start(deps).await.unwrap();
         let memories = open_memories(root, registry).await;
         let session = kernel.open_session("main").await.unwrap().id;
@@ -65,7 +65,7 @@ struct Callers {
 
 impl Callers {
     async fn start(root: &Path) -> Self {
-        let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
+        let store = Arc::new(open_store(root).await);
         let runtime = Arc::new(ScriptedRuntime::default());
         let factory = ScriptedProvider::new(vec![]);
         let provider = ScriptedProvider::new(vec![]);
@@ -373,7 +373,7 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
 #[tokio::test]
 async fn safe_mode_replies_when_another_use_needs_an_interface_absent_from_factory() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let runtime = Arc::new(ScriptedRuntime::default());
     let factory_provider = ScriptedProvider::new(vec![reply("factory repair reply")]);
     let active_provider = ScriptedProvider::new(vec![]);
@@ -424,7 +424,7 @@ async fn safe_mode_replies_when_another_use_needs_an_interface_absent_from_facto
 #[tokio::test]
 async fn safe_mode_keeps_the_active_generation_of_a_plugin_without_factory_code() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let runtime = Arc::new(ScriptedRuntime::default());
     // The first step answers the configuration probe for the new reply use.
     let custom = ScriptedProvider::new(vec![reply("probe"), reply("custom repair reply")]);

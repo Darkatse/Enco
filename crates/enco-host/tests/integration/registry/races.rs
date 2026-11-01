@@ -42,7 +42,7 @@ impl Runtime for PausedLoad {
 #[tokio::test]
 async fn registration_cannot_overwrite_a_rollback_committed_during_loading() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let scripted = Arc::new(ScriptedRuntime::default());
     for bytes in [FACTORY_BYTES, b"one", b"two", b"three"] {
         scripted.insert(bytes, loaded(ScriptedProvider::new(vec![])));
@@ -75,7 +75,7 @@ async fn registration_cannot_overwrite_a_rollback_committed_during_loading() {
 #[tokio::test]
 async fn a_late_failure_after_replacement_does_not_roll_back_or_publish_a_notice() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let runtime = Arc::new(ScriptedRuntime::default());
     for bytes in [FACTORY_BYTES, b"old", b"new"] {
         runtime.insert(bytes, loaded(ScriptedProvider::new(vec![])));
@@ -105,7 +105,7 @@ async fn a_late_failure_after_replacement_does_not_roll_back_or_publish_a_notice
 async fn registration_discards_preparation_when_its_plugin_or_configuration_changes() {
     for change_config in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+        let store = Arc::new(open_store(dir.path()).await);
         let scripted = Arc::new(ScriptedRuntime::default());
         for bytes in [FACTORY_BYTES, b"late", b"winner"] {
             scripted.insert(bytes, loaded(ScriptedProvider::new(vec![])));
@@ -155,7 +155,7 @@ async fn registration_discards_preparation_when_its_plugin_or_configuration_chan
 #[tokio::test]
 async fn rollback_cannot_overwrite_a_registration_committed_during_loading() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let scripted = Arc::new(ScriptedRuntime::default());
     for bytes in [FACTORY_BYTES, b"one", b"two", b"three"] {
         scripted.insert(bytes, loaded(ScriptedProvider::new(vec![])));
@@ -196,7 +196,7 @@ async fn rollback_cannot_overwrite_a_registration_committed_during_loading() {
 async fn automatic_rollback_discards_preparation_after_registration_or_promotion() {
     for promote_current in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+        let store = Arc::new(open_store(dir.path()).await);
         let scripted = Arc::new(ScriptedRuntime::default());
         for bytes in [FACTORY_BYTES, b"healthy", b"trial"] {
             scripted.insert(bytes, loaded(ScriptedProvider::new(vec![])));

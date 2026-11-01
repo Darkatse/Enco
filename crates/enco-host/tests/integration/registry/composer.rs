@@ -2,7 +2,6 @@
 use super::{fault, loaded, promote};
 use crate::support::*;
 use enco_core::*;
-use enco_host::*;
 use enco_kernel::*;
 use serde_json::json;
 use std::sync::Arc;
@@ -21,14 +20,14 @@ fn rejects_profile_options(result: Result<Registered, RegistryError>, field: &st
     assert!(matches!(result, Err(RegistryError::Rejected(causes))
         if matches!(causes.as_slice(), [Cause::Use {
             user, target: UseRef::Composer { profile }, failure,
-        }] if user == "profile default.composer" && profile == "default"
+        }] if user == "profile default.composer" && profile.as_str() == "default"
             && failure.message.contains("options") && failure.message.contains(field))));
 }
 
 #[tokio::test]
 async fn registrations_check_profile_options_against_candidate_composer_schemas() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let runtime = Arc::new(ScriptedRuntime::default());
     runtime.insert(FACTORY_BYTES, loaded(ScriptedProvider::new(vec![])));
     runtime.insert(COMPOSER_BYTES, composer_schema("limit", "integer"));
@@ -67,7 +66,7 @@ async fn registrations_check_profile_options_against_candidate_composer_schemas(
 #[tokio::test]
 async fn pinned_options_follow_current_code_and_unrepaired_mismatches_do_not_block_registration() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let runtime = Arc::new(ScriptedRuntime::default());
     runtime.insert(FACTORY_BYTES, loaded(ScriptedProvider::new(vec![])));
     runtime.insert(b"style", composer_schema("style", "string"));
@@ -131,7 +130,7 @@ async fn pinned_options_follow_current_code_and_unrepaired_mismatches_do_not_blo
     let unavailable = |status: RegistryStatus| {
         matches!(status.config.unavailable_uses.as_slice(), [usage]
             if usage.user == "profile default.composer"
-                && usage.target == (UseRef::Composer { profile: "default".into() }))
+                && usage.target == (UseRef::Composer { profile: "default".parse().unwrap() }))
     };
     assert!(unavailable(registry.status().await.unwrap()));
     // New code for the plugin may land while the mismatch it leaves unrepaired stays reported.

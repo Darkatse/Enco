@@ -204,7 +204,7 @@ pub(super) async fn check_profiles(
     deps: &RegistryDeps,
     kernel: &KernelSettings,
 ) -> Result<(), RegistryError> {
-    let mut stranded: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut stranded: BTreeMap<ProfileName, Vec<String>> = BTreeMap::new();
     for session in deps.store.sessions().await? {
         if !kernel.profiles.contains_key(&session.profile) {
             stranded
@@ -272,11 +272,11 @@ impl Registry {
     pub async fn set_profile(
         &self,
         session: SessionId,
-        profile: &str,
+        profile: &ProfileName,
     ) -> Result<(), RegistryError> {
         let _state = self.state.lock().await;
         if !self.view().config.kernel.profiles.contains_key(profile) {
-            return Err(RegistryError::UnknownProfile(profile.into()));
+            return Err(RegistryError::UnknownProfile(profile.clone()));
         }
         self.deps.store.set_profile(session, profile).await?;
         Ok(())

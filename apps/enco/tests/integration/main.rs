@@ -14,6 +14,7 @@ mod live;
 mod memory;
 mod onebot;
 mod process;
+mod profiles;
 #[path = "../../src/protocol.rs"]
 mod protocol;
 mod quotes;

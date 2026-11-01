@@ -7,7 +7,7 @@ use enco_host::{
     development_tool_specs, development_tools, memory_tool_specs, memory_tools, native_tools,
     self_status_spec,
 };
-use enco_kernel::{FactoryPlugin, Kernel, KernelDeps, RegistryDeps};
+use enco_kernel::{FactoryPlugin, Kernel, KernelDeps, RegistryDeps, Store};
 use enco_wasm::WasmRuntime;
 use std::sync::Arc;
 
@@ -31,15 +31,18 @@ pub(crate) struct Application {
 pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
     tokio::fs::create_dir_all(paths.workspace()).await?;
     let store = Arc::new(
-        SqliteStore::open(StorePaths {
-            db: paths.db(),
-            blobs: paths.blobs(),
-            artifacts: paths.artifacts(),
-        })
+        SqliteStore::open(
+            StorePaths {
+                db: paths.db(),
+                blobs: paths.blobs(),
+                artifacts: paths.artifacts(),
+            },
+            paths.workspace(),
+        )
         .await?,
     );
     let clock = Arc::new(SystemClock);
-    let mut tools = native_tools(paths.workspace())?;
+    let mut tools = native_tools(store.node().await?.id)?;
     let host_tool_names = tools
         .iter()
         .map(|tool| tool.spec())
@@ -98,7 +101,8 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
         store: store.clone(),
         registry,
         home: paths.home.clone(),
-        instructions: Arc::new(InstructionsContextSource::new(paths.instructions())),
+        owner_instructions: Arc::new(InstructionsContextSource::owner(paths.owner_instructions())),
+        profile_instructions: Arc::new(InstructionsContextSource::profile(paths.profiles())),
         memories: Arc::new(MemoryContextSource::new(memories.clone())),
         tools,
         clock: clock.clone(),

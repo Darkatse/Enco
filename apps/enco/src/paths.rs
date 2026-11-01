@@ -25,10 +25,14 @@ impl Paths {
         self.home.join("workspace")
     }
 
+    pub fn profiles(&self) -> PathBuf {
+        self.home.join("profiles")
+    }
+
     pub fn data(&self) -> PathBuf {
         self.home.join(".data")
     }
-    pub fn instructions(&self) -> PathBuf {
+    pub fn owner_instructions(&self) -> PathBuf {
         self.home.join("AGENTS.md")
     }
     pub fn db(&self) -> PathBuf {

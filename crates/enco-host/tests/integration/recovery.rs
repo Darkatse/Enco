@@ -445,7 +445,10 @@ impl Composer for ObservedContext {
         _: &ComposerOptions,
         input: &ComposeInput,
     ) -> Result<Composition, Failure> {
-        self.0.lock().unwrap().push(input.instructions.clone());
+        self.0
+            .lock()
+            .unwrap()
+            .push(input.owner_instructions.clone());
         Ok(Composition::Plan(reply_plan(input)))
     }
 }

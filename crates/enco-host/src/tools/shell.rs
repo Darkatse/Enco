@@ -1,4 +1,4 @@
-//! The shell tool: running a command in the workspace with a time limit and bounded output.
+//! The shell tool: running a command in the working directory with a time limit and bounded output.
 use super::{failure::*, resolve_path};
 use crate::limits::*;
 use async_trait::async_trait;
@@ -7,7 +7,7 @@ use enco_kernel::{CallContext, Tool};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{process::Stdio, time::Duration};
 use tokio::{
     io::AsyncReadExt,
     process::{Child, Command},
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 struct ShellArguments {
     /// The command line to run.
     command: String,
-    /// The directory to run in, relative to the workspace or absolute; the workspace by default.
+    /// The directory to run in, relative to the working directory or absolute; the working directory by default.
     cwd: Option<String>,
     /// How long the command may run, in milliseconds.
     #[serde(default = "default_timeout")]
@@ -32,14 +32,14 @@ fn default_timeout() -> u64 {
 }
 
 pub(super) struct Shell {
-    workspace: PathBuf,
+    node: NodeId,
     spec: ToolSpec,
 }
 
 impl Shell {
-    pub(super) fn new(workspace: PathBuf) -> Result<Self, SchemaError> {
+    pub(super) fn new(node: NodeId) -> Result<Self, SchemaError> {
         Ok(Self {
-            workspace,
+            node,
             spec: ToolSpec::of::<ShellArguments>(
                 "shell_exec",
                 format!(
@@ -81,8 +81,10 @@ impl Shell {
     ) -> Result<Outcome, Failure> {
         let arguments: ShellArguments = parse_arguments(args)?;
         let cwd = match &arguments.cwd {
-            None => self.workspace.clone(),
-            Some(cwd) => resolve_path(&self.workspace, cwd),
+            None => super::local_working_dir(self.node, &ctx.working_dir)
+                .await?
+                .to_owned(),
+            Some(cwd) => resolve_path(self.node, &ctx.working_dir, cwd).await?,
         };
         let child = Command::new("sh")
             .args(["-c", &arguments.command])

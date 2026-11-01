@@ -25,7 +25,7 @@ use std::{
 ///
 /// It covers the SQLite schema, plan records included. Until P4, persistent format changes
 /// require a new database; opening never migrates or deletes the old one.
-const SCHEMA_VERSION: u32 = 16;
+const SCHEMA_VERSION: u32 = 17;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -42,11 +42,15 @@ pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
     paths: StorePaths,
     node: NodeId,
+    /// Where a Session created on this node works until the owner changes it.
+    default_working_dir: WorkingDir,
 }
 
 impl SqliteStore {
     /// Open the authority, initializing the schema and node identity on first use.
-    pub async fn open(paths: StorePaths) -> Result<Self, StoreError> {
+    ///
+    /// A Session created through this store starts in `workspace` on this node.
+    pub async fn open(paths: StorePaths, workspace: PathBuf) -> Result<Self, StoreError> {
         for path in [&paths.db] {
             if let Some(parent) = path.parent() {
                 tokio::fs::create_dir_all(parent).await.map_err(backend)?;
@@ -66,6 +70,7 @@ impl SqliteStore {
             connection: Arc::new(Mutex::new(connection)),
             paths,
             node,
+            default_working_dir: WorkingDir::new(node, workspace).map_err(backend)?,
         })
     }
 
@@ -181,9 +186,19 @@ impl Store for SqliteStore {
             .await
     }
 
-    async fn set_profile(&self, id: SessionId, profile: &str) -> Result<(), StoreError> {
+    async fn set_profile(&self, id: SessionId, profile: &ProfileName) -> Result<(), StoreError> {
         let profile = profile.to_owned();
         self.run(move |connection| sessions::set_profile(connection, id, &profile))
+            .await
+    }
+
+    async fn set_working_dir(
+        &self,
+        id: SessionId,
+        working_dir: &WorkingDir,
+    ) -> Result<(), StoreError> {
+        let working_dir = working_dir.clone();
+        self.run(move |connection| sessions::set_working_dir(connection, id, &working_dir))
             .await
     }
 
@@ -192,10 +207,12 @@ impl Store for SqliteStore {
         name: &str,
         created_at: DateTime<Utc>,
     ) -> Result<SessionRecord, StoreError> {
-        let name = name.to_owned();
-        let node = self.node;
-        self.run(move |connection| sessions::ensure(connection, node, &name, created_at))
-            .await
+        let (node, name) = (self.node, name.to_owned());
+        let working_dir = self.default_working_dir.clone();
+        self.run(move |connection| {
+            sessions::ensure(connection, node, &working_dir, &name, created_at)
+        })
+        .await
     }
 
     async fn log(
@@ -249,9 +266,11 @@ impl Store for SqliteStore {
     ) -> Result<Acceptance, StoreError> {
         let events = events.to_vec();
         let write = connection.cloned();
-        let node = self.node;
-        self.run(move |connection| accept::accept(connection, node, &events, write.as_ref()))
-            .await
+        let (node, working_dir) = (self.node, self.default_working_dir.clone());
+        self.run(move |connection| {
+            accept::accept(connection, node, &working_dir, &events, write.as_ref())
+        })
+        .await
     }
 
     async fn connection_update_seen(&self, key: &str, update: &str) -> Result<bool, StoreError> {

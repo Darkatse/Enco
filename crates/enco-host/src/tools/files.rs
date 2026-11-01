@@ -1,5 +1,5 @@
 //! The file tools: reading, writing, editing and listing files, with relative paths resolved
-//! against the workspace.
+//! against the working directory.
 use super::{failure::*, resolve_path};
 use crate::limits::*;
 use async_trait::async_trait;
@@ -28,7 +28,7 @@ pub(super) fn kinds() -> [Kind; 4] {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ReadArguments {
-    /// The file to read, relative to the workspace or absolute.
+    /// The file to read, relative to the working directory or absolute.
     path: String,
     /// The first line to return, counting from 1.
     #[serde(default = "first_line")]
@@ -42,7 +42,7 @@ struct ReadArguments {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct WriteArguments {
-    /// The file to write, relative to the workspace or absolute.
+    /// The file to write, relative to the working directory or absolute.
     path: String,
     /// The complete new text of the file.
     content: String,
@@ -51,7 +51,7 @@ struct WriteArguments {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct EditArguments {
-    /// The file to edit, relative to the workspace or absolute.
+    /// The file to edit, relative to the working directory or absolute.
     path: String,
     /// The exact text to replace.
     #[schemars(length(min = 1))]
@@ -66,7 +66,7 @@ struct EditArguments {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ListArguments {
-    /// The directory to list, relative to the workspace or absolute.
+    /// The directory to list, relative to the working directory or absolute.
     path: String,
 }
 
@@ -114,15 +114,15 @@ impl Kind {
 /// Local file IO finishes quickly, so file tools ignore cancellation and settle normally;
 /// a blocking special file such as a FIFO holds cancellation and shutdown until it returns.
 pub(super) struct FileTool {
-    workspace: PathBuf,
+    node: NodeId,
     kind: Kind,
     spec: ToolSpec,
 }
 
 impl FileTool {
-    pub(super) fn new(workspace: PathBuf, kind: Kind) -> Result<Self, SchemaError> {
+    pub(super) fn new(node: NodeId, kind: Kind) -> Result<Self, SchemaError> {
         Ok(Self {
-            workspace,
+            node,
             spec: kind.spec()?,
             kind,
         })
@@ -158,7 +158,7 @@ impl FileTool {
             Kind::Read => {
                 let arguments: ReadArguments = parse_arguments(args)?;
                 return read(
-                    &self.resolve(&arguments.path),
+                    &self.resolve(ctx, &arguments.path).await?,
                     &arguments,
                     ctx.result_budget,
                 )
@@ -166,7 +166,7 @@ impl FileTool {
             }
             Kind::Write => {
                 let WriteArguments { path, content } = parse_arguments(args)?;
-                let path = self.resolve(&path);
+                let path = self.resolve(ctx, &path).await?;
                 let path = crate::file::write(&path, content.as_bytes())
                     .await
                     .map_err(|error| io(&path, error))?;
@@ -174,11 +174,11 @@ impl FileTool {
             }
             Kind::Edit => {
                 let arguments: EditArguments = parse_arguments(args)?;
-                edit(&self.resolve(&arguments.path), &arguments).await
+                edit(&self.resolve(ctx, &arguments.path).await?, &arguments).await
             }
             Kind::List => {
                 let ListArguments { path } = parse_arguments(args)?;
-                list(&self.resolve(&path)).await
+                list(&self.resolve(ctx, &path).await?).await
             }
         }?;
         Ok(Outcome::Ok {
@@ -188,8 +188,8 @@ impl FileTool {
         })
     }
 
-    fn resolve(&self, path: &str) -> PathBuf {
-        resolve_path(&self.workspace, path)
+    async fn resolve(&self, ctx: &CallContext, path: &str) -> Result<PathBuf, Failure> {
+        resolve_path(self.node, &ctx.working_dir, path).await
     }
 }
 

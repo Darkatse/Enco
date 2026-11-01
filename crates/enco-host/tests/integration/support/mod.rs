@@ -10,10 +10,13 @@ use enco_kernel::*;
 use std::{
     collections::{HashMap, VecDeque},
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 
 mod composer;
 mod development;
@@ -142,6 +145,13 @@ pub fn store_paths(root: &Path) -> StorePaths {
     }
 }
 
+/// The store a fixture home uses; its Sessions start in `workspace/`.
+pub async fn open_store(root: &Path) -> SqliteStore {
+    SqliteStore::open(store_paths(root), root.join("workspace"))
+        .await
+        .unwrap()
+}
+
 /// Memory's table is required in production, so the fixture also configures an embedding.
 pub fn configuration() -> serde_json::Value {
     serde_json::json!({
@@ -233,7 +243,7 @@ pub async fn registry_configured(
     document: serde_json::Value,
     extra_tools: Vec<ToolSpec>,
 ) -> (Arc<Registry>, Arc<SqliteStore>) {
-    let store = Arc::new(SqliteStore::open(store_paths(root)).await.unwrap());
+    let store = Arc::new(open_store(root).await);
     let mut deps = registry_deps(store.clone(), factory_runtime(loaded), FACTORY_BYTES);
     deps.host_tool_names
         .extend(extra_tools.into_iter().map(|spec| spec.name));
@@ -257,7 +267,7 @@ pub async fn open_memories(root: &Path, registry: Arc<Registry>) -> Arc<Memories
 }
 
 /// The lifeline is the host's own, so a kernel without its home's registration tools fails to start.
-pub fn kernel_deps(
+pub async fn kernel_deps(
     root: &Path,
     store: Arc<SqliteStore>,
     registry: Arc<Registry>,
@@ -266,7 +276,7 @@ pub fn kernel_deps(
 ) -> KernelDeps {
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let mut tools = native_tools(workspace.clone()).unwrap();
+    let mut tools = native_tools(store.node().await.unwrap().id).unwrap();
     let offered: Arc<dyn ContextSource<Supply = OfferedMemories>> = match memories {
         Some(memories) => {
             tools.extend(memory_tools(memories.clone()).unwrap());
@@ -282,7 +292,8 @@ pub fn kernel_deps(
         store,
         registry,
         home: root.to_owned(),
-        instructions: Arc::new(InstructionsContextSource::new(root.join("AGENTS.md"))),
+        owner_instructions: Arc::new(InstructionsContextSource::owner(root.join("AGENTS.md"))),
+        profile_instructions: Arc::new(InstructionsContextSource::profile(root.join("profiles"))),
         memories: offered,
         tools,
         clock: Arc::new(SystemClock),
@@ -382,7 +393,7 @@ pub async fn kernel_configured_composer(
     runtime.insert(COMPOSER_BYTES, composer_loaded(composer));
     let extra = tools.iter().map(|tool| tool.spec()).collect();
     let (development, registry, store) = scripted_home(root, runtime, document, extra).await;
-    let mut deps = kernel_deps(root, store.clone(), registry, None, Some(development));
+    let mut deps = kernel_deps(root, store.clone(), registry, None, Some(development)).await;
     deps.tools.extend(tools);
     configure(&mut deps);
     (Kernel::start(deps).await.unwrap(), store)
@@ -405,7 +416,8 @@ pub async fn kernel_with_memory(
         registry,
         Some(memories.clone()),
         Some(development),
-    );
+    )
+    .await;
     configure(&mut deps);
     (Kernel::start(deps).await.unwrap(), memories)
 }
@@ -559,5 +571,44 @@ impl Tool for TestStatus {
             outgoing: None,
             value: serde_json::json!(self.0.status().await.unwrap().plugins),
         }
+    }
+}
+
+/// A provider that, while armed, holds one request until resumed, so a test can act mid-Round.
+pub struct PausedProvider {
+    pub provider: Arc<ScriptedProvider>,
+    /// Only requests for this model are held; any request when absent.
+    pub model: Option<&'static str>,
+    pub pause: AtomicBool,
+    pub entered: Notify,
+    pub resume: Notify,
+}
+
+impl PausedProvider {
+    pub fn new(provider: Arc<ScriptedProvider>, model: Option<&'static str>, armed: bool) -> Self {
+        Self {
+            provider,
+            model,
+            pause: AtomicBool::new(armed),
+            entered: Notify::new(),
+            resume: Notify::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for PausedProvider {
+    async fn complete(
+        &self,
+        settings: &ProviderSettings,
+        request: ProviderRequest,
+    ) -> Result<Completion, Failure> {
+        if self.model.is_none_or(|model| settings.model == model)
+            && self.pause.swap(false, Ordering::SeqCst)
+        {
+            self.entered.notify_one();
+            self.resume.notified().await;
+        }
+        self.provider.complete(settings, request).await
     }
 }

@@ -22,7 +22,9 @@ pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure>
         session,
         transcript,
         previous_plan,
-        instructions,
+        owner_context,
+        owner_instructions,
+        profile_instructions,
         memories,
         omitted,
         unavailable,
@@ -39,7 +41,9 @@ pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure>
         home: home.to_string_lossy().into_owned(),
         transcript: transcript_record(transcript)?,
         previous: previous_plan.as_ref().map(previous),
-        instructions: instructions.clone(),
+        owner_context: *owner_context,
+        owner_instructions: owner_instructions.clone(),
+        profile_instructions: profile_instructions.clone(),
         memories: memories.iter().map(memory).collect::<Result<_, _>>()?,
         omitted: omitted.iter().map(omission).collect(),
         capabilities: tools
@@ -75,11 +79,16 @@ fn session_record(session: &SessionRecord) -> Result<wire::Session, Failure> {
         created_at,
         binding: _,
         profile,
+        working_dir,
     } = session;
     Ok(wire::Session {
         id: id.to_string(),
         name: name.clone(),
-        profile: profile.clone(),
+        profile: profile.to_string(),
+        working_dir: wire::WorkingDir {
+            node: working_dir.node.to_string(),
+            path: working_dir.path_str().into(),
+        },
         created_at: event::datetime(*created_at)?,
     })
 }

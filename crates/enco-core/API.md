@@ -47,7 +47,9 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - enum `IntentPath` — An addressable configuration file or plugin directory in the Enco home.
 - struct `InvalidIntentPath` — A path that cannot be addressed by the development commands.
 - struct `InvalidPluginName` — A plugin name outside the public naming grammar.
+- struct `InvalidProfileName` — A profile name outside the single-segment naming rule.
 - enum `InvalidReason` — A reason that cannot be stored as a single bounded line.
+- struct `InvalidWorkingDir` — A working directory that is not an absolute UTF-8 path.
 - struct `LogPos` — Structural Log ordering; wall clocks never determine this order.
 - struct `MappingOrigin` — An output's position in one immutable mapper call.
 - struct `MappingRecord` — A recorded mapper call; response bodies are separate blobs referenced by its arguments.
@@ -69,6 +71,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `PluginName` — A validated directory and routing name for one plugin.
 - struct `PluginRecord` — Mutable references owned exclusively by the registry.
 - struct `PluginSettings` — The complete `[plugin.<name>]` table. Only `config` is visible to the plugin.
+- struct `ProfileName` — A validated profile name, also used to select its profile instructions.
 - struct `ProviderSettings` — Per-call provider settings recorded before invocation. Credential values belong only to the host transport.
 - struct `Quote` — Messages that an input replies to or forwards, with their stored images.
 - enum `QuoteKind` — How a message relates to the messages it quotes.
@@ -92,7 +95,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `SchemaError` — Why a declared schema is outside the canonical subset, and where, as a JSON Pointer.
 - struct `Seq` — Sequence assigned by a Session actor, starting at one.
 - struct `SessionId` — Durable identity of a conversation and its Log.
-- struct `SessionRecord` — Persistent Session identity, execution binding and selected profile.
+- struct `SessionRecord` — Persistent Session identity, execution binding, selected profile and working directory.
 - struct `SessionRef` — A Session's stable identity with its resolved name for inspection.
 - enum `Settlement` — Durable execution outcome; result text is stored once in the Log entry's content or blob.
 - struct `Source` — A source an inline message renders, named and hashed by the composer that wrote it.
@@ -103,6 +106,8 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `Unviewable` — An attachment the owner sent but this host could not make visible as an image.
 - enum `UnviewableReason` — Expected attachment failures remain part of their input Event.
 - struct `Usage` — Token counts reported by the provider.
+- struct `WorkingDir` — A node's absolute UTF-8 directory path; availability is checked only when a tool needs it.
+- fn `is_name_segment` — Whether a name is one nonempty segment, without slashes, whitespace or controls, and not `.` or `..`.
 - fn `parse_arguments` — Parse a call's arguments into the tool's argument type.
 - fn `unanswered_input` — The latest interactive input still awaiting an answer, if any.
 - const `CONFIGURATION_FILE` — The owner's configuration file, relative to the Enco home.
@@ -807,6 +812,7 @@ pub enum EntryBody {
         run: crate::RunId,
         round: crate::RoundId,
         safe_mode: bool,
+        working_dir: crate::WorkingDir,
     },
     AttemptStarted {
         round: crate::RoundId,
@@ -862,6 +868,7 @@ Facts accepted by the Session owner.
   - `run` — Run containing this fact.
   - `round` — Round containing this fact.
   - `safe_mode` — Whether this Round uses only the lifeline.
+  - `working_dir` — Working directory pinned for this Round.
 - `AttemptStarted` — Committed before calling the Provider; `plan` addresses the recorded ContextPlan.
   - `round` — Round containing this fact.
   - `attempt` — Provider attempt associated with this fact.
@@ -1600,6 +1607,24 @@ impl Display for InvalidPluginName
 impl Error for InvalidPluginName
 ```
 
+## struct `InvalidProfileName`
+
+`src/profile.rs`
+
+```rust
+pub struct InvalidProfileName(/* private field */);
+```
+
+A profile name outside the single-segment naming rule.
+
+Implements:
+
+```rust
+impl Debug for InvalidProfileName
+impl Display for InvalidProfileName
+impl Error for InvalidProfileName
+```
+
 ## enum `InvalidReason`
 
 `src/registration.rs`
@@ -1622,6 +1647,24 @@ Implements:
 impl Debug for InvalidReason
 impl Display for InvalidReason
 impl Error for InvalidReason
+```
+
+## struct `InvalidWorkingDir`
+
+`src/working_dir.rs`
+
+```rust
+pub struct InvalidWorkingDir(/* private field */);
+```
+
+A working directory that is not an absolute UTF-8 path.
+
+Implements:
+
+```rust
+impl Debug for InvalidWorkingDir
+impl Display for InvalidWorkingDir
+impl Error for InvalidWorkingDir
 ```
 
 ## struct `LogPos`
@@ -2340,6 +2383,44 @@ impl Default for PluginSettings
 impl<'de> Deserialize<'de> for PluginSettings where PluginSettings: Default
 impl PartialEq for PluginSettings
 impl Serialize for PluginSettings
+```
+
+## struct `ProfileName`
+
+`src/profile.rs`
+
+```rust
+pub struct ProfileName(/* private field */);
+```
+
+A validated profile name, also used to select its profile instructions.
+
+### `ProfileName::as_str`
+
+```rust
+pub fn as_str(&self) -> &str
+```
+
+The validated name used in configuration and instruction paths.
+
+Implements:
+
+```rust
+impl AsRef<str> for ProfileName
+impl Borrow<str> for ProfileName
+impl Clone for ProfileName
+impl Debug for ProfileName
+impl Deref for ProfileName
+impl<'de> Deserialize<'de> for ProfileName
+impl Display for ProfileName
+impl Eq for ProfileName
+impl From<ProfileName> for String
+impl FromStr for ProfileName
+impl Hash for ProfileName
+impl Ord for ProfileName
+impl PartialEq for ProfileName
+impl PartialOrd for ProfileName
+impl Serialize for ProfileName
 ```
 
 ## struct `ProviderSettings`
@@ -3107,17 +3188,19 @@ pub struct SessionRecord {
     pub name: String,
     pub created_at: crate::DateTime<crate::Utc>,
     pub binding: Binding,
-    pub profile: String,
+    pub profile: crate::ProfileName,
+    pub working_dir: crate::WorkingDir,
 }
 ```
 
-Persistent Session identity, execution binding and selected profile.
+Persistent Session identity, execution binding, selected profile and working directory.
 
 - `id` — Identity joining the Session’s Inbox, Log and execution binding.
 - `name` — Unique, human-readable name used by native commands.
 - `created_at` — Creation time in UTC.
 - `binding` — Node and generation authorized to execute this Session.
 - `profile` — Name of the configuration selected at the next Round boundary.
+- `working_dir` — Working directory sampled at the next Round boundary.
 
 Implements:
 
@@ -3430,6 +3513,66 @@ impl<'de> Deserialize<'de> for Usage
 impl PartialEq for Usage
 impl Serialize for Usage
 ```
+
+## struct `WorkingDir`
+
+`src/working_dir.rs`
+
+```rust
+pub struct WorkingDir {
+    pub node: crate::NodeId,
+    /* private fields */
+}
+```
+
+A node's absolute UTF-8 directory path; availability is checked only when a tool needs it.
+
+- `node` — Node whose file system holds the directory.
+
+### `WorkingDir::new`
+
+```rust
+pub fn new(node: NodeId, path: PathBuf) -> Result<Self, InvalidWorkingDir>
+```
+
+Fix a node and absolute UTF-8 path without checking the file system.
+
+### `WorkingDir::path`
+
+```rust
+pub fn path(&self) -> &Path
+```
+
+Absolute path on the named node, without any availability guarantee.
+
+### `WorkingDir::path_str`
+
+```rust
+pub fn path_str(&self) -> &str
+```
+
+Absolute path as UTF-8, guaranteed by construction.
+
+Implements:
+
+```rust
+impl Clone for WorkingDir
+impl Debug for WorkingDir
+impl<'de> Deserialize<'de> for WorkingDir
+impl Eq for WorkingDir
+impl PartialEq for WorkingDir
+impl Serialize for WorkingDir
+```
+
+## fn `is_name_segment`
+
+`src/profile.rs`
+
+```rust
+pub fn is_name_segment(name: &str) -> bool
+```
+
+Whether a name is one nonempty segment, without slashes, whitespace or controls, and not `.` or `..`.
 
 ## fn `parse_arguments`
 

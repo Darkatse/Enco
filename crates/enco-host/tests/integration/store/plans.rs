@@ -116,9 +116,7 @@ async fn plans_share_catalogs_and_prefixes_but_bound_restoration_work() {
     assert!(parent.is_none());
     saved.push((replaced, plan));
     drop(store);
-    let reopened = SqliteStore::open(support::store_paths(dir.path()))
-        .await
-        .unwrap();
+    let reopened = support::open_store(dir.path()).await;
     for (hash, expected) in saved {
         assert_eq!(reopened.plan(&hash).await.unwrap(), expected);
     }
@@ -229,7 +227,11 @@ async fn fresh_databases_enable_incremental_vacuum_and_old_versions_stay_untouch
     db.pragma_update(None, "user_version", 12).unwrap();
     drop(store);
     assert!(matches!(
-        SqliteStore::open(support::store_paths(dir.path())).await,
+        SqliteStore::open(
+            support::store_paths(dir.path()),
+            dir.path().join("workspace")
+        )
+        .await,
         Err(StoreError::SchemaVersion { found: 12, .. })
     ));
     let sessions: i64 = db

@@ -59,6 +59,10 @@ pub(crate) async fn read(
             version: env!("CARGO_PKG_VERSION").into(),
             revision: env!("ENCO_REVISION").into(),
             home: application.paths.home.clone(),
+            profile_instructions: enco_host::profile_instruction_files(
+                &application.paths.profiles(),
+            )
+            .await,
             execution,
             channels: application.channels.status().await?,
         },

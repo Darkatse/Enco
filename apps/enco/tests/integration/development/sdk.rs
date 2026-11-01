@@ -53,11 +53,14 @@ async fn sdk_upgrades_and_downgrades_compare_built_artifacts_and_unchanged_sdk_s
     support::build_target(home, "sdk");
     let runtime = Arc::new(WasmRuntime::new().unwrap());
     let store = Arc::new(
-        SqliteStore::open(StorePaths {
-            db: home.join(".data/enco.db"),
-            blobs: home.join(".data/blobs"),
-            artifacts: home.join(".data/artifacts"),
-        })
+        SqliteStore::open(
+            StorePaths {
+                db: home.join(".data/enco.db"),
+                blobs: home.join(".data/blobs"),
+                artifacts: home.join(".data/artifacts"),
+            },
+            home.join("workspace"),
+        )
         .await
         .unwrap(),
     );

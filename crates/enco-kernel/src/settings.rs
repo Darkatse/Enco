@@ -2,7 +2,7 @@
 use crate::{
     Budget, CompletionEndpoint, ComposerSettings, Endpoints, Need, Profile, Use, UseTarget,
 };
-use enco_core::{DEFAULT_PROFILE, Modality, PluginName, ProviderSettings, Tz};
+use enco_core::{DEFAULT_PROFILE, Modality, PluginName, ProfileName, ProviderSettings, Tz};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -20,7 +20,7 @@ pub struct KernelSettings {
     /// Named model services and their facts.
     endpoints: BTreeMap<String, EndpointSpec>,
     /// Named Session policies, including `default`.
-    pub profiles: BTreeMap<String, Profile>,
+    pub profiles: BTreeMap<ProfileName, Profile>,
 }
 
 /// A resolved model service, independent of its caller and code generation.
@@ -200,6 +200,9 @@ impl KernelSettings {
         };
         for (name, value) in raw {
             let table = format!("{}.{name}", PROFILE_TABLE.name());
+            let name: ProfileName = name
+                .parse()
+                .map_err(|error| SettingsError::new(&table, error))?;
             let raw: RawProfile =
                 serde_json::from_value(value).map_err(|error| SettingsError::new(&table, error))?;
             let endpoints = |purpose: &str, names: &[String]| {

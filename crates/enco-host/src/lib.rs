@@ -14,7 +14,10 @@ mod store;
 mod tools;
 
 pub use clock::SystemClock;
-pub use context::InstructionsContextSource;
+pub use context::{
+    InstructionsContextSource, ProfileInstructionFile, ProfileInstructionFiles,
+    profile_instruction_files,
+};
 pub use memory::{
     Memories, MemoryContextSource, MemoryError, MemoryList, MemoryPaths, Recall, memory_tool_specs,
     memory_tools,

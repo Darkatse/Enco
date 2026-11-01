@@ -9,7 +9,7 @@ use std::{path::PathBuf, sync::Arc};
 #[tokio::test]
 async fn factory_records_need_registration_to_activate_and_preserve_source_overrides() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+    let store = Arc::new(open_store(dir.path()).await);
     let runtime = Arc::new(ScriptedRuntime::default());
     for bytes in [
         b"factory-1".as_slice(),
@@ -98,7 +98,7 @@ async fn factory_records_need_registration_to_activate_and_preserve_source_overr
 async fn overlapping_table_owners_are_rejected_before_any_generation_is_written() {
     for table in ["owner", "absent"] {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+        let store = Arc::new(open_store(dir.path()).await);
         let owners = if table == "owner" {
             vec![TableOwner {
                 tables: &[enco_kernel::ConfigTable::Single("owner")],
@@ -148,7 +148,7 @@ struct Crashed {
 impl Crashed {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SqliteStore::open(store_paths(dir.path())).await.unwrap());
+        let store = Arc::new(open_store(dir.path()).await);
         let runtime = Arc::new(ScriptedRuntime::default());
         for bytes in [FACTORY_BYTES, b"older", b"latest"] {
             runtime.insert(bytes, loaded(ScriptedProvider::new(vec![])));
@@ -282,7 +282,7 @@ async fn registering_new_factory_code_preserves_rollback_content() {
     let provider = ScriptedProvider::new(vec![]);
     runtime.insert(FACTORY_BYTES, loaded(provider.clone()));
     runtime.insert(b"new-factory", loaded(provider));
-    let store = Arc::new(SqliteStore::open(store_paths(root.path())).await.unwrap());
+    let store = Arc::new(open_store(root.path()).await);
     let registry = super::open(&store, runtime.clone()).await;
     let mut document = configuration();
     document["plugin"] = serde_json::json!({"fixture": {"config": {"label": "good"}}});
@@ -357,7 +357,7 @@ async fn rejected_settings_do_not_register_either_plugin_or_configuration() {
     let root = tempfile::tempdir().unwrap();
     let runtime = Arc::new(ScriptedRuntime::default());
     runtime.insert(FACTORY_BYTES, loaded(ScriptedProvider::new(vec![])));
-    let store = Arc::new(SqliteStore::open(store_paths(root.path())).await.unwrap());
+    let store = Arc::new(open_store(root.path()).await);
     let registry = super::open(&store, runtime).await;
     let before = store.registry().await.unwrap();
     let mut document = configuration();

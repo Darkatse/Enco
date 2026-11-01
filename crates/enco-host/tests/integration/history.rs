@@ -500,13 +500,16 @@ async fn large_history_results_keep_a_unit_summary_and_save_the_full_diff() {
         .collect();
     std::fs::write(root.path().join("plugins/draft/source.txt"), lines).unwrap();
     std::fs::write(root.path().join("plugins/draft/empty"), b"").unwrap();
-    let kernel = Kernel::start(kernel_deps(
-        root.path(),
-        store.clone(),
-        registry,
-        None,
-        Some(development),
-    ))
+    let kernel = Kernel::start(
+        kernel_deps(
+            root.path(),
+            store.clone(),
+            registry,
+            None,
+            Some(development),
+        )
+        .await,
+    )
     .await
     .unwrap();
     let session = kernel.open_session("review").await.unwrap();
