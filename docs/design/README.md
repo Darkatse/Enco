@@ -97,7 +97,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | Space | 主人全部节点的集合；控制平面（成员、Binding、期望状态）由共识维护 |
 | Binding | `key → (node, epoch)`，单写者资源的所有权：Session 是粘滞所有权，渠道与定时是租约 |
 
-其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief、回音、工作目录、常驻说明、角色说明；ContextPlan、Composer、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store；外部、Mapper（映射器）、MappingRecord（映射记录）、MappingOrigin（映射出处）、定本；Connection（连接）、Account（账号）。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
+其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief、回音、回溯（Backtrack）、工作目录、常驻说明、角色说明；ContextPlan、Composer、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store；外部、Mapper（映射器）、MappingRecord（映射记录）、MappingOrigin（映射出处）、定本；Connection（连接）、Account（账号）。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
 
 扩展只有两种形态：
 
