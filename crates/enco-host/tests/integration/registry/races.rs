@@ -83,7 +83,10 @@ async fn a_late_failure_after_replacement_does_not_roll_back_or_publish_a_notice
     let registry = open(&store, runtime).await;
     let old = register_source(&registry, "fixture", b"old").await;
     let new = register_source(&registry, "fixture", b"new").await;
-    let session = store.ensure_session("notice", Utc::now()).await.unwrap();
+    let session = store
+        .ensure_session(&"notice".parse().unwrap(), Utc::now())
+        .await
+        .unwrap();
     registry
         .report(
             old.id,
@@ -215,7 +218,10 @@ async fn automatic_rollback_discards_preparation_after_registration_or_promotion
         drop(registry);
         let registry = reopen_without_adapter(&store, &runtime, healthy.artifact).await;
         *runtime.pause.lock().unwrap() = Some(healthy.artifact);
-        let session = store.ensure_session("notice", Utc::now()).await.unwrap();
+        let session = store
+            .ensure_session(&"notice".parse().unwrap(), Utc::now())
+            .await
+            .unwrap();
         let report = tokio::spawn({
             let registry = registry.clone();
             async move {

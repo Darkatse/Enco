@@ -30,6 +30,7 @@ pub(crate) async fn chat(paths: &Paths, session: String) -> Result<()> {
                 match line.as_str() {
                     "/quit" => return Ok(()),
                     "/cancel" => { client.send(Command::Cancel { session: session.clone() }).await?; }
+                    "/halt" => { client.send(Command::Halt { session: session.clone() }).await?; }
                     "" => {},
                     _ => {
                         client.send(Command::Send {
@@ -103,12 +104,18 @@ fn render(
         }
         EntryBody::ToolCallStarted { capability, .. } => println!("  → {}", capability.name),
         EntryBody::ToolCallSettled {
-            outcome, outgoing, ..
+            outcome,
+            outgoing,
+            delegated,
+            ..
         } => {
             match outcome {
                 Settlement::Ok => println!("  ← ok"),
                 Settlement::Failed { failure } => println!("  ← failed: {}", failure.code),
                 Settlement::Unknown { failure } => println!("  ← unknown: {}", failure.code),
+            }
+            if let Some(delegated) = delegated {
+                println!("  ↪ delegated to {}", delegated.session.name);
             }
             if let Some(outgoing) = outgoing {
                 println!("{}", outgoing_text(paths, &outgoing));

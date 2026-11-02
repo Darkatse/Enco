@@ -125,6 +125,7 @@ fn settle_round(entries: &[Entry], result: &mut Vec<EntryBody>) {
             full: None,
             images: vec![],
             outgoing: None,
+            delegated: None,
         });
     }
 }

@@ -89,7 +89,11 @@ enum Action {
         #[arg(long)]
         json: bool,
     },
-    Sessions,
+    Sessions {
+        /// List archived Sessions instead of active ones.
+        #[arg(long)]
+        archived: bool,
+    },
     Log {
         #[arg(long, default_value = "main", help = "Session name or ID")]
         session: String,
@@ -114,6 +118,15 @@ enum Action {
     },
     Cancel {
         #[arg(long, default_value = "main")]
+        session: String,
+    },
+    /// Halt a Session and its descendants, waiting until their work has stopped.
+    Halt {
+        #[arg(long, default_value = "main")]
+        session: String,
+    },
+    /// Archive a Session and its descendants so they accept no more input.
+    Archive {
         session: String,
     },
     /// Take a conversation back to a Log position; changes made after it outside the conversation stay.
@@ -248,7 +261,7 @@ async fn main() -> Result<()> {
         Action::Status { json } => Command::Status {
             output: Output::for_json(json),
         },
-        Action::Sessions => Command::Sessions {},
+        Action::Sessions { archived } => Command::Sessions { archived },
         Action::Log { session } => Command::Log {
             session,
             after: None,
@@ -261,6 +274,8 @@ async fn main() -> Result<()> {
             enabled: matches!(state, Switch::On),
         },
         Action::Cancel { session } => Command::Cancel { session },
+        Action::Halt { session } => Command::Halt { session },
+        Action::Archive { session } => Command::Archive { session },
         Action::Backtrack { session, to } => Command::Backtrack {
             session,
             to,
@@ -364,6 +379,8 @@ impl Command {
             Self::Send { .. }
             | Self::Subscribe { .. }
             | Self::Cancel { .. }
+            | Self::Halt { .. }
+            | Self::Archive { .. }
             | Self::Backtrack { .. }
             | Self::Schedules { .. }
             | Self::CancelSchedule { .. }

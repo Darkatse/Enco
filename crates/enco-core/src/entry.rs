@@ -90,8 +90,11 @@ pub enum EntryBody {
         full: Option<ContentHash>,
         /// Images stored by the settlement before this entry was committed.
         images: Vec<Image>,
-        /// Owner-directed content accepted with this settlement.
+        /// Content handed to the current reply destination with this settlement.
         outgoing: Option<crate::Outgoing>,
+        /// Child delegation accepted atomically with this settlement.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delegated: Option<Delegated>,
     },
     /// All proposed calls have been settled and the Round has ended.
     RoundEnded {
@@ -116,6 +119,17 @@ pub enum EntryBody {
         /// Provider attempt associated with this fact.
         attempt: AttemptId,
     },
+}
+
+/// Child Session delegation committed with a `session_send` settlement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Delegated {
+    /// Target child Session identity and full name.
+    pub session: crate::SessionRef,
+    /// Whether this call created the child Session.
+    pub created: bool,
+    /// Event accepted into the child Session's Inbox.
+    pub event: crate::EventId,
 }
 
 /// Whether the model is replying or summarizing prior rounds.
@@ -208,31 +222,15 @@ pub enum RunEnd {
     Interrupted,
     /// Cancellation was requested and work has stopped.
     Cancelled,
+    /// The owner went back to an earlier message, which stopped it.
+    Backtracked,
+    /// A halt of this Session or an ancestor stopped it.
+    Halted,
     /// The operation stopped with a known failure.
     Failed {
         /// Classification and details of the failure.
         failure: Failure,
     },
-}
-
-/// The latest interactive input still awaiting an answer, if any.
-///
-/// An answer ends the wait of every input consumed before it: a reply that ends a Round, or the
-/// outcome of a Run that ended without completing, delivered instead of a reply. A skipped reply
-/// and a message sent during a Run are not answers.
-pub fn unanswered_input(entries: &[Entry]) -> Option<&Event> {
-    for entry in entries.iter().rev() {
-        match &entry.body {
-            EntryBody::RoundEnded {
-                end: RoundEnd::Replied,
-                ..
-            } => return None,
-            EntryBody::RunEnded { end, .. } if !matches!(end, RunEnd::Completed) => return None,
-            EntryBody::EventConsumed { event } if event.is_interactive() => return Some(event),
-            _ => {}
-        }
-    }
-    None
 }
 
 impl EntryBody {

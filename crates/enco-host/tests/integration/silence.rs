@@ -241,7 +241,11 @@ async fn an_automatic_rollback_notice_can_end_without_a_reply() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![skip("Rollback noted.")]);
     let (kernel, store) = kernel(dir.path(), provider).await;
-    let session = store.ensure_session("main", Utc::now()).await.unwrap().id;
+    let session = store
+        .ensure_session(&"main".parse().unwrap(), Utc::now())
+        .await
+        .unwrap()
+        .id;
     let trial = submit(kernel.registry(), source_request("custom", FACTORY_BYTES))
         .await
         .unwrap()

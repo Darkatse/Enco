@@ -2,26 +2,76 @@
 use super::{backend, encode, plans::EncodedWrite, rows};
 use crate::sqlite::timestamp;
 use enco_core::*;
-use enco_kernel::{Commit, StoreError};
+use enco_kernel::{Commit, CommitOutcome, StoreError};
+mod deliveries;
+use deliveries::Delivered;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 pub(super) fn commit(
     connection: &mut Connection,
     node: NodeId,
+    default_working_dir: &WorkingDir,
     session: SessionId,
     commit: Commit,
     plan: Option<EncodedWrite>,
-) -> Result<(), StoreError> {
+) -> Result<CommitOutcome, StoreError> {
     let first = commit.entries.first().ok_or(StoreError::EmptyCommit)?;
     let bodies = commit
         .entries
         .iter()
         .map(|entry| encode(&entry.body))
         .collect::<Result<Vec<_>, _>>()?;
-    // Ownership, append positions and Inbox consumption are checked in the same transaction.
+    let events = commit
+        .deliveries
+        .iter()
+        .map(|delivery| super::accept::encode_events(std::slice::from_ref(&delivery.event)))
+        .collect::<Result<Vec<_>, _>>()?;
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
+    check_append(&tx, node, session, first, &commit.entries)?;
+    consume_events(&tx, session, &commit)?;
+
+    let halted: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM inbox WHERE session_id=? AND json_extract(event, '$.body.kind')='halt')",
+        [session.to_string()], |row| row.get(0),
+    ).map_err(backend)?;
+    let mut delivered = Vec::new();
+    for (delivery, encoded) in commit.deliveries.iter().zip(&events) {
+        match deliveries::deliver(&tx, node, default_working_dir, halted, delivery, encoded)? {
+            Delivered::Written => delivered.push(delivery.event.session),
+            Delivered::Skipped => {}
+            Delivered::Rejected(reason) => return Ok(CommitOutcome::Rejected(reason)),
+        }
+    }
+    if let Some(plan) = plan {
+        plan.insert(&tx)?;
+    }
+
+    for (entry, body) in commit.entries.iter().zip(bodies) {
+        tx.execute(
+            "INSERT INTO log(session_id,epoch,seq,at,body) VALUES (?,?,?,?,?)",
+            params![
+                session.to_string(),
+                super::signed(entry.pos.epoch.0)?,
+                super::signed(entry.pos.seq.0)?,
+                timestamp(entry.at),
+                body
+            ],
+        )
+        .map_err(backend)?;
+    }
+    tx.commit().map_err(backend)?;
+    Ok(CommitOutcome::Committed { delivered })
+}
+
+fn check_append(
+    tx: &Transaction<'_>,
+    node: NodeId,
+    session: SessionId,
+    first: &Entry,
+    entries: &[Entry],
+) -> Result<(), StoreError> {
     let binding = tx
         .query_row(
             "SELECT binding_node,binding_epoch FROM sessions WHERE id=?",
@@ -50,7 +100,7 @@ pub(super) fn commit(
             |row| rows::unsigned(row, 0),
         )
         .map_err(backend)?;
-    for (i, entry) in commit.entries.iter().enumerate() {
+    for (i, entry) in entries.iter().enumerate() {
         let expected = LogPos {
             epoch: binding.epoch,
             seq: Seq(next_seq + i as u64),
@@ -63,26 +113,7 @@ pub(super) fn commit(
             });
         }
     }
-    consume_events(&tx, session, &commit)?;
-
-    if let Some(plan) = plan {
-        plan.insert(&tx)?;
-    }
-
-    for (entry, body) in commit.entries.iter().zip(bodies) {
-        tx.execute(
-            "INSERT INTO log(session_id,epoch,seq,at,body) VALUES (?,?,?,?,?)",
-            params![
-                session.to_string(),
-                super::signed(entry.pos.epoch.0)?,
-                super::signed(entry.pos.seq.0)?,
-                timestamp(entry.at),
-                body
-            ],
-        )
-        .map_err(backend)?;
-    }
-    tx.commit().map_err(backend)
+    Ok(())
 }
 
 fn consume_events(

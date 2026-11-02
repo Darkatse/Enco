@@ -5,7 +5,16 @@ use rusqlite::Row;
 pub(super) fn session(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
     Ok(SessionRecord {
         id: text(row, 0)?,
-        name: row.get(1)?,
+        name: text(row, 1)?,
+        parent: crate::sqlite::optional_text(row, 8)?
+            .map(|id| {
+                Ok::<_, rusqlite::Error>(SessionRef {
+                    id,
+                    name: text(row, 9)?,
+                })
+            })
+            .transpose()?,
+        archived_at: crate::sqlite::optional_text(row, 10)?,
         created_at: text(row, 2)?,
         binding: Binding {
             node: text(row, 3)?,

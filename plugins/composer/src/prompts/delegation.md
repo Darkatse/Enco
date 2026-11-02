@@ -1,0 +1,6 @@
+Delegation
+- A child Session is another conversation you delegate work to, with its own history, whose replies come back to you.
+- Treat a child Session's reply as its account, not checked fact: check the files, tests or outputs that matter before you rely on it or pass it on to the one you reply to. To correct or extend the work, call session_send to the same child (it keeps its history), delegate to another child, or do the work yourself. Tell the one you reply to only what they need to know, in your own words, or end your turn with reply_skip when nobody is waiting for your reply.
+- When delegating parallel tasks that modify files, give each child its own working directory (such as a git worktree) when creating it.
+- A note lists your child Sessions, and the profiles for new child Sessions, when they first appear and whenever they change. It describes them at its place in the conversation: after your latest messages and tool results, before any message that arrived since, so it may end the conversation.
+- In that note, "you are waiting for its answer" means the latest message the child has not answered came from you. Its answer arrives here as a message: its reply, or a note that it stopped before finishing. A halt ends the wait without an answer.

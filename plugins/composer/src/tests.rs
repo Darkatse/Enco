@@ -1,5 +1,6 @@
 use super::*;
 mod channel;
+mod delegation;
 mod instructions;
 mod silence;
 use crate::composer::*;
@@ -35,6 +36,7 @@ fn input() -> ComposeInput {
                 node: "node".into(),
                 path: "/enco/workspace".into(),
             },
+            parent: None,
             id: "session".into(),
             name: "main".into(),
             profile: "default".into(),
@@ -71,6 +73,8 @@ fn input() -> ComposeInput {
             max_output_tokens: 512,
         }),
         compactions_left: 2,
+        children: vec![],
+        profiles: vec![],
     }
 }
 
@@ -82,6 +86,7 @@ fn incoming(seq: u64, at: &str, text: &str) -> TranscriptItem {
             parts: vec![Part::Text(text.into())],
         },
         event: Some(Event {
+            interactive: true,
             id: format!("event-{seq}"),
             received_at: datetime(at),
             source: EventSource::Cli,
@@ -97,7 +102,7 @@ fn incoming(seq: u64, at: &str, text: &str) -> TranscriptItem {
 }
 
 fn reply(input: &ComposeInput) -> Plan {
-    let Composition::Reply(plan) = compose::compose(input).unwrap() else {
+    let Composition::Reply(plan) = Plugin::compose("{}".into(), input.clone()).unwrap() else {
         panic!("expected reply")
     };
     plan

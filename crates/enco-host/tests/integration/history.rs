@@ -419,7 +419,11 @@ async fn history_pages_provenance_and_status_bounds_are_independent_of_history_l
     }
     let reason = "Use the owner timezone";
     let actor = Initiator::Agent {
-        session: store.ensure_session("main", Utc::now()).await.unwrap().id,
+        session: store
+            .ensure_session(&"main".parse().unwrap(), Utc::now())
+            .await
+            .unwrap()
+            .id,
         call: CallId::new(),
         reason: reason.parse().unwrap(),
     };
@@ -444,7 +448,7 @@ async fn history_pages_provenance_and_status_bounds_are_independent_of_history_l
     assert_eq!(page.registrations[0].id, applied.registration.id);
     assert!(matches!((&page.registrations[0].initiator, &actor),
         (Initiator::Agent { session, call, reason }, Initiator::Agent { session: id, call: expected_call, reason: expected_reason })
-        if session.id == *id && session.name == "main" && call == expected_call && reason == expected_reason));
+        if session.id == *id && session.name.as_str() == "main" && call == expected_call && reason == expected_reason));
     assert_eq!(
         page.registrations[0].initiator.reason().map(Reason::as_str),
         Some(reason)

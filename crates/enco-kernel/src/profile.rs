@@ -16,6 +16,8 @@ pub struct CompletionEndpoint {
 /// Session policy sampled once at the start of a Round.
 #[derive(Clone)]
 pub struct Profile {
+    /// Owner-written purpose shown to Sessions that may delegate.
+    pub description: String,
     /// Plugin and typed invocation options used to compose this Session's requests.
     pub composer: ComposerSettings,
     /// Ordered candidates for ordinary replies.

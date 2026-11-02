@@ -1,4 +1,5 @@
 mod context;
+mod delegation;
 mod selection;
 
 use crate::{
@@ -24,7 +25,7 @@ impl SessionActor {
         inputs: Vec<Event>,
     ) -> Result<(RoundEnd, bool), KernelError> {
         let round = RoundId::new();
-        let (session, view) = self.deps.registry.session_view(self.session.id).await?;
+        let (session, ancestors, view) = self.deps.registry.session_view(self.session.id).await?;
         self.session = session;
         let mode = safe_mode(
             &self.entries,
@@ -45,7 +46,10 @@ impl SessionActor {
             working_dir: self.session.working_dir.clone(),
         });
         self.commit(prefix, None).await?;
-        let end = match self.execute_round(round, &view, mode, token).await {
+        let end = match self
+            .execute_round(round, &ancestors, &view, mode, token)
+            .await
+        {
             Ok(end) => end,
             Err(RoundError::Cancelled) => RoundEnd::Cancelled,
             // Health reports have settled, so an automatic rollback counts before this failure.
@@ -69,21 +73,20 @@ impl SessionActor {
     async fn execute_round(
         &mut self,
         round: RoundId,
+        ancestors: &[SessionRecord],
         view: &View,
         mode: Option<SafeMode>,
         token: &CancellationToken,
     ) -> Result<RoundEnd, RoundError> {
         let snapshot = self.deps.snapshot.for_round(&view.exports, mode.is_some());
         let settings = &view.config.kernel;
-        let profile = settings
-            .profiles
-            .get(&self.session.profile)
-            .ok_or_else(|| {
-                failed(
-                    code::PROFILE_UNKNOWN,
-                    format!("unknown profile {}", self.session.profile),
-                )
-            })?;
+        let (
+            profile,
+            delegation::Permissions {
+                tools,
+                owner_context,
+            },
+        ) = self.permissions(settings, &snapshot, ancestors)?;
         let safe_mode = mode.is_some();
         let mut selection = self.select(profile, safe_mode);
         let reply = selection.reply_target()?;
@@ -96,7 +99,7 @@ impl SessionActor {
             previous_plan,
             transcript,
         } = self
-            .gather(&snapshot, safe_mode, profile.owner_context, token)
+            .gather(&snapshot, safe_mode, owner_context, token)
             .await?;
         let mut input = ComposeInput {
             round,
@@ -104,9 +107,15 @@ impl SessionActor {
             home: self.deps.home.clone(),
             timezone: settings.timezone,
             session: self.session.clone(),
+            children: self.children().await?,
+            profiles: if !safe_mode && tools.contains(crate::builtin::SESSION_SEND) {
+                delegation::profiles(settings)
+            } else {
+                Vec::new()
+            },
             transcript,
             previous_plan,
-            owner_context: profile.owner_context,
+            owner_context,
             owner_instructions,
             profile_instructions,
             memories,
@@ -115,16 +124,16 @@ impl SessionActor {
                 .tools
                 .iter()
                 .filter(|tool| !safe_mode || snapshot.lifeline.contains(&tool.id))
-                .filter(|tool| {
-                    profile
-                        .tools
-                        .as_ref()
-                        .is_none_or(|names| names.contains(&tool.id.name))
-                })
+                .filter(|tool| tools.contains(&tool.id.name))
                 .map(|tool| (tool.id.clone(), tool.spec.clone()))
                 .collect(),
             lifeline: if profile.requires_lifeline {
-                snapshot.lifeline.clone()
+                snapshot
+                    .lifeline
+                    .iter()
+                    .filter(|id| tools.contains(&id.name))
+                    .cloned()
+                    .collect()
             } else {
                 Vec::new()
             },

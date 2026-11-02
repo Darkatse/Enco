@@ -9,6 +9,8 @@ use serde_json::{Value, json};
 
 /// The interaction message flag that shows a response only to the user who invoked it.
 const EPHEMERAL: u32 = 1 << 6;
+/// The message menu entry that backtracks; it acts on the message it is invoked on.
+const BACKTRACK_HERE: &str = "Backtrack here";
 
 #[derive(Deserialize)]
 pub(super) struct User {
@@ -111,21 +113,19 @@ pub(super) fn interaction(value: Value) -> Result<Option<(Inbound, Request)>, Fa
         interaction.data.custom_id.as_deref(),
     ) {
         (3, _, Some("cancel")) => Action::Cancel,
-        (2, Some("Backtrack here"), _) => Action::Backtrack,
+        (2, Some(BACKTRACK_HERE), _) => Action::Backtrack,
         (2, Some(name), _) => {
             let Some(kind) = CommandKind::from_name(name) else {
                 return Ok(None);
             };
-            let option = match kind {
-                CommandKind::Session => "name",
-                CommandKind::Everyone => "open",
-                CommandKind::Cancel | CommandKind::Backtrack => "",
-            };
-            let argument = interaction
-                .data
-                .options
-                .iter()
-                .find(|value| value.name == option)
+            let argument = option(kind)
+                .and_then(|(name, ..)| {
+                    interaction
+                        .data
+                        .options
+                        .iter()
+                        .find(|value| value.name == name)
+                })
                 .map_or("", |value| value.value.as_str());
             kind.action(argument)
                 .ok_or_else(|| wire::invalid("command option"))?
@@ -189,6 +189,18 @@ pub(super) fn commands(commands: Vec<Command>) -> Vec<Value> {
     commands.into_iter().map(command).collect()
 }
 
+/// The string option a slash command takes, as it is registered and as an interaction returns
+/// it: name, description and fixed choices; absent for a command without an argument.
+fn option(kind: CommandKind) -> Option<(&'static str, &'static str, &'static [&'static str])> {
+    Some(match kind {
+        CommandKind::Session => ("name", "Session to switch to", &[]),
+        CommandKind::Halt => ("name", "Session to halt", &[]),
+        CommandKind::Archive => ("name", "Session to archive", &[]),
+        CommandKind::Everyone => ("open", "Open the group to everyone", &["on", "off"]),
+        CommandKind::Cancel | CommandKind::Backtrack => return None,
+    })
+}
+
 fn command(command: Command) -> Value {
     let mut contexts = vec![];
     if command.group {
@@ -197,29 +209,13 @@ fn command(command: Command) -> Value {
     if command.direct {
         contexts.push(1);
     }
-    let (name, kind, options) = match command.kind {
-        CommandKind::Session => {
-            let name = json!({
-                "type": 3,
-                "name": "name",
-                "description": "Session to switch to",
-                "required": false,
-            });
-            (command.kind.name(), 1, json!([name]))
-        }
-        CommandKind::Cancel => (command.kind.name(), 1, json!([])),
-        CommandKind::Backtrack => ("Backtrack here", 3, json!([])),
-        CommandKind::Everyone => {
-            let choices = json!([{"name": "on", "value": "on"}, {"name": "off", "value": "off"}]);
-            let open = json!({
-                "type": 3,
-                "name": "open",
-                "description": "Open the group to everyone",
-                "required": false,
-                "choices": choices,
-            });
-            (command.kind.name(), 1, json!([open]))
-        }
+    let (name, kind) = match command.kind {
+        CommandKind::Backtrack => (BACKTRACK_HERE, 3),
+        CommandKind::Session
+        | CommandKind::Cancel
+        | CommandKind::Everyone
+        | CommandKind::Halt
+        | CommandKind::Archive => (command.kind.name(), 1),
     };
     let mut value = json!({
         "name": name,
@@ -229,7 +225,24 @@ fn command(command: Command) -> Value {
     });
     if kind == 1 {
         value["description"] = json!(command.description);
-        value["options"] = options;
+        value["options"] = option(command.kind)
+            .map(|(name, description, choices)| {
+                let mut option = json!({
+                    "type": 3,
+                    "name": name,
+                    "description": description,
+                    "required": false,
+                });
+                if !choices.is_empty() {
+                    option["choices"] = choices
+                        .iter()
+                        .map(|choice| json!({"name": choice, "value": choice}))
+                        .collect();
+                }
+                option
+            })
+            .into_iter()
+            .collect();
     }
     value
 }

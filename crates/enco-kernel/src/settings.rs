@@ -17,6 +17,10 @@ pub struct KernelSettings {
     pub timezone: Tz,
     /// Maximum number of Rounds in one Run.
     pub max_rounds_per_run: NonZeroU32,
+    /// Maximum delegation depth; roots are depth zero.
+    pub max_depth: u32,
+    /// Node-wide limit for concurrently running child Sessions.
+    pub max_concurrent_children: NonZeroUsize,
     /// Named model services and their facts.
     endpoints: BTreeMap<String, EndpointSpec>,
     /// Named Session policies, including `default`.
@@ -85,11 +89,15 @@ struct Owner {
 #[serde(default, deny_unknown_fields)]
 struct Run {
     max_rounds: NonZeroU32,
+    max_depth: u32,
+    max_concurrent_children: NonZeroUsize,
 }
 impl Default for Run {
     fn default() -> Self {
         Self {
             max_rounds: const { NonZeroU32::new(24).unwrap() },
+            max_depth: 1,
+            max_concurrent_children: const { NonZeroUsize::new(4).unwrap() },
         }
     }
 }
@@ -120,6 +128,8 @@ fn enabled_by_default() -> bool {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawProfile {
+    #[serde(default)]
+    description: String,
     composer: Option<ComposerSettings>,
     reply: Vec<String>,
     compaction: Vec<String>,
@@ -195,6 +205,8 @@ impl KernelSettings {
         let mut settings = Self {
             timezone: owner.timezone,
             max_rounds_per_run: run.max_rounds,
+            max_depth: run.max_depth,
+            max_concurrent_children: run.max_concurrent_children,
             endpoints,
             profiles: BTreeMap::new(),
         };
@@ -222,6 +234,7 @@ impl KernelSettings {
             settings.profiles.insert(
                 name,
                 Profile {
+                    description: raw.description,
                     composer: raw.composer.unwrap_or_else(|| ComposerSettings {
                         plugin: factory_composer.clone(),
                         options: serde_json::Map::new(),

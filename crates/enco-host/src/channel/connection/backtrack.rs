@@ -38,8 +38,8 @@ impl Connection {
                 receipt,
             }) => {
                 let body = EventBody::Backtrack { to: pos };
-                self.submit(state, session, source, body, key, None).await?;
-                Ok(Some(receipt.into()))
+                let refusal = self.submit(state, session, source, body, key, None).await?;
+                Ok(Some(refusal.unwrap_or_else(|| receipt.into())))
             }
             Err(refusal) => self.receipt(state, key, refusal).await,
         }
@@ -92,7 +92,7 @@ impl Connection {
             }
         };
         if state.chats.get(conversation) != Some(&target.session) {
-            let name = self.session_name(target.session).await?;
+            let name = self.kernel.session(target.session).await?.name;
             return Ok(Err(format!(
                 "That message is in Session {name}; switch to it first."
             )));

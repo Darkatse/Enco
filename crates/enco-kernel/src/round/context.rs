@@ -62,10 +62,24 @@ impl SessionActor {
 
     pub(super) fn located_transcript(&self) -> Transcript<LocatedImage> {
         let conversation = crate::transcript::conversation(&self.entries);
-        crate::transcript::project(&conversation).map_images(|image| LocatedImage {
-            path: self.deps.store.blob_path(&image.content),
-            image,
-        })
+        let mut transcript =
+            crate::transcript::project(&conversation).map_images(|image| LocatedImage {
+                path: self.deps.store.blob_path(&image.content),
+                image,
+            });
+        for item in &mut transcript.items {
+            if let Some(Event {
+                body:
+                    EventBody::SessionMessage(Outgoing {
+                        file: Some(file), ..
+                    }),
+                ..
+            }) = &item.event
+            {
+                item.file_path = Some(self.deps.store.blob_path(&file.content));
+            }
+        }
+        transcript
     }
 
     async fn previous_plan(

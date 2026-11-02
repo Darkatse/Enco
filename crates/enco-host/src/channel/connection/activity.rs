@@ -67,7 +67,10 @@ impl Connection {
             observation.cursor = Some(entry.pos);
             match entry.body {
                 EntryBody::EventConsumed { event } => {
-                    projection::route(&mut observation.target, &self.identity, &event)
+                    if let Some(destination) = event.reply_destination() {
+                        observation.target =
+                            projection::channel_target(destination, &self.identity);
+                    }
                 }
                 EntryBody::RunStarted { run } => {
                     observation.run = Some(ObservedRun {

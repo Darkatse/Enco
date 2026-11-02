@@ -8,13 +8,14 @@ use enco_core::*;
 use enco_host::SqliteStore;
 use enco_kernel::{Accepted, Commit, ConnectionWrite, NewSession, Store, StoreError};
 use std::path::Path;
+mod delegation;
 mod plans;
 
 /// A store holding the `main` Session, with a user message for it that is not yet accepted.
 async fn main_session(root: &Path) -> (SqliteStore, Event) {
     let store = support::open_store(root).await;
     let session = store
-        .ensure_session("main", Utc::now().trunc_subsecs(3))
+        .ensure_session(&"main".parse().unwrap(), Utc::now().trunc_subsecs(3))
         .await
         .unwrap();
     let event = Event {
@@ -98,8 +99,9 @@ async fn a_failed_acceptance_discards_its_connection_write() {
         state: serde_json::json!({"offset": 2}),
         update: Some("update-2".into()),
         session: Some(NewSession {
+            origin: enco_kernel::NewSessionOrigin::Root,
             id: SessionId::new(),
-            name: "group".into(),
+            name: "group".parse().unwrap(),
             profile: "default".parse().unwrap(),
             created_at: Utc::now().trunc_subsecs(3),
         }),
@@ -178,6 +180,7 @@ async fn commits_must_continue_the_log_within_the_current_epoch() {
             .commit(
                 event.session,
                 Commit {
+                    deliveries: Vec::new(),
                     entries: vec![bad],
                     plan: None
                 }
@@ -192,6 +195,7 @@ async fn commits_must_continue_the_log_within_the_current_epoch() {
             .commit(
                 event.session,
                 Commit {
+                    deliveries: Vec::new(),
                     entries: vec![bad],
                     plan: None
                 }
@@ -230,6 +234,7 @@ async fn a_commit_consuming_an_unaccepted_event_writes_nothing() {
             .commit(
                 event.session,
                 Commit {
+                    deliveries: Vec::new(),
                     entries: vec![entry, second],
                     plan: None,
                 }
@@ -254,6 +259,7 @@ async fn committed_entries_consume_their_events_and_survive_reopening() {
         .commit(
             event.session,
             Commit {
+                deliveries: Vec::new(),
                 entries: vec![entry.clone()],
                 plan: None,
             },
@@ -302,7 +308,10 @@ async fn schedule_cursor_and_inbox_delivery_commit_together() {
     let dir = tempfile::tempdir().unwrap();
     let store = support::open_store(dir.path()).await;
     let now: DateTime<Utc> = "2026-10-09T00:00:00Z".parse().unwrap();
-    let session = store.ensure_session("main", now).await.unwrap();
+    let session = store
+        .ensure_session(&"main".parse().unwrap(), now)
+        .await
+        .unwrap();
     let schedule = Schedule {
         id: ScheduleId::new(),
         session: session.id,
@@ -339,6 +348,7 @@ async fn schedule_cursor_and_inbox_delivery_commit_together() {
         .commit(
             session.id,
             Commit {
+                deliveries: Vec::new(),
                 entries: vec![consumed(&event)],
                 plan: None,
             },

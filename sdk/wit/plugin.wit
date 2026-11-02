@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.11.0;
+package enco:plugin@0.12.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -501,6 +501,14 @@ interface composer {
         path: string,
     }
 
+    /// Another Session, by identity and full name.
+    record session-source {
+        /// Its permanent ID.
+        id: string,
+        /// Its full name.
+        name: string,
+    }
+
     /// The Session the request is for.
     record session {
         /// Its permanent ID.
@@ -514,6 +522,38 @@ interface composer {
         /// Where its file tools resolve relative paths and its shell commands run by default, as
         /// pinned for this Round.
         working-dir: working-dir,
+        /// The Session that delegated to this one; absent for a Session the owner created. Inputs
+        /// whose `event-source` is `parent` came from it.
+        parent: option<session-source>,
+    }
+
+    /// A recorded file, by reference rather than by its bytes.
+    record file-ref {
+        /// Its name, without the directory it came from.
+        name: string,
+        /// The size of the bytes.
+        size: u64,
+        /// The BLAKE3 digest of the bytes, in lowercase hex.
+        content: string,
+        /// The file that holds the bytes.
+        path: string,
+    }
+
+    /// What another Session addressed to this one: a task from the parent, or a child's reply
+    /// or message.
+    record session-message {
+        /// What it wrote; the canonical message carries only this.
+        text: string,
+        /// A file it sent.
+        file: option<file-ref>,
+    }
+
+    /// A stop of a whole subtree.
+    record halt {
+        /// The Session at the top of the halted subtree, by full name.
+        root: string,
+        /// The Session that halted it, by full name; absent when the owner did.
+        by: option<string>,
     }
 
     /// A recorded image, by reference rather than by its bytes.
@@ -669,10 +709,6 @@ interface composer {
     }
 
     /// Who produced an input.
-    ///
-    /// Input from the CLI or a channel conversation is interactive: its sender waits for a reply,
-    /// and replies go back to it. Input from a schedule or the registry is not. A Session may
-    /// end a Round with `reply_skip` only while no interactive input awaits an answer.
     variant event-source {
         /// The owner, through Enco's own interface.
         cli,
@@ -682,6 +718,11 @@ interface composer {
         scheduler,
         /// The plugin registry, after an automatic rollback.
         registry,
+        /// The Session that delegated to this one, named in `session.parent`; a halt from further
+        /// up the tree also arrives from here.
+        parent,
+        /// A Session this one delegated to.
+        child(session-source),
     }
 
     /// A prior message quoted for context; it did not drive the Session.
@@ -755,6 +796,16 @@ interface composer {
         /// When that message is an input, the backtrack asks for a reply to it. Changes made after
         /// it outside the conversation, such as to files, were not undone.
         backtrack(log-pos),
+        /// Words from another Session.
+        session-message(session-message),
+        /// A child's Run that ended without completing, and how.
+        child-run-ended(run-end),
+        /// This Session's work and that of its children were stopped; the inputs between the end
+        /// of its last Run and this halt were not answered.
+        ///
+        /// Unlike a backtrack, it leaves the conversation as it is, and it is not interactive:
+        /// replies keep going where they went.
+        halt(halt),
     }
 
     /// An input this Session consumed.
@@ -767,6 +818,11 @@ interface composer {
         source: event-source,
         /// What it says.
         body: event-body,
+        /// Whether its sender waits for a reply.
+        ///
+        /// The kernel decides it from the source and the kind, the same way it decides where
+        /// replies go; while such an input awaits an answer, `reply_skip` fails.
+        interactive: bool,
     }
 
     /// How a Run ended.
@@ -779,8 +835,12 @@ interface composer {
         interrupted,
         /// It was cancelled.
         cancelled,
+        /// The owner went back to an earlier message, which stopped it.
+        backtracked,
         /// Execution stopped with this recorded failure.
         failed(failure),
+        /// A halt of this Session or an ancestor stopped it.
+        halted,
     }
 
     /// A Run's end, and where the Log records it.
@@ -901,6 +961,49 @@ interface composer {
         skipped: list<skipped-endpoint>,
     }
 
+    /// A child of this Session, by the facts that change only at moments its parent sees.
+    ///
+    /// Whether it is running right now is not here; `self_status` shows it.
+    record child {
+        /// Its name relative to this Session, as `session_send` takes it.
+        name: string,
+        /// The profile it uses.
+        profile: string,
+        /// Whether this Session awaits its answer: the latest of its inputs still awaiting an
+        /// answer came from this Session.
+        ///
+        /// An answer is a reply that ends one of its Rounds, or the outcome of a Run that ended
+        /// without completing; a halt ends the wait without one. While its replies go to this
+        /// Session, each answer arrives here as input.
+        awaiting: bool,
+        /// The halt that stopped it, when it has received no input since.
+        halted: option<halt>,
+        /// Whether the owner spoke to it after this Session did, so its replies go to the owner.
+        replies-to-owner: bool,
+    }
+
+    /// A reply model of a profile.
+    record profile-endpoint {
+        /// The endpoint, by its configured name.
+        endpoint: string,
+        /// The model it calls.
+        model: string,
+        /// What it accepts besides text.
+        accepts: list<modality>,
+        /// Its limits.
+        budget: budget,
+    }
+
+    /// A profile a new child may use.
+    record delegable-profile {
+        /// The profile, as `session_send` takes it.
+        name: string,
+        /// What the owner wrote it is for.
+        description: string,
+        /// Its reply models, in configured order.
+        reply: list<profile-endpoint>,
+    }
+
     /// Everything the host supplies for one composition.
     record compose-input {
         /// The Session the request is for.
@@ -922,8 +1025,7 @@ interface composer {
         /// The latest recorded reply plan in that conversation; absent at the start, or when it
         /// could not be read, which `omitted` then says.
         previous: option<plan>,
-        /// Whether the Session's profile gives it the owner's context: the owner instructions and
-        /// the memories.
+        /// Whether this Session has the owner's context: its profile and every ancestor's give it.
         owner-context: bool,
         /// The owner instructions: the text of `AGENTS.md`, as read at the start of this Round.
         ///
@@ -957,6 +1059,10 @@ interface composer {
         compaction: option<budget>,
         /// How many more compactions this Round allows.
         compactions-left: u32,
+        /// This Session's children that are not archived, in creation order.
+        children: list<child>,
+        /// The profiles a new child may use; empty when this Session cannot delegate.
+        profiles: list<delegable-profile>,
     }
 
     /// A source a plan renders, with a digest a later composition can compare.
@@ -1216,6 +1322,10 @@ interface channel {
         backtrack,
         /// Open this group to everyone or close it to the owner only; absent reports which.
         everyone(option<bool>),
+        /// Halt the named Session and its descendants, or the conversation's Session when absent.
+        halt(option<string>),
+        /// Archive the named Session and its descendants, or list archivable Sessions when absent.
+        archive(option<string>),
     }
 
     /// The text and attachments of a message.
@@ -1316,6 +1426,12 @@ interface channel {
         backtrack,
         /// Open the group to everyone, or close it to the owner only.
         everyone,
+        /// Halt the named Session and its descendants, or the conversation's Session when no name
+        /// follows.
+        halt,
+        /// Archive the named Session and its descendants; with no name, list the Sessions that
+        /// can be archived and archive nothing.
+        archive,
     }
 
     /// The next step of fetching the content a locator names.

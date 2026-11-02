@@ -1,100 +1,84 @@
-//! Where a Session's replies go: to the conversation of the owner's latest input, if that input
-//! came through this connection.
+//! Where a Session's replies go on this connection: core's delivery projection, resumed from the
+//! connection's cursor.
 //!
-//! Each reply is sent once it is complete. Input through the CLI or another connection takes
-//! replies away from this one; reminders and registry notices do not move them.
+//! Only conversations of this protocol account receive replies, each once it is complete. Input
+//! through the CLI, another connection or a parent Session takes replies away from this one;
+//! inputs that ask for no reply do not move them.
 use super::{Cursor, Identity};
 use enco_core::*;
 
-/// Advance through settled messages and complete boundaries; leave unfinished replies for the next
-/// wake.
+/// Advance through completed boundaries after the cursor; stop at the first one this connection
+/// delivers.
 pub(super) fn project(
     cursor: &mut Cursor,
     identity: &Identity,
     session: SessionId,
     entries: Vec<Entry>,
 ) -> Option<(Delivery, Outgoing)> {
-    let mut target = cursor.target.clone();
-    let mut reply_attempt = None;
-    let mut reply = String::new();
+    let mut projection = DeliveryProjection::resume(cursor.destination.clone());
     for entry in entries {
-        let outgoing = match entry.body {
-            EntryBody::EventConsumed { event } => {
-                route(&mut target, identity, &event);
-                continue;
-            }
-            EntryBody::RoundStarted { .. } => {
-                reply.clear();
-                reply_attempt = None;
-                continue;
-            }
-            EntryBody::AttemptStarted {
-                attempt,
-                purpose: AttemptPurpose::Reply,
-                ..
-            } => {
-                reply_attempt = Some(attempt);
-                continue;
-            }
-            EntryBody::AttemptSettled {
-                attempt,
-                result: AttemptResult::Completed { message, .. },
-            } if Some(attempt) == reply_attempt => {
-                reply = message.joined_text();
-                continue;
-            }
-            EntryBody::ToolCallSettled {
-                outgoing: Some(message),
-                ..
-            } => Some(message),
-            EntryBody::RoundEnded { end, .. } => {
-                matches!(end, RoundEnd::Replied).then(|| Outgoing {
-                    text: std::mem::take(&mut reply),
-                    file: None,
-                })
-            }
-            EntryBody::RunEnded { end, .. } => (match end {
-                RunEnd::Completed => None,
-                RunEnd::Cancelled => Some("Run cancelled.".into()),
-                RunEnd::Interrupted => {
-                    Some("Run interrupted by a restart; check `enco log` for details.".into())
-                }
-                RunEnd::BudgetExhausted => Some("Run reached its Round limit.".into()),
-                RunEnd::Failed { failure } => Some(format!("Run failed: {}", failure.message)),
-            })
-            .map(|text| Outgoing { text, file: None }),
-            _ => continue,
+        let Some(boundary) = projection.step(&entry) else {
+            continue;
         };
         cursor.processed = Some(entry.pos);
-        cursor.target = target.clone();
-        if let (Some(target), Some(outgoing)) = (target.clone(), outgoing) {
+        cursor.destination = boundary.destination.clone();
+        let target = boundary
+            .destination
+            .and_then(|destination| channel_target(destination, identity));
+        if let (Some(target), Some(content)) = (target, boundary.deliverable) {
             return Some((
                 Delivery {
                     session,
                     pos: entry.pos,
                     target,
                 },
-                outgoing,
+                outgoing(content),
             ));
         }
     }
     None
 }
 
-/// Interactive inputs move the reply destination; noninteractive events leave it in place.
-pub(super) fn route(target: &mut Option<String>, identity: &Identity, event: &Event) {
-    if !event.is_interactive() {
-        return;
+/// The cursor once a delivery settles: replies were going to its conversation.
+pub(super) fn delivered(identity: &Identity, delivery: &Delivery) -> Cursor {
+    Cursor {
+        processed: Some(delivery.pos),
+        destination: Some(ReplyDestination::Channel {
+            protocol: identity.protocol.clone(),
+            account: identity.account.clone(),
+            conversation: delivery.target.clone(),
+        }),
     }
-    *target = match &event.source {
-        EventSource::Channel {
+}
+
+/// The conversation on this protocol account that a destination names, if it names one.
+pub(super) fn channel_target(destination: ReplyDestination, identity: &Identity) -> Option<String> {
+    match destination {
+        ReplyDestination::Channel {
             protocol,
             account,
             conversation,
-            ..
-        } if protocol == &identity.protocol && account == &identity.account => {
-            Some(conversation.clone())
-        }
-        _ => None,
+        } if protocol == identity.protocol && account == identity.account => Some(conversation),
+        ReplyDestination::Channel { .. } | ReplyDestination::Cli | ReplyDestination::Parent => None,
+    }
+}
+
+/// The message the owner reads for what a Session handed over.
+fn outgoing(content: Deliverable) -> Outgoing {
+    let text = match content {
+        Deliverable::Message(outgoing) => return outgoing,
+        Deliverable::Reply(text) => text,
+        Deliverable::RunEnded(end) => match end {
+            RunEnd::Cancelled => "Run cancelled.".into(),
+            RunEnd::Backtracked => "Run stopped to go back to an earlier message.".into(),
+            RunEnd::Interrupted => {
+                "Run interrupted by a restart; check `enco log` for details.".into()
+            }
+            RunEnd::BudgetExhausted => "Run reached its Round limit.".into(),
+            RunEnd::Failed { failure } => format!("Run failed: {}", failure.message),
+            RunEnd::Halted => "Run halted.".into(),
+            RunEnd::Completed => "Run completed.".into(),
+        },
     };
+    Outgoing { text, file: None }
 }

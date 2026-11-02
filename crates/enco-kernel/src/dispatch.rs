@@ -1,3 +1,7 @@
+mod delegation;
+mod settle;
+use delegation::{DelegationRequest, Execution};
+
 use crate::{
     builtin::{BuiltinCall, REPLY_SKIP},
     session::SessionActor,
@@ -22,69 +26,6 @@ pub(crate) fn render_text(outcome: &Outcome) -> String {
 }
 
 impl SessionActor {
-    async fn settle(&mut self, call: CallId, mut outcome: Outcome) -> Result<(), StoreError> {
-        let mut stored = Vec::new();
-        if let Outcome::Ok { images, .. } = &outcome {
-            for bytes in images {
-                match crate::image::store(self.deps.store.as_ref(), bytes).await {
-                    Ok(image) => stored.push(image),
-                    Err(crate::ImageError::Store(error)) => return Err(error),
-                    Err(error) => {
-                        outcome = Outcome::Failed {
-                            failure: Failure {
-                                code: code::TOOL_FAILED.into(),
-                                message: error.to_string(),
-                                retryable: false,
-                            },
-                        };
-                        stored.clear();
-                        break;
-                    }
-                }
-            }
-        }
-        let outgoing = if let Outcome::Ok { outgoing, .. } = &mut outcome
-            && let Some(outgoing) = outgoing.take()
-        {
-            Some(crate::outgoing::store(self.deps.store.as_ref(), outgoing).await?)
-        } else {
-            None
-        };
-        let mut content = render_text(&outcome);
-        let mut full = None;
-        if content.len() > limits::TOOL_RESULT_INLINE_BYTES {
-            let hash = self.deps.store.put_blob(content.as_bytes()).await?;
-            let size = content.len();
-            content.truncate(content.floor_char_boundary(limits::TOOL_RESULT_PREVIEW_BYTES));
-            let path = self.deps.store.blob_path(&hash);
-            content.push_str(&format!(
-                "\n[truncated: {size} bytes; full result: {}; it may be cleaned up later]",
-                path.display(),
-            ));
-            full = Some(hash);
-        }
-        for image in &stored {
-            content.push_str(&format!(
-                "\n[image: {}, {} bytes; file: {}]",
-                image.format.mime(),
-                image.size,
-                self.deps.store.blob_path(&image.content).display()
-            ));
-        }
-        self.commit(
-            vec![EntryBody::ToolCallSettled {
-                call,
-                outcome: Settlement::from(&outcome),
-                content,
-                full,
-                images: stored,
-                outgoing,
-            }],
-            None,
-        )
-        .await
-    }
-
     /// The actor alone orders calls and records their facts; workers only return outcomes.
     pub(crate) async fn dispatch(
         &mut self,
@@ -128,7 +69,9 @@ impl SessionActor {
         for (index, call) in calls.iter().enumerate() {
             match prepare(snapshot, plan, call, skip, token, &view.exports) {
                 Ok((tool, args)) => ready.push((index, tool, args)),
-                Err(failure) => outcomes.push((index, None, Outcome::Failed { failure })),
+                Err(failure) => {
+                    outcomes.push((index, None, Execution::Result(Outcome::Failed { failure })))
+                }
             }
         }
         let starts: Vec<_> = ready
@@ -148,6 +91,8 @@ impl SessionActor {
         let mut tasks = tokio::task::JoinSet::new();
         for (index, tool, args) in ready {
             let code = tool.code.clone();
+            let builtin = tool.builtin;
+            let name = self.session.name.clone();
             let tool = tool.tool.clone();
             let ctx = CallContext {
                 session: self.session.id,
@@ -156,7 +101,17 @@ impl SessionActor {
                 cancel: batch_cancel.child_token(),
                 result_budget: limits::TOOL_RESULT_INLINE_BYTES,
             };
-            tasks.spawn(async move { (index, Some(code), tool.call(ctx, args).await) });
+            tasks.spawn(async move {
+                let execution = if builtin == Some(BuiltinCall::SessionSend) {
+                    match DelegationRequest::parse(args, &name, &ctx.working_dir) {
+                        Ok(request) => Execution::Delegation(request),
+                        Err(failure) => Execution::Result(Outcome::Failed { failure }),
+                    }
+                } else {
+                    Execution::Result(tool.call(ctx, args).await)
+                };
+                (index, Some(code), execution)
+            });
         }
         let mut stopped = None;
         while let Some(result) = tasks.join_next().await {
@@ -174,8 +129,9 @@ impl SessionActor {
         outcomes.sort_unstable_by_key(|(index, _, _)| *index);
         for (index, code, outcome) in outcomes {
             let verdict = match &outcome {
-                Outcome::Ok { .. } => Verdict::Ok,
-                Outcome::Failed { failure } | Outcome::Unknown { failure } => {
+                Execution::Delegation(..) => Verdict::Ok,
+                Execution::Result(Outcome::Ok { .. }) => Verdict::Ok,
+                Execution::Result(Outcome::Failed { failure } | Outcome::Unknown { failure }) => {
                     Verdict::Failed(failure.clone())
                 }
             };

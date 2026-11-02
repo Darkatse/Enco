@@ -612,3 +612,42 @@ impl Provider for PausedProvider {
         self.provider.complete(settings, request).await
     }
 }
+
+/// A provider request held until the test answers it.
+pub struct Prompt {
+    pub request: ProviderRequest,
+    pub answer: tokio::sync::oneshot::Sender<Result<Completion, Failure>>,
+}
+
+impl Prompt {
+    pub fn respond(self, completion: Result<Completion, Failure>) {
+        assert!(self.answer.send(completion).is_ok());
+    }
+
+    pub fn contains(&self, text: &str) -> bool {
+        self.request
+            .messages
+            .iter()
+            .any(|message| message.joined_text().contains(text))
+    }
+}
+
+/// A provider that queues each request by model, so concurrent Sessions answer in any order.
+pub struct ProviderQueues(pub HashMap<String, tokio::sync::mpsc::UnboundedSender<Prompt>>);
+
+#[async_trait]
+impl Provider for ProviderQueues {
+    async fn complete(
+        &self,
+        settings: &ProviderSettings,
+        request: ProviderRequest,
+    ) -> Result<Completion, Failure> {
+        let (answer, receive) = tokio::sync::oneshot::channel();
+        assert!(
+            self.0[&settings.model]
+                .send(Prompt { request, answer })
+                .is_ok()
+        );
+        receive.await.unwrap()
+    }
+}

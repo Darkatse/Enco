@@ -302,3 +302,79 @@ async fn a_rejected_protocol_state_resets_once_and_duplicate_commands_advance_th
     channel.shutdown().await.unwrap();
     kernel.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn archived_group_routes_create_fresh_sessions_with_transcribed_root_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider =
+        ScriptedProvider::new(vec![reply("first group reply"), reply("fresh group reply")]);
+    let Harness {
+        kernel,
+        adapter,
+        updates,
+        mut polling,
+        mut sending,
+        ..
+    } = group_harness(dir.path(), provider.clone()).await;
+    let mut policy = settings();
+    policy.group_profile = Some("group".parse().unwrap());
+    let channel = start_with(&kernel, &adapter, policy);
+    receive(&mut polling).await;
+    let mut first = group(
+        1,
+        "owner",
+        true,
+        Action::Message("old group question".into()),
+    );
+    first.input.conversation = "chat/room name".into();
+    updates.send(vec![first]).await.unwrap();
+    receive(&mut polling).await;
+    receive(&mut sending).await.result.send(Ok(())).unwrap();
+    let original = kernel
+        .find_session("controlled:chat-room-name")
+        .await
+        .unwrap();
+    assert!(original.name.is_root());
+    assert!(original.parent.is_none());
+    kernel.archive(original.id, EventSource::Cli).await.unwrap();
+    let mut second = group(
+        2,
+        "owner",
+        true,
+        Action::Message("new group question".into()),
+    );
+    second.input.conversation = "chat/room name".into();
+    updates.send(vec![second]).await.unwrap();
+    receive(&mut polling).await;
+    let mut responses = Vec::new();
+    for _ in 0..2 {
+        let sent = receive(&mut sending).await;
+        responses.push(sent.text);
+        sent.result.send(Ok(())).unwrap();
+    }
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|text| *text != "fresh group reply")
+            .count(),
+        1
+    );
+    let replacement = kernel
+        .find_session("controlled:chat-room-name")
+        .await
+        .unwrap();
+    assert_ne!(replacement.id, original.id);
+    assert_eq!(replacement.profile.as_str(), "group");
+    assert!(
+        !provider.requests.lock().unwrap()[1]
+            .messages
+            .iter()
+            .any(|message| message.joined_text() == "old group question")
+    );
+    assert!(matches!(
+        channel.status().await.unwrap().state,
+        ChannelState::Running
+    ));
+    channel.shutdown().await.unwrap();
+    kernel.shutdown().await.unwrap();
+}

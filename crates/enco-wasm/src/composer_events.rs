@@ -33,7 +33,11 @@ pub(super) fn failure(failure: &Failure) -> types::Failure {
     }
 }
 
-pub(super) fn event(event: &Event, located: &[wire::ImageRef]) -> Result<wire::Event, Failure> {
+pub(super) fn event(
+    event: &Event,
+    located: &[wire::ImageRef],
+    file_path: Option<&std::path::Path>,
+) -> Result<wire::Event, Failure> {
     // The Event belongs to the Session being composed, which the input already names.
     let Event {
         id,
@@ -42,7 +46,19 @@ pub(super) fn event(event: &Event, located: &[wire::ImageRef]) -> Result<wire::E
         body,
         received_at,
     } = event;
-    let source = match source {
+    Ok(wire::Event {
+        id: id.to_string(),
+        received_at: datetime(*received_at)?,
+        interactive: event.is_interactive(),
+        source: event_source(source),
+        body: event_body(body, located, file_path)?,
+    })
+}
+
+fn event_source(source: &EventSource) -> wire::EventSource {
+    match source {
+        EventSource::Parent => wire::EventSource::Parent,
+        EventSource::Child(session) => wire::EventSource::Child(session_source(session)),
         EventSource::Cli => wire::EventSource::Cli,
         EventSource::Channel {
             protocol,
@@ -65,7 +81,14 @@ pub(super) fn event(event: &Event, located: &[wire::ImageRef]) -> Result<wire::E
         }),
         EventSource::Scheduler => wire::EventSource::Scheduler,
         EventSource::Registry => wire::EventSource::Registry,
-    };
+    }
+}
+
+fn event_body(
+    body: &EventBody,
+    located: &[wire::ImageRef],
+    file_path: Option<&std::path::Path>,
+) -> Result<wire::EventBody, Failure> {
     let body = match body {
         EventBody::UserMessage {
             text,
@@ -113,14 +136,20 @@ pub(super) fn event(event: &Event, located: &[wire::ImageRef]) -> Result<wire::E
             failure: failure(fault),
             text: text.clone(),
         }),
+        EventBody::SessionMessage(Outgoing { text, file }) => {
+            wire::EventBody::SessionMessage(wire::SessionMessage {
+                text: text.clone(),
+                file: file
+                    .as_ref()
+                    .map(|file| file_ref(file, file_path))
+                    .transpose()?,
+            })
+        }
+        EventBody::ChildRunEnded { end } => wire::EventBody::ChildRunEnded(run_end(end)),
+        EventBody::Halt(value) => wire::EventBody::Halt(halt(value)),
         EventBody::Backtrack { to } => wire::EventBody::Backtrack(pos(*to)),
     };
-    Ok(wire::Event {
-        id: id.to_string(),
-        received_at: datetime(*received_at)?,
-        source,
-        body,
-    })
+    Ok(body)
 }
 
 fn earlier_message(item: &EarlierMessage) -> Result<wire::EarlierMessage, Failure> {
@@ -279,6 +308,41 @@ pub(super) fn run_end(end: &RunEnd) -> wire::RunEnd {
         RunEnd::BudgetExhausted => wire::RunEnd::BudgetExhausted,
         RunEnd::Interrupted => wire::RunEnd::Interrupted,
         RunEnd::Cancelled => wire::RunEnd::Cancelled,
+        RunEnd::Backtracked => wire::RunEnd::Backtracked,
+        RunEnd::Halted => wire::RunEnd::Halted,
         RunEnd::Failed { failure: value } => wire::RunEnd::Failed(failure(value)),
     }
+}
+
+pub(super) fn session_source(value: &SessionRef) -> wire::SessionSource {
+    let SessionRef { id, name } = value;
+    wire::SessionSource {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
+}
+
+pub(super) fn halt(value: &Halt) -> wire::Halt {
+    let Halt { root, by } = value;
+    wire::Halt {
+        root: root.name.to_string(),
+        by: by.as_ref().map(|by| by.name.to_string()),
+    }
+}
+
+/// The recorded file at the path the kernel located for it; a file it did not locate is an error.
+fn file_ref(file: &OutgoingFile, path: Option<&std::path::Path>) -> Result<wire::FileRef, Failure> {
+    let OutgoingFile {
+        name,
+        size,
+        content,
+    } = file;
+    let path =
+        path.ok_or_else(|| crate::convert::bad("a Session message's file has no local path"))?;
+    Ok(wire::FileRef {
+        name: name.clone(),
+        size: *size,
+        content: content.to_string(),
+        path: path.to_string_lossy().into_owned(),
+    })
 }

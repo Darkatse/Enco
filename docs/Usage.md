@@ -13,7 +13,7 @@
 - `sdk/`：随宿主分发的插件 SDK
 - `manual/`：由宿主根据当前运行代际自动生成的只读手册
 - `workspace/`：新 Session 的默认工作目录
-- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。数据库模式版本 17 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
+- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。数据库模式版本 18 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
 
 ### CLI 命令
 
@@ -30,7 +30,9 @@
 | 机械回退最近一次登记中仍在生效的部分 | `enco rollback` |
 | 创建工具插件骨架或导出出厂插件源码 | `enco plugin scaffold <name>` |
 | 改名已登记的插件并保留身份与历史 | `enco plugin rename <name> <to> [--reason "..."]` |
-| 查看会话列表、日志或检视某次模型请求 | `enco sessions`、`enco log`、`enco inspect [--attempt <id>]` |
+| 查看会话列表、日志或检视某次模型请求 | `enco sessions [--archived]`、`enco log [--session <name-or-id>]`、`enco inspect [--session <name-or-id>] [--attempt <id>]` |
+| 取消当前 Run 或叫停会话子树 | `enco cancel [--session <name>]`、`enco halt [--session <name>]` |
+| 单向归档会话及其子树 | `enco archive <session>` |
 | 将对话回溯到指定日志位置 | `enco backtrack [--session <name>] <epoch>:<seq>` |
 | 设置会话工作目录 | `enco working-dir <session> <path>` |
 | 切换会话 profile 或安全模式 | `enco profile <session> <profile>`、`enco safe-mode <on\|off>` |
@@ -40,9 +42,23 @@
 
 ### Profile 与上下文组装
 
-每个会话使用的模型、工具范围与组装策略在 `[profile.<名字>]` 中定义（名字为不含 `/` 与空白的一段）。默认使用宿主自带的 `composer`（空选项），也可以指定 `composer = { plugin = "<名字>", options = {} }`。composer 会声明自己的选项 schema，登记配置时据此校验每个 profile；它只接收已记录的历史、常驻说明与召回的记忆，没有文件或网络权限。安全模式下固定使用二进制内嵌的出厂 composer 与空选项。
+每个会话使用的模型、工具范围与组装策略在 `[profile.<名字>]` 中定义（名字为不含 `/` 与空白的一段），可用 `description` 写一句角色用途说明。默认使用宿主自带的 `composer`（空选项），也可以指定 `composer = { plugin = "<名字>", options = {} }`。composer 会声明自己的选项 schema，登记配置时据此校验每个 profile；它只接收已记录的历史、常驻说明与召回的记忆，没有文件或网络权限。安全模式下固定使用二进制内嵌的出厂 composer 与空选项。
 
 关于主人的偏好与全局规矩写在 `AGENTS.md`，只给 `owner_context` 未关闭的会话；关于某个角色做什么、怎样做写在 `profiles/<名字>.md`，与 `AGENTS.md` 叠加且更具体（`owner_context = false` 的群会话同样生效），直接编辑文件即可在下一个 Round 生效。每个会话另有自己的工作目录（新建时为 `workspace/`），文件工具、`message_send` 的相对路径与 `shell_exec` 的默认目录都以它为起点，用 `enco working-dir <session> <path>` 修改：相对路径按执行命令时的当前目录补全，设置时不检查目录，用到时目录不可用，相关的调用才失败。
+
+### Session 委派、叫停与归档
+
+Agent 可以用 `session_send(to, text, profile)` 把任务委派给子 Session。例如 `main` 向短名 `research` 委派后，子 Session 的全名为 `main/research`（每段名字不含 `/`、空白或控制字符，且不为 `.` 或 `..`）。新子 Session 从空白历史开始，在后台独立运行，完成后唤醒父 Session，由父核对结果后再决定是否回复你；再次向同一个短名发消息会延续它自己的历史，不再传 `profile`。子 Session 的有效权限取自身 profile 与祖先权限的交集。
+
+`[run]` 中的 `max_depth`（默认 1，根深度为 0）限制最大委派层级，`max_concurrent_children`（默认 4）限制本节点同时运行的子 Session 数，超出时按到达顺序排队等待名额，根 Session 不排队。
+
+你可以用 `enco chat --session main/research` 或渠道中的 `/session main/research` 直接与已有的子 Session 对话（子 Session 只能由父创建，切到不存在的子 Session 会被拒绝）。直接发消息会把它的回复去向切给你，父下次向它发消息时再回到父。
+
+- `enco cancel [--session <name>]` 或 `/cancel`：只停止当前这一个 Run，后台运行的子 Session 不受影响。
+- `enco halt [--session <name>]` 或 `/halt [<name>]`（`enco chat` 中输入 `/halt`）：叫停该 Session 及整棵子树，等待工作静止，此前未回答的输入不再回答；之后发消息即可继续。
+- `enco archive <name>` 或 `/archive <name>`：单向归档不需要的 Session 及其子树，停止接收输入、叫停工作并释放名字与定时提醒。归档不可恢复，必须给出名字；渠道中不带名字的 `/archive` 只列出可归档的 Session。群聊里的命令只作用于群自己的 Session：可以发不带名字的 `/halt`，按名字叫停与归档在私聊中进行。
+
+`enco status` 按树显示未归档 Session 的 profile、工作目录与运行、等待名额、停止或空闲状态；`enco sessions` 输出未归档 Session 的 JSON 列表，`enco sessions --archived` 输出已归档的 Session。归档后日志仍保留，可按 ID 用 `enco log --session <id>` 与 `enco inspect --session <id>` 查看；当名字只对应已归档的 Session 时，命令会报错并列出它们的 ID。
 
 ### 图片输入与文件发送
 
@@ -60,7 +76,7 @@
 
 ### Telegram
 
-取消配置示例中 `[channel.telegram]` 段的注释，把 `owner` 设为你自己的用户 ID 字符串，并导出 `secrets` 指定的 token 环境变量。照片与图片文件会连同说明文字进入同一条消息，不支持的附件也会如实告知 Agent。私聊支持 `/session` 切换会话、`/cancel` 停止当前运行、回复消息发送 `/backtrack` 回溯，命令菜单与正在输入的提示会自动注册。
+取消配置示例中 `[channel.telegram]` 段的注释，把 `owner` 设为你自己的用户 ID 字符串，并导出 `secrets` 指定的 token 环境变量。照片与图片文件会连同说明文字进入同一条消息，不支持的附件也会如实告知 Agent。私聊支持 `/session` 切换会话、`/cancel` 停止当前 Run、`/halt [<name>]` 叫停子树、`/archive <name>` 归档子树、回复消息发送 `/backtrack` 回溯，命令菜单与正在输入的提示会自动注册。
 
 ### Discord
 
@@ -70,7 +86,7 @@
 2. 在 Discord 设置中启用开发者模式，复制你的用户 ID 填入 `owner`。
 3. 邀请 bot 时勾选 `bot` 与 `applications.commands` 作用域，为它要服务的频道开启查看频道、发送消息、在线程中发送消息、读取消息历史、附加文件与嵌入链接权限。
 
-私聊要求你与 bot 至少同在一个服务器里；bot 能读到的频道消息会进入映射记录，只开放必要的频道即可。Discord 使用原生 `/session`（仅私聊）、`/cancel`、`/everyone`（仅服务器）斜杠命令与消息右键菜单中的 **Backtrack here**，命令与按钮回执只有操作者自己可见，在普通消息里手打斜杠命令不会触发它。
+私聊要求你与 bot 至少同在一个服务器里；bot 能读到的频道消息会进入映射记录，只开放必要的频道即可。Discord 使用原生 `/session`（仅私聊）、`/cancel`、`/halt`、`/archive`、`/everyone`（仅服务器）斜杠命令与消息右键菜单中的 **Backtrack here**，命令与按钮回执只有操作者自己可见，在普通消息里手打斜杠命令不会触发它。
 
 ### QQ（OneBot v11）
 
@@ -92,7 +108,7 @@ context = 0
 
 `base_url` 使用实际启用 WebSocket 的 HTTP 服务地址。SnowLuma 与 Enco 部署在同一台机器时，只监听本机地址。启用群聊时，按下文配置独立的 `group_profile`。
 
-私聊使用文字命令 `/session`、`/cancel`、`/backtrack`；群里发送 `/everyone on|off` 开关成员提问。引用一条消息并发送 `/backtrack` 即可回溯。普通群消息以 @ bot 为准；QQ 引用回复通常附带 @，手动删除它之后就不触发提问。其他人的命令静默忽略，带附件的文字按普通消息处理。
+私聊使用文字命令 `/session`、`/cancel`、`/halt [<name>]`、`/archive <name>`、`/backtrack`；群里发送 `/everyone on|off` 开关成员提问。引用一条消息并发送 `/backtrack` 即可回溯。普通群消息以 @ bot 为准；QQ 引用回复通常附带 @，手动删除它之后就不触发提问。其他人的命令静默忽略，带附件的文字按普通消息处理。
 
 回复以 Markdown 原文发送，长文字分段，图片随文字发送，其他文件单独上传。发送节奏由 `onebot` 插件给出，初始最短间隔 1.5 秒，再增加至多 1.5 秒随机延迟。Run 进行时，手机 QQ 私聊显示可能短暂间断的「正在输入」；Mac QQ 与群聊不显示，取消使用 `/cancel`。
 

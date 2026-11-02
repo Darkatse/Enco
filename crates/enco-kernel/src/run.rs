@@ -44,28 +44,24 @@ impl SessionActor {
         let mut ending = RunEnd::BudgetExhausted;
         let max_rounds = self.deps.registry.view().config.kernel.max_rounds_per_run;
         let mut pending = self.deps.store.pending(self.session.id).await?;
+        if command_end(&pending).is_some() {
+            // Inter-Run commands are consumed by the actor without starting a Run.
+            return Ok(());
+        }
         for _ in 0..max_rounds.get() {
-            // The owner went back: the Run stops at this boundary, and the backtrack follows it.
-            if pending.iter().any(crate::transcript::is_backtrack) {
-                if !prefix.is_empty() {
-                    // Nothing of this Run is recorded yet, so it does not start at all.
-                    return Ok(());
-                }
-                ending = RunEnd::Cancelled;
-                break;
-            }
             let inputs = std::mem::take(&mut pending);
             let (end, safe_mode) = self
                 .round(run, &token, std::mem::take(&mut prefix), inputs)
                 .await?;
             pending = self.deps.store.pending(self.session.id).await?;
+            if let Some(end) = command_end(&pending) {
+                ending = end;
+                break;
+            }
             // How the Run ends if it stops after this Round, and whether it stops now.
             let stop;
             (ending, stop) = match end {
-                RoundEnd::Replied | RoundEnd::ReplySkipped
-                    if pending.is_empty()
-                        || pending.iter().any(crate::transcript::is_backtrack) =>
-                {
+                RoundEnd::Replied | RoundEnd::ReplySkipped if pending.is_empty() => {
                     (RunEnd::Completed, true)
                 }
                 RoundEnd::Replied | RoundEnd::ReplySkipped | RoundEnd::ToolsSettled => {
@@ -84,4 +80,12 @@ impl SessionActor {
             .await?;
         Ok(())
     }
+}
+
+fn command_end(pending: &[Event]) -> Option<RunEnd> {
+    pending.iter().rev().find_map(|event| match event.body {
+        EventBody::Halt(..) => Some(RunEnd::Halted),
+        EventBody::Backtrack { .. } => Some(RunEnd::Backtracked),
+        _ => None,
+    })
 }

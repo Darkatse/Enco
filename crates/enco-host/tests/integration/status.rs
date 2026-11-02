@@ -225,7 +225,10 @@ async fn owner_switch_and_stopped_owners_are_reported_from_execution_facts() {
     ));
     let (development, registry, store) =
         scripted_home(root.path(), runtime, configuration(), vec![]).await;
-    let session = store.ensure_session("broken", Utc::now()).await.unwrap();
+    let session = store
+        .ensure_session(&"broken".parse().unwrap(), Utc::now())
+        .await
+        .unwrap();
     // A future Log body is valid JSON but unreadable by this host's Session owner.
     rusqlite::Connection::open(root.path().join("enco.db"))
         .unwrap()

@@ -97,7 +97,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | Space | 主人全部节点的集合；控制平面（成员、Binding、期望状态）由共识维护 |
 | Binding | `key → (node, epoch)`，单写者资源的所有权：Session 是粘滞所有权，渠道与定时是租约 |
 
-其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief、回音、回溯（Backtrack）、工作目录、常驻说明、角色说明；ContextPlan、Composer、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store；外部、Mapper（映射器）、MappingRecord（映射记录）、MappingOrigin（映射出处）、定本；Connection（连接）、Account（账号）。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
+其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief、回音、回溯（Backtrack）、委派、子 Session、全名、叫停（Halt）、归档、工作目录、常驻说明、角色说明；ContextPlan、Composer、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store；外部、Mapper（映射器）、MappingRecord（映射记录）、MappingOrigin（映射出处）、定本；Connection（连接）、Account（账号）。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
 
 扩展只有两种形态：
 
@@ -131,7 +131,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 
 | 透镜 | 做到极致的地方 | Enco 拿走的 | 它的教训与 Enco 的对策 |
 |---|---|---|---|
-| Erlang | 隔离进程、邮箱、位置透明、supervision、热代码加载 | 归属者 actor 持有状态，代际是可替换的回调模块；健康门控是代际的 supervisor，父 Session 是子 Session 的 supervisor | 位置透明掩盖部分失败，netsplit 后要人工收拾，最多两个代码版本 → 远程调用显式返回 `unknown`，控制平面用共识，记录与钉住的实例数量不限，恢复只留两份制品 |
+| Erlang | 隔离进程、邮箱、位置透明、supervision、热代码加载 | 归属者 actor 持有状态，代际是可替换的回调模块；健康门控是代际的 supervisor，父 Session 监视子 Session、向下叫停 | 位置透明掩盖部分失败，netsplit 后要人工收拾，最多两个代码版本 → 远程调用显式返回 `unknown`，控制平面用共识，记录与钉住的实例数量不限，恢复只留两份制品 |
 | Plan 9 | 按进程组合的命名空间，`import`，`cpu` | 每个 Round 的能力快照是一个命名空间，由本地与远程导出的能力组成；roam 就是 `cpu` | 一切皆文件会丢失动作的语义 → 动作用类型化调用，文件投影只用于查看 |
 | Smalltalk | 活的 image，系统在运行中修改自己 | 自我修改的闭环，`status` 与 `inspect` | image 不可复现、会腐烂，包之间的方法覆盖让结果取决于加载顺序 → 源码是意图，登记把源码与制品按内容寻址记进自己的库；要改变一个插件的行为就改它的源码并登记 |
 | Lisp | 代码即数据，eval 与 REPL，语言扩展自身 | Log 是数据；请求是 composer 对当前输入的纯函数，并作为数据记录；工具调用是被内核 eval 的程序 | 无限扩展导致方言碎片化 → 少量类型化的贡献与 WIT 契约 |
@@ -166,7 +166,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | 专题 | 内容 |
 |---|---|
 | [代际](generations.md) | 自我修改：登记、生效、恢复与宿主例外 |
-| [Session](session.md) | Log、Round、请求的唯一构造路径、Attempt、恢复与取消、定时 |
+| [Session](session.md) | Log、Round、请求的唯一构造路径、Attempt、恢复与取消、定时、委派、叫停与归档 |
 | [上下文与手册](context.md) | 内核、composer 与 Provider 的分工，渐进式披露，一份文档两种读者，手册的三层与投影 |
 | [插件](plugins.md) | 边界与契约、参数 schema、插件只响应调用、Store、命名与身份、接线与准入、外部的映射与定本、配置与密钥、原生能力 |
 | [渠道](channels.md) | 连接 actor、事件的转移、投递的结算 |

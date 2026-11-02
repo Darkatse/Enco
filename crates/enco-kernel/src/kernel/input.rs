@@ -57,9 +57,11 @@ impl Kernel {
 
     /// Accept inputs and connection progress before waking the affected Session owners.
     ///
-    /// A Session the connection creates with this acceptance starts once it is committed. A
-    /// backtrack must point at a recorded position other than another backtrack; a newly accepted
-    /// one signals the Session's current Run, which stops at its next boundary.
+    /// A Session the connection creates with this acceptance starts once it is committed. An
+    /// input to an archived Session is not written and its result says so; the connection
+    /// progress commits all the same. A backtrack must point at a recorded position other than a
+    /// command; a newly accepted command signals the Session's current Run, which stops at its
+    /// next boundary.
     pub async fn accept(
         &self,
         events: &[Event],
@@ -68,17 +70,18 @@ impl Kernel {
         if self.deps.shutdown.is_cancelled() {
             return Err(KernelError::ShuttingDown);
         }
-        let created = connection.and_then(|write| write.session.as_ref());
-        let mut handles = HashMap::new();
         for event in events {
-            if created.is_none_or(|session| session.id != event.session) {
-                handles.insert(event.session, self.handle(event.session)?);
+            // Whether the Session exists or is archived is the transaction's to say.
+            if let Some(handle) = lock(&self.sessions).get(&event.session)
+                && let Some(reason) = lock(&handle.stopped).clone()
+            {
+                return Err(KernelError::SessionStopped(event.session, reason));
             }
             if let EventBody::Backtrack { to } = event.body {
                 self.check_backtrack(event.session, to).await?;
             }
         }
-        let accepted = match created {
+        let accepted = match connection.and_then(|write| write.session.as_ref()) {
             Some(session) => {
                 self.deps
                     .registry
@@ -88,13 +91,23 @@ impl Kernel {
             None => self.deps.store.accept(events, connection).await?,
         };
         if let Some(session) = accepted.session {
-            handles.insert(session.id, self.ensure_actor(session)?);
+            self.ensure_actor(session)?;
         }
         for (event, accepted) in events.iter().zip(&accepted.events) {
-            handles[&event.session].wake.notify_one();
-            // A resent backtrack already took effect; the Run now going may be a later one.
-            if *accepted == Accepted::New && crate::transcript::is_backtrack(event) {
-                self.cancel(event.session)?;
+            if *accepted == Accepted::Archived {
+                continue;
+            }
+            let handle = lock(&self.sessions)
+                .get(&event.session)
+                .cloned()
+                .ok_or(KernelError::UnknownSession(event.session))?;
+            handle.wake.notify_one();
+            // A resent command already took effect; the Run now going may be a later one.
+            if *accepted == Accepted::New
+                && crate::transcript::is_command(event)
+                && let Some(token) = lock(&handle.run_cancel).as_ref()
+            {
+                token.cancel();
             }
         }
         Ok(accepted.events)
@@ -112,9 +125,20 @@ impl Kernel {
             .find(|entry| entry.pos == to)
             .ok_or_else(|| rejected("the position is not in its Log"))?;
         match &entry.body {
-            EntryBody::EventConsumed { event } if crate::transcript::is_backtrack(event) => {
-                Err(rejected("the position is another backtrack"))
-            }
+            EntryBody::EventConsumed {
+                event:
+                    Event {
+                        body: EventBody::Halt(..),
+                        ..
+                    },
+            } => Err(rejected("the position is a halt")),
+            EntryBody::EventConsumed {
+                event:
+                    Event {
+                        body: EventBody::Backtrack { .. },
+                        ..
+                    },
+            } => Err(rejected("the position is another backtrack")),
             _ => Ok(()),
         }
     }

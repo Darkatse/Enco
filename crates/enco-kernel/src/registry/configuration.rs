@@ -205,12 +205,18 @@ pub(super) async fn check_profiles(
     kernel: &KernelSettings,
 ) -> Result<(), RegistryError> {
     let mut stranded: BTreeMap<ProfileName, Vec<String>> = BTreeMap::new();
-    for session in deps.store.sessions().await? {
+    for session in deps
+        .store
+        .sessions()
+        .await?
+        .into_iter()
+        .filter(|session| session.archived_at.is_none())
+    {
         if !kernel.profiles.contains_key(&session.profile) {
             stranded
                 .entry(session.profile)
                 .or_default()
-                .push(session.name);
+                .push(session.name.into());
         }
     }
     if stranded.is_empty() {
@@ -235,7 +241,7 @@ impl Registry {
     pub(crate) async fn session_view(
         &self,
         session: SessionId,
-    ) -> Result<(SessionRecord, Arc<View>), RegistryError> {
+    ) -> Result<(SessionRecord, Vec<SessionRecord>, Arc<View>), RegistryError> {
         let _state = self.state.lock().await;
         let session = self
             .deps
@@ -243,7 +249,19 @@ impl Registry {
             .session(session)
             .await?
             .ok_or(StoreError::UnknownSession(session))?;
-        Ok((session, self.view()))
+        let mut ancestors = Vec::new();
+        let mut parent = session.parent.as_ref().map(|parent| parent.id);
+        while let Some(id) = parent {
+            let ancestor = self
+                .deps
+                .store
+                .session(id)
+                .await?
+                .ok_or(StoreError::UnknownSession(id))?;
+            parent = ancestor.parent.as_ref().map(|parent| parent.id);
+            ancestors.push(ancestor);
+        }
+        Ok((session, ancestors, self.view()))
     }
 
     /// Accept input that creates a Session, under the committer that also changes profiles.
@@ -266,6 +284,37 @@ impl Registry {
             return Err(RegistryError::UnknownProfile(session.profile.clone()));
         }
         Ok(self.deps.store.accept(events, connection).await?)
+    }
+
+    pub(crate) async fn commit_session(
+        &self,
+        session: SessionId,
+        commit: crate::Commit,
+    ) -> Result<crate::CommitOutcome, StoreError> {
+        let mut creates = commit
+            .deliveries
+            .iter()
+            .filter_map(|delivery| match &delivery.kind {
+                crate::SessionDeliveryKind::Delegation {
+                    create: Some(child),
+                    ..
+                } => Some(&child.profile),
+                _ => None,
+            });
+        let Some(first) = creates.next() else {
+            return self.deps.store.commit(session, commit).await;
+        };
+        let _state = self.state.lock().await;
+        let view = self.view();
+        if let Some(profile) = std::iter::once(first)
+            .chain(creates)
+            .find(|profile| !view.config.kernel.profiles.contains_key(*profile))
+        {
+            return Ok(crate::CommitOutcome::Rejected(
+                crate::CommitRejection::ProfileUnknown(profile.clone()),
+            ));
+        }
+        self.deps.store.commit(session, commit).await
     }
 
     /// Profile assignments share the registry's committer with configuration changes.

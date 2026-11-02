@@ -20,6 +20,8 @@ pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure>
         home,
         timezone,
         session,
+        children,
+        profiles,
         transcript,
         previous_plan,
         owner_context,
@@ -37,6 +39,8 @@ pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure>
     } = input;
     Ok(wire::ComposeInput {
         session: session_record(session)?,
+        children: children.iter().map(child).collect(),
+        profiles: profiles.iter().map(profile).collect(),
         timezone: timezone.to_string(),
         home: home.to_string_lossy().into_owned(),
         transcript: transcript_record(transcript)?,
@@ -76,6 +80,8 @@ fn session_record(session: &SessionRecord) -> Result<wire::Session, Failure> {
     let SessionRecord {
         id,
         name,
+        parent,
+        archived_at: _,
         created_at,
         binding: _,
         profile,
@@ -83,7 +89,8 @@ fn session_record(session: &SessionRecord) -> Result<wire::Session, Failure> {
     } = session;
     Ok(wire::Session {
         id: id.to_string(),
-        name: name.clone(),
+        name: name.to_string(),
+        parent: parent.as_ref().map(event::session_source),
         profile: profile.to_string(),
         working_dir: wire::WorkingDir {
             node: working_dir.node.to_string(),
@@ -184,6 +191,7 @@ fn transcript_item(item: &TranscriptItem<LocatedImage>) -> Result<wire::Transcri
         message: recorded,
         generation: _,
         event: input,
+        file_path,
     } = item;
     let message = message(recorded);
     let images: Vec<_> = message
@@ -198,7 +206,7 @@ fn transcript_item(item: &TranscriptItem<LocatedImage>) -> Result<wire::Transcri
         pos: event::pos(*pos),
         event: input
             .as_ref()
-            .map(|value| event::event(value, &images))
+            .map(|value| event::event(value, &images, file_path.as_deref()))
             .transpose()?,
         message,
     })
@@ -399,3 +407,56 @@ fn plan_item(item: wire::PlanItem) -> Result<CompositionItem, Failure> {
 #[cfg(test)]
 #[path = "composer_convert_tests.rs"]
 mod tests;
+
+fn child(value: &enco_kernel::Child) -> wire::Child {
+    let enco_kernel::Child {
+        name,
+        profile,
+        state:
+            ChildState {
+                awaiting,
+                halted,
+                replies_to_owner,
+            },
+    } = value;
+    wire::Child {
+        name: name.clone(),
+        profile: profile.to_string(),
+        awaiting: *awaiting,
+        halted: halted.as_ref().map(event::halt),
+        replies_to_owner: *replies_to_owner,
+    }
+}
+
+fn profile(value: &enco_kernel::DelegableProfile) -> wire::DelegableProfile {
+    let enco_kernel::DelegableProfile {
+        name,
+        description,
+        reply,
+    } = value;
+    wire::DelegableProfile {
+        name: name.to_string(),
+        description: description.clone(),
+        reply: reply.iter().map(profile_endpoint).collect(),
+    }
+}
+
+fn profile_endpoint(value: &enco_kernel::ProfileEndpoint) -> wire::ProfileEndpoint {
+    let enco_kernel::ProfileEndpoint {
+        endpoint,
+        model,
+        accepts,
+        budget: limits,
+    } = value;
+    wire::ProfileEndpoint {
+        endpoint: endpoint.clone(),
+        model: model.clone(),
+        budget: budget(*limits),
+        accepts: accepts
+            .iter()
+            .map(|modality| match modality {
+                Modality::Image => wire::Modality::Image,
+            })
+            .collect(),
+    }
+}

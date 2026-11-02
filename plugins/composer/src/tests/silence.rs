@@ -1,14 +1,20 @@
+use super::delegation::{capability, child_source};
 use super::*;
-use enco_sdk::types::{Effect, ToolSpec};
 
 #[test]
 fn only_noninteractive_inputs_offer_silence_when_the_tool_is_available() {
     let owner = incoming(1, "2026-10-02T14:03:00Z", "hello");
     let message = owner.event.as_ref().unwrap().body.clone();
+    let session_message = EventBody::SessionMessage(SessionMessage {
+        text: "Evidence".into(),
+        file: None,
+    });
+    // Whether each input is interactive, as the kernel decides it.
     let cases = [
-        (EventSource::Cli, message.clone(), false),
-        (member(false), message, false),
-        (EventSource::Cli, EventBody::Backtrack(pos(1)), false),
+        (EventSource::Cli, message.clone(), true),
+        (member(false), message, true),
+        (EventSource::Cli, EventBody::Backtrack(pos(1)), true),
+        (EventSource::Parent, session_message.clone(), true),
         (
             EventSource::Scheduler,
             EventBody::Reminder(Reminder {
@@ -17,7 +23,7 @@ fn only_noninteractive_inputs_offer_silence_when_the_tool_is_available() {
                 skipped: 0,
                 text: "routine check".into(),
             }),
-            true,
+            false,
         ),
         (
             EventSource::Registry,
@@ -28,39 +34,40 @@ fn only_noninteractive_inputs_offer_silence_when_the_tool_is_available() {
                 failure: enco_sdk::protocol::failure("plugin.trap", "probe trapped", false),
                 text: "rolled back".into(),
             }),
-            true,
+            false,
+        ),
+        (child_source(), session_message, false),
+        (
+            child_source(),
+            EventBody::ChildRunEnded(RunEnd::Interrupted),
+            false,
         ),
     ];
     for available in [false, true] {
-        for (source, body, noninteractive) in &cases {
+        for (source, body, interactive) in &cases {
             let mut input = input();
+            input.session.parent = Some(SessionSource {
+                id: "parent".into(),
+                name: "root".into(),
+            });
             if available {
-                input.capabilities.push(Capability {
-                    id: CapabilityId {
-                        node: "node".into(),
-                        name: "reply_skip".into(),
-                    },
-                    spec: ToolSpec {
-                        name: "reply_skip".into(),
-                        description: "End without replying".into(),
-                        input_schema:
-                            r#"{"type":"object","properties":{},"additionalProperties":false}"#
-                                .into(),
-                        effect: Effect::ReadOnly,
-                    },
-                });
+                input.capabilities.push(capability("reply_skip"));
             }
             let mut item = incoming(2, "2026-10-02T14:05:00Z", "input");
             let event = item.event.as_mut().unwrap();
             event.source = source.clone();
             event.body = body.clone();
+            event.interactive = *interactive;
             item.message.parts = match body {
                 EventBody::Reminder(reminder) => vec![Part::Text(reminder.text.clone())],
                 EventBody::GenerationRolledBack(rollback) => {
                     vec![Part::Text(rollback.text.clone())]
                 }
-                EventBody::Backtrack(_) => vec![],
                 EventBody::UserMessage(message) => vec![Part::Text(message.text.clone())],
+                EventBody::SessionMessage(message) => vec![Part::Text(message.text.clone())],
+                EventBody::Backtrack(_) | EventBody::ChildRunEnded(_) | EventBody::Halt(_) => {
+                    vec![]
+                }
             };
             input.transcript.items = vec![owner.clone(), item];
             let plan = reply(&input);
@@ -77,7 +84,7 @@ fn only_noninteractive_inputs_offer_silence_when_the_tool_is_available() {
                     PlanItem::Log(_) => None,
                 })
                 .unwrap();
-            assert_eq!(note.contains("reply_skip"), available && *noninteractive);
+            assert_eq!(note.contains("reply_skip"), available && !interactive);
         }
     }
 }

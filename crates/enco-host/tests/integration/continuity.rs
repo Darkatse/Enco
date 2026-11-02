@@ -443,7 +443,10 @@ async fn invalid_schedule_arguments_leave_no_records_and_allow_correction() {
 async fn stopped_scheduler_reports_the_schedule_that_failed() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_store(dir.path()).await;
-    let session = store.ensure_session("main", Utc::now()).await.unwrap();
+    let session = store
+        .ensure_session(&"main".parse().unwrap(), Utc::now())
+        .await
+        .unwrap();
     let schedule = Schedule {
         id: ScheduleId::new(),
         session: session.id,

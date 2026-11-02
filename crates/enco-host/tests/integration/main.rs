@@ -2,6 +2,7 @@
 mod backtrack;
 mod channel;
 mod continuity;
+mod delegation;
 mod fallback;
 mod history;
 mod images;

@@ -1,3 +1,8 @@
+mod content;
+mod state;
+pub use content::*;
+pub use state::*;
+
 use crate::{DateTime, LogPos, MappingOrigin, SessionId, Settlement, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -27,3 +32,6 @@ pub struct DeliverySettlement {
     /// Observation time for display, never ordering.
     pub at: DateTime<Utc>,
 }
+
+#[cfg(test)]
+mod tests;

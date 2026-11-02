@@ -137,27 +137,7 @@ fn node(out: &mut String, status: &Status, timezone: Tz) {
             "off"
         }
     ));
-    let sessions: Vec<_> = node
-        .execution
-        .sessions
-        .iter()
-        .map(|session| {
-            format!(
-                "{} {}",
-                code(&session.session.name),
-                if session.stopped.is_some() {
-                    "stopped"
-                } else if session.running {
-                    "running"
-                } else {
-                    "idle"
-                }
-            )
-        })
-        .collect();
-    if !sessions.is_empty() {
-        out.push_str(&format!("Sessions: {}\n", sessions.join(" · ")));
-    }
+    sessions(out, status);
     let channels: Vec<_> = node
         .channels
         .iter()
@@ -206,6 +186,38 @@ fn node(out: &mut String, status: &Status, timezone: Tz) {
                 time(failure.at, timezone),
                 code(&status.session.name),
                 code(&failure.delivery.target)
+            ));
+        }
+    }
+}
+
+fn sessions(out: &mut String, status: &Status) {
+    let mut sessions: Vec<_> = status
+        .node
+        .execution
+        .sessions
+        .iter()
+        .filter(|session| session.session.archived_at.is_none())
+        .collect();
+    sessions.sort_by(|a, b| a.session.name.cmp(&b.session.name));
+    if !sessions.is_empty() {
+        out.push_str("\nSessions:\n");
+        for session in sessions {
+            let state = if session.stopped.is_some() {
+                "stopped".into()
+            } else if session.running {
+                "running".into()
+            } else if let Some(pos) = session.waiting {
+                format!("waiting for a slot (#{pos})")
+            } else {
+                "idle".into()
+            };
+            out.push_str(&format!(
+                "{}- {} · profile {} · {} · {state}\n",
+                "  ".repeat(session.session.name.depth() as usize),
+                code(&session.session.name),
+                code(session.session.profile.as_str()),
+                code(session.session.working_dir.path_str())
             ));
         }
     }

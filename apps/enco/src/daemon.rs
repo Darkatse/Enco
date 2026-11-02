@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use enco_core::*;
-use enco_kernel::{Accepted, ImageError, Kernel, KernelError, Scheduled};
+use enco_kernel::{Accepted, ImageError, KernelError, Scheduled, SessionLookupError};
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
 use tokio::{
@@ -191,8 +191,9 @@ impl From<KernelError> for CommandError {
     fn from(error: KernelError) -> Self {
         Self {
             code: match error {
-                KernelError::UnknownSession(_) => "unknown_session",
-                KernelError::Backtrack { .. } => "bad_request",
+                KernelError::UnknownSession(_)
+                | KernelError::Lookup(SessionLookupError::Unknown(_)) => "unknown_session",
+                KernelError::Backtrack { .. } | KernelError::Lookup(_) => "bad_request",
                 _ => "kernel",
             },
             message: error.to_string(),
@@ -200,17 +201,21 @@ impl From<KernelError> for CommandError {
     }
 }
 
-async fn existing_session(kernel: &Kernel, name: &str) -> Result<SessionRecord, CommandError> {
-    let sessions = kernel.sessions().await?;
-    sessions
-        .iter()
-        .find(|s| s.name == name)
-        .or_else(|| sessions.iter().find(|s| s.id.to_string() == name))
-        .cloned()
-        .ok_or_else(|| CommandError {
-            code: "unknown_session",
-            message: format!("unknown session {name}"),
-        })
+/// The entry's refusal of input to an archived Session.
+fn archived(session: &SessionRecord) -> CommandError {
+    CommandError {
+        code: "bad_request",
+        message: format!("session {} is archived and accepts no input", session.name),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ListedSession {
+    #[serde(flatten)]
+    session: SessionRecord,
+    running: bool,
+    waiting: Option<usize>,
+    stopped: Option<String>,
 }
 
 #[expect(
@@ -267,6 +272,7 @@ async fn process(
             let accepted = match accepted {
                 Accepted::New => "new",
                 Accepted::Duplicate => "duplicate",
+                Accepted::Archived => return Err(archived(&session)),
             };
             json!({ "session_id": session.id, "event_id": event_id, "accepted": accepted })
         }
@@ -285,18 +291,27 @@ async fn process(
             json!({ "session_id": session.id })
         }
         Command::Cancel { session: name } => {
-            let session = existing_session(kernel, &name).await?;
+            let session = kernel.find_session(&name).await?;
             json!({ "cancelled": kernel.cancel(session.id)? })
+        }
+        Command::Halt { session: name } => {
+            let session = kernel.find_session(&name).await?;
+            json!({ "halted": kernel.halt(session.id, EventSource::Cli).await? })
+        }
+        Command::Archive { session: name } => {
+            let session = kernel.find_session(&name).await?;
+            json!({ "archived": kernel.archive(session.id, EventSource::Cli).await? })
         }
         Command::Backtrack {
             session: name,
             to,
             event_id,
         } => {
-            let session = existing_session(kernel, &name).await?;
+            let session = kernel.find_session(&name).await?;
             let accepted = match kernel.backtrack(session.id, event_id, to).await? {
                 Accepted::New => "new",
                 Accepted::Duplicate => "duplicate",
+                Accepted::Archived => return Err(archived(&session)),
             };
             json!({ "session_id": session.id, "event_id": event_id, "accepted": accepted })
         }
@@ -336,12 +351,28 @@ async fn process(
                 })?;
             render(output, &status, || status.document())
         }
-        Command::Sessions {} => json!(kernel.sessions().await?),
+        Command::Sessions { archived } => {
+            let mut sessions: Vec<_> = kernel
+                .status()
+                .await?
+                .sessions
+                .into_iter()
+                .filter(|status| status.session.archived_at.is_some() == archived)
+                .map(|status| ListedSession {
+                    session: status.session,
+                    running: status.running,
+                    waiting: status.waiting,
+                    stopped: status.stopped,
+                })
+                .collect();
+            sessions.sort_by(|a, b| a.session.name.cmp(&b.session.name));
+            json!(sessions)
+        }
         Command::Log {
             session: name,
             after,
         } => {
-            let session = existing_session(kernel, &name).await?;
+            let session = kernel.find_session(&name).await?;
             json!(kernel.log(session.id, after).await?)
         }
         Command::Apply { reason, output } => {
@@ -403,14 +434,14 @@ async fn process(
             session: name,
             attempt_id,
         } => {
-            let session = existing_session(kernel, &name).await?;
+            let session = kernel.find_session(&name).await?;
             json!(kernel.inspect(session.id, attempt_id).await?)
         }
         Command::SetWorkingDir {
             session: name,
             path,
         } => {
-            let session = existing_session(kernel, &name).await?;
+            let session = kernel.find_session(&name).await?;
             let working_dir = kernel.set_working_dir(session.id, path).await?;
             json!({ "working_dir": working_dir })
         }
@@ -418,7 +449,7 @@ async fn process(
             session: name,
             profile,
         } => {
-            let session = existing_session(kernel, &name).await?;
+            let session = kernel.find_session(&name).await?;
             kernel.set_profile(session.id, &profile).await?;
             json!({ "profile": profile })
         }

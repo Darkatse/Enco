@@ -38,9 +38,12 @@ Session execution through explicit ports.
 - struct `ChannelSettings` — The service and secret names chosen for one connection; values remain in transport.
 - struct `ChannelToolActivity` — One tool call visible in a Run's progress view.
 - enum `ChannelToolState` — A tool's current state in a progress view.
+- struct `Child` — A child of this Session, by the facts that change only at moments its parent sees.
 - struct `CodeProvenance` — Where a generation's code came from; settings-only generations follow their code generation.
 - enum `CodeSource` — How a generation's code entered the registry.
-- struct `Commit` — An atomic append of Log facts and consumption of their corresponding Inbox rows.
+- struct `Commit` — An atomic append of Log facts, Inbox consumption and cross-Session inputs.
+- enum `CommitOutcome` — Result of checking and committing a Session owner's transaction.
+- enum `CommitRejection` — A normal tool precondition failure, distinct from a storage failure.
 - struct `Completion` — Provider output with host-assigned call identities.
 - struct `CompletionEndpoint` — A profile's endpoint with the context limits required by completion.
 - struct `ComposeInput` — Fixed Round inputs, with the selected budgets and recorded recovery facts for this composition.
@@ -56,6 +59,7 @@ Session execution through explicit ports.
 - struct `ContextError` — A context source failed to supply its authoritative content.
 - struct `ContextQuery` — Shared input to a Round's context sources.
 - struct `Credential` — A declared credential; transport validates placement and alone reads its value.
+- struct `DelegableProfile` — An available profile for a newly delegated child.
 - struct `DeliveryStatus` — A delivery failure with the Session name resolved before presentation.
 - enum `Difference` — One layer in which a registered plugin runs otherwise than registered.
 - struct `Endpoint` — A resolved model service, independent of its caller and code generation.
@@ -67,6 +71,7 @@ Session execution through explicit ports.
 - struct `FactoryPlugin` — A plugin supplied with the host binary.
 - struct `FactoryStatus` — Current host-owned recovery code and whether registered intent needs to follow it.
 - struct `Fetched` — What a channel mapper's fetch found at a locator.
+- struct `Halted` — A halted subtree, as far as its actors could take the halt.
 - struct `HeaderPlacement` — A request header carrying a credential.
 - enum `ImageError` — Image ingestion either rejects its input or reports a storage failure.
 - struct `Inspection` — An Attempt reconstructed exclusively from its recorded plan and Log prefix.
@@ -84,6 +89,7 @@ Session execution through explicit ports.
 - enum `Location` — Where transport alone writes a credential value.
 - enum `Need` — A use's interface and behavior requirements, shared by wiring checks and real probes.
 - struct `NewSession` — A Session created together with the input that first reaches it.
+- enum `NewSessionOrigin` — Origin fixed when a Session is created.
 - struct `NodeRecord` — Persistent node identity and recovery policy.
 - struct `OfferedMemories` — The memories offered for one Round, and what could not be offered.
 - struct `Placement` — One credential recipient and the location populated for that recipient.
@@ -93,6 +99,7 @@ Session execution through explicit ports.
 - struct `PluginStatus` — What runs for one plugin, and how that differs from its registered intent.
 - struct `Probe` — A successful real call made while applying configuration.
 - struct `Profile` — Session policy sampled once at the start of a Round.
+- struct `ProfileEndpoint` — A reply endpoint's declared model capabilities and budget.
 - enum `Proposed` — What a candidate generation changes, which decides the part its failure concerns.
 - struct `ProviderRequest` — A canonical model request. Session requests resolve a frozen, recorded plan; registry probes contain only fixed validation content.
 - struct `Question` — Instructions and the allowed answer shape for one independent judgment.
@@ -122,6 +129,9 @@ Session execution through explicit ports.
 - struct `Schedules` — Commands to the sole owner of durable schedules.
 - enum `ScopeError` — A requested rewind that the scope cannot address.
 - struct `SelectedGeneration` — A generation a registration selected, as it stands now.
+- struct `SessionDelivery` — One input handed from a Session owner to another Session's Inbox.
+- enum `SessionDeliveryKind` — Meaning of a cross-Session write within its owning Session's commit.
+- enum `SessionLookupError` — Why a Session name or ID given by the owner did not resolve to a Session to act on.
 - struct `SessionStatus` — Live execution status, separate from durable Session facts.
 - struct `SettingsError` — A configuration error attributed to the table that owns it.
 - enum `Standing` — How the running layer of one plugin stands against its registered layer.
@@ -187,6 +197,7 @@ What an atomic acceptance committed.
 pub enum Accepted {
     New,
     Duplicate,
+    Archived,
 }
 ```
 
@@ -194,6 +205,7 @@ Whether an Event was newly accepted.
 
 - `New` — Accepted for the first time.
 - `Duplicate` — The Event ID was already accepted.
+- `Archived` — The target Session is archived and accepts no input.
 
 Implements:
 
@@ -562,6 +574,8 @@ pub enum ChannelAction<T = ChannelAttachment, Q = ChannelQuote> {
     Cancel,
     Backtrack,
     Everyone(Option<bool>),
+    Halt(Option<String>),
+    Archive(Option<String>),
 }
 ```
 
@@ -573,6 +587,8 @@ The meaning of an incoming message, independent of protocol command syntax.
 - `Cancel` — Stop the conversation's current work.
 - `Backtrack` — Return to the message named by the input's reply target.
 - `Everyone` — Open or close a group to members; absent queries its current setting.
+- `Halt` — Halt a named subtree, or the conversation Session when absent.
+- `Archive` — Archive a named subtree, or list archivable Sessions when absent.
 
 ## struct `ChannelActivity`
 
@@ -700,6 +716,8 @@ pub enum ChannelCommandKind {
     Cancel,
     Backtrack,
     Everyone,
+    Halt,
+    Archive,
 }
 ```
 
@@ -709,6 +727,8 @@ The commands understood by the connection owner.
 - `Cancel` — Stop current work.
 - `Backtrack` — Return to a previous message.
 - `Everyone` — Change who can address the Agent in a group.
+- `Halt` — Halt a Session subtree.
+- `Archive` — Archive a named Session subtree.
 
 ## struct `ChannelContent`
 
@@ -1071,6 +1091,31 @@ impl Clone for ChannelToolState
 impl Copy for ChannelToolState
 ```
 
+## struct `Child`
+
+`src/ports/composer.rs`
+
+```rust
+pub struct Child {
+    pub name: String,
+    pub profile: ProfileName,
+    pub state: ChildState,
+}
+```
+
+A child of this Session, by the facts that change only at moments its parent sees.
+
+- `name` — Its name relative to this Session.
+- `profile` — Its current profile.
+- `state` — Whether this Session waits for its answer, how it was halted and where its replies go.
+
+Implements:
+
+```rust
+impl Clone for Child
+impl Debug for Child
+```
+
 ## struct `CodeProvenance`
 
 `src/registry/intent.rs`
@@ -1130,19 +1175,84 @@ impl Serialize for CodeSource
 
 ## struct `Commit`
 
-`src/ports/store.rs`
+`src/ports/store/commit.rs`
 
 ```rust
 pub struct Commit {
     pub entries: Vec<Entry>,
-    pub plan: Option<std::sync::Arc<PlanWrite>>,
+    pub plan: Option<std::sync::Arc<super::PlanWrite>>,
+    pub deliveries: Vec<SessionDelivery>,
 }
 ```
 
-An atomic append of Log facts and consumption of their corresponding Inbox rows.
+An atomic append of Log facts, Inbox consumption and cross-Session inputs.
 
 - `entries` — Ordered facts to append.
-- `plan` — A request plan accepted together with the Attempt that refers to it.
+- `plan` — A request plan accepted with the Attempt that refers to it.
+- `deliveries` — Inputs committed with these facts, in order.
+
+## enum `CommitOutcome`
+
+`src/ports/store/commit.rs`
+
+```rust
+pub enum CommitOutcome {
+    Committed {
+        delivered: Vec<SessionId>,
+    },
+    Rejected(CommitRejection),
+}
+```
+
+Result of checking and committing a Session owner's transaction.
+
+- `Committed` — Facts committed, with the actual Inbox recipients to wake after the transaction.
+  - `delivered` — Sessions whose Inbox accepted a new input.
+- `Rejected` — No changes were written; the owning actor must record the tool's failure instead.
+
+## enum `CommitRejection`
+
+`src/ports/store/commit.rs`
+
+```rust
+pub enum CommitRejection {
+    Halted,
+    Archived(SessionName),
+    MissingProfile(SessionName),
+    ChildExists(SessionName),
+    ProfileMismatch {
+        current: ProfileName,
+        requested: ProfileName,
+    },
+    WorkingDirMismatch {
+        current: WorkingDir,
+        requested: WorkingDir,
+    },
+    ProfileUnknown(ProfileName),
+}
+```
+
+A normal tool precondition failure, distinct from a storage failure.
+
+- `Halted` — The sending Session has an unconsumed halt.
+- `Archived` — The recipient no longer accepts inputs.
+- `MissingProfile` — Creating a new child requires a profile.
+- `ChildExists` — Another creation occupied this name before commit.
+- `ProfileMismatch` — The supplied profile disagrees with the existing child's profile.
+  - `current` — Existing profile.
+  - `requested` — Supplied profile.
+- `WorkingDirMismatch` — Only the owner may change an existing child's working directory.
+  - `current` — Existing directory.
+  - `requested` — Supplied directory.
+- `ProfileUnknown` — The running configuration has no profile by this name for a new child.
+
+Implements:
+
+```rust
+impl Debug for CommitRejection
+impl Display for CommitRejection
+impl Error for CommitRejection
+```
 
 ## struct `Completion`
 
@@ -1204,6 +1314,8 @@ pub struct ComposeInput {
     pub now: DateTime<Utc>,
     pub timezone: Tz,
     pub session: SessionRecord,
+    pub children: Vec<Child>,
+    pub profiles: Vec<DelegableProfile>,
     pub transcript: Transcript<LocatedImage>,
     pub previous_plan: Option<ContextPlan>,
     pub owner_context: bool,
@@ -1228,9 +1340,11 @@ Fixed Round inputs, with the selected budgets and recorded recovery facts for th
 - `now` — UTC instant sampled once for this Round.
 - `timezone` — Owner's time zone, shared with recurring schedules.
 - `session` — Session metadata sampled for this Round.
+- `children` — Unarchived direct children in creation order.
+- `profiles` — Profiles available to new children; empty when delegation is unavailable.
 - `transcript` — Canonical history after the latest compaction.
 - `previous_plan` — Most recent reply plan; the composer decides whether to reuse it.
-- `owner_context` — Whether the Session's profile gives it the owner's context: owner instructions and memories.
+- `owner_context` — Whether this Session and all its ancestors permit owner instructions and memories.
 - `owner_instructions` — The owner instructions; absent when missing, in safe mode or without the owner's context.
 - `profile_instructions` — The selected profile's instructions; absent when missing or in safe mode.
 - `memories` — Pinned memories first, then those recalled for the latest input, most relevant first;
@@ -1540,6 +1654,30 @@ Implements:
 ```rust
 impl Clone for Credential
 impl Serialize for Credential
+```
+
+## struct `DelegableProfile`
+
+`src/ports/composer.rs`
+
+```rust
+pub struct DelegableProfile {
+    pub name: ProfileName,
+    pub description: String,
+    pub reply: Vec<ProfileEndpoint>,
+}
+```
+
+An available profile for a newly delegated child.
+
+- `name` — Validated profile name.
+- `description` — Owner-written purpose.
+- `reply` — Reply endpoints in configured order.
+
+Implements:
+
+```rust
+impl Clone for DelegableProfile
 ```
 
 ## struct `DeliveryStatus`
@@ -1873,6 +2011,31 @@ Implements:
 impl<T: Debug> Debug for Fetched<T>
 ```
 
+## struct `Halted`
+
+`src/kernel/lifecycle.rs`
+
+```rust
+pub struct Halted {
+    pub sessions: Vec<SessionRef>,
+    pub stopped: Vec<SessionRef>,
+}
+```
+
+A halted subtree, as far as its actors could take the halt.
+
+- `sessions` — The Sessions halted, root first; empty when the root was already archived.
+- `stopped` — Halted Sessions whose actor had stopped after a failure; each takes its halt once it runs
+  again.
+
+Implements:
+
+```rust
+impl Clone for Halted
+impl Debug for Halted
+impl Serialize for Halted
+```
+
 ## struct `HeaderPlacement`
 
 `src/ports/runtime.rs`
@@ -2095,9 +2258,61 @@ pub async fn accept(&self, events: &[Event], connection: Option<&ConnectionWrite
 
 Accept inputs and connection progress before waking the affected Session owners.
 
-A Session the connection creates with this acceptance starts once it is committed. A
-backtrack must point at a recorded position other than another backtrack; a newly accepted
-one signals the Session's current Run, which stops at its next boundary.
+A Session the connection creates with this acceptance starts once it is committed. An
+input to an archived Session is not written and its result says so; the connection
+progress commits all the same. A backtrack must point at a recorded position other than a
+command; a newly accepted command signals the Session's current Run, which stops at its
+next boundary.
+
+### `Kernel::session`
+
+`src/kernel/lifecycle.rs`
+
+```rust
+pub async fn session(&self, id: SessionId) -> Result<SessionRecord, KernelError>
+```
+
+Read a recorded Session by its permanent identity, whether active or archived.
+
+### `Kernel::find_session`
+
+`src/kernel/lifecycle.rs`
+
+```rust
+pub async fn find_session(&self, selector: &str) -> Result<SessionRecord, KernelError>
+```
+
+Resolve an unarchived Session's name, or any recorded Session's ID, archived ones included.
+
+### `Kernel::open_session`
+
+`src/kernel/lifecycle.rs`
+
+```rust
+pub async fn open_session(&self, selector: &str) -> Result<SessionRecord, KernelError>
+```
+
+Open an unarchived Session, creating only root names.
+
+### `Kernel::halt`
+
+`src/kernel/lifecycle.rs`
+
+```rust
+pub async fn halt(&self, session: SessionId, source: EventSource) -> Result<Halted, KernelError>
+```
+
+Halt an unarchived subtree and wait until no halt waits in its running Sessions' Inboxes.
+
+### `Kernel::archive`
+
+`src/kernel/lifecycle.rs`
+
+```rust
+pub async fn archive(&self, session: SessionId, source: EventSource) -> Result<Halted, KernelError>
+```
+
+Stop accepting input for a subtree, halt it, and wait until its actors have stopped.
 
 ### `Kernel::start`
 
@@ -2105,15 +2320,7 @@ one signals the Session's current Run, which stops at its next boundary.
 pub async fn start(deps: KernelDeps) -> Result<Self, KernelError>
 ```
 
-Bind capabilities and start one actor for each existing Session.
-
-### `Kernel::open_session`
-
-```rust
-pub async fn open_session(&self, name: &str) -> Result<SessionRecord, KernelError>
-```
-
-Create a Session if needed and ensure its owner is running.
+Bind capabilities and start unarchived Sessions, plus archived ones not yet quiescent.
 
 ### `Kernel::connection_update_seen`
 
@@ -2316,6 +2523,7 @@ pub enum KernelError {
         reason: String,
     },
     UnknownSession(SessionId),
+    Lookup(SessionLookupError),
     UnknownProfile(ProfileName),
     InvalidWorkingDir(InvalidWorkingDir),
     Backtrack {
@@ -2340,6 +2548,7 @@ Public command failure; Round failures are recorded in the Log instead.
   - `attempt` — Attempt which references the invalid plan.
   - `reason` — Decoding or resolution failure.
 - `UnknownSession` — No such Session is registered.
+- `Lookup` — A name or ID did not resolve to a Session to act on.
 - `UnknownProfile` — The requested profile is absent from the node configuration.
 - `InvalidWorkingDir` — The requested working directory is not an absolute UTF-8 path.
 - `Backtrack` — A backtrack must point at a position that this Session's conversation has recorded.
@@ -2356,6 +2565,7 @@ impl Error for KernelError
 impl From<InvalidWorkingDir> for KernelError
 impl From<RegistryError> for KernelError
 impl From<ScheduleError> for KernelError
+impl From<SessionLookupError> for KernelError
 impl From<StoreError> for KernelError
 ```
 
@@ -2367,6 +2577,8 @@ impl From<StoreError> for KernelError
 pub struct KernelSettings {
     pub timezone: enco_core::Tz,
     pub max_rounds_per_run: std::num::NonZeroU32,
+    pub max_depth: u32,
+    pub max_concurrent_children: std::num::NonZeroUsize,
     pub profiles: std::collections::BTreeMap<enco_core::ProfileName, crate::Profile>,
     /* private fields */
 }
@@ -2376,6 +2588,8 @@ Parsed kernel tables, sampled by each consumer at its own boundary.
 
 - `timezone` — Owner's civil timezone.
 - `max_rounds_per_run` — Maximum number of Rounds in one Run.
+- `max_depth` — Maximum delegation depth; roots are depth zero.
+- `max_concurrent_children` — Node-wide limit for concurrently running child Sessions.
 - `profiles` — Named Session policies, including `default`.
 
 ### `KernelSettings::TABLES`
@@ -2647,26 +2861,57 @@ impl PartialEq for Need
 ```rust
 pub struct NewSession {
     pub id: SessionId,
-    pub name: String,
+    pub name: SessionName,
     pub profile: ProfileName,
+    pub origin: NewSessionOrigin,
     pub created_at: DateTime<Utc>,
 }
 ```
 
 A Session created together with the input that first reaches it.
 
-Like a Session that `ensure_session` creates, it starts bound to this node at epoch one, in
-this node's default working directory.
+It starts bound to this node at epoch one; its origin determines its directory and name policy.
 
 - `id` — Identity chosen by the creator, which also records it in its own state.
-- `name` — Display name; an occupied name receives a numeric suffix.
+- `name` — Full validated name; its origin determines how occupied names are handled.
 - `profile` — Registered profile the Session starts with.
+- `origin` — Root or child creation facts.
 - `created_at` — Creation time for display.
 
 Implements:
 
 ```rust
 impl Clone for NewSession
+```
+
+## enum `NewSessionOrigin`
+
+`src/ports/store.rs`
+
+```rust
+pub enum NewSessionOrigin {
+    Root,
+    Child {
+        parent: SessionId,
+        working_dir: WorkingDir,
+    },
+}
+```
+
+Origin fixed when a Session is created.
+
+- `Root` — A root uses the node's default directory; an occupied name gets a numeric suffix.
+- `Child` — A child uses its parent's identity and an explicitly resolved working directory.
+  - `parent` — Fixed parent identity.
+  - `working_dir` — Directory supplied by the parent, without availability checks.
+
+Implements:
+
+```rust
+impl Clone for NewSessionOrigin
+impl Debug for NewSessionOrigin
+impl Eq for NewSessionOrigin
+impl PartialEq for NewSessionOrigin
 ```
 
 ## struct `NodeRecord`
@@ -2911,6 +3156,7 @@ impl Serialize for Probe
 
 ```rust
 pub struct Profile {
+    pub description: String,
     pub composer: ComposerSettings,
     pub reply: Endpoints,
     pub compaction: Endpoints,
@@ -2922,6 +3168,7 @@ pub struct Profile {
 
 Session policy sampled once at the start of a Round.
 
+- `description` — Owner-written purpose shown to Sessions that may delegate.
 - `composer` — Plugin and typed invocation options used to compose this Session's requests.
 - `reply` — Ordered candidates for ordinary replies.
 - `compaction` — Ordered candidates for summarizing history.
@@ -2933,6 +3180,32 @@ Implements:
 
 ```rust
 impl Clone for Profile
+```
+
+## struct `ProfileEndpoint`
+
+`src/ports/composer.rs`
+
+```rust
+pub struct ProfileEndpoint {
+    pub endpoint: String,
+    pub model: String,
+    pub accepts: std::collections::BTreeSet<Modality>,
+    pub budget: Budget,
+}
+```
+
+A reply endpoint's declared model capabilities and budget.
+
+- `endpoint` — Configured endpoint name.
+- `model` — Configured model name.
+- `accepts` — Non-text inputs this model accepts.
+- `budget` — Context and output limits.
+
+Implements:
+
+```rust
+impl Clone for ProfileEndpoint
 ```
 
 ## enum `Proposed`
@@ -3814,6 +4087,7 @@ impl Clone for SafeMode
 pub enum ScheduleError {
     EmptyMessage,
     UnknownSession(SessionId),
+    SessionArchived(SessionId),
     InvalidCron(String),
     NoOccurrenceAfter(DateTime<FixedOffset>),
     TooFrequent,
@@ -3830,6 +4104,7 @@ Schedule validation or persistence failure.
 
 - `EmptyMessage` — A reminder must contain meaningful text.
 - `UnknownSession` — There is no such destination Session.
+- `SessionArchived` — An archived destination accepts no new reminders.
 - `InvalidCron` — Cron parsing or evaluation failed.
 - `NoOccurrenceAfter` — The rule has no occurrence after the supplied instant.
 - `TooFrequent` — A likely typo would wake the Agent too frequently.
@@ -3970,6 +4245,84 @@ impl Clone for SelectedGeneration
 impl Serialize for SelectedGeneration
 ```
 
+## struct `SessionDelivery`
+
+`src/ports/store/commit.rs`
+
+```rust
+pub struct SessionDelivery {
+    pub event: Event,
+    pub kind: SessionDeliveryKind,
+}
+```
+
+One input handed from a Session owner to another Session's Inbox.
+
+- `event` — Sender-assigned identity and complete input.
+- `kind` — Preconditions and whether failed delivery may leave the local facts committed.
+
+## enum `SessionDeliveryKind`
+
+`src/ports/store/commit.rs`
+
+```rust
+pub enum SessionDeliveryKind {
+    Boundary,
+    Message,
+    Delegation {
+        name: SessionName,
+        create: Option<Box<super::NewSession>>,
+        profile: Option<ProfileName>,
+        working_dir: Option<WorkingDir>,
+    },
+}
+```
+
+Meaning of a cross-Session write within its owning Session's commit.
+
+- `Boundary` — A Round's reply or a Run's end; when a halt or archival blocks it, the facts still commit.
+- `Message` — A message's effect is delivery itself; rejection leaves the entire commit unwritten.
+- `Delegation` — A delegation's effect, with optional creation and assertions about an existing child.
+  - `name` — Target child's full name.
+  - `create` — New child, absent when addressing an existing child.
+  - `profile` — Supplied profile must match an existing child's current profile.
+  - `working_dir` — Supplied directory must match an existing child's current directory.
+
+## enum `SessionLookupError`
+
+`src/kernel/lifecycle.rs`
+
+```rust
+pub enum SessionLookupError {
+    InvalidName(InvalidSessionName),
+    Unknown(String),
+    Archived {
+        name: String,
+        ids: Vec<SessionId>,
+    },
+    ChildNotFound(SessionName),
+}
+```
+
+Why a Session name or ID given by the owner did not resolve to a Session to act on.
+
+- `InvalidName` — The name breaks the rule for name segments.
+- `Unknown` — No Session has this ID, and no unarchived Session has this name.
+- `Archived` — Only archived Sessions answer to this name or ID; their history stays readable by ID.
+  - `name` — The name the caller gave, or the archived Session's name when it gave an ID.
+  - `ids` — The archived Sessions that had that name.
+- `ChildNotFound` — A child Session that does not exist yet; only its parent creates it.
+
+Implements:
+
+```rust
+impl Debug for SessionLookupError
+impl Display for SessionLookupError
+impl Error for SessionLookupError
+impl From<InvalidSessionName> for SessionLookupError
+impl From<SessionLookupError> for KernelError
+```
+
 ## struct `SessionStatus`
 
 `src/kernel.rs`
@@ -3978,6 +4331,7 @@ impl Serialize for SelectedGeneration
 pub struct SessionStatus {
     pub session: SessionRecord,
     pub running: bool,
+    pub waiting: Option<usize>,
     pub stopped: Option<String>,
 }
 ```
@@ -3986,6 +4340,7 @@ Live execution status, separate from durable Session facts.
 
 - `session` — Durable Session metadata.
 - `running` — Whether a Run is currently executing.
+- `waiting` — FIFO position while awaiting a child Run slot, starting at one.
 - `stopped` — Storage failure that stopped this actor, if any.
 
 Implements:
@@ -4252,6 +4607,7 @@ pub struct TranscriptItem<I = Image> {
     pub message: Message<I>,
     pub generation: Option<GenerationId>,
     pub event: Option<Event>,
+    pub file_path: Option<std::path::PathBuf>,
 }
 ```
 
@@ -4261,6 +4617,7 @@ One canonical message and its immutable source.
 - `message` — Canonical message used when resolving a plan reference.
 - `generation` — Provider generation of the producing Attempt, present only for Assistant messages.
 - `event` — Consumed Inbox Event, present only for inputs; the composer narrates its circumstances.
+- `file_path` — Where the file of this input's Session message is stored, supplied only to composition.
 
 Implements:
 
@@ -4786,12 +5143,20 @@ Read the metadata sampled by the Session actor at each Round boundary.
 async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError>
 ```
 
-Look up a Session without creating it.
+Look up an unarchived Session by name without creating it.
+
+### `Store::children`
+
+```rust
+async fn children(&self, parent: SessionId) -> Result<Vec<SessionRecord>, StoreError>
+```
+
+The unarchived Sessions this one delegated to, in creation order.
 
 ### `Store::ensure_session`
 
 ```rust
-async fn ensure_session(&self, name: &str, created_at: DateTime<Utc>) -> Result<SessionRecord, StoreError>
+async fn ensure_session(&self, name: &SessionName, created_at: DateTime<Utc>) -> Result<SessionRecord, StoreError>
 ```
 
 Create if absent, with local binding at epoch one, the default profile and this node's
@@ -4805,6 +5170,17 @@ async fn set_working_dir(&self, id: SessionId, working_dir: &WorkingDir) -> Resu
 
 Persist the working directory for subsequent Rounds, without checking availability.
 
+### `Store::halt_subtree`
+
+```rust
+async fn halt_subtree(&self, root: SessionId, source: EventSource, halt: Halt, at: DateTime<Utc>, archive: bool) -> Result<Vec<SessionRef>, StoreError>
+```
+
+Atomically halt the unarchived subtree, optionally archiving it; returns it root first.
+
+The root receives `source`; descendants receive `Parent`. Each input carries `halt`. A root
+that is already archived writes nothing and returns no Sessions.
+
 ### `Store::log`
 
 ```rust
@@ -4813,10 +5189,19 @@ async fn log(&self, session: SessionId, after: Option<LogPos>) -> Result<Vec<Ent
 
 Read immutable facts in structural order after an optional position.
 
+### `Store::child_state`
+
+```rust
+async fn child_state(&self, child: SessionId) -> Result<ChildState, StoreError>
+```
+
+Fold a child's unconsumed inputs, then its Log, newest first through `ChildStateFold`,
+reading only as far back as the fold needs.
+
 ### `Store::commit`
 
 ```rust
-async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreError>
+async fn commit(&self, session: SessionId, commit: Commit) -> Result<CommitOutcome, StoreError>
 ```
 
 Atomically append facts and consume their Inbox inputs after checking ownership and positions.
@@ -4918,11 +5303,12 @@ Read schedules, optionally filtered by state.
 ### `Store::fire_schedule`
 
 ```rust
-async fn fire_schedule(&self, expected_last: Option<DateTime<Utc>>, done: bool, event: &Event) -> Result<(), StoreError>
+async fn fire_schedule(&self, expected_last: Option<DateTime<Utc>>, done: bool, event: &Event) -> Result<Accepted, StoreError>
 ```
 
 Advance an active Schedule from expected_last and accept its Event atomically.
-Mark it done when no occurrence remains.
+
+Mark it done when no occurrence remains; archived targets return `Archived` without writes.
 
 ### `Store::set_profile`
 

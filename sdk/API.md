@@ -152,6 +152,8 @@ pub enum Action {
     Cancel,
     Backtrack,
     Everyone(::core::option::Option<bool>),
+    Halt(::core::option::Option<String>),
+    Archive(::core::option::Option<String>),
 }
 ```
 
@@ -163,6 +165,8 @@ What an incoming message asks for, whatever the protocol's command syntax.
 - `Cancel` — Stop the work the conversation's Session is doing.
 - `Backtrack` — Take the conversation back to the message `reply-to` names.
 - `Everyone` — Open this group to everyone or close it to the owner only; absent reports which.
+- `Halt` — Halt the named Session and its descendants, or the conversation's Session when absent.
+- `Archive` — Archive the named Session and its descendants, or list archivable Sessions when absent.
 
 Implements:
 
@@ -243,6 +247,8 @@ pub enum CommandKind {
     Cancel,
     Backtrack,
     Everyone,
+    Halt,
+    Archive,
 }
 ```
 
@@ -252,6 +258,10 @@ The commands the host understands.
 - `Cancel` — Stop the work of the conversation's Session.
 - `Backtrack` — Go back to the message the command replies to.
 - `Everyone` — Open the group to everyone, or close it to the owner only.
+- `Halt` — Halt the named Session and its descendants, or the conversation's Session when no name
+  follows.
+- `Archive` — Archive the named Session and its descendants; with no name, list the Sessions that
+  can be archived and archive nothing.
 
 ### `channel::CommandKind::name`
 

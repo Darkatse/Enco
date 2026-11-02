@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use enco_core::*;
 use std::path::PathBuf;
-use std::sync::Arc;
+mod commit;
 mod registry;
+pub use commit::*;
 pub use registry::*;
 
 /// Persistence boundary; only the owning actor may commit its state.
@@ -19,13 +20,15 @@ pub trait Store: Send + Sync {
     async fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError>;
     /// Read the metadata sampled by the Session actor at each Round boundary.
     async fn session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError>;
-    /// Look up a Session without creating it.
+    /// Look up an unarchived Session by name without creating it.
     async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError>;
+    /// The unarchived Sessions this one delegated to, in creation order.
+    async fn children(&self, parent: SessionId) -> Result<Vec<SessionRecord>, StoreError>;
     /// Create if absent, with local binding at epoch one, the default profile and this node's
     /// default working directory.
     async fn ensure_session(
         &self,
-        name: &str,
+        name: &SessionName,
         created_at: DateTime<Utc>,
     ) -> Result<SessionRecord, StoreError>;
 
@@ -36,6 +39,19 @@ pub trait Store: Send + Sync {
         working_dir: &WorkingDir,
     ) -> Result<(), StoreError>;
 
+    /// Atomically halt the unarchived subtree, optionally archiving it; returns it root first.
+    ///
+    /// The root receives `source`; descendants receive `Parent`. Each input carries `halt`. A root
+    /// that is already archived writes nothing and returns no Sessions.
+    async fn halt_subtree(
+        &self,
+        root: SessionId,
+        source: EventSource,
+        halt: Halt,
+        at: DateTime<Utc>,
+        archive: bool,
+    ) -> Result<Vec<SessionRef>, StoreError>;
+
     // ---- Log (writer: the owning Session actor)
     /// Read immutable facts in structural order after an optional position.
     async fn log(
@@ -43,8 +59,12 @@ pub trait Store: Send + Sync {
         session: SessionId,
         after: Option<LogPos>,
     ) -> Result<Vec<Entry>, StoreError>;
+    /// Fold a child's unconsumed inputs, then its Log, newest first through `ChildStateFold`,
+    /// reading only as far back as the fold needs.
+    async fn child_state(&self, child: SessionId) -> Result<ChildState, StoreError>;
     /// Atomically append facts and consume their Inbox inputs after checking ownership and positions.
-    async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreError>;
+    async fn commit(&self, session: SessionId, commit: Commit)
+    -> Result<CommitOutcome, StoreError>;
     /// Restore a recorded request plan and verify its complete content address.
     async fn plan(&self, hash: &ContentHash) -> Result<ContextPlan, StoreError>;
     /// Find where a channel message with this protocol ID was consumed.
@@ -93,13 +113,14 @@ pub trait Store: Send + Sync {
     /// Read schedules, optionally filtered by state.
     async fn schedules(&self, state: Option<ScheduleState>) -> Result<Vec<Schedule>, StoreError>;
     /// Advance an active Schedule from expected_last and accept its Event atomically.
-    /// Mark it done when no occurrence remains.
+    ///
+    /// Mark it done when no occurrence remains; archived targets return `Archived` without writes.
     async fn fire_schedule(
         &self,
         expected_last: Option<DateTime<Utc>>,
         done: bool,
         event: &Event,
-    ) -> Result<(), StoreError>;
+    ) -> Result<Accepted, StoreError>;
 
     // ---- Identity, generations and wiring (writer: Registry)
     /// Select the profile under the registry committer, effective at the next Round.
@@ -141,14 +162,6 @@ pub struct NodeRecord {
     pub id: NodeId,
     /// Whether the next Round uses only the lifeline.
     pub safe_mode: bool,
-}
-
-/// An atomic append of Log facts and consumption of their corresponding Inbox rows.
-pub struct Commit {
-    /// Ordered facts to append.
-    pub entries: Vec<Entry>,
-    /// A request plan accepted together with the Attempt that refers to it.
-    pub plan: Option<Arc<PlanWrite>>,
 }
 
 /// An immutable request plan whose complete content address is computed once before committing.
@@ -194,18 +207,33 @@ pub struct ConnectionWrite {
 
 /// A Session created together with the input that first reaches it.
 ///
-/// Like a Session that `ensure_session` creates, it starts bound to this node at epoch one, in
-/// this node's default working directory.
+/// It starts bound to this node at epoch one; its origin determines its directory and name policy.
 #[derive(Clone)]
 pub struct NewSession {
     /// Identity chosen by the creator, which also records it in its own state.
     pub id: SessionId,
-    /// Display name; an occupied name receives a numeric suffix.
-    pub name: String,
+    /// Full validated name; its origin determines how occupied names are handled.
+    pub name: SessionName,
     /// Registered profile the Session starts with.
     pub profile: ProfileName,
+    /// Root or child creation facts.
+    pub origin: NewSessionOrigin,
     /// Creation time for display.
     pub created_at: DateTime<Utc>,
+}
+
+/// Origin fixed when a Session is created.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NewSessionOrigin {
+    /// A root uses the node's default directory; an occupied name gets a numeric suffix.
+    Root,
+    /// A child uses its parent's identity and an explicitly resolved working directory.
+    Child {
+        /// Fixed parent identity.
+        parent: SessionId,
+        /// Directory supplied by the parent, without availability checks.
+        working_dir: WorkingDir,
+    },
 }
 
 /// What an atomic acceptance committed.
@@ -233,6 +261,8 @@ pub enum Accepted {
     New,
     /// The Event ID was already accepted.
     Duplicate,
+    /// The target Session is archived and accepts no input.
+    Archived,
 }
 
 /// A failed storage operation or commit precondition.

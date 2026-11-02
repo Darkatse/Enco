@@ -23,6 +23,12 @@ pub(crate) enum Command {
     Cancel {
         session: String,
     },
+    Halt {
+        session: String,
+    },
+    Archive {
+        session: String,
+    },
     Backtrack {
         session: String,
         to: enco_core::LogPos,
@@ -40,7 +46,9 @@ pub(crate) enum Command {
     Status {
         output: Output,
     },
-    Sessions {},
+    Sessions {
+        archived: bool,
+    },
     Log {
         session: String,
         after: Option<LogPos>,

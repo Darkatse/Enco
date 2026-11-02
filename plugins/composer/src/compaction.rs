@@ -1,7 +1,7 @@
 //! Planning a compaction: how much history to summarize, and the request that summarizes it.
 use crate::composer::*;
 use crate::{estimate_tokens, key, limits::*};
-use enco_sdk::types::Role;
+use enco_sdk::types::{Failure, Role};
 use std::collections::HashMap;
 
 const COMPACTION_PROMPT: &str = include_str!("prompts/compaction.md");
@@ -26,7 +26,7 @@ impl Compaction {
         input: &ComposeInput,
         history: &[(&TranscriptItem, String)],
         budget: &Budget,
-    ) -> Self {
+    ) -> Result<Self, Failure> {
         let mut header = String::new();
         if let Some(summary) = &input.transcript.summary {
             header.push_str(&format!("Previous summary:\n{summary}\n\n"));
@@ -36,6 +36,7 @@ impl Compaction {
         let chunks = history
             .iter()
             .map(|(item, annotation)| {
+                let speaker = crate::history::speaker(item.event.as_ref(), &input.session)?;
                 let mut chunk = String::new();
                 if !annotation.is_empty() {
                     chunk.push_str(annotation);
@@ -43,10 +44,7 @@ impl Compaction {
                 }
                 for part in &item.message.parts {
                     match part {
-                        Part::Text(text) => {
-                            let speaker = crate::history::speaker(item.event.as_ref());
-                            chunk.push_str(&format!("{speaker}: {text}\n"));
-                        }
+                        Part::Text(text) => chunk.push_str(&format!("{speaker}: {text}\n")),
                         Part::ToolCall(call) => {
                             names.insert(call.id.as_str(), call.name.as_str());
                             let arguments = clip(&call.arguments);
@@ -65,22 +63,22 @@ impl Compaction {
                         Part::Extension(_) | Part::Image(_) => {}
                     }
                 }
-                (item.pos, chunk)
+                Ok((item.pos, chunk))
             })
-            .collect();
+            .collect::<Result<_, Failure>>()?;
         let max_output_tokens = budget.max_output_tokens;
         // Estimating parts separately never undercounts their concatenation.
         let overhead = estimate_tokens(COMPACTION_PROMPT)
             .saturating_add(estimate_tokens(&header))
             .saturating_add(estimate_tokens(COMPACTION_FOOTER))
             .saturating_add(max_output_tokens);
-        Self {
+        Ok(Self {
             window: budget.context_tokens,
             header,
             chunks,
             max_output_tokens,
             overhead,
-        }
+        })
     }
 
     /// The Round end up to which compaction summarizes the history.

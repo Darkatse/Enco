@@ -121,6 +121,7 @@ fn recorded_quote_images_keep_their_locations_and_do_not_become_own_images() {
         message,
         generation: None,
         event: Some(event),
+        file_path: None,
     })
     .unwrap();
     let wire::EventBody::UserMessage(message) = item.event.unwrap().body else {

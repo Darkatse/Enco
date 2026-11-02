@@ -3,6 +3,7 @@
 
 mod attempt;
 mod builtin;
+mod child_slots;
 mod dispatch;
 mod image;
 mod inspect;
@@ -20,6 +21,7 @@ mod scheduler;
 mod session;
 mod settings;
 mod snapshot;
+mod subtree;
 mod transcript;
 
 pub use builtin::builtin_tool_specs;

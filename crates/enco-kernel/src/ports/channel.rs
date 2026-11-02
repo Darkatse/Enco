@@ -115,6 +115,10 @@ pub enum ChannelAction<T = ChannelAttachment, Q = ChannelQuote> {
     Backtrack,
     /// Open or close a group to members; absent queries its current setting.
     Everyone(Option<bool>),
+    /// Halt a named subtree, or the conversation Session when absent.
+    Halt(Option<String>),
+    /// Archive a named subtree, or list archivable Sessions when absent.
+    Archive(Option<String>),
 }
 
 /// An image still held by the protocol.
@@ -269,6 +273,10 @@ pub enum ChannelCommandKind {
     Backtrack,
     /// Change who can address the Agent in a group.
     Everyone,
+    /// Halt a Session subtree.
+    Halt,
+    /// Archive a named Session subtree.
+    Archive,
 }
 
 /// A Run's current progress, containing only public tool names and outcomes.

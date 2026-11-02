@@ -231,7 +231,7 @@ async fn a_backtrack_stops_the_running_run_and_supersedes_the_inputs_before_it()
     assert!(matches!(
         ended.last().unwrap().body,
         EntryBody::RunEnded {
-            end: RunEnd::Cancelled,
+            end: RunEnd::Backtracked,
             ..
         }
     ));

@@ -25,7 +25,7 @@ use std::{
 ///
 /// It covers the SQLite schema, plan records included. Until P4, persistent format changes
 /// require a new database; opening never migrates or deletes the old one.
-const SCHEMA_VERSION: u32 = 17;
+const SCHEMA_VERSION: u32 = 18;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -181,6 +181,11 @@ impl Store for SqliteStore {
             .await
     }
 
+    async fn children(&self, parent: SessionId) -> Result<Vec<SessionRecord>, StoreError> {
+        self.run(move |connection| sessions::children(connection, parent))
+            .await
+    }
+
     async fn session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError> {
         self.run(move |connection| sessions::get(connection, id))
             .await
@@ -204,7 +209,7 @@ impl Store for SqliteStore {
 
     async fn ensure_session(
         &self,
-        name: &str,
+        name: &SessionName,
         created_at: DateTime<Utc>,
     ) -> Result<SessionRecord, StoreError> {
         let (node, name) = (self.node, name.to_owned());
@@ -224,14 +229,40 @@ impl Store for SqliteStore {
             .await
     }
 
-    async fn commit(&self, session: SessionId, commit: Commit) -> Result<(), StoreError> {
+    async fn halt_subtree(
+        &self,
+        root: SessionId,
+        source: EventSource,
+        halt: Halt,
+        at: DateTime<Utc>,
+        archive: bool,
+    ) -> Result<Vec<SessionRef>, StoreError> {
+        self.run(move |connection| {
+            sessions::halt_subtree(connection, root, source, halt, at, archive)
+        })
+        .await
+    }
+
+    async fn child_state(&self, child: SessionId) -> Result<ChildState, StoreError> {
+        self.run(move |connection| sessions::child_state(connection, child))
+            .await
+    }
+
+    async fn commit(
+        &self,
+        session: SessionId,
+        commit: Commit,
+    ) -> Result<CommitOutcome, StoreError> {
         let plan = match &commit.plan {
             Some(plan) => self.prepare_plan(session, plan.clone()).await?,
             None => None,
         };
         let node = self.node;
-        self.run(move |connection| commit::commit(connection, node, session, commit, plan))
-            .await
+        let working_dir = self.default_working_dir.clone();
+        self.run(move |connection| {
+            commit::commit(connection, node, &working_dir, session, commit, plan)
+        })
+        .await
     }
 
     async fn plan(&self, hash: &ContentHash) -> Result<ContextPlan, StoreError> {
@@ -328,7 +359,7 @@ impl Store for SqliteStore {
         expected_last: Option<DateTime<Utc>>,
         done: bool,
         event: &Event,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Accepted, StoreError> {
         let event = event.clone();
         self.run(move |connection| schedules::fire(connection, expected_last, done, &event))
             .await

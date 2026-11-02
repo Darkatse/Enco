@@ -1,7 +1,7 @@
 use crate::ContentHash;
 use serde::{Deserialize, Serialize};
 
-/// Content addressed to the owner: Markdown text and at most one file.
+/// Content addressed to a reply destination: Markdown text and at most one file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outgoing<F = OutgoingFile> {
     /// Markdown authored by the sender.

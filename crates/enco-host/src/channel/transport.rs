@@ -226,6 +226,8 @@ impl Reader {
             ChannelAction::Cancel => Action::Cancel,
             ChannelAction::Backtrack => Action::Backtrack,
             ChannelAction::Everyone(open) => Action::Everyone(open),
+            ChannelAction::Halt(name) => Action::Halt(name),
+            ChannelAction::Archive(name) => Action::Archive(name),
         };
         Ok(Input {
             conversation: input.conversation,

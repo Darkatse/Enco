@@ -4,6 +4,7 @@ pub(super) mod activity;
 mod backtrack;
 mod delivery;
 mod input;
+mod lifecycle;
 mod receipts;
 
 use super::{projection, transport, *};
@@ -25,7 +26,7 @@ struct Connection {
     menu_failure: Arc<Mutex<Option<String>>>,
     clock: Arc<dyn Clock>,
     stop: CancellationToken,
-    readers: JoinSet<Result<(), ChannelError>>,
+    readers: JoinSet<Result<Option<SessionId>, ChannelError>>,
     watched: BTreeSet<SessionId>,
     dirty: BTreeSet<SessionId>,
     wake: mpsc::Sender<SessionId>,
@@ -140,7 +141,7 @@ impl Connection {
         self.register_commands().await;
         let sessions: Vec<_> = self.state.outbound.keys().copied().collect();
         for session in sessions {
-            self.follow(session)?;
+            self.follow(session).await?;
             self.observe(session).await?;
         }
         let mut incoming = self.start_receiving();
@@ -165,8 +166,15 @@ impl Connection {
                     if let Some(error) = self.sent(flight, result).await? { return Err(ChannelCallError::from(error).into()); }
                 },
                 Some(result) = self.readers.join_next() => {
-                    result.map_err(|error| ChannelError::Task(error.to_string()))??;
-                    return Err(ChannelError::Task("channel reader stopped unexpectedly".into()));
+                    match result.map_err(|error| ChannelError::Task(error.to_string()))?? {
+                        Some(session) => {
+                            self.watched.remove(&session);
+                            self.observe(session).await?;
+                            // Drain the final facts through the usual projection, then forget the wake.
+                            self.dirty.insert(session);
+                        }
+                        None => return Err(ChannelError::Task("channel reader stopped unexpectedly".into())),
+                    }
                 }
                 Some(batch) = incoming.recv() => {
                     match batch.change {
@@ -197,7 +205,12 @@ impl Connection {
                 Some(result) = self.replies.join_next() => {
                     result.map_err(|error| ChannelError::Task(error.to_string()))??;
                 }
-                Some(session) = wakes.recv() => { self.dirty.insert(session); self.observe(session).await?; }
+                Some(session) = wakes.recv() => {
+                    if self.watched.contains(&session) {
+                        self.dirty.insert(session);
+                        self.observe(session).await?;
+                    }
+                }
             }
         }
     }
@@ -226,25 +239,25 @@ impl Connection {
                     "channel receiver stopped unexpectedly".into(),
                 ));
             }
-            result
+            result.map(|()| None)
         });
-        self.readers.spawn(
-            transport::Reader {
-                adapter: self.adapter.clone(),
-                kernel: self.kernel.clone(),
-                settings: self.settings.clone(),
-                generation: self.generation,
-                clock: self.clock.clone(),
-            }
-            .prepare(
-                transport::Policy {
-                    everyone: self.state.everyone.clone(),
-                },
-                received,
-                batches,
-                self.stop.clone(),
-            ),
+        let preparation = transport::Reader {
+            adapter: self.adapter.clone(),
+            kernel: self.kernel.clone(),
+            settings: self.settings.clone(),
+            generation: self.generation,
+            clock: self.clock.clone(),
+        }
+        .prepare(
+            transport::Policy {
+                everyone: self.state.everyone.clone(),
+            },
+            received,
+            batches,
+            self.stop.clone(),
         );
+        self.readers
+            .spawn(async move { preparation.await.map(|()| None) });
         incoming
     }
 
@@ -268,7 +281,7 @@ impl Connection {
         }
         while let Some(result) = self.readers.join_next().await {
             match result {
-                Ok(Ok(())) => {}
+                Ok(Ok(_)) => {}
                 Ok(Err(error)) => {
                     exit.stopped.get_or_insert(error);
                 }
@@ -304,18 +317,24 @@ impl Connection {
         state: State,
         settlement: Option<DeliverySettlement>,
     ) -> Result<(), ChannelError> {
-        self.write(state, None, None, None, settlement).await
+        self.write(state, None, None, None, settlement)
+            .await
+            .map(drop)
     }
 
-    /// Accept one protocol update with the state it leads to, and the input and Session it brings.
+    /// Accept one protocol update with the state it leads to, and the input and Session it brings;
+    /// returns how the input was accepted.
     async fn commit_update(
         &mut self,
         state: State,
         update: String,
         event: Option<Event>,
         session: Option<NewSession>,
-    ) -> Result<(), ChannelError> {
-        self.write(state, Some(update), event, session, None).await
+    ) -> Result<Option<Accepted>, ChannelError> {
+        let accepted = self
+            .write(state, Some(update), event, session, None)
+            .await?;
+        Ok(accepted.first().copied())
     }
 
     async fn write(
@@ -325,8 +344,9 @@ impl Connection {
         event: Option<Event>,
         session: Option<NewSession>,
         settlement: Option<DeliverySettlement>,
-    ) -> Result<(), ChannelError> {
-        self.kernel
+    ) -> Result<Vec<Accepted>, ChannelError> {
+        let accepted = self
+            .kernel
             .accept(
                 event.as_slice(),
                 Some(&ConnectionWrite {
@@ -339,34 +359,50 @@ impl Connection {
             )
             .await?;
         self.state = state;
-        Ok(())
+        Ok(accepted)
     }
 
-    fn follow(&mut self, session: SessionId) -> Result<(), ChannelError> {
+    async fn follow(&mut self, session: SessionId) -> Result<(), ChannelError> {
         if self.watched.contains(&session) {
             return Ok(());
         }
         // Subscribe before marking dirty; every commit is covered by Log or a later wake.
-        let mut entries = self.kernel.subscribe(session)?;
+        let mut entries = match self.kernel.subscribe(session) {
+            Ok(entries) => entries,
+            Err(error @ KernelError::UnknownSession(_)) => {
+                if self.kernel.session(session).await?.archived_at.is_some() {
+                    self.dirty.insert(session);
+                    return Ok(());
+                }
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
         self.watched.insert(session);
         self.dirty.insert(session);
         let wake = self.wake.clone();
         let stop = self.stop.clone();
+        let kernel = self.kernel.clone();
         self.readers.spawn(async move {
             loop {
                 let event = tokio::select! {
-                    _ = stop.cancelled() => return Ok(()),
+                    _ = stop.cancelled() => return Ok(None),
                     event = entries.recv() => event,
                 };
                 match event {
                     Ok(Entry { body: EntryBody::ToolCallStarted { .. } | EntryBody::ToolCallSettled { .. } | EntryBody::RunStarted { .. } | EntryBody::EventConsumed { .. } | EntryBody::RoundEnded { .. } | EntryBody::RunEnded { .. }, .. })
                     | Err(broadcast::error::RecvError::Lagged(_)) => {
                         tokio::select! {
-                            _ = stop.cancelled() => return Ok(()),
+                            _ = stop.cancelled() => return Ok(None),
                             result = wake.send(session) => result.map_err(|_| ChannelError::Task("connection stopped".into()))?,
                         }
                     }
-                    Err(broadcast::error::RecvError::Closed) => return Err(ChannelError::Task(format!("Session {session} subscription closed"))),
+                    Err(broadcast::error::RecvError::Closed) => {
+                        if kernel.session(session).await?.archived_at.is_some() {
+                            return Ok(Some(session));
+                        }
+                        return Err(ChannelError::Task(format!("Session {session} subscription closed")));
+                    },
                     _ => {},
                 }
             }
@@ -377,10 +413,15 @@ impl Connection {
     /// The Sessions to choose from, marking the one this conversation is routed to.
     async fn sessions(&self, conversation: &str) -> Result<String, ChannelError> {
         let current = self.state.chats.get(conversation);
-        let names = self
+        let mut sessions: Vec<_> = self
             .kernel
             .sessions()
             .await?
+            .into_iter()
+            .filter(|s| s.archived_at.is_none())
+            .collect();
+        sessions.sort_by(|a, b| a.name.cmp(&b.name));
+        let names = sessions
             .iter()
             .map(|s| {
                 if Some(&s.id) == current {
@@ -396,17 +437,5 @@ impl Connection {
         } else {
             names
         })
-    }
-
-    /// The Session's name, for telling the owner where something belongs.
-    async fn session_name(&self, session: SessionId) -> Result<String, ChannelError> {
-        let record = self
-            .kernel
-            .sessions()
-            .await?
-            .into_iter()
-            .find(|s| s.id == session)
-            .ok_or(KernelError::UnknownSession(session))?;
-        Ok(record.name)
     }
 }

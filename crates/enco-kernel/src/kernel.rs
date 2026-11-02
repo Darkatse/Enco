@@ -1,4 +1,6 @@
 mod input;
+mod lifecycle;
+pub use lifecycle::{Halted, SessionLookupError};
 
 use crate::{
     session::{SessionDeps, SessionHandle, lock},
@@ -65,6 +67,8 @@ pub struct SessionStatus {
     pub session: SessionRecord,
     /// Whether a Run is currently executing.
     pub running: bool,
+    /// FIFO position while awaiting a child Run slot, starting at one.
+    pub waiting: Option<usize>,
     /// Storage failure that stopped this actor, if any.
     pub stopped: Option<String>,
 }
@@ -107,6 +111,9 @@ pub enum KernelError {
     /// No such Session is registered.
     #[error("unknown session {0}")]
     UnknownSession(SessionId),
+    /// A name or ID did not resolve to a Session to act on.
+    #[error(transparent)]
+    Lookup(#[from] SessionLookupError),
     /// The requested profile is absent from the node configuration.
     #[error("unknown profile {0}")]
     UnknownProfile(ProfileName),
@@ -136,11 +143,18 @@ pub struct DeliveryStatus {
 }
 
 impl Kernel {
-    /// Bind capabilities and start one actor for each existing Session.
+    /// Bind capabilities and start unarchived Sessions, plus archived ones not yet quiescent.
     pub async fn start(mut deps: KernelDeps) -> Result<Self, KernelError> {
         let (schedules, scheduler) = crate::scheduler::Scheduler::channel();
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let subtrees = Arc::new(crate::subtree::Subtrees {
+            store: deps.store.clone(),
+            clock: deps.clock.clone(),
+            sessions: sessions.clone(),
+            deps: std::sync::OnceLock::new(),
+        });
         deps.tools.extend(
-            crate::builtin::tools(schedules.clone())
+            crate::builtin::tools(schedules.clone(), subtrees.clone())
                 .map_err(|error| KernelError::Config(format!("tool declaration: {error}")))?,
         );
         let declared: std::collections::BTreeSet<_> =
@@ -166,11 +180,19 @@ impl Kernel {
                 registry: deps.registry,
                 snapshot,
                 shutdown: CancellationToken::new(),
+                subtrees,
+                slots: Arc::new(crate::child_slots::ChildSlots::default()),
             }),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions,
         };
+        let _ = kernel.deps.subtrees.deps.set(Arc::downgrade(&kernel.deps));
         for session in kernel.deps.store.sessions().await? {
-            kernel.ensure_actor(session)?;
+            // An archived Session whose halt still waits was stopped before it took effect.
+            if session.archived_at.is_none()
+                || !crate::subtree::quiescent(kernel.deps.store.as_ref(), session.id).await?
+            {
+                kernel.ensure_actor(session)?;
+            }
         }
         *lock(&kernel.scheduler) = Some(scheduler.start(
             kernel.deps.store.clone(),
@@ -183,14 +205,9 @@ impl Kernel {
     }
 
     fn ensure_actor(&self, session: SessionRecord) -> Result<Arc<SessionHandle>, KernelError> {
-        let mut sessions = lock(&self.sessions);
-        if self.deps.shutdown.is_cancelled() {
-            return Err(KernelError::ShuttingDown);
-        }
-        Ok(sessions
-            .entry(session.id)
-            .or_insert_with(|| SessionHandle::start(session, self.deps.clone()))
-            .clone())
+        self.deps
+            .ensure_actor(session)
+            .ok_or(KernelError::ShuttingDown)
     }
 
     fn handle(&self, id: SessionId) -> Result<Arc<SessionHandle>, KernelError> {
@@ -202,17 +219,6 @@ impl Kernel {
             return Err(KernelError::SessionStopped(id, reason));
         }
         Ok(handle)
-    }
-
-    /// Create a Session if needed and ensure its owner is running.
-    pub async fn open_session(&self, name: &str) -> Result<SessionRecord, KernelError> {
-        let session = self
-            .deps
-            .store
-            .ensure_session(name, self.deps.clock.now())
-            .await?;
-        self.ensure_actor(session.clone())?;
-        Ok(session)
     }
 
     /// Check protocol update acceptance before preparing its content or routes.
@@ -348,6 +354,7 @@ impl Kernel {
             .map(|session| {
                 let handle = handles.get(&session.id);
                 SessionStatus {
+                    waiting: self.deps.slots.position(session.id),
                     running: handle.is_some_and(|h| lock(&h.run_cancel).is_some()),
                     stopped: handle.and_then(|h| lock(&h.stopped).clone()),
                     session,

@@ -98,6 +98,8 @@ pub(super) fn message(
         wire::Action::Cancel => ChannelAction::Cancel,
         wire::Action::Backtrack => ChannelAction::Backtrack,
         wire::Action::Everyone(value) => ChannelAction::Everyone(value),
+        wire::Action::Halt(value) => ChannelAction::Halt(value),
+        wire::Action::Archive(value) => ChannelAction::Archive(value),
     };
     Ok(ChannelMessage {
         key,
@@ -261,6 +263,8 @@ pub(super) fn command(value: &ChannelCommand) -> wire::Command {
             ChannelCommandKind::Cancel => wire::CommandKind::Cancel,
             ChannelCommandKind::Backtrack => wire::CommandKind::Backtrack,
             ChannelCommandKind::Everyone => wire::CommandKind::Everyone,
+            ChannelCommandKind::Halt => wire::CommandKind::Halt,
+            ChannelCommandKind::Archive => wire::CommandKind::Archive,
         },
         description: description.clone(),
         direct: *direct,

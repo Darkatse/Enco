@@ -34,14 +34,18 @@ pub(crate) fn backtracked_to_input(entries: &[Entry]) -> bool {
 /// The input an entry consumed; a backtrack is a command about the conversation, not an input.
 pub(crate) fn input(entry: &Entry) -> Option<&Event> {
     match &entry.body {
-        EntryBody::EventConsumed { event } if !is_backtrack(event) => Some(event),
+        EntryBody::EventConsumed { event } if !is_command(event) => Some(event),
         _ => None,
     }
 }
 
-/// Whether an input asks to take the conversation back.
-pub(crate) fn is_backtrack(event: &Event) -> bool {
-    matches!(event.body, EventBody::Backtrack { .. })
+/// Whether an input is a command that takes effect between Runs and supersedes the inputs
+/// before it: a backtrack or a halt.
+pub(crate) fn is_command(event: &Event) -> bool {
+    matches!(
+        event.body,
+        EventBody::Backtrack { .. } | EventBody::Halt(..)
+    )
 }
 
 fn backtrack(entry: &Entry) -> Option<LogPos> {
@@ -147,6 +151,7 @@ pub(crate) fn project(entries: &[&Entry]) -> Transcript {
                 pos: entry.pos,
                 message,
                 generation,
+                file_path: None,
                 event: match &entry.body {
                     EntryBody::EventConsumed { event } => Some(event.clone()),
                     _ => None,

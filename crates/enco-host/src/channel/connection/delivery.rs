@@ -32,7 +32,7 @@ impl Connection {
             if let Some((delivery, mut message)) = outgoing {
                 let target = delivery.target.clone();
                 if self.state.chats.get(&target) != Some(&session) {
-                    let name = self.session_name(session).await?;
+                    let name = self.kernel.session(session).await?.name;
                     message.text = format!("[{name}]\n\n{}", message.text);
                 }
                 let file = match message.file {
@@ -119,10 +119,7 @@ impl Connection {
         state.sending = None;
         state.outbound.insert(
             delivery.session,
-            Cursor {
-                processed: Some(delivery.pos),
-                target: Some(delivery.target.clone()),
-            },
+            projection::delivered(&self.identity, &delivery),
         );
         self.dirty.insert(delivery.session);
         self.commit(

@@ -1,6 +1,6 @@
 //! The connection's update boundary: routing, group context and owner commands commit here.
 use super::*;
-use enco_kernel::{ChannelCommand, ChannelCommandKind};
+use enco_kernel::{ChannelCommand, ChannelCommandKind, NewSessionOrigin};
 use transport::Disposition;
 
 const NO_GROUP_PROFILE: &str =
@@ -10,7 +10,7 @@ const REFUSAL: &str = "Only the owner can use this.";
 
 /// The commands the connection understands, as offered in the protocol's menus.
 fn commands() -> Vec<ChannelCommand> {
-    use ChannelCommandKind::{Backtrack, Cancel, Everyone, Session};
+    use ChannelCommandKind::{Archive, Backtrack, Cancel, Everyone, Halt, Session};
     [
         (
             Session,
@@ -19,6 +19,18 @@ fn commands() -> Vec<ChannelCommand> {
             false,
         ),
         (Cancel, "Stop the current work", true, true),
+        (
+            Halt,
+            "Halt a Session and its children, or this conversation's Session",
+            true,
+            true,
+        ),
+        (
+            Archive,
+            "Archive a Session and its children, or list Sessions with /archive",
+            true,
+            false,
+        ),
         (
             Backtrack,
             "Reply to a message with this to go back to it",
@@ -144,26 +156,25 @@ impl Connection {
                 return self.backtrack(state, &target, source, key, reply_to).await;
             }
             Action::SelectSession(_) | Action::Sessions if !direct => GROUP_SESSION.into(),
-            Action::SelectSession(name) => {
-                let session = self.kernel.open_session(&name).await?.id;
-                state.chats.insert(target.clone(), session);
-                format!("Switched to {name}.")
-            }
+            Action::SelectSession(name) => match self.kernel.open_session(&name).await {
+                Ok(session) => {
+                    state.chats.insert(target.clone(), session.id);
+                    format!("Switched to {}.", session.name)
+                }
+                Err(KernelError::Lookup(error)) => error.to_string(),
+                Err(error) => return Err(error.into()),
+            },
             Action::Sessions => self.sessions(&target).await?,
-            Action::Cancel => {
-                // The cancellation follows the accepted command, never a command still unwritten.
-                self.commit_update(state, key, None, None).await?;
-                let result = self
-                    .state
-                    .chats
-                    .get(&target)
-                    .map(|session| self.kernel.cancel(*session))
-                    .transpose();
-                return Ok(Some(match result {
-                    Ok(Some(true)) => "Cancellation requested.".into(),
-                    Ok(_) => "No active Run.".into(),
-                    Err(error) => format!("Cancel failed: {error}"),
-                }));
+            Action::Cancel => return self.cancel_session(state, key, &target).await,
+            Action::Halt(name) => {
+                return self
+                    .stop_session(state, key, source, (&target, direct), name, false)
+                    .await;
+            }
+            Action::Archive(name) => {
+                return self
+                    .stop_session(state, key, source, (&target, direct), name, true)
+                    .await;
             }
             Action::Everyone(open) => everyone(&mut state, &target, direct, open),
         };
@@ -184,14 +195,32 @@ impl Connection {
             (false, Some(profile)) => Some(profile.clone()),
             (false, None) => return self.receipt(state, key, NO_GROUP_PROFILE.into()).await,
         };
+        // A route to an archived Session counts as no route; the owner learns where it goes now.
+        let mut archived = None;
+        if let Some(id) = state.chats.get(target) {
+            let session = self.kernel.session(*id).await?;
+            if session.archived_at.is_some() {
+                state.chats.remove(target);
+                archived = Some(session.name);
+            }
+        }
         let (session, created) = match (state.chats.get(target), group_profile) {
             (Some(session), _) => (*session, None),
             (None, None) => (self.kernel.open_session("main").await?.id, None),
             (None, Some(profile)) => {
+                let name = transcribe_name_segment(&format!("{}:{target}", self.settings.name))
+                    .ok_or_else(|| {
+                        ChannelError::Config(format!(
+                            "connection name {} cannot name a group Session",
+                            self.settings.name
+                        ))
+                    })?;
                 let created = NewSession {
                     id: SessionId::new(),
-                    name: format!("{}:{target}", self.settings.name),
+                    name: SessionName::root(&name)
+                        .map_err(|error| ChannelError::Config(error.to_string()))?,
                     profile,
+                    origin: NewSessionOrigin::Root,
                     created_at: self.clock.now(),
                 };
                 (created.id, Some(created))
@@ -206,9 +235,21 @@ impl Connection {
             earlier,
             quote: content.quote,
         };
-        self.submit(state, session, source, body, key, created)
-            .await?;
-        Ok(None)
+        if let Some(refusal) = self
+            .submit(state, session, source, body, key, created)
+            .await?
+        {
+            return Ok(Some(refusal));
+        }
+        Ok(match archived {
+            Some(archived) => {
+                let now = self.kernel.session(session).await?.name;
+                Some(format!(
+                    "Session {archived} is archived; this conversation now goes to Session {now}."
+                ))
+            }
+            None => None,
+        })
     }
 
     /// Accept the update; `text` is its receipt.
@@ -224,6 +265,8 @@ impl Connection {
 
     /// Accept the update with an input for `session`, creating it when `created` says so, and
     /// follow the Session's replies.
+    ///
+    /// Returns a receipt for the owner when the Session is archived and refused the input.
     pub(super) async fn submit(
         &mut self,
         mut state: State,
@@ -232,7 +275,7 @@ impl Connection {
         body: EventBody,
         key: String,
         created: Option<NewSession>,
-    ) -> Result<(), ChannelError> {
+    ) -> Result<Option<String>, ChannelError> {
         state.outbound.entry(session).or_default();
         let event = Event {
             id: EventId::new(),
@@ -241,9 +284,15 @@ impl Connection {
             body,
             received_at: self.clock.now(),
         };
-        self.commit_update(state, key, Some(event), created).await?;
-        self.follow(session)?;
-        self.observe(session).await
+        if self.commit_update(state, key, Some(event), created).await? == Some(Accepted::Archived) {
+            let name = self.kernel.session(session).await?.name;
+            return Ok(Some(format!(
+                "Session {name} is archived and accepts no input."
+            )));
+        }
+        self.follow(session).await?;
+        self.observe(session).await?;
+        Ok(None)
     }
 }
 

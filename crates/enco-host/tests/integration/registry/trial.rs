@@ -87,7 +87,10 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
     let healthy = register_source(&registry, "custom", FACTORY_BYTES).await;
     promote(&registry, healthy.id).await;
     let next = register_source(&registry, "custom", FACTORY_BYTES).await;
-    let session = store.ensure_session("notice", Utc::now()).await.unwrap();
+    let session = store
+        .ensure_session(&"notice".parse().unwrap(), Utc::now())
+        .await
+        .unwrap();
     let sql = rusqlite::Connection::open(dir.path().join("enco.db")).unwrap();
     sql.execute_batch("CREATE TRIGGER reject_notice BEFORE INSERT ON inbox BEGIN SELECT RAISE(ABORT, 'notice unavailable'); END;").unwrap();
     assert!(

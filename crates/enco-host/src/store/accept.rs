@@ -3,7 +3,7 @@
 use super::{backend, encode, sessions, signed};
 use enco_core::*;
 use enco_kernel::{Acceptance, Accepted, ConnectionWrite, StoreError};
-use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 pub(super) fn accept(
     connection: &mut Connection,
@@ -77,6 +77,19 @@ pub(super) fn events_in(
 ) -> Result<Vec<Accepted>, StoreError> {
     let mut accepted = Vec::with_capacity(events.len());
     for (id, session, body) in events {
+        let archived: Option<String> = tx
+            .query_row(
+                "SELECT archived_at FROM sessions WHERE id=?",
+                [session.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .ok_or(StoreError::UnknownSession(*session))?;
+        if archived.is_some() {
+            accepted.push(Accepted::Archived);
+            continue;
+        }
         let inserted = tx.execute(
             "INSERT INTO inbox(event_id,session_id,event) SELECT ?1,?2,?3 WHERE NOT EXISTS (SELECT 1 FROM log WHERE event_id=?1) ON CONFLICT(event_id) DO NOTHING",
             params![id.to_string(), session.to_string(), body],

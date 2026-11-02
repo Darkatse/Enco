@@ -42,11 +42,19 @@ pub(super) fn selected(input: &ComposeInput, omitted: &mut Vec<Omission>) -> BTr
 
 /// Attachment descriptions survive even when the endpoint cannot view their images.
 pub(super) fn attachments(body: &EventBody) -> Option<String> {
-    let EventBody::UserMessage(message) = body else {
-        return None;
-    };
-    let lines = descriptions(&message.images, &message.unviewable);
-    (!lines.is_empty()).then(|| lines.join("\n"))
+    match body {
+        EventBody::UserMessage(message) => {
+            let lines = descriptions(&message.images, &message.unviewable);
+            (!lines.is_empty()).then(|| lines.join("\n"))
+        }
+        EventBody::SessionMessage(message) => message.file.as_ref().map(|file| {
+            format!(
+                "[file: {}, {} bytes, at {}]",
+                file.name, file.size, file.path
+            )
+        }),
+        _ => None,
+    }
 }
 
 pub(super) fn descriptions(images: &[ImageRef], unviewable: &[Unviewable]) -> Vec<String> {

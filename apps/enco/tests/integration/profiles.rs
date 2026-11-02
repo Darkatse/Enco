@@ -126,14 +126,14 @@ async fn working_dir_cli_absolutizes_without_requiring_the_directory_to_exist() 
         daemon
             .connect()
             .await
-            .request(Command::Sessions {})
+            .request(Command::Sessions { archived: false })
             .await
             .unwrap(),
     )
     .unwrap();
     let main = sessions
         .iter()
-        .find(|session| session.name == "main")
+        .find(|session| session.name.as_str() == "main")
         .unwrap();
     assert_eq!(main.working_dir.path(), directory);
     let inspection = ask(&daemon, "main").await;

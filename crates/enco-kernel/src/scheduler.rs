@@ -94,6 +94,9 @@ pub enum ScheduleError {
     /// There is no such destination Session.
     #[error("unknown session {0}")]
     UnknownSession(SessionId),
+    /// An archived destination accepts no new reminders.
+    #[error("this Session is archived and accepts no new reminders")]
+    SessionArchived(SessionId),
     /// Cron parsing or evaluation failed.
     #[error("invalid cron expression: {0}")]
     InvalidCron(String),
@@ -350,12 +353,22 @@ impl Command {
                 let _ = reply.send(result);
             }
             Self::List { session, reply } => {
-                let schedules = agenda
-                    .iter()
-                    .filter(|(_, entry)| session.is_none_or(|id| entry.schedule.session == id))
-                    .map(|((next_due, _), entry)| entry.scheduled(*next_due))
-                    .collect();
-                let _ = reply.send(Ok(schedules));
+                let result = match store.schedules(Some(ScheduleState::Active)).await {
+                    Ok(active) => {
+                        let ids: std::collections::HashSet<_> =
+                            active.iter().map(|schedule| schedule.id).collect();
+                        Ok(agenda
+                            .iter()
+                            .filter(|(_, entry)| {
+                                session.is_none_or(|id| entry.schedule.session == id)
+                                    && ids.contains(&entry.schedule.id)
+                            })
+                            .map(|((next_due, _), entry)| entry.scheduled(*next_due))
+                            .collect())
+                    }
+                    Err(error) => Err(error.into()),
+                };
+                let _ = reply.send(result);
             }
             Self::Cancel { id, reply } => {
                 let result = store.cancel_schedule(id).await.map_err(ScheduleError::from);
@@ -379,8 +392,12 @@ async fn create(
     if message.trim().is_empty() {
         return Err(ScheduleError::EmptyMessage);
     }
-    if !store.sessions().await?.iter().any(|s| s.id == session) {
-        return Err(ScheduleError::UnknownSession(session));
+    let record = store
+        .session(session)
+        .await?
+        .ok_or(ScheduleError::UnknownSession(session))?;
+    if record.archived_at.is_some() {
+        return Err(ScheduleError::SessionArchived(session));
     }
     let parsed = Rule::parse(&rule, timezone)?;
     let next_due = parsed.first_after(now)?;
@@ -444,13 +461,16 @@ async fn fire_due(
             },
             received_at: now,
         };
-        store
+        let accepted = store
             .fire_schedule(
                 schedule.last.map(|last| last.due_at),
                 next.is_none(),
                 &event,
             )
             .await?;
+        if accepted == crate::Accepted::Archived {
+            continue;
+        }
         schedule.last = Some(Occurrence {
             due_at,
             event: event.id,

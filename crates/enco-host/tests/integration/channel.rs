@@ -2,6 +2,7 @@
 mod activity;
 mod backtrack;
 mod groups;
+mod lifecycle;
 mod outgoing;
 mod silence;
 mod supervisor;

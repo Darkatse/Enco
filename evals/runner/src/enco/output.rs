@@ -208,5 +208,7 @@ pub(crate) enum RunEnd {
     BudgetExhausted,
     Interrupted,
     Cancelled,
+    Backtracked,
+    Halted,
     Failed { failure: Failure },
 }

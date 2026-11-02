@@ -1,5 +1,4 @@
-//! `message_send`: recording a message or a file for delivery to the owner through the
-//! channels.
+//! `message_send`: record a message or file for the current reply destination.
 use super::{failure::*, resolve_path};
 use crate::limits::MESSAGE_FILE_MAX_BYTES;
 use async_trait::async_trait;
@@ -34,10 +33,11 @@ impl MessageSend {
             node,
             spec: ToolSpec::of::<MessageArguments>(
                 "message_send",
-                "Send the owner a message now, with Markdown text, one file, or both. \
+                "Send a message now to the one you are currently replying to: the owner, or the Session that delegated to you. \
+                 Send Markdown text, one file, or both. \
                  Your final reply is delivered normally; do not repeat it here. \
-                 Text accompanying tool calls may not reach the owner. \
-                 Success confirms the message was recorded for delivery; delivery failures \
+                 Text accompanying tool calls may not reach them. \
+                 Success confirms the message was recorded for delivery; channel delivery failures \
                  appear in the channels section of self_status.",
                 Effect::ReadOnly,
             )?,
@@ -58,7 +58,8 @@ impl Tool for MessageSend {
     async fn call(&self, ctx: CallContext, args: Map<String, Value>) -> Outcome {
         match self.prepare(&ctx, args).await {
             Ok(outgoing) => Outcome::Ok {
-                value: "Message recorded for delivery to the owner.".into(),
+                value: "Message recorded for delivery to the one you are currently replying to."
+                    .into(),
                 images: Vec::new(),
                 outgoing: Some(outgoing),
             },

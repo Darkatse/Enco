@@ -101,14 +101,23 @@ impl CommandKind {
             Self::Cancel => "cancel",
             Self::Backtrack => "backtrack",
             Self::Everyone => "everyone",
+            Self::Halt => "halt",
+            Self::Archive => "archive",
         }
     }
 
     /// The command with this exact, case-sensitive name; unknown names are ordinary text.
     pub fn from_name(name: &str) -> Option<Self> {
-        [Self::Session, Self::Cancel, Self::Backtrack, Self::Everyone]
-            .into_iter()
-            .find(|kind| kind.name() == name)
+        [
+            Self::Session,
+            Self::Cancel,
+            Self::Backtrack,
+            Self::Everyone,
+            Self::Halt,
+            Self::Archive,
+        ]
+        .into_iter()
+        .find(|kind| kind.name() == name)
     }
 
     /// What the command asks for with `argument`, compared without surrounding whitespace;
@@ -117,6 +126,10 @@ impl CommandKind {
         match (self, argument.trim()) {
             (Self::Session, "") => Some(Action::Sessions),
             (Self::Session, name) => Some(Action::SelectSession(name.into())),
+            (Self::Halt, "") => Some(Action::Halt(None)),
+            (Self::Halt, name) => Some(Action::Halt(Some(name.into()))),
+            (Self::Archive, "") => Some(Action::Archive(None)),
+            (Self::Archive, name) => Some(Action::Archive(Some(name.into()))),
             (Self::Cancel, "") => Some(Action::Cancel),
             (Self::Backtrack, "") => Some(Action::Backtrack),
             (Self::Everyone, "") => Some(Action::Everyone(None)),

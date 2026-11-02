@@ -26,11 +26,15 @@ pub struct ComposeInput {
     pub timezone: Tz,
     /// Session metadata sampled for this Round.
     pub session: SessionRecord,
+    /// Unarchived direct children in creation order.
+    pub children: Vec<Child>,
+    /// Profiles available to new children; empty when delegation is unavailable.
+    pub profiles: Vec<DelegableProfile>,
     /// Canonical history after the latest compaction.
     pub transcript: Transcript<LocatedImage>,
     /// Most recent reply plan; the composer decides whether to reuse it.
     pub previous_plan: Option<ContextPlan>,
-    /// Whether the Session's profile gives it the owner's context: owner instructions and memories.
+    /// Whether this Session and all its ancestors permit owner instructions and memories.
     pub owner_context: bool,
     /// The owner instructions; absent when missing, in safe mode or without the owner's context.
     pub owner_instructions: Option<String>,
@@ -119,6 +123,8 @@ pub struct TranscriptItem<I = Image> {
     pub generation: Option<GenerationId>,
     /// Consumed Inbox Event, present only for inputs; the composer narrates its circumstances.
     pub event: Option<Event>,
+    /// Where the file of this input's Session message is stored, supplied only to composition.
+    pub file_path: Option<PathBuf>,
 }
 
 /// An image reference with the node-local address supplied by its store.
@@ -161,6 +167,7 @@ impl<I> Transcript<I> {
                     pos: item.pos,
                     generation: item.generation,
                     event: item.event,
+                    file_path: item.file_path,
                     message: Message {
                         role: item.message.role,
                         parts: item
@@ -224,4 +231,39 @@ pub enum Composition {
         /// Tool-free request to generate the summary.
         plan: CompositionPlan,
     },
+}
+
+/// A child of this Session, by the facts that change only at moments its parent sees.
+#[derive(Debug, Clone)]
+pub struct Child {
+    /// Its name relative to this Session.
+    pub name: String,
+    /// Its current profile.
+    pub profile: ProfileName,
+    /// Whether this Session waits for its answer, how it was halted and where its replies go.
+    pub state: ChildState,
+}
+
+/// A reply endpoint's declared model capabilities and budget.
+#[derive(Clone)]
+pub struct ProfileEndpoint {
+    /// Configured endpoint name.
+    pub endpoint: String,
+    /// Configured model name.
+    pub model: String,
+    /// Non-text inputs this model accepts.
+    pub accepts: std::collections::BTreeSet<Modality>,
+    /// Context and output limits.
+    pub budget: Budget,
+}
+
+/// An available profile for a newly delegated child.
+#[derive(Clone)]
+pub struct DelegableProfile {
+    /// Validated profile name.
+    pub name: ProfileName,
+    /// Owner-written purpose.
+    pub description: String,
+    /// Reply endpoints in configured order.
+    pub reply: Vec<ProfileEndpoint>,
 }

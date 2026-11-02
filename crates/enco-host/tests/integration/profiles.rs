@@ -277,7 +277,7 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
     };
     assert!(
         matches!(causes.as_slice(), [Cause::ProfileInUse { profile, sessions }]
-            if profile.as_str() == "alternate" && sessions.iter().eq([&session.name])),
+            if profile.as_str() == "alternate" && sessions.iter().map(String::as_str).eq([session.name.as_str()])),
         "{causes:?}"
     );
     assert_eq!(kernel.registry().view().config.generation, before);

@@ -61,6 +61,7 @@ async fn save(store: &SqliteStore, session: SessionId, seq: u64, plan: ContextPl
         .commit(
             session,
             Commit {
+                deliveries: Vec::new(),
                 entries: vec![attempt(seq, hash)],
                 plan: Some(write),
             },
@@ -124,6 +125,7 @@ async fn plans_share_catalogs_and_prefixes_but_bound_restoration_work() {
         .commit(
             event.session,
             Commit {
+                deliveries: Vec::new(),
                 entries: vec![attempt(68, replaced)],
                 plan: None,
             },
@@ -149,6 +151,7 @@ async fn a_failed_attempt_insert_rolls_back_the_plan_and_its_catalog() {
             .commit(
                 event.session,
                 Commit {
+                    deliveries: Vec::new(),
                     entries: vec![attempt(1, hash)],
                     plan: Some(write)
                 }

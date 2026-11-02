@@ -6,14 +6,18 @@ CREATE TABLE meta (
 
 CREATE TABLE sessions (
   id            TEXT PRIMARY KEY,
-  name          TEXT NOT NULL UNIQUE,
+  name          TEXT NOT NULL,
   created_at    TEXT NOT NULL,
   binding_node  TEXT NOT NULL,
   binding_epoch INTEGER NOT NULL,
   profile       TEXT NOT NULL,           -- Selected profile name
   working_dir_node TEXT NOT NULL,        -- Node owning the working directory
-  working_dir_path TEXT NOT NULL         -- Absolute UTF-8 working directory
+  working_dir_path TEXT NOT NULL,        -- Absolute UTF-8 working directory
+  parent        TEXT REFERENCES sessions(id),
+  archived_at   TEXT
 ) STRICT;
+
+CREATE UNIQUE INDEX sessions_active_name ON sessions(name) WHERE archived_at IS NULL;
 
 CREATE TABLE log (
   session_id TEXT NOT NULL REFERENCES sessions(id),

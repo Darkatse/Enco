@@ -12,8 +12,8 @@ pub use supervisor::ChannelSupervisor;
 
 use enco_core::*;
 use enco_kernel::{
-    ChannelAction as Action, ChannelAdapter as Adapter, ChannelCallError, ChannelFault as Fault,
-    ChannelIdentity as Identity, Clock, Kernel, KernelError,
+    Accepted, ChannelAction as Action, ChannelAdapter as Adapter, ChannelCallError,
+    ChannelFault as Fault, ChannelIdentity as Identity, Clock, Kernel, KernelError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -70,7 +70,8 @@ struct State {
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Cursor {
     processed: Option<LogPos>,
-    target: Option<String>,
+    /// Where replies were going at `processed`, which is all a projection resumes from.
+    destination: Option<ReplyDestination>,
 }
 
 /// A connection's state, and the deliveries that failed for good.

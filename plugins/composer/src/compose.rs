@@ -28,7 +28,7 @@ pub(super) fn compose(input: &ComposeInput) -> Result<Composition, Failure> {
         &mut memory_budget,
         &mut omitted,
     );
-    let sizes = history::sizes(&items[1..], &input.transcript)?;
+    let (sizes, trailing) = history::sizes(&items[1..], &input.transcript)?;
     let definitions = tokens(
         input
             .capabilities
@@ -42,7 +42,11 @@ pub(super) fn compose(input: &ComposeInput) -> Result<Composition, Failure> {
             })
             .sum(),
     );
-    let history_tokens: u32 = sizes.iter().map(|(_, size)| size).sum();
+    let history_tokens = sizes
+        .iter()
+        .map(|(_, size)| size)
+        .sum::<u32>()
+        .saturating_add(trailing);
     let total = system_tokens
         .saturating_add(history_tokens)
         .saturating_add(definitions)
@@ -53,7 +57,7 @@ pub(super) fn compose(input: &ComposeInput) -> Result<Composition, Failure> {
             && let Some(budget) = &input.compaction
         {
             let keep = window.saturating_mul(COMPACTION_TAIL_PERCENT) / 100;
-            let compaction = Compaction::new(input, &history, budget);
+            let compaction = Compaction::new(input, &history, budget)?;
             if let Some(upto) = compaction.boundary(input, &sizes, history_tokens, keep) {
                 return Ok(Composition::Compact(crate::composer::Compaction {
                     plan: compaction.plan(&upto),

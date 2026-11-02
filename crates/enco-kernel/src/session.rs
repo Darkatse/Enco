@@ -1,7 +1,7 @@
-use crate::{
-    Clock, Commit, KernelError, PlanWrite, Store, StoreError, limits::SESSION_BROADCAST_CAPACITY,
-    snapshot::Snapshot,
-};
+mod admission;
+mod commit;
+
+use crate::{Clock, KernelError, Store, limits::SESSION_BROADCAST_CAPACITY, snapshot::Snapshot};
 use enco_core::*;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::{
@@ -21,11 +21,14 @@ pub(crate) struct SessionDeps {
     pub registry: Arc<crate::Registry>,
     pub snapshot: Arc<Snapshot>,
     pub shutdown: CancellationToken,
+    pub subtrees: Arc<crate::subtree::Subtrees>,
+    pub slots: Arc<crate::child_slots::ChildSlots>,
 }
 
 pub(crate) struct SessionHandle {
     pub id: SessionId,
     pub wake: Notify,
+    pub changed: Notify,
     pub entries: broadcast::Sender<Entry>,
     pub run_cancel: Mutex<Option<CancellationToken>>,
     pub stopped: Mutex<Option<String>>,
@@ -37,6 +40,7 @@ impl SessionHandle {
         let handle = Arc::new(Self {
             id: session.id,
             wake: Notify::new(),
+            changed: Notify::new(),
             entries: broadcast::channel(SESSION_BROADCAST_CAPACITY).0,
             run_cancel: Mutex::new(None),
             stopped: Mutex::new(None),
@@ -50,12 +54,17 @@ impl SessionHandle {
                 handle: task_handle,
                 entries: vec![],
                 next: 1,
+                delivery: DeliveryProjection::default(),
             };
             if let Err(error) = actor.serve().await {
                 tracing::error!(session = %actor.session.id, %error, "Session stopped");
                 *lock(&actor.handle.stopped) = Some(error.to_string());
             }
             *lock(&actor.handle.run_cancel) = None;
+            actor.handle.changed.notify_waiters();
+            if actor.session.archived_at.is_some() && lock(&actor.handle.stopped).is_none() {
+                lock(&actor.deps.subtrees.sessions).remove(&actor.session.id);
+            }
         });
         *lock(&handle.task) = Some(task);
         handle
@@ -69,11 +78,16 @@ pub(crate) struct SessionActor {
     // Keep the full Log in memory; project incrementally if long Sessions make scans costly.
     pub entries: Vec<Entry>,
     pub next: u64,
+    /// What the committed Log hands to its reply destination, folded up to its last entry.
+    pub delivery: DeliveryProjection,
 }
 
 impl SessionActor {
     async fn serve(&mut self) -> Result<(), KernelError> {
         self.entries = self.deps.store.log(self.session.id, None).await?;
+        for entry in &self.entries {
+            self.delivery.step(entry);
+        }
         self.next = self
             .entries
             .iter()
@@ -88,63 +102,50 @@ impl SessionActor {
             if self.deps.shutdown.is_cancelled() {
                 return Ok(());
             }
+            self.session = self
+                .deps
+                .store
+                .session(self.session.id)
+                .await?
+                .ok_or(crate::StoreError::UnknownSession(self.session.id))?;
             let pending = self.deps.store.pending(self.session.id).await?;
-            if let Some(last) = pending.iter().rposition(crate::transcript::is_backtrack) {
-                // A backtrack takes effect between Runs, superseding the inputs that preceded it.
+            if let Some(last) = pending.iter().rposition(crate::transcript::is_command) {
                 let consumed = pending
                     .into_iter()
                     .take(last + 1)
                     .map(|event| EntryBody::EventConsumed { event })
                     .collect();
                 self.commit(consumed, None).await?;
-            } else if pending.is_empty() && !crate::transcript::backtracked_to_input(&self.entries)
-            {
+                if self.session.archived_at.is_some() {
+                    return Ok(());
+                }
+                continue;
+            }
+            if self.session.archived_at.is_some() {
+                return Ok(());
+            }
+            if pending.is_empty() && !crate::transcript::backtracked_to_input(&self.entries) {
                 tokio::select! {
                     _ = self.handle.wake.notified() => {},
                     _ = self.deps.shutdown.cancelled() => return Ok(()),
                 }
-            } else {
-                let token = self.deps.shutdown.child_token();
-                *lock(&self.handle.run_cancel) = Some(token.clone());
-                let result = self.run(token).await;
-                *lock(&self.handle.run_cancel) = None;
-                result?;
+                continue;
             }
+            let permit = if self.session.parent.is_some() {
+                let Some(permit) = self.child_permit().await? else {
+                    continue;
+                };
+                Some(permit)
+            } else {
+                None
+            };
+            let token = self.deps.shutdown.child_token();
+            *lock(&self.handle.run_cancel) = Some(token.clone());
+            let result = self.run(token).await;
+            *lock(&self.handle.run_cancel) = None;
+            self.handle.changed.notify_waiters();
+            drop(permit);
+            result?;
         }
-    }
-
-    pub(crate) async fn commit(
-        &mut self,
-        bodies: Vec<EntryBody>,
-        plan: Option<Arc<PlanWrite>>,
-    ) -> Result<(), StoreError> {
-        let entries: Vec<_> = bodies
-            .into_iter()
-            .enumerate()
-            .map(|(i, body)| Entry {
-                pos: LogPos {
-                    epoch: self.session.binding.epoch,
-                    seq: Seq(self.next + i as u64),
-                },
-                at: self.deps.clock.now(),
-                body,
-            })
-            .collect();
-        self.deps
-            .store
-            .commit(
-                self.session.id,
-                Commit {
-                    entries: entries.clone(),
-                    plan,
-                },
-            )
-            .await?;
-        self.next += entries.len() as u64;
-        for entry in entries {
-            self.entries.push(entry.clone());
-            let _ = self.handle.entries.send(entry);
-        }
-        Ok(())
     }
 }

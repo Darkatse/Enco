@@ -5,12 +5,12 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_PROFILE: &str = "default";
 
 /// A Session's stable identity with its resolved name for inspection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRef {
     /// Identity used by the Session's durable records.
     pub id: SessionId,
     /// Human-readable name resolved by the record owner.
-    pub name: String,
+    pub name: crate::SessionName,
 }
 
 /// Persistent Session identity, execution binding, selected profile and working directory.
@@ -18,10 +18,14 @@ pub struct SessionRef {
 pub struct SessionRecord {
     /// Identity joining the Session’s Inbox, Log and execution binding.
     pub id: SessionId,
-    /// Unique, human-readable name used by native commands.
-    pub name: String,
+    /// Human-readable full name, unique among unarchived Sessions.
+    pub name: crate::SessionName,
+    /// Parent fixed at creation; absent for a root Session.
+    pub parent: Option<SessionRef>,
     /// Creation time in UTC.
     pub created_at: DateTime<Utc>,
+    /// Time this Session stopped accepting inputs; absent while unarchived.
+    pub archived_at: Option<DateTime<Utc>>,
     /// Node and generation authorized to execute this Session.
     pub binding: Binding,
     /// Name of the configuration selected at the next Round boundary.

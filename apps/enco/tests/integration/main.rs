@@ -10,6 +10,7 @@ mod decision;
 mod development;
 mod discord_mapper;
 mod gemini;
+mod lifecycle;
 mod live;
 mod memory;
 mod onebot;

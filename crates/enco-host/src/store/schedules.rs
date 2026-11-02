@@ -54,12 +54,13 @@ pub(super) fn list(
         .prepare(&format!(
             "SELECT {COLUMNS}
              FROM schedules
-             WHERE (? IS NULL OR state=?)
+             WHERE (?1 IS NULL OR state=?1)
+               AND (?1 IS NOT 'active' OR EXISTS (SELECT 1 FROM sessions s WHERE s.id=schedules.session_id AND s.archived_at IS NULL))
              ORDER BY created_at,id"
         ))
         .map_err(backend)?;
     query
-        .query_map(params![filter, filter], rows::schedule)
+        .query_map(params![filter], rows::schedule)
         .map_err(backend)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(backend)
@@ -73,7 +74,7 @@ pub(super) fn fire(
     expected_last: Option<DateTime<Utc>>,
     done: bool,
     event: &Event,
-) -> Result<(), StoreError> {
+) -> Result<Accepted, StoreError> {
     let (id, due_at) = match &event.body {
         EventBody::Reminder {
             schedule, due_at, ..
@@ -86,31 +87,37 @@ pub(super) fn fire(
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
-    let inserted = tx
-        .execute(
-            "UPDATE schedules SET last_due=?,last_event_id=?,state=?
-             WHERE id=? AND state='active' AND last_due IS ?",
-            params![
-                timestamp(due_at),
-                event.id.to_string(),
-                state_name(if done {
-                    ScheduleState::Done
-                } else {
-                    ScheduleState::Active
-                }),
-                id.to_string(),
-                expected_last.map(timestamp),
-            ],
-        )
-        .map_err(backend)?;
-    if inserted == 0 {
+    let active: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schedules WHERE id=? AND state='active' AND last_due IS ?)",
+        params![id.to_string(), expected_last.map(timestamp)], |row| row.get(0),
+    ).map_err(backend)?;
+    if !active {
         return Err(StoreError::ScheduleNotActive(id));
     }
-    if super::accept::events_in(&tx, &events)? == [Accepted::Duplicate] {
-        return Err(StoreError::Inbox(format!(
-            "reminder {} was already accepted",
-            event.id
-        )));
+    match super::accept::events_in(&tx, &events)?[0] {
+        Accepted::Archived => return Ok(Accepted::Archived),
+        Accepted::Duplicate => {
+            return Err(StoreError::Inbox(format!(
+                "reminder {} was already accepted",
+                event.id
+            )));
+        }
+        Accepted::New => {}
     }
-    tx.commit().map_err(backend)
+    tx.execute(
+        "UPDATE schedules SET last_due=?,last_event_id=?,state=? WHERE id=?",
+        params![
+            timestamp(due_at),
+            event.id.to_string(),
+            state_name(if done {
+                ScheduleState::Done
+            } else {
+                ScheduleState::Active
+            }),
+            id.to_string()
+        ],
+    )
+    .map_err(backend)?;
+    tx.commit().map_err(backend)?;
+    Ok(Accepted::New)
 }

@@ -12,15 +12,21 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - enum `AttemptPurpose` — Whether the model is replying or summarizing prior rounds.
 - enum `AttemptResult` — The durable settlement of a provider attempt.
 - struct `Binding` — Execution owner and fencing generation; a single node uses itself at epoch one.
+- struct `Boundary` — A Log entry at which a Session hands content to its reply destination, or would if it had any.
 - struct `CallId` — Host-assigned identity of one proposed tool invocation.
 - struct `CapabilityId` — A node-qualified capability, displayed as `name@node`; the model sees only `name`.
+- struct `ChildState` — Child facts computed from committed history followed by accepted, unconsumed inputs.
+- struct `ChildStateFold` — Folds a child's history, newest first, into its `ChildState`.
 - enum `CodeIntent` — The owner's choice of code source, independent of the resulting component bytes.
 - enum `CodeRef` — Identifies the exact code used by an invocation.
 - struct `ConfigGeneration` — An immutable registered configuration document.
 - struct `ConfigurationRef` — The identity and registration of a configuration, without copying its document.
 - struct `ContentHash` — BLAKE3 address of immutable bytes, encoded as lowercase hexadecimal.
 - struct `ContextPlan` — The complete request plan, recorded by content address before sending.
+- struct `Delegated` — Child Session delegation committed with a `session_send` settlement.
+- enum `Deliverable` — What a Session hands to its reply destination at a delivery boundary.
 - struct `Delivery` — A logical channel delivery referencing its original Log fact.
+- struct `DeliveryProjection` — Folds a Session's Log, in order, into what it hands to its reply destination.
 - struct `DeliverySettlement` — Final outcome, committed atomically with the connection's outbound progress.
 - struct `DisclosedTool` — A tool as a plan disclosed it to the model, kept verbatim.
 - struct `EarlierMessage` — A prior chat message quoted as context, without starting a Session Run.
@@ -39,6 +45,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `GenerationId` — Registry-global generation number, ordered by commit rather than time.
 - struct `GenerationRecord` — One immutable generation identity, with a mutable availability status.
 - enum `GenerationStatus` — Eligibility for use and automatic recovery.
+- struct `Halt` — A stop of a whole Session subtree.
 - struct `Image` — Recorded image metadata; the kernel stores the bytes before accepting this reference.
 - struct `ImageData` — Bytes resolved from a recorded image for one frozen Provider request.
 - enum `ImageFormat` — Encodings shared by the supported image input protocols.
@@ -49,6 +56,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `InvalidPluginName` — A plugin name outside the public naming grammar.
 - struct `InvalidProfileName` — A profile name outside the single-segment naming rule.
 - enum `InvalidReason` — A reason that cannot be stored as a single bounded line.
+- struct `InvalidSessionName` — A Session name with an empty or invalid segment.
 - struct `InvalidWorkingDir` — A working directory that is not an absolute UTF-8 path.
 - struct `LogPos` — Structural Log ordering; wall clocks never determine this order.
 - struct `MappingOrigin` — An output's position in one immutable mapper call.
@@ -62,7 +70,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `Omission` — A visible explanation of content excluded from this request.
 - enum `Origin` — Source of a registered generation.
 - enum `Outcome` — Known success, known failure, or an effect whose outcome is uncertain.
-- struct `Outgoing` — Content addressed to the owner: Markdown text and at most one file.
+- struct `Outgoing` — Content addressed to a reply destination: Markdown text and at most one file.
 - struct `OutgoingFile` — A recorded file; the kernel stores the bytes before accepting this reference.
 - enum `Part` — Typed content of a canonical message.
 - enum `PlanItem` — Inline content or a reference to an immutable canonical message.
@@ -82,6 +90,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `RegisteredName` — One accepted name change.
 - struct `RegistrationId` — Registry-global registration number; one accepted change may contain several generations.
 - struct `RegistrationRecord` — One accepted external change, also the unit of owner rollback.
+- enum `ReplyDestination` — Where a Session sends replies after consuming an interactive input.
 - enum `Role` — The speaker in a canonical model message.
 - struct `RolledBack` — A committed automatic rollback, also accepted as a Session input when applicable.
 - enum `RoundEnd` — Why this Round stopped.
@@ -95,6 +104,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `SchemaError` — Why a declared schema is outside the canonical subset, and where, as a JSON Pointer.
 - struct `Seq` — Sequence assigned by a Session actor, starting at one.
 - struct `SessionId` — Durable identity of a conversation and its Log.
+- struct `SessionName` — A Session's full name, made of validated segments separated by `/`.
 - struct `SessionRecord` — Persistent Session identity, execution binding, selected profile and working directory.
 - struct `SessionRef` — A Session's stable identity with its resolved name for inspection.
 - enum `Settlement` — Durable execution outcome; result text is stored once in the Log entry's content or blob.
@@ -109,7 +119,8 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `WorkingDir` — A node's absolute UTF-8 directory path; availability is checked only when a tool needs it.
 - fn `is_name_segment` — Whether a name is one nonempty segment, without slashes, whitespace or controls, and not `.` or `..`.
 - fn `parse_arguments` — Parse a call's arguments into the tool's argument type.
-- fn `unanswered_input` — The latest interactive input still awaiting an answer, if any.
+- fn `transcribe_name_segment` — Turn external text into one name segment; return none when no valid segment remains.
+- fn `unanswered_input` — Latest interactive input still waiting for a final reply or an unsuccessful Run result.
 - const `CONFIGURATION_FILE` — The owner's configuration file, relative to the Enco home.
 - const `DEFAULT_PROFILE` — Profile selected when a Session is created; every node configuration must define it.
 - const `PLUGINS_DIRECTORY` — The directory holding one source directory per plugin, relative to the Enco home.
@@ -310,6 +321,32 @@ impl PartialEq for Binding
 impl Serialize for Binding
 ```
 
+## struct `Boundary`
+
+`src/delivery/content.rs`
+
+```rust
+pub struct Boundary {
+    pub destination: Option<crate::ReplyDestination>,
+    pub deliverable: Option<Deliverable>,
+}
+```
+
+A Log entry at which a Session hands content to its reply destination, or would if it had
+any.
+
+- `destination` — Where replies go at this entry.
+- `deliverable` — Content to hand over; absent for a Round that ended without a reply and for a Run that
+  completed.
+
+Implements:
+
+```rust
+impl Clone for Boundary
+impl Debug for Boundary
+impl PartialEq for Boundary
+```
+
 ## struct `CallId`
 
 `src/ids.rs`
@@ -372,6 +409,80 @@ impl<'de> Deserialize<'de> for CapabilityId
 impl Display for CapabilityId
 impl PartialEq for CapabilityId
 impl Serialize for CapabilityId
+```
+
+## struct `ChildState`
+
+`src/delivery/state.rs`
+
+```rust
+pub struct ChildState {
+    pub awaiting: bool,
+    pub halted: Option<crate::Halt>,
+    pub replies_to_owner: bool,
+}
+```
+
+Child facts computed from committed history followed by accepted, unconsumed inputs.
+
+- `awaiting` — Whether the parent still waits for this child's answer.
+- `halted` — Most recent halt, provided no later input has superseded it.
+- `replies_to_owner` — Whether replies currently go to the owner rather than the delegating parent.
+
+Implements:
+
+```rust
+impl Clone for ChildState
+impl Debug for ChildState
+impl Eq for ChildState
+impl PartialEq for ChildState
+```
+
+## struct `ChildStateFold`
+
+`src/delivery/state.rs`
+
+```rust
+pub struct ChildStateFold {
+    /* private fields */
+}
+```
+
+Folds a child's history, newest first, into its `ChildState`.
+
+Feed its unconsumed inputs newest first, then its Log newest first. Each fact is decided by the
+newest fact of its kind, so the fold needs only the history since the latest input that asks
+for a reply, and says when it has it.
+
+### `ChildStateFold::input`
+
+```rust
+pub fn input(&mut self, event: &Event) -> ControlFlow<()>
+```
+
+Fold the next older input; breaks once every fact is decided.
+
+### `ChildStateFold::entry`
+
+```rust
+pub fn entry(&mut self, body: &EntryBody) -> ControlFlow<()>
+```
+
+Fold the next older Log entry; breaks once every fact is decided.
+
+### `ChildStateFold::finish`
+
+```rust
+pub fn finish(self) -> ChildState
+```
+
+The facts from what was folded; an undecided fact means the history never decided it.
+
+Implements:
+
+```rust
+impl Debug for ChildStateFold
+impl Default for ChildStateFold
 ```
 
 ## enum `CodeIntent`
@@ -579,6 +690,61 @@ impl PartialEq for ContextPlan
 impl Serialize for ContextPlan
 ```
 
+## struct `Delegated`
+
+`src/entry.rs`
+
+```rust
+pub struct Delegated {
+    pub session: crate::SessionRef,
+    pub created: bool,
+    pub event: crate::EventId,
+}
+```
+
+Child Session delegation committed with a `session_send` settlement.
+
+- `session` — Target child Session identity and full name.
+- `created` — Whether this call created the child Session.
+- `event` — Event accepted into the child Session's Inbox.
+
+Implements:
+
+```rust
+impl Clone for Delegated
+impl Debug for Delegated
+impl<'de> Deserialize<'de> for Delegated
+impl Eq for Delegated
+impl PartialEq for Delegated
+impl Serialize for Delegated
+```
+
+## enum `Deliverable`
+
+`src/delivery/content.rs`
+
+```rust
+pub enum Deliverable {
+    Reply(String),
+    Message(crate::Outgoing),
+    RunEnded(crate::RunEnd),
+}
+```
+
+What a Session hands to its reply destination at a delivery boundary.
+
+- `Reply` — The reply that ended a Round.
+- `Message` — A `message_send` payload, handed over as its call settles.
+- `RunEnded` — How a Run that did not complete ended, handed over instead of a reply; never `Completed`.
+
+Implements:
+
+```rust
+impl Clone for Deliverable
+impl Debug for Deliverable
+impl PartialEq for Deliverable
+```
+
 ## struct `Delivery`
 
 `src/delivery.rs`
@@ -605,6 +771,54 @@ impl Debug for Delivery
 impl<'de> Deserialize<'de> for Delivery
 impl PartialEq for Delivery
 impl Serialize for Delivery
+```
+
+## struct `DeliveryProjection`
+
+`src/delivery/content.rs`
+
+```rust
+pub struct DeliveryProjection {
+    /* private fields */
+}
+```
+
+Folds a Session's Log, in order, into what it hands to its reply destination.
+
+This is the only definition of that content: the channel shell and the delivery to a parent
+both fold through it. A Round that replies has no tool calls, so no reply is in progress at a
+boundary and resuming after one needs only the destination there.
+
+### `DeliveryProjection::resume`
+
+```rust
+pub fn resume(destination: Option<ReplyDestination>) -> Self
+```
+
+Resume folding after a boundary that recorded this destination.
+
+### `DeliveryProjection::destination`
+
+```rust
+pub fn destination(&self) -> Option<&ReplyDestination>
+```
+
+Where replies go after the entries folded so far: the latest input that asked for a reply.
+
+### `DeliveryProjection::step`
+
+```rust
+pub fn step(&mut self, entry: &Entry) -> Option<Boundary>
+```
+
+Fold the next entry; returns the boundary it completes, if it is one.
+
+Implements:
+
+```rust
+impl Clone for DeliveryProjection
+impl Debug for DeliveryProjection
+impl Default for DeliveryProjection
 ```
 
 ## struct `DeliverySettlement`
@@ -841,6 +1055,7 @@ pub enum EntryBody {
         full: Option<crate::ContentHash>,
         images: Vec<crate::Image>,
         outgoing: Option<crate::Outgoing>,
+        delegated: Option<Delegated>,
     },
     RoundEnded {
         round: crate::RoundId,
@@ -892,7 +1107,8 @@ Facts accepted by the Session owner.
   - `content` — Exact model-visible result text.
   - `full` — Address of the complete result when its inline text was truncated.
   - `images` — Images stored by the settlement before this entry was committed.
-  - `outgoing` — Owner-directed content accepted with this settlement.
+  - `outgoing` — Content handed to the current reply destination with this settlement.
+  - `delegated` — Child delegation accepted atomically with this settlement.
 - `RoundEnded` — All proposed calls have been settled and the Round has ended.
   - `round` — Round containing this fact.
   - `end` — Reason execution stopped.
@@ -978,6 +1194,14 @@ pub fn is_interactive(&self) -> bool
 
 Whether this input's sender waits for a reply and moves the reply destination to itself.
 
+### `Event::reply_destination`
+
+```rust
+pub fn reply_destination(&self) -> Option<ReplyDestination>
+```
+
+The destination selected by this input, absent when it does not ask for a reply.
+
 ### `Event::canonical_message`
 
 ```rust
@@ -1025,6 +1249,11 @@ pub enum EventBody {
     Backtrack {
         to: crate::LogPos,
     },
+    SessionMessage(crate::Outgoing),
+    ChildRunEnded {
+        end: crate::RunEnd,
+    },
+    Halt(Halt),
 }
 ```
 
@@ -1049,6 +1278,10 @@ Input to a Session, consumed in Inbox order.
   It carries no text: the composer narrates it. Changes made after the position outside the
   conversation stay as they are.
   - `to` — The position the owner pointed at; the kernel derives what the conversation keeps.
+- `SessionMessage` — Words and an optional file from another Session.
+- `ChildRunEnded` — A child's Run that ended without completing.
+  - `end` — Recorded terminal result, distinct from the child's own words.
+- `Halt` — A command stopping this Session's subtree without moving its reply destination.
 
 Implements:
 
@@ -1116,13 +1349,15 @@ pub enum EventSource {
     },
     Scheduler,
     Registry,
+    Parent,
+    Child(crate::SessionRef),
 }
 ```
 
 The producer of an Inbox input.
 
 - `Cli` — Input submitted through the native interface.
-- `Channel` — Interactive input from a channel connection.
+- `Channel` — Input from a channel connection.
   - `protocol` — Protocol declared by the channel mapper, such as `telegram`.
   - `account` — Account identity within the protocol.
   - `conversation` — Conversation to which default replies return.
@@ -1134,6 +1369,8 @@ The producer of an Inbox input.
     at it later.
 - `Scheduler` — Input generated by a durable schedule.
 - `Registry` — Notice generated by automatic plugin recovery.
+- `Parent` — The delegating parent, including commands passed down from its ancestors.
+- `Child` — A child Session's report, with its fixed identity and full name.
 
 Implements:
 
@@ -1316,6 +1553,33 @@ impl<'de> Deserialize<'de> for GenerationStatus
 impl Eq for GenerationStatus
 impl PartialEq for GenerationStatus
 impl Serialize for GenerationStatus
+```
+
+## struct `Halt`
+
+`src/event.rs`
+
+```rust
+pub struct Halt {
+    pub root: crate::SessionRef,
+    pub by: Option<crate::SessionRef>,
+}
+```
+
+A stop of a whole Session subtree.
+
+- `root` — Session at the top of the halted subtree.
+- `by` — Session that halted it; absent when the owner did.
+
+Implements:
+
+```rust
+impl Clone for Halt
+impl Debug for Halt
+impl<'de> Deserialize<'de> for Halt
+impl Eq for Halt
+impl PartialEq for Halt
+impl Serialize for Halt
 ```
 
 ## struct `Image`
@@ -1647,6 +1911,24 @@ Implements:
 impl Debug for InvalidReason
 impl Display for InvalidReason
 impl Error for InvalidReason
+```
+
+## struct `InvalidSessionName`
+
+`src/session_name.rs`
+
+```rust
+pub struct InvalidSessionName(/* private field */);
+```
+
+A Session name with an empty or invalid segment.
+
+Implements:
+
+```rust
+impl Debug for InvalidSessionName
+impl Display for InvalidSessionName
+impl Error for InvalidSessionName
 ```
 
 ## struct `InvalidWorkingDir`
@@ -2091,7 +2373,7 @@ pub struct Outgoing<F = OutgoingFile> {
 }
 ```
 
-Content addressed to the owner: Markdown text and at most one file.
+Content addressed to a reply destination: Markdown text and at most one file.
 
 - `text` — Markdown authored by the sender.
 - `file` — Optional attachment, recorded by reference or carried as bytes at a boundary.
@@ -2738,6 +3020,42 @@ impl PartialEq for RegistrationRecord
 impl Serialize for RegistrationRecord
 ```
 
+## enum `ReplyDestination`
+
+`src/event.rs`
+
+```rust
+pub enum ReplyDestination {
+    Cli,
+    Channel {
+        protocol: String,
+        account: String,
+        conversation: String,
+    },
+    Parent,
+}
+```
+
+Where a Session sends replies after consuming an interactive input.
+
+- `Cli` — The native CLI interface.
+- `Channel` — A conversation on a channel connection.
+  - `protocol` — Protocol declared by the channel mapper.
+  - `account` — Account identity within the protocol.
+  - `conversation` — Conversation within the account.
+- `Parent` — The parent Session that delegated to this one.
+
+Implements:
+
+```rust
+impl Clone for ReplyDestination
+impl Debug for ReplyDestination
+impl<'de> Deserialize<'de> for ReplyDestination
+impl Eq for ReplyDestination
+impl PartialEq for ReplyDestination
+impl Serialize for ReplyDestination
+```
+
 ## enum `Role`
 
 `src/message.rs`
@@ -2894,6 +3212,8 @@ pub enum RunEnd {
     BudgetExhausted,
     Interrupted,
     Cancelled,
+    Backtracked,
+    Halted,
     Failed {
         failure: crate::Failure,
     },
@@ -2906,6 +3226,8 @@ Why this Run stopped.
 - `BudgetExhausted` — The Run exhausted its Round allowance.
 - `Interrupted` — The previous process ended before settlement.
 - `Cancelled` — Cancellation was requested and work has stopped.
+- `Backtracked` — The owner went back to an earlier message, which stopped it.
+- `Halted` — A halt of this Session or an ancestor stopped it.
 - `Failed` — The operation stopped with a known failure.
   - `failure` — Classification and details of the failure.
 
@@ -3178,6 +3500,84 @@ impl PartialOrd for SessionId
 impl Serialize for SessionId
 ```
 
+## struct `SessionName`
+
+`src/session_name.rs`
+
+```rust
+pub struct SessionName(/* private field */);
+```
+
+A Session's full name, made of validated segments separated by `/`.
+
+### `SessionName::root`
+
+```rust
+pub fn root(name: &str) -> Result<Self, InvalidSessionName>
+```
+
+Validate a single-segment name for a root Session.
+
+### `SessionName::child`
+
+```rust
+pub fn child(&self, short: &str) -> Result<Self, InvalidSessionName>
+```
+
+Append one validated child segment to this Session's full name.
+
+### `SessionName::is_root`
+
+```rust
+pub fn is_root(&self) -> bool
+```
+
+Whether this name contains only a root segment.
+
+### `SessionName::short_name`
+
+```rust
+pub fn short_name(&self) -> &str
+```
+
+The final segment, relative to the parent when there is one.
+
+### `SessionName::depth`
+
+```rust
+pub fn depth(&self) -> u32
+```
+
+Number of ancestors expressed by this name; roots have depth zero.
+
+### `SessionName::as_str`
+
+```rust
+pub fn as_str(&self) -> &str
+```
+
+The validated full name.
+
+Implements:
+
+```rust
+impl AsRef<str> for SessionName
+impl Borrow<str> for SessionName
+impl Clone for SessionName
+impl Debug for SessionName
+impl Deref for SessionName
+impl<'de> Deserialize<'de> for SessionName
+impl Display for SessionName
+impl Eq for SessionName
+impl From<SessionName> for String
+impl FromStr for SessionName
+impl Hash for SessionName
+impl Ord for SessionName
+impl PartialEq for SessionName
+impl PartialOrd for SessionName
+impl Serialize for SessionName
+```
+
 ## struct `SessionRecord`
 
 `src/session.rs`
@@ -3185,8 +3585,10 @@ impl Serialize for SessionId
 ```rust
 pub struct SessionRecord {
     pub id: crate::SessionId,
-    pub name: String,
+    pub name: crate::SessionName,
+    pub parent: Option<SessionRef>,
     pub created_at: crate::DateTime<crate::Utc>,
+    pub archived_at: Option<crate::DateTime<crate::Utc>>,
     pub binding: Binding,
     pub profile: crate::ProfileName,
     pub working_dir: crate::WorkingDir,
@@ -3196,8 +3598,10 @@ pub struct SessionRecord {
 Persistent Session identity, execution binding, selected profile and working directory.
 
 - `id` — Identity joining the Session’s Inbox, Log and execution binding.
-- `name` — Unique, human-readable name used by native commands.
+- `name` — Human-readable full name, unique among unarchived Sessions.
+- `parent` — Parent fixed at creation; absent for a root Session.
 - `created_at` — Creation time in UTC.
+- `archived_at` — Time this Session stopped accepting inputs; absent while unarchived.
 - `binding` — Node and generation authorized to execute this Session.
 - `profile` — Name of the configuration selected at the next Round boundary.
 - `working_dir` — Working directory sampled at the next Round boundary.
@@ -3219,7 +3623,7 @@ impl Serialize for SessionRecord
 ```rust
 pub struct SessionRef {
     pub id: crate::SessionId,
-    pub name: String,
+    pub name: crate::SessionName,
 }
 ```
 
@@ -3233,6 +3637,7 @@ Implements:
 ```rust
 impl Clone for SessionRef
 impl Debug for SessionRef
+impl<'de> Deserialize<'de> for SessionRef
 impl Eq for SessionRef
 impl PartialEq for SessionRef
 impl Serialize for SessionRef
@@ -3587,19 +3992,27 @@ Parse a call's arguments into the tool's argument type.
 Dispatch has already checked them against the declared schema, so this fails only on rules the
 type enforces itself, such as the characters allowed in a plugin name.
 
-## fn `unanswered_input`
+## fn `transcribe_name_segment`
 
-`src/entry.rs`
+`src/session_name.rs`
 
 ```rust
-pub fn unanswered_input(entries: &[Entry]) -> Option<&crate::Event>
+pub fn transcribe_name_segment(text: &str) -> Option<String>
 ```
 
-The latest interactive input still awaiting an answer, if any.
+Turn external text into one name segment; return none when no valid segment remains.
 
-An answer ends the wait of every input consumed before it: a reply that ends a Round, or the
-outcome of a Run that ended without completing, delivered instead of a reply. A skipped reply
-and a message sent during a Run are not answers.
+## fn `unanswered_input`
+
+`src/delivery/state.rs`
+
+```rust
+pub fn unanswered_input(entries: &[crate::Entry]) -> Option<&crate::Event>
+```
+
+Latest interactive input still waiting for a final reply or an unsuccessful Run result.
+
+Mid-Run messages and skipped replies do not answer it; a consumed halt invalidates the wait.
 
 ## const `CONFIGURATION_FILE`
 
