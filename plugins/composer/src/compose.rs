@@ -1,9 +1,11 @@
 //! Selects reply content and asks for compaction when the model's window is nearly full.
 use crate::composer::*;
-use crate::{compaction::Compaction, context, estimate_tokens, history, limits::*, tokens};
+use crate::{
+    Options, compaction::Compaction, context, estimate_tokens, history, limits::*, tokens,
+};
 use enco_sdk::types::Failure;
 
-pub(super) fn compose(input: &ComposeInput) -> Result<Composition, Failure> {
+pub(super) fn compose(input: &ComposeInput, options: &Options) -> Result<Composition, Failure> {
     let timezone = input
         .timezone
         .parse()
@@ -20,7 +22,7 @@ pub(super) fn compose(input: &ComposeInput) -> Result<Composition, Failure> {
     let system_tokens = estimate_tokens(&head.text);
     let history = history::annotated(input, timezone)?;
     let selected_images = crate::images::selected(input, &mut omitted);
-    let items = history::reply_items(
+    let (items, reused_prefix_len) = history::reply_items(
         input,
         PlanItem::Message(head),
         &history,
@@ -29,58 +31,97 @@ pub(super) fn compose(input: &ComposeInput) -> Result<Composition, Failure> {
         &mut omitted,
     );
     let (sizes, trailing) = history::sizes(&items[1..], &input.transcript)?;
-    let definitions = tokens(
-        input
-            .capabilities
-            .iter()
-            .map(|capability| {
-                let spec = &capability.spec;
-                spec.name.len()
-                    + spec.description.len()
-                    + spec.input_schema.len()
-                    + PART_OVERHEAD_BYTES
-            })
-            .sum(),
-    );
     let history_tokens = sizes
         .iter()
-        .map(|(_, size)| size)
-        .sum::<u32>()
-        .saturating_add(trailing);
-    let total = system_tokens
-        .saturating_add(history_tokens)
-        .saturating_add(definitions)
-        .saturating_add(budget.max_output_tokens);
+        .fold(trailing, |total, (_, size)| total.saturating_add(*size));
+    let tools: Vec<_> = input
+        .capabilities
+        .iter()
+        .map(|capability| capability.id.clone())
+        .collect();
+    let total = request_tokens(
+        input,
+        &items,
+        reused_prefix_len,
+        &tools,
+        system_tokens,
+        history_tokens,
+    )?;
     let window = budget.context_tokens;
-    if total > window.saturating_mul(COMPACTION_TRIGGER_PERCENT) / 100 {
-        if input.compactions_left > 0
-            && let Some(budget) = &input.compaction
-        {
-            let keep = window.saturating_mul(COMPACTION_TAIL_PERCENT) / 100;
-            let compaction = Compaction::new(input, &history, budget)?;
-            if let Some(upto) = compaction.boundary(input, &sizes, history_tokens, keep) {
-                return Ok(Composition::Compact(crate::composer::Compaction {
-                    plan: compaction.plan(&upto),
-                    upto,
-                }));
-            }
+    let threshold = u64::from(window) * u64::from(options.compact_at) / 100;
+    if (input.compaction_requested || u64::from(total) > threshold)
+        && input.compactions_left > 0
+        && let Some(budget) = &input.compaction
+    {
+        // The retained tail scales with the threshold: 3/8 of it, so 30% of the window at 80%.
+        let keep = if input.compaction_requested {
+            0
+        } else {
+            threshold * 3 / 8
+        };
+        let compaction = Compaction::new(input, &history, budget)?;
+        if let Some(upto) = compaction.boundary(input, &sizes, history_tokens, keep) {
+            return Ok(Composition::Compact(crate::composer::Compaction {
+                plan: compaction.plan(&upto),
+                upto,
+            }));
         }
-        if total > window {
-            return Err(enco_sdk::protocol::failure(
-                "context.overflow",
-                format!("context needs approximately {total} tokens, but the window is {window}"),
-                false,
-            ));
-        }
+    }
+    if total > window {
+        return Err(enco_sdk::protocol::failure(
+            "context.overflow",
+            format!("context needs approximately {total} tokens, but the window is {window}"),
+            false,
+        ));
     }
     Ok(Composition::Reply(Plan {
         items,
-        tools: input
-            .capabilities
-            .iter()
-            .map(|capability| capability.id.clone())
-            .collect(),
+        tools,
         max_output_tokens: Some(budget.max_output_tokens),
         omitted,
     }))
+}
+
+/// The request's size in tokens, output budget included.
+///
+/// When the previous plan is reused with the same tools, its reported input tokens measure the
+/// whole prefix, head, images and tool definitions included, and only the appended items are
+/// estimated; otherwise everything is estimated.
+fn request_tokens(
+    input: &ComposeInput,
+    items: &[PlanItem],
+    reused_prefix_len: Option<usize>,
+    tools: &[CapabilityId],
+    system_tokens: u32,
+    history_tokens: u32,
+) -> Result<u32, Failure> {
+    let input_tokens = if let (Some(prefix_len), Some(previous), Some(usage)) =
+        (reused_prefix_len, &input.previous, &input.previous_usage)
+        && previous.tools == tools
+    {
+        u32::try_from(usage.input_tokens)
+            .unwrap_or(u32::MAX)
+            .saturating_add(history::appended_tokens(
+                &items[prefix_len..],
+                &input.transcript,
+            )?)
+    } else {
+        let definitions = tokens(
+            input
+                .capabilities
+                .iter()
+                .map(|capability| {
+                    let spec = &capability.spec;
+                    spec.name.len()
+                        + spec.description.len()
+                        + spec.input_schema.len()
+                        + PART_OVERHEAD_BYTES
+                })
+                .sum(),
+        );
+        system_tokens
+            .saturating_add(history_tokens)
+            .saturating_add(definitions)
+    };
+    Ok(input_tokens.saturating_add(input.reply.budget.max_output_tokens))
 }

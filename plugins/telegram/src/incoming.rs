@@ -224,7 +224,7 @@ fn message_inbound(
         return None;
     }
     // Only text alone is a command; a forward's text is the original sender's, so it has none.
-    let command = (content.images.is_empty() && content.unviewable.is_empty())
+    let command = (content.attachments.is_empty() && content.unviewable.is_empty())
         .then(|| command(&content.text, username))
         .flatten();
     let addressed = direct

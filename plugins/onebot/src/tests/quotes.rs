@@ -87,7 +87,7 @@ fn reply_with_only_bot_mention_fetches_text_and_image() -> Result<(), String> {
         messages[0].sent_at.as_ref().map(|time| time.seconds),
         Some(1793291000)
     );
-    assert_eq!(messages[0].images.len(), 1);
+    assert_eq!(messages[0].attachments.len(), 1);
     Ok(())
 }
 
@@ -233,7 +233,7 @@ fn an_image_url_cannot_become_a_quote_request() -> Result<(), String> {
     let Action::Message(content) = &reading.messages[0].action else {
         return Err("message".into());
     };
-    let step = Plugin::fetch(content.images[0].locator.clone(), vec![], LIMIT)
+    let step = Plugin::fetch(content.attachments[0].locator.clone(), vec![], LIMIT)
         .map_err(|e| e.failure.message)?;
     assert!(matches!(step, FetchStep::Download(url) if url == "onebot:reply:-42"));
     Ok(())

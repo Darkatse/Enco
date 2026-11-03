@@ -1,7 +1,7 @@
 use crate::{
-    AttemptId, CallId, CapabilityId, CodeRef, ContentHash, DateTime, Effect, Event, Failure,
-    GenerationId, Image, LogPos, Message, Part, Role, RoundId, RunId, Settlement, ToolCall,
-    ToolResult, Utc,
+    AttemptId, CallId, CapabilityId, CodeRef, ContentHash, DateTime, Effect, Event, EventBody,
+    Failure, GenerationId, Image, LogPos, Message, Part, Role, RoundId, RunId, Settlement,
+    ToolCall, ToolResult, Utc,
 };
 use serde::{Deserialize, Serialize};
 
@@ -222,7 +222,7 @@ pub enum RunEnd {
     Interrupted,
     /// Cancellation was requested and work has stopped.
     Cancelled,
-    /// The owner went back to an earlier message, which stopped it.
+    /// The owner went back in the conversation, which stopped it.
     Backtracked,
     /// A halt of this Session or an ancestor stopped it.
     Halted,
@@ -242,7 +242,10 @@ impl EntryBody {
         call: Option<&ToolCall>,
     ) -> Option<Message> {
         match self {
-            Self::EventConsumed { event } => Some(event.canonical_message()),
+            // A compaction request only asks the next Run to compact; the model never sees it.
+            Self::EventConsumed { event } if !matches!(event.body, EventBody::Compact) => {
+                Some(event.canonical_message())
+            }
             // An unusable reply stays in the Log but is not part of the conversation.
             Self::AttemptSettled {
                 result: result @ AttemptResult::Completed { message, .. },

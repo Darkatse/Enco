@@ -8,7 +8,7 @@ use serde_json::json;
 
 const MESSAGE_CHARS: usize = 4000;
 /// How long an action carrying a file may take, uploads included.
-const FILE_TIMEOUT_MS: u32 = 300_000;
+pub(super) const FILE_TIMEOUT_MS: u32 = 300_000;
 
 fn image(file: &FileData) -> bool {
     file.data.starts_with(b"\x89PNG\r\n\x1a\n")

@@ -8,9 +8,9 @@ use wiremock::{
 };
 
 #[tokio::test]
-async fn telegram_photos_documents_and_unsupported_attachments_keep_their_message() {
+async fn telegram_photos_documents_voice_and_locations_keep_their_message() {
     if channel::child(
-        "telegram_images::telegram_photos_documents_and_unsupported_attachments_keep_their_message",
+        "telegram_images::telegram_photos_documents_voice_and_locations_keep_their_message",
     ) {
         return;
     }
@@ -23,29 +23,36 @@ async fn telegram_photos_documents_and_unsupported_attachments_keep_their_messag
                 {"file_id": "small", "width": 10, "height": 10}
             ]}},
             {"update_id": 2, "message": {"message_id": 2, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "is_bot": false, "first_name": "Fixture User"}, "document": {
-                "file_id": "document", "file_name": "picture.webp", "mime_type": "image/webp"
+                "file_id": "document", "file_name": "report.pdf", "mime_type": "application/pdf"
             }}},
-            {"update_id": 3, "message": {"message_id": 3, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "is_bot": false, "first_name": "Fixture User"}, "voice": {"file_id": "voice"}}}
+            {"update_id": 3, "message": {"message_id": 3, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "is_bot": false, "first_name": "Fixture User"}, "voice": {"file_id": "voice"}}},
+            {"update_id": 4, "message": {"message_id": 4, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "is_bot": false, "first_name": "Fixture User"}, "location": {"latitude": 0, "longitude": 0}}}
         ]}))).expect(1).mount(&server).await;
     let updates = channel::messages(telegram.clone()).await;
     let Action::Message(photo) = &updates[0].input.action else {
         panic!("expected photo")
     };
     assert_eq!(photo.text, "look");
-    assert_eq!(photo.images.len(), 1);
-    assert_eq!(photo.images[0].locator, json!("large"));
+    assert_eq!(photo.attachments.len(), 1);
+    assert_eq!(photo.attachments[0].locator, json!("large"));
     let Action::Message(document) = &updates[1].input.action else {
         panic!("expected document")
     };
     assert!(document.text.is_empty());
-    assert_eq!(document.images[0].locator, json!("document"));
+    assert_eq!(document.attachments[0].locator, json!("document"));
+    assert_eq!(document.attachments[0].name, "report.pdf");
     let Action::Message(voice) = &updates[2].input.action else {
         panic!("expected voice")
     };
-    assert!(voice.images.is_empty());
-    assert_eq!(voice.unviewable[0].what, "voice message");
+    assert_eq!(voice.attachments[0].locator, json!("voice"));
+    assert_eq!(voice.attachments[0].name, "voice message");
+    assert!(voice.unviewable.is_empty());
+    let Action::Message(location) = &updates[3].input.action else {
+        panic!("expected location")
+    };
+    assert!(location.attachments.is_empty());
     assert!(matches!(
-        voice.unviewable[0].reason,
+        location.unviewable[0].reason,
         UnviewableReason::Unsupported
     ));
     // Parsing protocol locations never downloads; the common reader authorizes first.
@@ -67,7 +74,7 @@ async fn telegram_photos_documents_and_unsupported_attachments_keep_their_messag
         .await;
     assert_eq!(
         telegram
-            .fetch_image(&photo.images[0].locator)
+            .fetch_file(&photo.attachments[0].locator)
             .await
             .unwrap()
             .content
@@ -98,7 +105,7 @@ async fn telegram_attachment_failures_keep_retry_evidence_without_download_urls(
             .expect(1)
             .mount_as_scoped(&server)
             .await;
-        let result = telegram.fetch_image("file-id").await;
+        let result = telegram.fetch_file("file-id").await;
         if status == 403 {
             assert!(
                 matches!(result.unwrap().content, Err(reason) if reason.contains("403") && !reason.contains("secret"))
@@ -112,4 +119,19 @@ async fn telegram_attachment_failures_keep_retry_evidence_without_download_urls(
         assert!(!failure.to_string().contains("secret"));
         drop(download);
     }
+    // A body over the 32 MiB response limit leaves the file unavailable rather than a fault
+    // the host retries.
+    let _download = Mock::given(path("/file/bot42:test-secret/image.png"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0; 32 * 1024 * 1024 + 1]))
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+    assert!(
+        telegram
+            .fetch_file("file-id")
+            .await
+            .unwrap()
+            .content
+            .is_err()
+    );
 }

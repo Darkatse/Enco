@@ -65,23 +65,51 @@ pub struct ImageData {
     pub data: Vec<u8>,
 }
 
-/// An attachment the owner sent but this host could not make visible as an image.
+/// Part of a message's content kept only as a description, such as a location or an attachment
+/// that could not be fetched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Unviewable {
-    /// Protocol-provided description of the attachment.
+    /// A plain description such as report.pdf, voice message or location, not a protocol type
+    /// name.
     pub what: String,
-    /// Recorded reason it was not accepted as an image.
+    /// Why it cannot be shown.
     pub reason: UnviewableReason,
 }
 
-/// Expected attachment failures remain part of their input Event.
+/// Why part of a message is kept only as a description.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnviewableReason {
-    /// The attachment is not a supported image encoding.
+    /// It is not a file Enco can keep, such as a location or a poll.
     Unsupported,
-    /// Its original bytes exceed the image limit.
-    TooLarge,
-    /// The service permanently refused retrieval, with its diagnostic context.
+    /// It could not be retrieved, for this reason.
     Unavailable(String),
+}
+
+/// A recorded attachment: an image a model may view, or any other file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Attachment {
+    /// Bytes in an accepted image format, within the image limit.
+    Image(Image),
+    /// Any other file.
+    File(crate::File),
+}
+
+impl Attachment {
+    /// The recorded image, when this attachment is one.
+    pub fn image(&self) -> Option<&Image> {
+        match self {
+            Self::Image(image) => Some(image),
+            Self::File(_) => None,
+        }
+    }
+
+    /// The address of its bytes in the blob store.
+    pub fn content(&self) -> ContentHash {
+        match self {
+            Self::Image(image) => image.content,
+            Self::File(file) => file.content,
+        }
+    }
 }

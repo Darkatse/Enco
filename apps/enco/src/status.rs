@@ -56,8 +56,7 @@ pub(crate) async fn read(
     Ok(enco_host::status::Status {
         development,
         node: enco_host::status::Node {
-            version: env!("CARGO_PKG_VERSION").into(),
-            revision: env!("ENCO_REVISION").into(),
+            build: application.build.clone(),
             home: application.paths.home.clone(),
             profile_instructions: enco_host::profile_instruction_files(
                 &application.paths.profiles(),

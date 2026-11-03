@@ -1,10 +1,9 @@
 //! The document that `self_status` returns: what needs attention, then the three layers of every
 //! unit, then recent registrations, Sessions and channels.
-use super::{
-    cell, code, comparison, generation_state, history, next, path, situations, step, time,
-};
+use super::{cell, code, comparison, generation_state, history, next, path, situations, step};
 use crate::{
     channel::ChannelState,
+    clock::local_time,
     development::PluginUnit,
     status::{CallStep, Status, Step},
 };
@@ -129,8 +128,8 @@ fn node(out: &mut String, status: &Status, timezone: Tz) {
     let node = &status.node;
     out.push_str(&format!(
         "\n## Node\n\nHost {} ({}) · safe mode {}\n",
-        node.version,
-        code(&node.revision),
+        node.build.version,
+        code(&node.build.revision),
         if node.execution.safe_mode {
             "on"
         } else {
@@ -183,7 +182,7 @@ fn node(out: &mut String, status: &Status, timezone: Tz) {
             };
             out.push_str(&format!(
                 "- {} · Session {} · target {}: {outcome}\n",
-                time(failure.at, timezone),
+                local_time(failure.at, timezone),
                 code(&status.session.name),
                 code(&failure.delivery.target)
             ));

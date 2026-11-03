@@ -12,9 +12,9 @@ impl SessionActor {
             let wake = self.handle.wake.notified();
             tokio::pin!(wake);
             wake.as_mut().enable();
-            // Archiving writes a halt, so a command also covers it.
+            // Archiving writes a halt, so this check also covers it.
             let pending = self.deps.store.pending(self.session.id).await?;
-            if pending.iter().any(crate::transcript::is_command)
+            if pending.iter().any(|event| event.body.supersedes_inputs())
                 || self.deps.shutdown.is_cancelled()
             {
                 return Ok(None);

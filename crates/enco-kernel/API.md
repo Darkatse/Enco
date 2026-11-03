@@ -21,7 +21,7 @@ Session execution through explicit ports.
 - struct `ChannelActivity` — A Run's current progress, containing only public tool names and outcomes.
 - struct `ChannelActivityEpilogue` — How a Run turned out, left in place of its view where the view was only for display.
 - enum `ChannelActivityUpdate` — How a Run's view in a conversation should be updated.
-- struct `ChannelAttachment` — An image still held by the protocol.
+- struct `ChannelAttachment` — An attachment still held by the protocol.
 - struct `ChannelBackoff` — Doubling waits between attempts of one channel operation, from one second up to `CHANNEL_MAX_BACKOFF`.
 - enum `ChannelCallError` — A mapper or protocol failure, distinct from failing to record its evidence.
 - struct `ChannelCommand` — A command offered by the host in protocol menus.
@@ -35,7 +35,7 @@ Session execution through explicit ports.
 - struct `ChannelPacingGap` — The time the host leaves before each protocol message sent through one connection.
 - struct `ChannelQuote` — Messages carried by an input, or the protocol locator by which to read them.
 - enum `ChannelQuoted` — The protocol's available representation of quoted content.
-- struct `ChannelQuotedMessage` — One quoted message before the host reads images and records owner identity.
+- struct `ChannelQuotedMessage` — One quoted message before the host reads attachments and records owner identity.
 - enum `ChannelReading` — One arrival's messages and protocol checkpoint, delivered in receive order.
 - struct `ChannelSent` — The confirmed result of sending one part.
 - struct `ChannelSettings` — The service and secret names chosen for one connection; values remain in transport.
@@ -61,6 +61,7 @@ Session execution through explicit ports.
 - struct `ConsumedMessage` — Where a channel message became a Session's input.
 - struct `ContextError` — A context source failed to supply its authoritative content.
 - struct `ContextQuery` — Shared input to a Round's context sources.
+- struct `ContextUsage` — How much context a Session's current conversation uses, as recorded.
 - struct `Credential` — A declared credential; transport validates placement and alone reads its value.
 - struct `DelegableProfile` — An available profile for a newly delegated child.
 - struct `DeliveryStatus` — A delivery failure with the Session name resolved before presentation.
@@ -76,7 +77,6 @@ Session execution through explicit ports.
 - struct `Fetched` — What a channel mapper's fetch found at a locator.
 - struct `Halted` — A halted subtree, as far as its actors could take the halt.
 - struct `HeaderPlacement` — A request header carrying a credential.
-- enum `ImageError` — Image ingestion either rejects its input or reports a storage failure.
 - struct `Inspection` — An Attempt reconstructed exclusively from its recorded plan and Log prefix.
 - enum `IntentPart` — The part of the owner's intent that a cause points to.
 - struct `Kernel` — Single-node execution owner. Sessions serialize their own Log writes.
@@ -84,11 +84,11 @@ Session execution through explicit ports.
 - enum `KernelError` — Public command failure; Round failures are recorded in the Log instead.
 - struct `KernelSettings` — Parsed kernel tables, sampled by each consumer at its own boundary.
 - struct `Label` — An option or score level. Names are unique within a question.
+- struct `LastRequest` — The latest completed reply request in a conversation, as the service reported it.
 - enum `LoadError` — Why a component cannot be loaded, attributed to its code or to the settings it was given.
 - struct `Loaded` — Exports returned by loading a component. Each invocation owns its own runtime state.
 - struct `LoadedComposer` — A composer's option declaration and invocation, loaded from the same content.
 - struct `LoadedTools` — Tool declarations are evaluated once with the generation's accepted configuration.
-- struct `LocatedImage` — An image reference with the node-local address supplied by its store.
 - enum `Location` — Where transport alone writes a credential value.
 - enum `Need` — A use's interface and behavior requirements, shared by wiring checks and real probes.
 - struct `NewSession` — A Session created together with the input that first reaches it.
@@ -121,10 +121,12 @@ Session execution through explicit ports.
 - enum `RegistryError` — An explicit registry operation could not complete.
 - struct `RegistryState` — Durable facts; compiled code and admission are projections of this history.
 - struct `RegistryStatus` — Plugin and configuration facts sampled under the same committer.
+- struct `ReplyModel` — A profile's first reply model, where its next request goes unless that model fails.
 - struct `ReplyTarget` — The reply model the kernel selected, and why earlier candidates were passed over.
 - struct `RewindScope` — The paths a rewind between two accepted states can address, decided once for every caller.
 - struct `RewindSelection` — The configuration file and plugin directories one rewind writes.
 - struct `Rollback` — A completed owner rollback, which may stop plugins when no recoverable code remains.
+- enum `RunState` — Where a Session stands between and within Runs.
 - enum `Running` — The running layer of one plugin.
 - enum `SafeMode` — The reason for the Round's fixed recovery mode.
 - enum `ScheduleError` — Schedule validation or persistence failure.
@@ -135,6 +137,7 @@ Session execution through explicit ports.
 - struct `SessionDelivery` — One input handed from a Session owner to another Session's Inbox.
 - enum `SessionDeliveryKind` — Meaning of a cross-Session write within its owning Session's commit.
 - enum `SessionLookupError` — Why a Session name or ID given by the owner did not resolve to a Session to act on.
+- struct `SessionOverview` — One Session as its owner reads it, from its actor, its Log and the running configuration.
 - struct `SessionStatus` — Live execution status, separate from durable Session facts.
 - struct `SettingsError` — A configuration error attributed to the table that owns it.
 - enum `Standing` — How the running layer of one plugin stands against its registered layer.
@@ -576,6 +579,9 @@ pub enum ChannelAction<T = ChannelAttachment, Q = ChannelQuote> {
     SelectSession(String),
     Cancel,
     Backtrack,
+    Status,
+    Compact,
+    Clear,
     Everyone(Option<bool>),
     Halt(Option<String>),
     Archive(Option<String>),
@@ -589,6 +595,9 @@ The meaning of an incoming message, independent of protocol command syntax.
 - `SelectSession` — Select or create the named Session.
 - `Cancel` — Stop the conversation's current work.
 - `Backtrack` — Return to the message named by the input's reply target.
+- `Status` — Show the conversation's Session and its context.
+- `Compact` — Compact the conversation's history when its Session's next Run starts.
+- `Clear` — Start the conversation over; its earlier messages stay recorded.
 - `Everyone` — Open or close a group to members; absent queries its current setting.
 - `Halt` — Halt a named subtree, or the conversation Session when absent.
 - `Archive` — Archive a named subtree, or list archivable Sessions when absent.
@@ -673,14 +682,14 @@ impl Clone for ChannelActivityUpdate
 
 ```rust
 pub struct ChannelAttachment {
-    pub what: String,
+    pub name: String,
     pub locator: String,
 }
 ```
 
-An image still held by the protocol.
+An attachment still held by the protocol.
 
-- `what` — A description, such as a file name and media type.
+- `name` — What the attachment is called: its filename, or what it is when it came without one.
 - `locator` — The mapper's opaque locator for fetching it.
 
 Implements:
@@ -771,6 +780,9 @@ pub enum ChannelCommandKind {
     Session,
     Cancel,
     Backtrack,
+    Status,
+    Compact,
+    Clear,
     Everyone,
     Halt,
     Archive,
@@ -782,6 +794,9 @@ The commands understood by the connection owner.
 - `Session` — List or select Sessions.
 - `Cancel` — Stop current work.
 - `Backtrack` — Return to a previous message.
+- `Status` — Show the conversation's Session and its context.
+- `Compact` — Compact the conversation's history when its Session's next Run starts.
+- `Clear` — Start the conversation over; its earlier messages stay recorded.
 - `Everyone` — Change who can address the Agent in a group.
 - `Halt` — Halt a Session subtree.
 - `Archive` — Archive a named Session subtree.
@@ -793,7 +808,7 @@ The commands understood by the connection owner.
 ```rust
 pub struct ChannelContent<T, Q = ChannelQuote> {
     pub text: String,
-    pub images: Vec<T>,
+    pub attachments: Vec<T>,
     pub unviewable: Vec<enco_core::Unviewable>,
     pub quote: Option<Q>,
 }
@@ -802,8 +817,8 @@ pub struct ChannelContent<T, Q = ChannelQuote> {
 Text and attachments before or after fetching.
 
 - `text` — The message's text.
-- `images` — Images in protocol order, before or after attachment fetching.
-- `unviewable` — Other attachments and why they cannot be viewed.
+- `attachments` — Attachments in protocol order, before or after attachment fetching.
+- `unviewable` — Content kept only as a description, and why.
 - `quote` — The messages this input replies to or forwards.
 
 Implements:
@@ -1038,12 +1053,12 @@ pub struct ChannelQuotedMessage {
     pub conversation_name: Option<String>,
     pub sent_at: Option<enco_core::DateTime<enco_core::Utc>>,
     pub text: String,
-    pub images: Vec<ChannelAttachment>,
+    pub attachments: Vec<ChannelAttachment>,
     pub unviewable: Vec<enco_core::Unviewable>,
 }
 ```
 
-One quoted message before the host reads images and records owner identity.
+One quoted message before the host reads attachments and records owner identity.
 
 - `depth` — Nesting depth; nested forwards follow their parent one level deeper.
 - `sender` — The sender's protocol ID, when reported.
@@ -1051,7 +1066,7 @@ One quoted message before the host reads images and records owner identity.
 - `conversation_name` — The named original conversation, when it was elsewhere.
 - `sent_at` — When the message was first sent, when reported.
 - `text` — The protocol's readable message text.
-- `images` — Images still held by the protocol, in message order.
+- `attachments` — Attachments still held by the protocol, in message order.
 - `unviewable` — Content that could not be shown, and why.
 
 Implements:
@@ -1405,8 +1420,11 @@ pub struct ComposeInput {
     pub session: SessionRecord,
     pub children: Vec<Child>,
     pub profiles: Vec<DelegableProfile>,
-    pub transcript: Transcript<LocatedImage>,
+    pub transcript: Transcript,
+    pub blob_paths: std::collections::HashMap<ContentHash, std::path::PathBuf>,
     pub previous_plan: Option<ContextPlan>,
+    pub previous_usage: Option<Usage>,
+    pub compaction_requested: bool,
     pub owner_context: bool,
     pub owner_instructions: Option<String>,
     pub profile_instructions: Option<String>,
@@ -1432,7 +1450,11 @@ Fixed Round inputs, with the selected budgets and recorded recovery facts for th
 - `children` — Unarchived direct children in creation order.
 - `profiles` — Profiles available to new children; empty when delegation is unavailable.
 - `transcript` — Canonical history after the latest compaction.
+- `blob_paths` — Where the blobs the transcript refers to are stored, by content hash: its images, and the
+  attachments and files of its inputs.
 - `previous_plan` — Most recent reply plan; the composer decides whether to reuse it.
+- `previous_usage` — Token usage reported for the completed Attempt that sent `previous_plan`.
+- `compaction_requested` — Whether the owner asked to compact the conversation before this Round's reply.
 - `owner_context` — Whether this Session and all its ancestors permit owner instructions and memories.
 - `owner_instructions` — The owner instructions; absent when missing, in safe mode or without the owner's context.
 - `profile_instructions` — The selected profile's instructions; absent when missing or in safe mode.
@@ -1711,6 +1733,31 @@ Shared input to a Round's context sources.
 - `latest_event` — Latest consumed input; does not imply source data is unchanged.
 - `new_input` — Whether this Round consumed any new Inbox input.
 - `cancel` — Child of the current Run cancellation token.
+
+## struct `ContextUsage`
+
+`src/kernel/overview.rs`
+
+```rust
+pub struct ContextUsage {
+    pub last_request: Option<LastRequest>,
+    pub compactions: usize,
+    pub compaction_requested: bool,
+}
+```
+
+How much context a Session's current conversation uses, as recorded.
+
+- `last_request` — The latest completed reply request in the conversation, if any.
+- `compactions` — How many compactions the conversation records.
+- `compaction_requested` — Whether a compaction request waits for the next Run.
+
+Implements:
+
+```rust
+impl Clone for ContextUsage
+impl Debug for ContextUsage
+```
 
 ## struct `Credential`
 
@@ -2148,36 +2195,6 @@ impl Clone for HeaderPlacement
 impl Serialize for HeaderPlacement
 ```
 
-## enum `ImageError`
-
-`src/image.rs`
-
-```rust
-pub enum ImageError {
-    Unsupported,
-    TooLarge {
-        size: u64,
-    },
-    Store(crate::StoreError),
-}
-```
-
-Image ingestion either rejects its input or reports a storage failure.
-
-- `Unsupported` — The bytes have no supported image signature.
-- `TooLarge` — The original bytes exceed the ingestion limit.
-  - `size` — Original byte length.
-- `Store` — The content store could not accept the image.
-
-Implements:
-
-```rust
-impl Debug for ImageError
-impl Display for ImageError
-impl Error for ImageError
-impl From<StoreError> for ImageError
-```
-
 ## struct `Inspection`
 
 `src/inspect.rs`
@@ -2295,15 +2312,16 @@ pub struct Kernel {
 
 Single-node execution owner. Sessions serialize their own Log writes.
 
-### `Kernel::store_image`
+### `Kernel::store_attachment`
 
 `src/image.rs`
 
 ```rust
-pub async fn store_image(&self, bytes: &[u8]) -> Result<Image, ImageError>
+pub async fn store_attachment(&self, name: String, bytes: &[u8]) -> Result<Attachment, StoreError>
 ```
 
-Store image bytes through the same ingestion boundary used by tool settlement.
+Store an attachment as an image when its bytes are an image a model may be shown, or as a
+file with `name` otherwise.
 
 ### `Kernel::inspect`
 
@@ -2320,7 +2338,7 @@ Inspect a specified Attempt, or the latest one, without composing or invoking a 
 `src/kernel/input.rs`
 
 ```rust
-pub async fn submit(&self, session: SessionId, event_id: EventId, text: String, images: Vec<Image>) -> Result<Accepted, KernelError>
+pub async fn submit(&self, session: SessionId, event_id: EventId, text: String, attachments: Vec<Attachment>) -> Result<Accepted, KernelError>
 ```
 
 Persist input before waking its owner; duplicate IDs remain harmless.
@@ -2330,10 +2348,10 @@ Persist input before waking its owner; duplicate IDs remain harmless.
 `src/kernel/input.rs`
 
 ```rust
-pub async fn backtrack(&self, session: SessionId, event_id: EventId, to: LogPos) -> Result<Accepted, KernelError>
+pub async fn backtrack(&self, session: SessionId, event_id: EventId, to: Option<LogPos>) -> Result<Accepted, KernelError>
 ```
 
-Take the conversation back to a recorded position, as the owner asked from the CLI.
+Take the conversation back to a recorded position, or its start when `to` is absent.
 
 Like `submit`, a repeated event ID is accepted once.
 
@@ -2350,8 +2368,19 @@ Accept inputs and connection progress before waking the affected Session owners.
 A Session the connection creates with this acceptance starts once it is committed. An
 input to an archived Session is not written and its result says so; the connection
 progress commits all the same. A backtrack must point at a recorded position other than a
-command; a newly accepted command signals the Session's current Run, which stops at its
-next boundary.
+command; a newly accepted backtrack or halt signals the Session's current Run, which stops
+at its next boundary.
+
+### `Kernel::can_request_compaction`
+
+`src/kernel/input.rs`
+
+```rust
+pub async fn can_request_compaction(&self, session: SessionId) -> Result<bool, KernelError>
+```
+
+Whether `session` can accept a compaction request now: it is running, or its current
+conversation has a complete Round to compact.
 
 ### `Kernel::session`
 
@@ -2402,6 +2431,16 @@ pub async fn archive(&self, session: SessionId, source: EventSource) -> Result<H
 ```
 
 Stop accepting input for a subtree, halt it, and wait until its actors have stopped.
+
+### `Kernel::session_overview`
+
+`src/kernel/overview.rs`
+
+```rust
+pub async fn session_overview(&self, id: SessionId) -> Result<SessionOverview, KernelError>
+```
+
+The owner's view of one Session.
 
 ### `Kernel::start`
 
@@ -2558,7 +2597,7 @@ Signal cancellation and wait for every owner to stop.
 `src/outgoing.rs`
 
 ```rust
-pub async fn outgoing_file(&self, file: &OutgoingFile) -> Result<FileData, KernelError>
+pub async fn outgoing_file(&self, file: &File) -> Result<FileData, KernelError>
 ```
 
 Resolve the recorded attachment before a channel starts its delivery.
@@ -2748,6 +2787,32 @@ impl Clone for Label
 impl Debug for Label
 ```
 
+## struct `LastRequest`
+
+`src/kernel/overview.rs`
+
+```rust
+pub struct LastRequest {
+    pub model: String,
+    pub usage: Usage,
+    pub compacted_since: bool,
+}
+```
+
+The latest completed reply request in a conversation, as the service reported it.
+
+- `model` — The model that served it.
+- `usage` — The token usage the service reported.
+- `compacted_since` — Whether a compaction was recorded after it, so its size no longer describes the
+  conversation.
+
+Implements:
+
+```rust
+impl Clone for LastRequest
+impl Debug for LastRequest
+```
+
 ## enum `LoadError`
 
 `src/ports/runtime.rs`
@@ -2860,30 +2925,6 @@ Implements:
 
 ```rust
 impl Clone for LoadedTools
-```
-
-## struct `LocatedImage`
-
-`src/ports/composer.rs`
-
-```rust
-pub struct LocatedImage {
-    pub image: Image,
-    pub path: std::path::PathBuf,
-}
-```
-
-An image reference with the node-local address supplied by its store.
-
-- `image` — Immutable image identity and metadata.
-- `path` — Local file holding the bytes.
-
-Implements:
-
-```rust
-impl Borrow<Image> for LocatedImage
-impl Clone for LocatedImage
-impl Debug for LocatedImage
 ```
 
 ## enum `Location`
@@ -3982,6 +4023,29 @@ Plugin and configuration facts sampled under the same committer.
 - `config` — Current configuration and its validity.
 - `recent_registrations` — Recent registrations from the same locked observation as the current references.
 
+## struct `ReplyModel`
+
+`src/kernel/overview.rs`
+
+```rust
+pub struct ReplyModel {
+    pub model: String,
+    pub window: std::num::NonZeroU32,
+}
+```
+
+A profile's first reply model, where its next request goes unless that model fails.
+
+- `model` — The model the endpoint runs.
+- `window` — The endpoint's context window in tokens.
+
+Implements:
+
+```rust
+impl Clone for ReplyModel
+impl Debug for ReplyModel
+```
+
 ## struct `ReplyTarget`
 
 `src/ports/composer.rs`
@@ -4096,6 +4160,49 @@ Implements:
 
 ```rust
 impl Serialize for Rollback
+```
+
+## enum `RunState`
+
+`src/kernel/overview.rs`
+
+```rust
+pub enum RunState {
+    Stopped {
+        reason: String,
+    },
+    Running {
+        started_at: DateTime<Utc>,
+        round: usize,
+    },
+    Waiting {
+        position: usize,
+    },
+    Halted(Halt),
+    Idle {
+        last_run: Option<(DateTime<Utc>, RunEnd)>,
+    },
+}
+```
+
+Where a Session stands between and within Runs.
+
+- `Stopped` — Its actor stopped after a storage failure.
+  - `reason` — Recorded failure message.
+- `Running` — A Run is executing.
+  - `started_at` — When the Run started.
+  - `round` — The Round it is in, starting at one.
+- `Waiting` — Waiting for a child Run slot.
+  - `position` — FIFO position, starting at one.
+- `Halted` — Halted, by the same rule a parent uses for its children.
+- `Idle` — Idle between Runs.
+  - `last_run` — When the latest Run ended, and how; absent before any Run has ended.
+
+Implements:
+
+```rust
+impl Clone for RunState
+impl Debug for RunState
 ```
 
 ## enum `Running`
@@ -4416,6 +4523,38 @@ impl From<InvalidSessionName> for SessionLookupError
 impl From<SessionLookupError> for KernelError
 ```
 
+## struct `SessionOverview`
+
+`src/kernel/overview.rs`
+
+```rust
+pub struct SessionOverview {
+    pub session: SessionRecord,
+    pub reply: Option<ReplyModel>,
+    pub children: usize,
+    pub running_children: usize,
+    pub run: RunState,
+    pub context: ContextUsage,
+}
+```
+
+One Session as its owner reads it, from its actor, its Log and the running configuration.
+
+- `session` — Durable Session metadata.
+- `reply` — The first reply model its profile configures; absent when the profile is not in the
+  running configuration.
+- `children` — Number of its unarchived direct children.
+- `running_children` — Number of those children running a Run now.
+- `run` — Where it stands between and within Runs.
+- `context` — How much context its current conversation uses.
+
+Implements:
+
+```rust
+impl Clone for SessionOverview
+impl Debug for SessionOverview
+```
+
 ## struct `SessionStatus`
 
 `src/kernel.rs`
@@ -4605,7 +4744,6 @@ impl Debug for StoreError
 impl Display for StoreError
 impl Error for StoreError
 impl From<StoreError> for ChannelCallError
-impl From<StoreError> for ImageError
 impl From<StoreError> for KernelError
 impl From<StoreError> for RegistryError
 impl From<StoreError> for ScheduleError
@@ -4659,9 +4797,9 @@ impl Serialize for ToolOwner
 `src/ports/composer.rs`
 
 ```rust
-pub struct Transcript<I = Image> {
+pub struct Transcript {
     pub summary: Option<String>,
-    pub items: Vec<TranscriptItem<I>>,
+    pub items: Vec<TranscriptItem>,
     pub round_ends: Vec<LogPos>,
     pub run_ends: Vec<(LogPos, RunEnd)>,
 }
@@ -4674,20 +4812,12 @@ Model-facing projection of immutable Log facts.
 - `round_ends` — Complete Round boundaries eligible for compaction, in ascending Log position order.
 - `run_ends` — Run outcomes after the summary, in Log order; the composer decides how to describe them.
 
-### `Transcript::map_images`
-
-```rust
-pub fn map_images<J>(self, image: impl FnMut(I) -> J) -> Transcript<J>
-```
-
-Change the image representation without copying the other message content.
-
 Implements:
 
 ```rust
-impl<I: Clone> Clone for Transcript<I>
-impl<I: Debug> Debug for Transcript<I>
-impl<I> Default for Transcript<I>
+impl Clone for Transcript
+impl Debug for Transcript
+impl Default for Transcript
 ```
 
 ## struct `TranscriptItem`
@@ -4695,12 +4825,11 @@ impl<I> Default for Transcript<I>
 `src/ports/composer.rs`
 
 ```rust
-pub struct TranscriptItem<I = Image> {
+pub struct TranscriptItem {
     pub pos: LogPos,
-    pub message: Message<I>,
+    pub message: Message,
     pub generation: Option<GenerationId>,
     pub event: Option<Event>,
-    pub file_path: Option<std::path::PathBuf>,
 }
 ```
 
@@ -4710,13 +4839,12 @@ One canonical message and its immutable source.
 - `message` — Canonical message used when resolving a plan reference.
 - `generation` — Provider generation of the producing Attempt, present only for Assistant messages.
 - `event` — Consumed Inbox Event, present only for inputs; the composer narrates its circumstances.
-- `file_path` — Where the file of this input's Session message is stored, supplied only to composition.
 
 Implements:
 
 ```rust
-impl<I: Clone> Clone for TranscriptItem<I>
-impl<I: Debug> Debug for TranscriptItem<I>
+impl Clone for TranscriptItem
+impl Debug for TranscriptItem
 ```
 
 ## enum `UnitChange`
@@ -4969,13 +5097,13 @@ async fn receive(&self, protocol: Option<Value>, readings: mpsc::UnboundedSender
 
 Receive arrivals without waiting for preparation; drain receipt acknowledgments on stop.
 
-### `ChannelAdapter::fetch_image`
+### `ChannelAdapter::fetch_file`
 
 ```rust
-async fn fetch_image(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError>
+async fn fetch_file(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError>
 ```
 
-Fetch the image at an attachment's locator; an address from content outside the mapper's
+Fetch the file at an attachment's locator; an address from content outside the mapper's
 origins is unavailable. Reads have no external effects.
 
 ### `ChannelAdapter::fetch_quote`

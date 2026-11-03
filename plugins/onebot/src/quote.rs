@@ -189,6 +189,8 @@ fn list(
 struct Shown {
     user_id: u64,
     #[serde(default)]
+    group_id: Option<u64>,
+    #[serde(default)]
     sender: Sender,
     time: u64,
     message: Vec<Value>,
@@ -215,7 +217,7 @@ fn node(value: Value, depth: u8) -> Node {
             };
         }
     };
-    let segments = content::decode(&shown.message, None);
+    let segments = content::decode(&shown.message, None, shown.group_id);
     let mut message = QuotedMessage::new(depth, segments.content);
     message.sender = Some(shown.user_id.to_string());
     message.sender_name = shown.sender.name();

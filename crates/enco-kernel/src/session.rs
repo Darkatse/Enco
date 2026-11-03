@@ -109,7 +109,10 @@ impl SessionActor {
                 .await?
                 .ok_or(crate::StoreError::UnknownSession(self.session.id))?;
             let pending = self.deps.store.pending(self.session.id).await?;
-            if let Some(last) = pending.iter().rposition(crate::transcript::is_command) {
+            if let Some(last) = pending
+                .iter()
+                .rposition(|event| event.body.supersedes_inputs())
+            {
                 let consumed = pending
                     .into_iter()
                     .take(last + 1)
@@ -119,6 +122,20 @@ impl SessionActor {
                 if self.session.archived_at.is_some() {
                     return Ok(());
                 }
+                continue;
+            }
+            // Compaction requests are consumed between Runs on their own; the inputs before them
+            // wait for the next Run.
+            if pending
+                .iter()
+                .any(|event| matches!(event.body, EventBody::Compact))
+            {
+                let consumed = pending
+                    .into_iter()
+                    .filter(|event| matches!(event.body, EventBody::Compact))
+                    .map(|event| EntryBody::EventConsumed { event })
+                    .collect();
+                self.commit(consumed, None).await?;
                 continue;
             }
             if self.session.archived_at.is_some() {

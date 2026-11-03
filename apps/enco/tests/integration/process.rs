@@ -68,7 +68,7 @@ async fn node_lock_is_held_while_serving_and_until_shutdown_is_quiescent() {
         .unwrap();
     client
         .send(Command::Send {
-            images: Vec::new(),
+            files: Vec::new(),
             session: "main".into(),
             text: "read held".into(),
             event_id: EventId::new(),
@@ -153,7 +153,7 @@ async fn started(daemon: &Daemon, client: &mut client::Client) {
         .unwrap();
     client
         .send(Command::Send {
-            images: Vec::new(),
+            files: Vec::new(),
             session: "main".into(),
             text: "run the test command".into(),
             event_id: EventId::new(),

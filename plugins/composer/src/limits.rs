@@ -1,6 +1,5 @@
 //! Budgeting policy for the factory composer.
 pub(super) const COMPACTION_TRIGGER_PERCENT: u32 = 80;
-pub(super) const COMPACTION_TAIL_PERCENT: u32 = 30;
 pub(super) const INSTRUCTION_PERCENT: u32 = 10;
 pub(super) const MEMORY_PERCENT: u32 = 15;
 pub(super) const COMPACTION_TOOL_BYTES: usize = 2_000;

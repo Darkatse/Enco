@@ -106,7 +106,10 @@ async fn a_backtrack_requires_a_reply_even_when_it_returns_to_a_reminder() {
             .find(|entry| matches!(entry.body, EntryBody::EventConsumed { .. }))
             .unwrap()
             .pos;
-        kernel.backtrack(session, EventId::new(), to).await.unwrap();
+        kernel
+            .backtrack(session, EventId::new(), Some(to))
+            .await
+            .unwrap();
         skip_failure(&finish(&mut rx).await);
         kernel.shutdown().await.unwrap();
     }

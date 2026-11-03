@@ -2,6 +2,7 @@ use super::*;
 mod channel;
 mod delegation;
 mod instructions;
+mod measurement;
 mod silence;
 use crate::composer::*;
 use enco_sdk::types::{Datetime, ImageFormat, QuoteKind, Role, Unviewable, UnviewableReason};
@@ -51,6 +52,8 @@ fn input() -> ComposeInput {
             run_ends: vec![],
         },
         previous: None,
+        previous_usage: None,
+        compaction_requested: false,
         owner_context: true,
         owner_instructions: None,
         profile_instructions: None,
@@ -92,7 +95,7 @@ fn incoming(seq: u64, at: &str, text: &str) -> TranscriptItem {
             source: EventSource::Cli,
             body: EventBody::UserMessage(UserMessage {
                 text: text.into(),
-                images: vec![],
+                attachments: vec![],
                 unviewable: vec![],
                 earlier: vec![],
                 quote: None,
@@ -266,12 +269,14 @@ fn compaction_only_round_after_a_summary_cannot_produce_an_empty_summary_request
     });
     input.transcript.round_ends = vec![pos(5)];
     assert_eq!(
-        compose::compose(&input).unwrap_err().code,
+        Plugin::compose("{}".into(), input.clone())
+            .unwrap_err()
+            .code,
         "context.overflow"
     );
     input.transcript.round_ends.push(pos(20));
     assert!(
-        matches!(compose::compose(&input).unwrap(), Composition::Compact(compaction) if compaction.upto == pos(20))
+        matches!(Plugin::compose("{}".into(), input.clone()).unwrap(), Composition::Compact(compaction) if compaction.upto == pos(20))
     );
 }
 
@@ -310,7 +315,7 @@ fn compaction_carries_circumstances_and_attachments_without_pinned_memory_or_too
         quote: None,
     });
     message.unviewable.push(Unviewable {
-        what: "voice message".into(),
+        what: "location".into(),
         reason: UnviewableReason::Unsupported,
     });
     message.quote = Some(Quote {
@@ -324,7 +329,7 @@ fn compaction_carries_circumstances_and_attachments_without_pinned_memory_or_too
             conversation_name: None,
             sent_at: None,
             text: "The deadline is tomorrow".into(),
-            images: vec![image(12)],
+            attachments: vec![AttachmentRef::Image(image(12))],
             unviewable: vec![],
         }]),
     });
@@ -339,13 +344,13 @@ fn compaction_carries_circumstances_and_attachments_without_pinned_memory_or_too
     let text = text(&compaction.plan);
     assert!(text.contains("2026-10-02 10:03"));
     assert!(text.contains("provider.bad_request: request rejected"));
-    assert!(text.contains("voice message; Enco cannot read this kind of content"));
+    assert!(text.contains("location; Enco cannot read this kind of content"));
     assert!(text.contains("Earlier messages in this chat, not addressed to you:"));
     assert!(text.contains("55: We were discussing the deadline"));
     assert!(text.contains("> [attachment: photo]"));
     assert!(text.contains("This message is from Ada, a member of this group, not the owner."));
     assert!(text.contains("Ada: context"));
-    assert!(text.contains("Ada replies to this message:\n> Bob: The deadline is tomorrow\n> [image: image/png, 12 bytes; file: /images/12.png]"));
+    assert!(text.contains("Ada replies to this message:\n> Bob: The deadline is tomorrow\n> [image: image/png, 12 bytes, at /images/12.png]"));
     assert!(!text.contains("Owner is River"));
     assert!(compaction.plan.tools.is_empty());
 }
@@ -375,7 +380,7 @@ fn images_stop_at_the_first_entry_that_does_not_fit_and_text_targets_keep_descri
         let EventBody::UserMessage(message) = &mut item.event.as_mut().unwrap().body else {
             panic!("owner fixture")
         };
-        message.images = vec![image; count];
+        message.attachments = vec![AttachmentRef::Image(image); count];
         input.transcript.items.push(item);
     }
     let plan = reply(&input);
@@ -398,7 +403,7 @@ fn images_stop_at_the_first_entry_that_does_not_fit_and_text_targets_keep_descri
             .iter()
             .all(|item| !matches!(item, PlanItem::Log(reference) if reference.images))
     );
-    assert!(text(&text_only).contains("file: /images/9437184.png"));
+    assert!(text(&text_only).contains("at /images/9437184.png"));
     assert_eq!(text_only.omitted.len(), 6);
 }
 
@@ -454,7 +459,7 @@ fn a_small_compaction_window_allows_replies_until_the_reply_itself_overflows() {
             &"some detailed history ".repeat(150),
         ));
         input.transcript.round_ends.push(pos(seq * 10 + 9));
-        match compose::compose(&input) {
+        match Plugin::compose("{}".into(), input.clone()) {
             Ok(Composition::Reply(plan)) => {
                 replies += 1;
                 input.previous = Some(plan);

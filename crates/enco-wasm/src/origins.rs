@@ -118,13 +118,15 @@ impl Destinations {
         within(url, std::iter::once(&self.service).chain(&self.declared))
     }
 
-    /// An absolute URL taken from external content, at a declared origin only: the service is
-    /// reached by paths the mapper builds, never by one content chooses.
-    pub fn download(&self, requested: &str) -> Result<Url, Failure> {
+    /// An absolute URL taken from external content, when it is at a declared origin.
+    ///
+    /// The service is reached by paths the mapper builds, never by one content chooses.
+    pub fn download(&self, requested: &str) -> Option<Url> {
         if requested.starts_with('/') {
-            return Err(crate::convert::bad("a download needs an absolute URL"));
+            return None;
         }
-        within(self.resolve(requested, REQUEST_SCHEMES)?, &self.declared)
+        let url = self.resolve(requested, REQUEST_SCHEMES).ok()?;
+        within(url, &self.declared).ok()
     }
 
     /// `requested` as an absolute URL in one of `schemes`, or as a path joined to the service
@@ -253,6 +255,29 @@ mod tests {
         assert!(destinations.socket("https://cdn.example").is_err());
         assert!(destinations.socket("wss://gateway.example").is_err());
         assert!(destinations.socket("wss://cdn.example").is_err());
+    }
+
+    #[test]
+    fn downloads_reach_only_declared_origins() {
+        let destinations = Destinations::new(
+            Url::parse("https://api.example/v1").unwrap(),
+            &[Origin::parse("https://cdn.example").unwrap()],
+        );
+        assert!(
+            destinations
+                .download("https://cdn.example/report.pdf")
+                .is_some()
+        );
+        for refused in [
+            "https://other.example/report.pdf",
+            "https://api.example/v1/send",
+            "/report.pdf",
+            "not a URL",
+            "file:///report.pdf",
+            "https://user@cdn.example/x",
+        ] {
+            assert!(destinations.download(refused).is_none(), "{refused}");
+        }
     }
 
     #[test]

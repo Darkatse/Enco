@@ -44,6 +44,8 @@ fn messages_keep_native_text_commands_addressing_threads_and_attachments() -> Re
             "url": "https://cdn.discordapp.com/attachments/a.ogg",
             "content_type": "audio/ogg",
         },
+        {"filename":"report.pdf", "url":"https://cdn.discordapp.com/attachments/report.pdf", "content_type":"application/pdf"},
+        {"filename":"diagram.png", "url":"https://cdn.discordapp.com/attachments/diagram.png", "content_type":"application/octet-stream"},
     ]);
     let reply = created(2, reply)?;
     let inbound = &reply.messages[0];
@@ -54,10 +56,25 @@ fn messages_keep_native_text_commands_addressing_threads_and_attachments() -> Re
         return Err("expected content".into());
     };
     assert_eq!(
-        content.images[0].locator,
+        content.attachments[0].locator,
         "https://cdn.discordapp.com/attachments/a.webp"
     );
-    assert_eq!(content.unviewable[0].what, "file voice.ogg");
+    assert_eq!(content.attachments[1].name, "voice.ogg");
+    assert_eq!(content.attachments[2].name, "report.pdf");
+    assert_eq!(content.attachments[3].name, "diagram.png");
+    assert_eq!(
+        Plugin::fetch(
+            content.attachments[2].locator.clone(),
+            vec![Response {
+                status: 200,
+                headers: vec![],
+                body: b"PDF bytes".to_vec()
+            }],
+            1
+        ),
+        Ok(crate::channel::FetchStep::File(b"PDF bytes".to_vec()))
+    );
+    assert!(content.unviewable.is_empty());
     let Some(Quote {
         messages: Quoted::Messages(quoted),
         ..
@@ -103,6 +120,18 @@ fn only_contentless_messages_are_ignored_and_forwards_are_not_replies() -> Resul
             .collect::<Vec<_>>(),
         ["sticker", "card"]
     );
+    let mut poll = message();
+    poll["content"] = json!("");
+    poll["poll"] = json!({"question":{"text":"When?"}, "answers":[
+        {"answer_id":1,"poll_media":{"text":"Today"}},
+        {"answer_id":2,"poll_media":{"text":"Tomorrow"}},
+    ], "expiry":"2026-11-04T12:00:00+00:00", "allow_multiselect":false, "layout_type":1});
+    let reading = created(2, poll)?;
+    let Action::Message(content) = &reading.messages[0].action else {
+        return Err("expected poll".into());
+    };
+    assert!(content.attachments.is_empty());
+    assert_eq!(content.unviewable[0].what, "poll");
     let mut forwarded = message();
     forwarded["content"] = json!("");
     forwarded["message_reference"] =
@@ -123,6 +152,9 @@ fn native_commands_and_buttons_defer_ephemerally_then_answer() -> Result<(), Str
     let named = |command| json!({"name": command, "options": option("name", "main/research")});
     for (kind, data, action) in [
         (2, json!({"name": "cancel"}), Action::Cancel),
+        (2, json!({"name": "status"}), Action::Status),
+        (2, json!({"name": "compact"}), Action::Compact),
+        (2, json!({"name": "clear"}), Action::Clear),
         (3, json!({"custom_id": "cancel"}), Action::Cancel),
         (
             2,
@@ -207,6 +239,9 @@ fn command_menus_have_native_contexts_and_name_their_options() -> Result<(), Str
             cmd(CommandKind::Backtrack, true, true),
             cmd(CommandKind::Halt, true, true),
             cmd(CommandKind::Archive, true, false),
+            cmd(CommandKind::Status, true, true),
+            cmd(CommandKind::Compact, true, true),
+            cmd(CommandKind::Clear, true, true),
         ],
     );
     assert_eq!(menu[0].url, "/applications/app/commands");
@@ -219,6 +254,11 @@ fn command_menus_have_native_contexts_and_name_their_options() -> Result<(), Str
         assert_eq!(commands[index]["name"], name);
         assert_eq!(commands[index]["options"][0]["name"], "name");
         assert_eq!(commands[index]["options"][0]["required"], false);
+    }
+    for (index, name) in [(4, "status"), (5, "compact"), (6, "clear")] {
+        assert_eq!(commands[index]["name"], name);
+        assert_eq!(commands[index]["type"], 1);
+        assert_eq!(commands[index]["options"], json!([]));
     }
     Ok(())
 }

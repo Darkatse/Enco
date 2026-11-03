@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use enco_core::*;
-use enco_kernel::{Accepted, ImageError, KernelError, Scheduled, SessionLookupError};
+use enco_kernel::{Accepted, KernelError, Scheduled, SessionLookupError};
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
 use tokio::{
@@ -237,34 +237,38 @@ async fn process(
         Command::Send {
             session: name,
             text,
-            images,
+            files,
             event_id,
         } => {
             let mut stored = Vec::new();
-            for path in images {
+            for path in files {
                 if !path.is_absolute() {
                     return Err(CommandError {
                         code: "bad_request",
-                        message: format!("image path must be absolute: {}", path.display()),
+                        message: format!("file path must be absolute: {}", path.display()),
                     });
                 }
+                let file_name = path
+                    .file_name()
+                    .ok_or_else(|| CommandError {
+                        code: "bad_request",
+                        message: format!("file path has no filename: {}", path.display()),
+                    })?
+                    .to_str()
+                    .ok_or_else(|| CommandError {
+                        code: "bad_request",
+                        message: format!("filename is not UTF-8: {}", path.display()),
+                    })?
+                    .to_owned();
                 let bytes = tokio::fs::read(&path).await.map_err(|error| CommandError {
                     code: "bad_request",
                     message: format!("{}: {error}", path.display()),
                 })?;
                 stored.push(
                     kernel
-                        .store_image(&bytes)
+                        .store_attachment(file_name, &bytes)
                         .await
-                        .map_err(|error| CommandError {
-                            code: match error {
-                                ImageError::Unsupported | ImageError::TooLarge { .. } => {
-                                    "bad_request"
-                                }
-                                ImageError::Store(_) => "kernel",
-                            },
-                            message: format!("{}: {error}", path.display()),
-                        })?,
+                        .map_err(KernelError::from)?,
                 );
             }
             let session = kernel.open_session(&name).await?;
@@ -308,7 +312,7 @@ async fn process(
             event_id,
         } => {
             let session = kernel.find_session(&name).await?;
-            let accepted = match kernel.backtrack(session.id, event_id, to).await? {
+            let accepted = match kernel.backtrack(session.id, event_id, Some(to)).await? {
                 Accepted::New => "new",
                 Accepted::Duplicate => "duplicate",
                 Accepted::Archived => return Err(archived(&session)),

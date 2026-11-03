@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.13.0;
+package enco:plugin@0.14.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -146,22 +146,22 @@ interface types {
         unknown(failure),
     }
 
-    /// Why an attachment did not become an image.
+    /// Why part of a message is kept only as a description.
     variant unviewable-reason {
-        /// Its format is not an accepted image format.
+        /// It is not a file Enco can keep, such as a location or a poll.
         unsupported,
-        /// It is larger than an image may be.
-        too-large,
         /// It could not be retrieved, for this reason.
         unavailable(string),
     }
 
-    /// Part of a message's content kept only as a description, such as an attachment.
+    /// Part of a message's content kept only as a description, such as a location or an
+    /// attachment that could not be fetched.
     ///
     /// Facts about the message, such as who sent it, are not content: one that cannot be read is
     /// absent instead.
     record unviewable {
-        /// A plain description such as voice message or file report.pdf, not a protocol type name.
+        /// A plain description such as report.pdf, voice message or location, not a protocol type
+        /// name.
         what: string,
         /// Why it cannot be shown.
         reason: unviewable-reason,
@@ -177,6 +177,16 @@ interface types {
         options: json,
     }
 
+    /// Token counts reported by the service, including cache hits when available.
+    record usage {
+        /// Tokens the request used.
+        input-tokens: u64,
+        /// Tokens the reply used.
+        output-tokens: u64,
+        /// The part of `input-tokens` served from the service's cache, when it reports one.
+        cached-input-tokens: option<u64>,
+    }
+
     /// How a Run ended.
     variant run-end {
         /// It finished.
@@ -187,7 +197,7 @@ interface types {
         interrupted,
         /// It was cancelled.
         cancelled,
-        /// The owner went back to an earlier message, which stopped it.
+        /// The owner went back in the conversation, which stopped it.
         backtracked,
         /// Execution stopped with this recorded failure.
         failed(failure),
@@ -274,7 +284,7 @@ interface tools {
 
 /// Adapts canonical requests to a model service protocol.
 interface completion {
-    use types.{failure, message, tool-spec, settings};
+    use types.{failure, message, tool-spec, settings, usage};
 
     /// The frozen messages, disclosed tools and output budget for one completion.
     ///
@@ -286,16 +296,6 @@ interface completion {
         tools: list<tool-spec>,
         /// The most tokens the reply may use; the service's default when absent.
         max-output-tokens: option<u32>,
-    }
-
-    /// Token counts reported by the service, including cache hits when available.
-    record usage {
-        /// Tokens the request used.
-        input-tokens: u64,
-        /// Tokens the reply used.
-        output-tokens: u64,
-        /// The part of `input-tokens` served from the service's cache, when it reports one.
-        cached-input-tokens: option<u64>,
     }
 
     /// The service-reported reason that generation stopped.
@@ -499,7 +499,7 @@ world tool-plugin {
 /// out a capability in `lifeline`; or when a compaction discloses any tool or stops where no Round
 /// ends.
 interface composer {
-    use types.{datetime, failure, image-format, json, quote-kind, role, run-end, tool-spec, unviewable};
+    use types.{datetime, failure, image-format, json, quote-kind, role, run-end, tool-spec, unviewable, usage};
 
     /// The position of an entry in this Session's Log.
     record log-pos {
@@ -547,7 +547,7 @@ interface composer {
 
     /// A recorded file, by reference rather than by its bytes.
     record file-ref {
-        /// Its name, without the directory it came from.
+        /// What it is called: its filename, or what it is when it came without one.
         name: string,
         /// The size of the bytes.
         size: u64,
@@ -586,7 +586,15 @@ interface composer {
         path: string,
     }
 
-    /// Messages quoted by an input, with their stored pictures.
+    /// An attachment as recorded: an image a model may view, or any other file.
+    variant attachment-ref {
+        /// Bytes in an accepted image format, within the image limit.
+        image(image-ref),
+        /// Any other file.
+        file(file-ref),
+    }
+
+    /// Messages quoted by an input, with their stored attachments.
     record quote {
         /// Whether the input replies to these messages or forwards them.
         kind: quote-kind,
@@ -620,8 +628,8 @@ interface composer {
         sent-at: option<datetime>,
         /// What the sender wrote.
         text: string,
-        /// The quoted images in their recorded order.
-        images: list<image-ref>,
+        /// The quoted attachments in their recorded order.
+        attachments: list<attachment-ref>,
         /// Content that could not be shown, and why.
         unviewable: list<unviewable>,
     }
@@ -643,7 +651,7 @@ interface composer {
         unavailable(string),
     }
 
-    /// A quoted message in earlier context; images remain descriptions.
+    /// A quoted message in earlier context; attachments remain descriptions.
     record earlier-quoted-message {
         /// Nesting depth; a nested forward follows its parent one level deeper.
         depth: u8,
@@ -661,8 +669,8 @@ interface composer {
         sent-at: option<datetime>,
         /// What the sender wrote.
         text: string,
-        /// Descriptions of images; their content was not fetched.
-        images: list<string>,
+        /// Descriptions of attachments; their bytes were not fetched.
+        attachments: list<string>,
         /// Content that could not be shown, and why.
         unviewable: list<unviewable>,
     }
@@ -765,9 +773,9 @@ interface composer {
     record user-message {
         /// What the sender wrote.
         text: string,
-        /// The images sent with it.
-        images: list<image-ref>,
-        /// The attachments that are not images.
+        /// Its attachments, in the order they were sent.
+        attachments: list<attachment-ref>,
+        /// Content kept only as a description, and why.
         unviewable: list<unviewable>,
         /// Earlier messages quoted for context; the canonical message excludes them.
         earlier: list<earlier-message>,
@@ -809,11 +817,12 @@ interface composer {
         reminder(reminder),
         /// A notice of an automatic rollback.
         generation-rolled-back(rollback),
-        /// The owner went back to the message at this Log position; the transcript continues from it.
+        /// The owner went back in the conversation: to the message at this Log position, or to
+        /// its start when absent; the transcript continues from there.
         ///
         /// When that message is an input, the backtrack asks for a reply to it. Changes made after
         /// it outside the conversation, such as to files, were not undone.
-        backtrack(log-pos),
+        backtrack(option<log-pos>),
         /// Words from another Session.
         session-message(session-message),
         /// A child's Run that ended without completing, and how.
@@ -1025,6 +1034,13 @@ interface composer {
         /// The latest recorded reply plan in that conversation; absent at the start, or when it
         /// could not be read, which `omitted` then says.
         previous: option<plan>,
+        /// What the service reported for the request made from `previous`; absent when that
+        /// attempt did not complete.
+        previous-usage: option<usage>,
+        /// Whether the owner asked for the conversation to be compacted before this Round's reply.
+        ///
+        /// Once this Round records a compaction, it is false for the Round's later compositions.
+        compaction-requested: bool,
         /// Whether this Session has the owner's context: its profile and every ancestor's give it.
         owner-context: bool,
         /// The owner instructions: the text of `AGENTS.md`, as read at the start of this Round.
@@ -1344,6 +1360,12 @@ interface channel {
         halt(option<string>),
         /// Archive the named Session and its descendants, or list archivable Sessions when absent.
         archive(option<string>),
+        /// Show the conversation's Session and its context.
+        status,
+        /// Compact the conversation's history when its Session's next Run starts.
+        compact,
+        /// Start the conversation over; its earlier messages stay recorded.
+        clear,
     }
 
     /// The text and attachments of a message.
@@ -1351,8 +1373,8 @@ interface channel {
         /// What the sender wrote as people in the chat see it; mentions use names where the
         /// protocol supplies them, and a leading mention of this bot is left out.
         text: string,
-        /// Images, by the protocol's locator for fetching them.
-        images: list<attachment>,
+        /// Its attachments in order; the host fetches each and keeps it as an image or a file.
+        attachments: list<attachment>,
         /// Parts of the content that cannot be shown, and why.
         unviewable: list<unviewable>,
         /// The messages it replies to or forwards, when it does.
@@ -1392,16 +1414,20 @@ interface channel {
         sent-at: option<datetime>,
         /// What the sender wrote as people in the chat see it, mentions of this bot included.
         text: string,
-        /// Images, by their protocol locators.
-        images: list<attachment>,
+        /// Its attachments, by their protocol locators.
+        attachments: list<attachment>,
         /// Content that could not be shown, and why.
         unviewable: list<unviewable>,
     }
 
-    /// An image attachment described by its protocol locator.
+    /// An attachment, by the protocol's locator for fetching its bytes.
     record attachment {
-        /// What the attachment is, for a message that cannot show it.
-        what: string,
+        /// What it is called: the filename the protocol shows people, or what it is, such as
+        /// `voice message`, when there is none.
+        ///
+        /// It carries no extension the protocol does not give, and describes the attachment when
+        /// it cannot be fetched.
+        name: string,
         /// The opaque locator passed to `fetch`.
         locator: string,
     }
@@ -1451,6 +1477,12 @@ interface channel {
         /// Archive the named Session and its descendants; with no name, list the Sessions that
         /// can be archived and archive nothing.
         archive,
+        /// Show the conversation's Session and its context.
+        status,
+        /// Compact the conversation's history when its Session's next Run starts.
+        compact,
+        /// Start the conversation over; its earlier messages stay recorded.
+        clear,
     }
 
     /// The next step of fetching the content a locator names.
@@ -1464,8 +1496,8 @@ interface channel {
         /// content never chooses a path on the service; an address elsewhere makes the attachment
         /// unavailable.
         download(string),
-        /// The attachment's bytes.
-        image(list<u8>),
+        /// The bytes of the file an attachment's locator names.
+        file(list<u8>),
         /// The messages a quote's locator names, listed as `quoted.messages` is.
         messages(list<quoted-message>),
         /// The nonempty name a `conversation-name` locator names.

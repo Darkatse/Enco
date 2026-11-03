@@ -144,6 +144,13 @@ async fn each_owner_rejects_its_invalid_table_without_registering() {
             .remove(field);
         cases.push((invalid, vec![table, endpoint, field]));
     }
+    // The factory composer's own options schema bounds the compaction threshold.
+    for compact_at in [0, 101] {
+        let mut invalid = original.clone();
+        invalid["profile"]["default"]["composer"] =
+            json!({"plugin": "composer", "options": {"compact_at": compact_at}});
+        cases.push((invalid, vec!["[profile.default]", "compact_at"]));
+    }
     for (invalid, expected) in cases {
         let error = apply(&daemon, &invalid).await.unwrap_err();
         assert!(expected.iter().all(|part| error.contains(part)), "{error}");
@@ -518,7 +525,7 @@ async fn restart_restores_registered_configuration_without_credentials() {
         .unwrap();
     client
         .send(Command::Send {
-            images: Vec::new(),
+            files: Vec::new(),
             session: "main".into(),
             text: "hello".into(),
             event_id: EventId::new(),

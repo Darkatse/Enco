@@ -204,11 +204,22 @@ async fn background_reports_mid_run_messages_and_followups_share_persistent_hist
     let child_next = h.next("worker").await;
     assert!(parent_report.contains("early finding"));
     // The parent's composer gets the child's file at a local path it can read.
-    assert!(h.latest("main").transcript.items.iter().any(|item| {
-        matches!(&item.event, Some(Event { body: EventBody::SessionMessage(Outgoing { file: Some(file), .. }), .. }) if file.name == "finding.txt")
-            && item
-                .file_path
-                .as_ref()
+    let input = h.latest("main");
+    assert!(input.transcript.items.iter().any(|item| {
+        let Some(Event {
+            body:
+                EventBody::SessionMessage(Outgoing {
+                    file: Some(file), ..
+                }),
+            ..
+        }) = &item.event
+        else {
+            return false;
+        };
+        file.name == "finding.txt"
+            && input
+                .blob_paths
+                .get(&file.content)
                 .is_some_and(|path| std::fs::read(path).unwrap() == b"data")
     }));
     assert!(h.latest("main").children[0].state.awaiting);

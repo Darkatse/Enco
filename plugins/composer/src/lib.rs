@@ -18,7 +18,16 @@ struct Plugin;
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct Options {}
+pub(crate) struct Options {
+    /// Percentage of the reply model's context window at which history is compacted.
+    #[serde(default = "default_compact_at")]
+    #[schemars(range(min = 1, max = 100))]
+    pub compact_at: u32,
+}
+
+fn default_compact_at() -> u32 {
+    limits::COMPACTION_TRIGGER_PERCENT
+}
 
 impl lifecycle::Guest for Plugin {
     fn describe(config: String) -> Result<lifecycle::Description, Failure> {
@@ -42,10 +51,11 @@ impl composer::Guest for Plugin {
     }
 
     fn compose(
-        _options: String,
+        options: String,
         input: crate::composer::ComposeInput,
     ) -> Result<crate::composer::Composition, Failure> {
-        compose::compose(&input)
+        let options: Options = enco_sdk::parse_options(&options)?;
+        compose::compose(&input, &options)
     }
 }
 

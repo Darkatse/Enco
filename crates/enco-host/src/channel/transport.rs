@@ -5,8 +5,8 @@ use super::{Action, Adapter, ChannelCallError, ChannelError, Fault};
 use crate::limits::CHANNEL_ATTEMPTS;
 use enco_core::*;
 use enco_kernel::{
-    ChannelAction, ChannelBackoff, ChannelContent, ChannelInput, ChannelPacingGap, ImageError,
-    Kernel,
+    ChannelAction, ChannelBackoff, ChannelContent, ChannelInput, ChannelPacingGap, Kernel,
+    KernelError,
 };
 use serde_json::Value;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
@@ -75,7 +75,7 @@ pub(super) struct Input {
     pub kind: ConversationKind,
     pub reply_to: Option<String>,
     pub respond: Option<String>,
-    pub action: Action<Image, Quote>,
+    pub action: Action<Attachment, Quote>,
 }
 
 /// What a conversation gets when an input finds it without a route.
@@ -232,9 +232,9 @@ impl Reader {
                             owner,
                             text: body.text,
                             attachments: body
-                                .images
+                                .attachments
                                 .into_iter()
-                                .map(|image| image.what)
+                                .map(|attachment| attachment.name)
                                 .chain(body.unviewable.into_iter().map(|item| item.what))
                                 .collect(),
                             origin,
@@ -270,6 +270,9 @@ impl Reader {
             ChannelAction::SelectSession(name) => Action::SelectSession(name),
             ChannelAction::Cancel => Action::Cancel,
             ChannelAction::Backtrack => Action::Backtrack,
+            ChannelAction::Status => Action::Status,
+            ChannelAction::Compact => Action::Compact,
+            ChannelAction::Clear => Action::Clear,
             ChannelAction::Everyone(open) => Action::Everyone(open),
             ChannelAction::Halt(name) => Action::Halt(name),
             ChannelAction::Archive(name) => Action::Archive(name),

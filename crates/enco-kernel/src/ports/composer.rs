@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use enco_core::*;
-use std::{borrow::Borrow, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 
 /// Pure policy boundary: identical inputs must produce identical plans.
 #[async_trait]
@@ -31,9 +31,16 @@ pub struct ComposeInput {
     /// Profiles available to new children; empty when delegation is unavailable.
     pub profiles: Vec<DelegableProfile>,
     /// Canonical history after the latest compaction.
-    pub transcript: Transcript<LocatedImage>,
+    pub transcript: Transcript,
+    /// Where the blobs the transcript refers to are stored, by content hash: its images, and the
+    /// attachments and files of its inputs.
+    pub blob_paths: HashMap<ContentHash, PathBuf>,
     /// Most recent reply plan; the composer decides whether to reuse it.
     pub previous_plan: Option<ContextPlan>,
+    /// Token usage reported for the completed Attempt that sent `previous_plan`.
+    pub previous_usage: Option<Usage>,
+    /// Whether the owner asked to compact the conversation before this Round's reply.
+    pub compaction_requested: bool,
     /// Whether this Session and all its ancestors permit owner instructions and memories.
     pub owner_context: bool,
     /// The owner instructions; absent when missing, in safe mode or without the owner's context.
@@ -100,12 +107,12 @@ pub struct Budget {
 }
 
 /// Model-facing projection of immutable Log facts.
-#[derive(Debug, Clone)]
-pub struct Transcript<I = Image> {
+#[derive(Debug, Clone, Default)]
+pub struct Transcript {
     /// Latest replacement for summarized history.
     pub summary: Option<String>,
     /// Canonical messages still visible after that summary, in ascending Log position order.
-    pub items: Vec<TranscriptItem<I>>,
+    pub items: Vec<TranscriptItem>,
     /// Complete Round boundaries eligible for compaction, in ascending Log position order.
     pub round_ends: Vec<LogPos>,
     /// Run outcomes after the summary, in Log order; the composer decides how to describe them.
@@ -114,76 +121,15 @@ pub struct Transcript<I = Image> {
 
 /// One canonical message and its immutable source.
 #[derive(Debug, Clone)]
-pub struct TranscriptItem<I = Image> {
+pub struct TranscriptItem {
     /// Position of the originating fact.
     pub pos: LogPos,
     /// Canonical message used when resolving a plan reference.
-    pub message: Message<I>,
+    pub message: Message,
     /// Provider generation of the producing Attempt, present only for Assistant messages.
     pub generation: Option<GenerationId>,
     /// Consumed Inbox Event, present only for inputs; the composer narrates its circumstances.
     pub event: Option<Event>,
-    /// Where the file of this input's Session message is stored, supplied only to composition.
-    pub file_path: Option<PathBuf>,
-}
-
-/// An image reference with the node-local address supplied by its store.
-#[derive(Debug, Clone)]
-pub struct LocatedImage {
-    /// Immutable image identity and metadata.
-    pub image: Image,
-    /// Local file holding the bytes.
-    pub path: PathBuf,
-}
-
-impl Borrow<Image> for LocatedImage {
-    fn borrow(&self) -> &Image {
-        &self.image
-    }
-}
-
-impl<I> Default for Transcript<I> {
-    fn default() -> Self {
-        Self {
-            summary: None,
-            items: Vec::new(),
-            round_ends: Vec::new(),
-            run_ends: Vec::new(),
-        }
-    }
-}
-
-impl<I> Transcript<I> {
-    /// Change the image representation without copying the other message content.
-    pub fn map_images<J>(self, mut image: impl FnMut(I) -> J) -> Transcript<J> {
-        Transcript {
-            summary: self.summary,
-            round_ends: self.round_ends,
-            run_ends: self.run_ends,
-            items: self
-                .items
-                .into_iter()
-                .map(|item| TranscriptItem {
-                    pos: item.pos,
-                    generation: item.generation,
-                    event: item.event,
-                    file_path: item.file_path,
-                    message: Message {
-                        role: item.message.role,
-                        parts: item
-                            .message
-                            .parts
-                            .into_iter()
-                            .map(|part| match part.retype() {
-                                Ok(part) => part,
-                                Err(value) => Part::Image(image(value)),
-                            })
-                            .collect(),
-                    },
-                })
-                .collect(),
-        }
-    }
 }
 
 /// Text written by a composer, or a reference to a recorded message.

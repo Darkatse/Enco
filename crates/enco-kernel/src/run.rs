@@ -54,6 +54,9 @@ impl SessionActor {
                 .round(run, &token, std::mem::take(&mut prefix), inputs)
                 .await?;
             pending = self.deps.store.pending(self.session.id).await?;
+            // A request that arrives during the Run is for the next one; only the first Round
+            // consumes the requests waiting when the Run began.
+            pending.retain(|event| !matches!(event.body, EventBody::Compact));
             if let Some(end) = command_end(&pending) {
                 ending = end;
                 break;

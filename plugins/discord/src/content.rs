@@ -2,7 +2,7 @@
 //! becomes unviewable and the rest of the message stays.
 use crate::incoming::User;
 use enco_sdk::channel::{
-    Attachment, Content, Quote, Quoted, QuotedMessage, decode_part, invalid_part,
+    Attachment, AttachmentKind, Content, Quote, Quoted, QuotedMessage, decode_part, invalid_part,
 };
 use enco_sdk::types::{Datetime, QuoteKind, Unviewable, UnviewableReason};
 use serde::{Deserialize, Deserializer, de::Error as _};
@@ -178,7 +178,6 @@ fn datetime<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Datetime, D::E
 struct File {
     filename: String,
     url: String,
-    content_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -264,28 +263,18 @@ fn displays(components: Vec<Component>, lines: &mut Vec<String>) {
 /// Adds `body`'s files, stickers, embeds the sender wrote and poll to `content`.
 fn attachments(body: &Map<String, Value>, content: &mut Content) {
     for value in list(body, "attachments", "attachments", &mut content.unviewable) {
-        let Some(file) = decode_part::<File>(PROTOCOL, "file", &value, &mut content.unviewable)
+        let what = AttachmentKind::File.name();
+        let Some(file) = decode_part::<File>(PROTOCOL, what, &value, &mut content.unviewable)
         else {
             continue;
         };
-        let what = format!("file {}", file.filename);
-        if file
-            .content_type
-            .as_deref()
-            .is_some_and(|mime| mime.starts_with("image/"))
-        {
-            content.images.push(Attachment {
-                what,
-                locator: file.url,
-            });
-        } else {
-            content.unviewable.push(Unviewable {
-                what,
-                reason: UnviewableReason::Unsupported,
-            });
-        }
+        content.attachments.push(Attachment {
+            name: file.filename,
+            locator: file.url,
+        });
     }
-    let stickers = list(body, "sticker_items", "sticker", &mut content.unviewable).len();
+    let sticker = AttachmentKind::Sticker.name();
+    let stickers = list(body, "sticker_items", sticker, &mut content.unviewable).len();
     // Link previews and GIFs repeat a URL already in the text; only a rich embed is the sender's.
     let cards = list(body, "embeds", "card", &mut content.unviewable)
         .iter()
@@ -293,7 +282,7 @@ fn attachments(body: &Map<String, Value>, content: &mut Content) {
         .filter(|embed| embed.kind == "rich")
         .count();
     let polls = usize::from(body.contains_key("poll"));
-    for (what, count) in [("sticker", stickers), ("card", cards), ("poll", polls)] {
+    for (what, count) in [(sticker, stickers), ("card", cards), ("poll", polls)] {
         for _ in 0..count {
             content.unviewable.push(Unviewable {
                 what: what.into(),

@@ -5,8 +5,8 @@ use std::collections::HashMap;
 /// The entries that make up the conversation as it now stands.
 ///
 /// The latest consumed backtrack keeps the conversation up to its target, then continues with
-/// itself and every entry after it. The kept part honours the backtracks within it, so positions
-/// can skip.
+/// itself and every entry after it; a backtrack to the start keeps no earlier entries. The kept
+/// part honours the backtracks within it, so positions can skip.
 pub(crate) fn conversation(entries: &[Entry]) -> Vec<&Entry> {
     let Some((at, to)) = entries
         .iter()
@@ -17,38 +17,76 @@ pub(crate) fn conversation(entries: &[Entry]) -> Vec<&Entry> {
         return entries.iter().collect();
     };
     let before = &entries[..at];
-    let mut kept = conversation(&before[..kept(before, to)]);
+    let mut kept = match to {
+        Some(to) => conversation(&before[..kept(before, to)]),
+        None => Vec::new(),
+    };
     kept.extend(&entries[at..]);
     kept
 }
 
 /// Whether the Log ends with a backtrack to an input, which the next Run replies to again.
 pub(crate) fn backtracked_to_input(entries: &[Entry]) -> bool {
-    entries.last().and_then(backtrack).is_some_and(|to| {
-        entries
-            .binary_search_by_key(&to, |entry| entry.pos)
-            .is_ok_and(|index| input(&entries[index]).is_some())
-    })
+    entries
+        .last()
+        .and_then(backtrack)
+        .flatten()
+        .is_some_and(|to| {
+            entries
+                .binary_search_by_key(&to, |entry| entry.pos)
+                .is_ok_and(|index| input(&entries[index]).is_some())
+        })
 }
 
-/// The input an entry consumed; a backtrack is a command about the conversation, not an input.
+/// The ordinary input an entry consumed; commands about the conversation are not inputs.
 pub(crate) fn input(entry: &Entry) -> Option<&Event> {
     match &entry.body {
-        EntryBody::EventConsumed { event } if !is_command(event) => Some(event),
+        EntryBody::EventConsumed { event } if !event.body.is_command() => Some(event),
         _ => None,
     }
 }
 
-/// Whether an input is a command that takes effect between Runs and supersedes the inputs
-/// before it: a backtrack or a halt.
-pub(crate) fn is_command(event: &Event) -> bool {
-    matches!(
-        event.body,
-        EventBody::Backtrack { .. } | EventBody::Halt(..)
-    )
+/// Whether the owner asked to compact the conversation and the request still holds.
+///
+/// Newest first, over the inputs not yet consumed and then the conversation: a request holds
+/// until a Round ends, a compaction is recorded, or a backtrack leaves it behind. A halt leaves
+/// it in place.
+pub(crate) fn compaction_requested(conversation: &[&Entry], pending: &[Event]) -> bool {
+    fn decides(body: &EventBody) -> Option<bool> {
+        match body {
+            EventBody::Compact => Some(true),
+            EventBody::Backtrack { .. } => Some(false),
+            _ => None,
+        }
+    }
+    pending
+        .iter()
+        .rev()
+        .find_map(|event| decides(&event.body))
+        .or_else(|| {
+            conversation
+                .iter()
+                .rev()
+                .find_map(|entry| match &entry.body {
+                    EntryBody::EventConsumed { event } => decides(&event.body),
+                    EntryBody::RoundEnded { .. } | EntryBody::Compacted { .. } => Some(false),
+                    _ => None,
+                })
+        })
+        .unwrap_or(false)
 }
 
-fn backtrack(entry: &Entry) -> Option<LogPos> {
+/// Whether `conversation` has a complete Round after its latest compaction with visible
+/// items to summarize.
+pub(crate) fn has_compactable_round(conversation: &[&Entry]) -> bool {
+    let transcript = project(conversation);
+    transcript
+        .items
+        .first()
+        .is_some_and(|first| transcript.round_ends.iter().any(|end| *end >= first.pos))
+}
+
+fn backtrack(entry: &Entry) -> Option<Option<LogPos>> {
     match &entry.body {
         EntryBody::EventConsumed {
             event:
@@ -151,7 +189,6 @@ pub(crate) fn project(entries: &[&Entry]) -> Transcript {
                 pos: entry.pos,
                 message,
                 generation,
-                file_path: None,
                 event: match &entry.body {
                     EntryBody::EventConsumed { event } => Some(event.clone()),
                     _ => None,
@@ -166,3 +203,6 @@ pub(crate) fn project(entries: &[&Entry]) -> Transcript {
     }
     transcript
 }
+
+#[cfg(test)]
+mod tests;

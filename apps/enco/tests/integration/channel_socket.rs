@@ -62,7 +62,7 @@ async fn socket_frames_timers_and_resume_continue_while_receipt_acknowledgment_w
         Err(oneshot::error::TryRecvError::Empty)
     ));
     assert_eq!(
-        adapter.fetch_image("file").await.unwrap().content.unwrap(),
+        adapter.fetch_file("file").await.unwrap().content.unwrap(),
         b"image"
     );
     assert!(
@@ -73,7 +73,7 @@ async fn socket_frames_timers_and_resume_continue_while_receipt_acknowledgment_w
     // A mapper that never finishes a fetch, or ends in another kind than asked for, fails its
     // generation's contract.
     assert!(matches!(
-        adapter.fetch_image("endless").await,
+        adapter.fetch_file("endless").await,
         Err(enco_kernel::ChannelCallError::Protocol(fault)) if fault.failure.code == enco_core::code::PLUGIN_CONTRACT
     ));
     assert!(matches!(

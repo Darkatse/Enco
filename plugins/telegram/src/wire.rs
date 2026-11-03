@@ -24,7 +24,7 @@ pub(super) fn answer<T: DeserializeOwned>(method: &str, response: Response) -> R
     let envelope = match envelope {
         Ok(envelope) => envelope,
         Err(_) if !(200..300).contains(&response.status) => {
-            return Err(http_error(method, response.status, None));
+            return Err(http_error(method, response.status, None, None));
         }
         Err(_) => return Err(invalid_response(method)),
     };
@@ -37,7 +37,7 @@ pub(super) fn answer<T: DeserializeOwned>(method: &str, response: Response) -> R
             response.status
         };
         if status == 400
-            && let Some(description) = envelope.description
+            && let Some(description) = &envelope.description
         {
             let lower = description.to_ascii_lowercase();
             if [
@@ -52,7 +52,7 @@ pub(super) fn answer<T: DeserializeOwned>(method: &str, response: Response) -> R
                 return Err(Fault {
                     failure: Failure {
                         code: "channel.conversation_gone".into(),
-                        message: description,
+                        message: description.clone(),
                         retryable: false,
                     },
                     unknown: false,
@@ -64,6 +64,7 @@ pub(super) fn answer<T: DeserializeOwned>(method: &str, response: Response) -> R
         return Err(http_error(
             method,
             status,
+            envelope.description,
             envelope.parameters.and_then(|p| p.retry_after),
         ));
     }
@@ -80,11 +81,18 @@ pub(super) fn request(method: &str, body: Value, timeout_ms: u32) -> Request {
     }
 }
 
-pub(super) fn http_error(method: &str, status: u16, retry_after: Option<u32>) -> Fault {
+/// The fault for Telegram refusing `method` with HTTP `status`; its message is Telegram's own
+/// `description` when it gives one.
+pub(super) fn http_error(
+    method: &str,
+    status: u16,
+    description: Option<String>,
+    retry_after: Option<u32>,
+) -> Fault {
     Fault {
         failure: Failure {
             code: format!("channel.http.{status}"),
-            message: format!("{method} returned HTTP {status}"),
+            message: description.unwrap_or_else(|| format!("{method} returned HTTP {status}")),
             retryable: status == 429 || status >= 500,
         },
         // Only a client rejection proves non-delivery: reads may retry a 5xx, sends may not.

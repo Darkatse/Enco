@@ -137,7 +137,7 @@ async fn attachment_exchange_records_each_complete_mapper_input() {
         .respond_with(ResponseTemplate::new(200).set_body_bytes(image))
         .mount(&server)
         .await;
-    let fetched = adapter.fetch_image("a-image").await.unwrap();
+    let fetched = adapter.fetch_file("a-image").await.unwrap();
     assert_eq!(fetched.content.unwrap(), image);
     let mut records = Vec::new();
     for shard in std::fs::read_dir(root.path().join("blobs")).unwrap() {

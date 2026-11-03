@@ -14,7 +14,7 @@ pub(crate) enum Command {
     Send {
         session: String,
         text: String,
-        images: Vec<std::path::PathBuf>,
+        files: Vec<std::path::PathBuf>,
         event_id: EventId,
     },
     Subscribe {

@@ -2,11 +2,13 @@
 //! replies and settles deliveries, one at a time.
 pub(super) mod activity;
 mod backtrack;
+mod conversation;
 mod delivery;
 mod input;
 mod lifecycle;
 mod observation;
 mod receipts;
+mod status;
 mod view_results;
 
 use super::{projection, transport, *};
@@ -27,6 +29,7 @@ struct Connection {
     state: State,
     menu_failure: Arc<Mutex<Option<String>>>,
     clock: Arc<dyn Clock>,
+    build: crate::status::HostBuild,
     stop: CancellationToken,
     readers: JoinSet<Result<Option<SessionId>, ChannelError>>,
     watched: BTreeSet<SessionId>,
@@ -84,15 +87,29 @@ pub(super) struct Exit {
     pub shutdown: Result<(), ChannelError>,
 }
 
-pub(super) async fn run(
-    kernel: Arc<Kernel>,
-    adapter: Arc<dyn Adapter>,
-    settings: ConnectionSettings,
-    generation: GenerationId,
-    clock: Arc<dyn Clock>,
-    stop: CancellationToken,
-    menu_failure: Arc<Mutex<Option<String>>>,
-) -> Exit {
+/// Inputs fixed for the lifetime of this connection's actor.
+pub(super) struct Start {
+    pub kernel: Arc<Kernel>,
+    pub adapter: Arc<dyn Adapter>,
+    pub settings: ConnectionSettings,
+    pub generation: GenerationId,
+    pub clock: Arc<dyn Clock>,
+    pub stop: CancellationToken,
+    pub menu_failure: Arc<Mutex<Option<String>>>,
+    pub build: crate::status::HostBuild,
+}
+
+pub(super) async fn run(start: Start) -> Exit {
+    let Start {
+        kernel,
+        adapter,
+        settings,
+        generation,
+        clock,
+        stop,
+        menu_failure,
+        build,
+    } = start;
     let mut state = match restore(&kernel, adapter.as_ref()).await {
         Ok(state) => state,
         Err(error) => {
@@ -118,6 +135,7 @@ pub(super) async fn run(
         menu_failure,
         state,
         clock,
+        build,
         stop: stop.child_token(),
         readers: JoinSet::new(),
         watched: BTreeSet::new(),

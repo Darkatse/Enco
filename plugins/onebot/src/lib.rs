@@ -1,6 +1,7 @@
 //! OneBot v11 messages translated without I/O; the host owns the connection and delivery.
 mod content;
 mod faces;
+mod files;
 mod incoming;
 mod outgoing;
 mod quote;
@@ -117,30 +118,19 @@ impl channel::Guest for Plugin {
     }
 
     fn fetch(locator: String, responses: Vec<Response>, limit: u32) -> Result<FetchStep, Fault> {
-        let url = match wire::Locator::parse(&locator)? {
-            wire::Locator::Image(url) => url,
-            wire::Locator::Quote(target) => return quote::fetch(target, responses, limit),
-        };
-        let Some(response) = responses.into_iter().next() else {
-            return Ok(FetchStep::Download(url));
-        };
-        // Image links point at QQ's CDN, not the OneBot API: no status here judges the token or
-        // a delivery, so a stale link leaves only this image unviewable.
-        let status = response.status;
-        let failure = format!("image download returned HTTP {status}");
-        match status {
-            200..=299 => Ok(FetchStep::Image(response.body)),
-            429 | 500.. => Err(Fault {
-                failure: Failure {
-                    code: format!("channel.http.{status}"),
-                    message: failure,
-                    retryable: true,
-                },
-                unknown: false,
-                fatal: false,
-                retry_after: None,
-            }),
-            _ => Ok(FetchStep::Unavailable(failure)),
+        match wire::Locator::parse(&locator)? {
+            wire::Locator::Quote(target) => quote::fetch(target, responses, limit),
+            wire::Locator::Download(url) => files::download(url, responses),
+            wire::Locator::PrivateFile { file_id, file_hash } => files::fetch(
+                "get_private_file_url",
+                json!({"file_id": file_id, "file_hash": file_hash}),
+                responses,
+            ),
+            wire::Locator::GroupFile { group_id, file_id } => files::fetch(
+                "get_group_file_url",
+                json!({"group_id": group_id, "file_id": file_id}),
+                responses,
+            ),
         }
     }
 

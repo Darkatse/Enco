@@ -2,10 +2,13 @@
 mod activity;
 mod backtrack;
 mod children;
+mod conversation;
+mod files;
 mod groups;
 mod lifecycle;
 mod outgoing;
 mod silence;
+mod status;
 mod supervisor;
 mod topics;
 use crate::support;
@@ -21,7 +24,8 @@ use enco_kernel::{
     ChannelAttachment as Attachment, ChannelCallError, ChannelCommand,
     ChannelContent as MessageContent, ChannelFault as Fault, ChannelIdentity as Identity,
     ChannelInput as Input, ChannelMessage, ChannelQuotedMessage, ChannelReading, ChannelSent,
-    ConnectionWrite, Fetched, Kernel, Store,
+    ConnectionWrite, ContextError, ContextQuery, ContextSource, Fetched, Kernel, OfferedMemories,
+    Store,
 };
 use serde_json::{Value, json};
 use std::{
@@ -211,7 +215,7 @@ impl Adapter for ControlledChannel {
             tokio::select! { _ = stop.cancelled() => return Ok(()), _ = done => {} }
         }
     }
-    async fn fetch_image(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError> {
+    async fn fetch_file(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError> {
         Fetch::ask(&self.fetches, locator).await
     }
     async fn fetch_quote(
@@ -500,6 +504,13 @@ fn settings() -> ConnectionSettings {
         name: "controlled".into(),
     }
 }
+fn host_version() -> enco_host::status::HostBuild {
+    enco_host::status::HostBuild {
+        version: "test-version".into(),
+        revision: "test-revision".into(),
+    }
+}
+
 fn start(kernel: &Arc<Kernel>, adapter: &Arc<ControlledChannel>) -> Channel {
     start_with(kernel, adapter, settings())
 }
@@ -521,6 +532,7 @@ fn start_with(
             .unwrap()
             .generation,
         Arc::new(enco_host::SystemClock),
+        host_version(),
     )
 }
 
@@ -826,8 +838,8 @@ fn photo() -> Action {
     Action::Message(MessageContent {
         quote: None,
         text: "caption".into(),
-        images: vec![Attachment {
-            what: "photo".into(),
+        attachments: vec![Attachment {
+            name: "photo".into(),
             locator: "file-id".into(),
         }],
         unviewable: Vec::new(),
@@ -912,7 +924,7 @@ async fn attachments_are_authorized_before_fetch_and_retry_after_the_committed_p
     assert_eq!(events.len(), 4);
     let EventBody::UserMessage {
         text,
-        images,
+        attachments,
         unviewable,
         ..
     } = &events[2]
@@ -921,15 +933,19 @@ async fn attachments_are_authorized_before_fetch_and_retry_after_the_committed_p
     };
     assert_eq!(text, "caption");
     assert!(unviewable.is_empty());
-    assert_eq!(images.len(), 1);
-    assert_eq!(store.get_blob(&images[0].content).await.unwrap(), bytes);
+    let [enco_core::Attachment::Image(image)] = attachments.as_slice() else {
+        panic!("expected image")
+    };
+    assert_eq!(store.get_blob(&image.content).await.unwrap(), bytes);
     let EventBody::UserMessage {
-        images, unviewable, ..
+        attachments,
+        unviewable,
+        ..
     } = &events[3]
     else {
         panic!("expected owner message")
     };
-    assert!(images.is_empty());
+    assert!(attachments.is_empty());
     assert!(
         matches!(&unviewable[0].reason, UnviewableReason::Unavailable(reason) if reason.contains("403"))
     );
@@ -975,7 +991,7 @@ fn quoted_message(
     sender: &str,
     name: &str,
     text: &str,
-    images: Vec<Attachment>,
+    attachments: Vec<Attachment>,
 ) -> ChannelQuotedMessage {
     ChannelQuotedMessage {
         depth: 0,
@@ -984,13 +1000,13 @@ fn quoted_message(
         conversation_name: None,
         sent_at: None,
         text: text.into(),
-        images,
+        attachments,
         unviewable: Vec::new(),
     }
 }
 
 #[tokio::test]
-async fn fetched_quotes_record_identity_images_and_fetch_origin_with_the_event() {
+async fn fetched_quotes_record_identity_attachments_and_fetch_origin_with_the_event() {
     let dir = tempfile::tempdir().unwrap();
     let Harness {
         kernel,
@@ -1007,7 +1023,7 @@ async fn fetched_quotes_record_identity_images_and_fetch_origin_with_the_event()
     receive(&mut polling).await;
     let content = MessageContent {
         text: "what is in this picture?".into(),
-        images: Vec::new(),
+        attachments: Vec::new(),
         unviewable: Vec::new(),
         quote: Some(enco_kernel::ChannelQuote {
             kind: QuoteKind::Reply,
@@ -1034,7 +1050,7 @@ async fn fetched_quotes_record_identity_images_and_fetch_origin_with_the_event()
                     "Original owner name",
                     "a picture",
                     vec![Attachment {
-                        what: "photo".into(),
+                        name: "photo".into(),
                         locator: "quoted-image".into(),
                     }],
                 ),
@@ -1075,19 +1091,50 @@ async fn fetched_quotes_record_identity_images_and_fetch_origin_with_the_event()
     assert!(messages[0].owner && !messages[0].yours);
     assert!(!messages[1].owner && messages[1].yours);
     assert_eq!(messages[0].text, "a picture");
-    assert_eq!(
-        store
-            .get_blob(&messages[0].images[0].content)
-            .await
-            .unwrap(),
-        PNG
-    );
+    let enco_core::Attachment::Image(quoted_image) = &messages[0].attachments[0] else {
+        panic!("expected image")
+    };
+    assert_eq!(store.get_blob(&quoted_image.content).await.unwrap(), PNG);
     assert!(
         event
             .canonical_message()
             .parts
             .iter()
-            .any(|part| matches!(part, Part::Image(image) if image == &messages[0].images[0]))
+            .any(|part| matches!(part, Part::Image(image) if image == quoted_image))
     );
     kernel.shutdown().await.unwrap();
+}
+
+/// Holds a Session's Round while its context is gathered, so a test can act mid-Run.
+pub(super) struct Gate {
+    pub armed: AtomicBool,
+    pub entered: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+    session: &'static str,
+}
+
+impl Gate {
+    pub fn new(session: &'static str) -> Arc<Self> {
+        Arc::new(Self {
+            armed: AtomicBool::new(true),
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            session,
+        })
+    }
+}
+
+#[async_trait]
+impl ContextSource for Gate {
+    type Supply = OfferedMemories;
+    async fn contribute(&self, query: &ContextQuery) -> Result<OfferedMemories, ContextError> {
+        if query.session.name.as_str() == self.session && self.armed.swap(false, Ordering::SeqCst) {
+            self.entered.notify_one();
+            tokio::select! {
+                () = query.cancel.cancelled() => {},
+                () = self.release.notified() => {},
+            }
+        }
+        Ok(OfferedMemories::default())
+    }
 }

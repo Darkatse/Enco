@@ -32,7 +32,7 @@ async fn waiting_for_an_input_survives_pushes_that_overtake_a_catch_up() {
             serde_json::from_str(&reader.next_line().await.unwrap().unwrap()).unwrap();
         assert_eq!(request["text"], "");
         assert_eq!(
-            request["images"],
+            request["files"],
             json!([directory.join("first.png"), directory.join("second.webp")])
         );
         let event_id: EventId = serde_json::from_value(request["event_id"].clone()).unwrap();
@@ -73,9 +73,9 @@ async fn waiting_for_an_input_survives_pushes_that_overtake_a_catch_up() {
         .args([
             "send",
             "--wait",
-            "--image",
+            "--file",
             "first.png",
-            "--image",
+            "--file",
             "second.webp",
         ])
         .current_dir(root.path())
@@ -107,7 +107,7 @@ fn run_entries(session: SessionId, event_id: EventId, run: RunId) -> [Entry; 2] 
                 source: EventSource::Cli,
                 body: EventBody::UserMessage {
                     quote: None,
-                    images: Vec::new(),
+                    attachments: Vec::new(),
                     unviewable: Vec::new(),
                     earlier: Vec::new(),
                     text: "second input".into(),

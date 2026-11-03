@@ -6,20 +6,11 @@ mod history;
 mod situations;
 mod status;
 use super::{HomeComparison, Invocation, SettingsComparison};
-use crate::{
-    clock::LOCAL_TIME,
-    status::{CallStep, FixTarget, OwnerAction, Step, Steps},
-};
+use crate::status::{CallStep, FixTarget, OwnerAction, Step, Steps};
 pub use actions::registration_document;
 pub(super) use causes::causes;
-use enco_core::{
-    DateTime, GenerationStatus, Initiator, IntentPath, PluginActivation, SessionRef, Tz, Utc,
-};
+use enco_core::{GenerationStatus, Initiator, IntentPath, PluginActivation, SessionRef};
 pub(super) use errors::failure;
-
-fn time(at: DateTime<Utc>, timezone: Tz) -> String {
-    at.with_timezone(&timezone).format(LOCAL_TIME).to_string()
-}
 
 fn caller(initiator: &Initiator<SessionRef>) -> String {
     match initiator {

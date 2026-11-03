@@ -128,8 +128,10 @@ pub async fn current_status(
     enco_host::status::Status {
         development: development.status(kernel.registry()).await.unwrap(),
         node: enco_host::status::Node {
-            version: "test".into(),
-            revision: "fixture".into(),
+            build: enco_host::status::HostBuild {
+                version: "test".into(),
+                revision: "fixture".into(),
+            },
             home: root.into(),
             profile_instructions: enco_host::profile_instruction_files(&root.join("profiles"))
                 .await,

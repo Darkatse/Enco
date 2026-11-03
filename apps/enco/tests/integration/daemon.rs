@@ -43,7 +43,7 @@ async fn submit(daemon: &Daemon, session: &str, text: &str) -> Vec<Entry> {
         .unwrap();
     client
         .send(Command::Send {
-            images: Vec::new(),
+            files: Vec::new(),
             session: session.into(),
             text: text.into(),
             event_id: EventId::new(),
@@ -72,7 +72,7 @@ async fn cli_to_wasm_to_http_records_a_reply() {
         .await
         .unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
-        .args(["send", "--wait", "--image", "photo.png"])
+        .args(["send", "--wait", "--file", "photo.png"])
         .current_dir(daemon.root.path())
         .env("ENCO_HOME", daemon.root.path())
         .output()
@@ -82,8 +82,8 @@ async fn cli_to_wasm_to_http_records_a_reply() {
     let waited: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let entries = finish(&mut client).await;
     assert!(entries.iter().any(|entry| matches!(&entry.body,
-        EntryBody::EventConsumed { event: Event { body: EventBody::UserMessage { text, images, unviewable, .. }, .. } }
-            if text.is_empty() && images.len() == 1 && images[0].format == ImageFormat::Png && unviewable.is_empty()
+        EntryBody::EventConsumed { event: Event { body: EventBody::UserMessage { text, attachments, unviewable, .. }, .. } }
+            if text.is_empty() && matches!(attachments.as_slice(), [Attachment::Image(image)] if image.format == ImageFormat::Png) && unviewable.is_empty()
     )));
     let ended = entries.last().unwrap();
     let EntryBody::RunEnded { run, end } = &ended.body else {
@@ -144,6 +144,75 @@ async fn cli_to_wasm_to_http_records_a_reply() {
 }
 
 #[tokio::test]
+async fn cli_file_bytes_are_stored_and_available_to_the_agent() {
+    let server = hello_service().await;
+    let mut daemon = Daemon::start(&server, "openai-compatible").await;
+    let pdf = b"%PDF-1.7\nfixture report\n%%EOF\n";
+    std::fs::write(daemon.root.path().join("report.pdf"), pdf).unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))
+        .args(["send", "--wait", "--file", "report.pdf"])
+        .current_dir(daemon.root.path())
+        .env("ENCO_HOME", daemon.root.path())
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut client = daemon.connect().await;
+    let log: Vec<Entry> = serde_json::from_value(
+        client
+            .request(Command::Log {
+                session: "main".into(),
+                after: None,
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let file = log
+        .iter()
+        .find_map(|entry| match &entry.body {
+            EntryBody::EventConsumed {
+                event:
+                    Event {
+                        body: EventBody::UserMessage { attachments, .. },
+                        ..
+                    },
+            } => match attachments.as_slice() {
+                [Attachment::File(file)] => Some(file),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(file.name, "report.pdf");
+    assert_eq!(file.size, pdf.len() as u64);
+    let stored = enco_host::blob_path(&daemon.root.path().join(".data/blobs"), &file.content);
+    assert_eq!(std::fs::read(&stored).unwrap(), pdf);
+    let inspection: Inspection = serde_json::from_value(
+        client
+            .request(Command::Inspect {
+                session: "main".into(),
+                attempt_id: None,
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let text: String = inspection
+        .request
+        .messages
+        .iter()
+        .map(Message::joined_text)
+        .collect();
+    assert!(text.contains("report.pdf") && text.contains(stored.to_str().unwrap()));
+    daemon.stop().await;
+}
+
+#[tokio::test]
 async fn credentials_stay_at_the_service_origin_and_out_of_recorded_results() {
     let server = MockServer::start().await;
     let other = MockServer::start().await;
@@ -191,7 +260,7 @@ async fn credentials_stay_at_the_service_origin_and_out_of_recorded_results() {
             .unwrap();
         client
             .send(Command::Send {
-                images: Vec::new(),
+                files: Vec::new(),
                 session: session.into(),
                 text: "hello".into(),
                 event_id: EventId::new(),
@@ -263,7 +332,7 @@ async fn unusable_completions_fail_the_run_and_stay_out_of_later_requests() {
     for text in ["first", "second", "third"] {
         client
             .send(Command::Send {
-                images: Vec::new(),
+                files: Vec::new(),
                 session: "main".into(),
                 text: text.into(),
                 event_id: EventId::new(),
@@ -697,7 +766,7 @@ async fn a_pure_channel_built_against_the_previous_contract_requests_a_rebuild()
     let runtime = WasmRuntime::new().unwrap();
     let error = runtime
         .load(
-            br#"(component (instance $old) (export "enco:plugin/channel@0.10.0" (instance $old)))"#,
+            br#"(component (instance $old) (export "enco:plugin/channel@0.13.0" (instance $old)))"#,
             &PluginSettings::default(),
         )
         .await
@@ -705,7 +774,7 @@ async fn a_pure_channel_built_against_the_previous_contract_requests_a_rebuild()
         .unwrap();
     let reason = error.to_string();
     assert!(
-        reason.contains("0.10.0") && reason.contains("rebuild"),
+        reason.contains("0.13.0") && reason.contains("rebuild"),
         "{reason}"
     );
 }

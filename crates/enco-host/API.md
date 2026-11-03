@@ -512,7 +512,7 @@ Shutdown signals the connection actor and all its helpers, then waits for them.
 ### `channel::Channel::start`
 
 ```rust
-pub fn start(kernel: Arc<Kernel>, adapter: Arc<dyn Adapter>, settings: ConnectionSettings, generation: GenerationId, clock: Arc<dyn Clock>) -> Self
+pub fn start(kernel: Arc<Kernel>, adapter: Arc<dyn Adapter>, settings: ConnectionSettings, generation: GenerationId, clock: Arc<dyn Clock>, build: crate::status::HostBuild) -> Self
 ```
 
 Start the connection; it carries addressed messages to Sessions and their replies back
@@ -679,7 +679,7 @@ Maintains the configured connections and joins each old owner before replacing i
 ### `channel::ChannelSupervisor::start`
 
 ```rust
-pub fn start(kernel: Arc<Kernel>, store: Arc<dyn Store>, clock: Arc<dyn Clock>) -> Self
+pub fn start(kernel: Arc<Kernel>, store: Arc<dyn Store>, clock: Arc<dyn Clock>, build: crate::status::HostBuild) -> Self
 ```
 
 Follow the registry's active view, opening accounts through their fixed mapper generation.
@@ -2556,6 +2556,7 @@ application gathers the facts, and `Status::document` writes the text.
 - enum `status::Divergence` — One way in which what runs for a plugin differs from what is registered.
 - enum `status::FixTarget` — What the Agent edits; each target is named by the facts that call for it.
 - enum `status::GenerationFailure` — A recorded failure of a generation, attributed by what the generation introduced.
+- struct `status::HostBuild` — The host's build: its release version and the commit it was built from.
 - struct `status::Node` — This host: its build, its home, and what it executes.
 - enum `status::OwnerAction` — Something only the owner can do; the Agent asks for it.
 - struct `status::Status` — Enco's state now, as `self_status` and `enco status` report it.
@@ -2965,14 +2966,37 @@ Implements:
 impl<'a> Serialize for GenerationFailure<'a>
 ```
 
+## struct `status::HostBuild`
+
+`src/status.rs`
+
+```rust
+pub struct HostBuild {
+    pub version: String,
+    pub revision: String,
+}
+```
+
+The host's build: its release version and the commit it was built from.
+
+- `version` — Release version of the host, such as `0.1.0`.
+- `revision` — Git commit the host was built from; a build with uncommitted edits shows the same commit.
+
+Implements:
+
+```rust
+impl Clone for HostBuild
+impl Debug for HostBuild
+impl Serialize for HostBuild
+```
+
 ## struct `status::Node`
 
 `src/status.rs`
 
 ```rust
 pub struct Node {
-    pub version: String,
-    pub revision: String,
+    pub build: HostBuild,
     pub home: std::path::PathBuf,
     pub execution: enco_kernel::Status,
     pub channels: Vec<crate::channel::ChannelStatus>,
@@ -2982,8 +3006,7 @@ pub struct Node {
 
 This host: its build, its home, and what it executes.
 
-- `version` — Release version of the host, such as `0.1.0`.
-- `revision` — Git commit the host was built from; a build with uncommitted edits shows the same commit.
+- `build` — The build running; in JSON its fields sit directly in `node`.
 - `home` — The Enco home directory this host runs from.
 - `execution` — Execution state from the kernel, such as safe mode, Sessions and the Scheduler; in JSON
   its fields sit directly in `node`.

@@ -13,7 +13,7 @@ struct View<'a> {
     attachments: Vec<String>,
 }
 
-/// The two quoted-message records share every field but how they keep images.
+/// The two quoted-message records share every field but how they keep attachments.
 macro_rules! view {
     ($message:expr, $attachments:expr) => {
         View {
@@ -77,7 +77,7 @@ pub(super) fn incoming(quote: &Quote, speaker: &str, timezone: Tz) -> Result<Str
                 .map(|message| {
                     view!(
                         message,
-                        images::descriptions(&message.images, &message.unviewable)
+                        images::descriptions(&message.attachments, &message.unviewable)
                     )
                 })
                 .collect();
@@ -101,7 +101,7 @@ pub(super) fn earlier(message: &EarlierMessage, timezone: Tz) -> Result<String, 
             .iter()
             .map(|message| {
                 let attachments = message
-                    .images
+                    .attachments
                     .iter()
                     .map(String::as_str)
                     .chain(message.unviewable.iter().map(|item| item.what.as_str()))

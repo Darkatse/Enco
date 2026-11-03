@@ -292,7 +292,7 @@ async fn an_owner_backtrack_in_a_child_tells_its_parent_and_keeps_the_answer_for
         .unwrap()
         .pos;
     h.kernel
-        .backtrack(child.id, EventId::new(), task)
+        .backtrack(child.id, EventId::new(), Some(task))
         .await
         .unwrap();
     drop(interrupted);

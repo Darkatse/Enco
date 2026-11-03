@@ -25,7 +25,6 @@ mod subtree;
 mod transcript;
 
 pub use builtin::builtin_tool_specs;
-pub use image::ImageError;
 pub use inspect::Inspection;
 pub use kernel::*;
 pub use limits::{CHANNEL_MAX_BACKOFF, IMAGE_MAX_BYTES, TRIAL_CALLS};
@@ -34,3 +33,6 @@ pub use profile::*;
 pub use registry::*;
 pub use scheduler::{ScheduleError, Scheduled, Schedules};
 pub use settings::*;
+
+#[cfg(test)]
+mod test_support;

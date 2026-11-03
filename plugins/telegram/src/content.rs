@@ -2,7 +2,7 @@
 //! unviewable and the rest of the message stays.
 use crate::incoming::{User, root_title};
 use enco_sdk::channel::{
-    Attachment, Content, Quote, Quoted, QuotedMessage, decode_part, invalid_part,
+    Attachment, AttachmentKind, Content, Quote, Quoted, QuotedMessage, decode_part, invalid_part,
 };
 use enco_sdk::types::{Datetime, QuoteKind, Unviewable, UnviewableReason};
 use serde::Deserialize;
@@ -78,10 +78,9 @@ struct Photo {
     height: u32,
 }
 #[derive(Deserialize)]
-struct Document {
+struct File {
     file_id: String,
     file_name: Option<String>,
-    mime_type: Option<String>,
 }
 
 /// A message `body`'s text, as the sender wrote it, and attachments.
@@ -92,47 +91,45 @@ fn content(body: &Map<String, Value>) -> Content {
             decode_part(PROTOCOL, "text", value, &mut content.unviewable).unwrap_or_default();
     }
     if let Some(value) = body.get("photo") {
+        let image = AttachmentKind::Image.name();
         match largest(value) {
-            Ok(photo) => content.images.push(Attachment {
-                what: "photo".into(),
+            Ok(photo) => content.attachments.push(Attachment {
+                name: image.into(),
                 locator: photo.file_id,
             }),
             Err(error) => content
                 .unviewable
-                .push(invalid_part(PROTOCOL, "photo", error)),
+                .push(invalid_part(PROTOCOL, image, error)),
         }
     }
-    if let Some(value) = body.get("document")
-        && let Some(document) =
-            decode_part::<Document>(PROTOCOL, "file", value, &mut content.unviewable)
-    {
-        let what = format!(
-            "file {}",
-            document.file_name.as_deref().unwrap_or("unnamed")
-        );
-        if document
-            .mime_type
-            .as_deref()
-            .is_some_and(|mime| mime.starts_with("image/"))
+    for (field, kind) in [
+        ("document", AttachmentKind::File),
+        ("voice", AttachmentKind::VoiceMessage),
+        ("audio", AttachmentKind::Audio),
+        ("video", AttachmentKind::Video),
+        ("video_note", AttachmentKind::VideoMessage),
+        ("animation", AttachmentKind::Animation),
+        ("sticker", AttachmentKind::Sticker),
+    ] {
+        // For backward compatibility Telegram also sets `document` on an animation; it is the
+        // same file.
+        if field == "document" && body.contains_key("animation") {
+            continue;
+        }
+        let kind = kind.name();
+        if let Some(value) = body.get(field)
+            && let Some(file) = decode_part::<File>(PROTOCOL, kind, value, &mut content.unviewable)
         {
-            content.images.push(Attachment {
-                what,
-                locator: document.file_id,
-            });
-        } else {
-            content.unviewable.push(Unviewable {
-                what,
-                reason: UnviewableReason::Unsupported,
+            content.attachments.push(Attachment {
+                name: file
+                    .file_name
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| kind.into()),
+                locator: file.file_id,
             });
         }
     }
     for (field, what) in [
-        ("voice", "voice message"),
-        ("audio", "audio message"),
-        ("video", "video"),
-        ("video_note", "video message"),
-        ("animation", "animation"),
-        ("sticker", "sticker"),
         ("contact", "contact"),
         ("location", "location"),
         ("venue", "venue"),

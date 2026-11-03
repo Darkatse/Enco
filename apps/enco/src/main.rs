@@ -71,10 +71,11 @@ enum Action {
         session: String,
         #[arg(long)]
         wait: bool,
-        /// Attach a PNG, JPEG or WebP image; repeat for multiple images.
-        #[arg(long = "image")]
-        images: Vec<PathBuf>,
-        #[arg(required_unless_present = "images")]
+        /// Attach a file; repeat for multiple files. PNG, JPEG and WebP files within the image
+        /// limit are kept as images.
+        #[arg(long = "file")]
+        files: Vec<PathBuf>,
+        #[arg(required_unless_present = "files")]
         text: Option<String>,
     },
     Schedules {
@@ -225,24 +226,24 @@ async fn main() -> Result<()> {
         Action::Send {
             session,
             text,
-            images,
+            files,
             wait: true,
         } => {
             println!(
                 "{:#}",
-                send::wait(&paths, session, text.unwrap_or_default(), absolute(images)?).await?
+                send::wait(&paths, session, text.unwrap_or_default(), absolute(files)?).await?
             );
             return Ok(());
         }
         Action::Send {
             session,
             text,
-            images,
+            files,
             wait: false,
         } => Command::Send {
             session,
             text: text.unwrap_or_default(),
-            images: absolute(images)?,
+            files: absolute(files)?,
             event_id: EventId::new(),
         },
         Action::Schedules { cancel } => match cancel {

@@ -7,19 +7,19 @@ use serde_json::json;
 
 /// How a fetch ended, before checking that it is the kind the host asked for.
 enum End {
-    Image(Vec<u8>),
+    File(Vec<u8>),
     Messages(Vec<wire::QuotedMessage>),
     Name(String),
     Unavailable(String),
 }
 
 impl Connection {
-    pub(super) async fn image(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError> {
+    pub(super) async fn file(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError> {
         let (end, origin) = self.fetch(locator).await?;
         let content = match end {
-            End::Image(bytes) => Ok(bytes),
+            End::File(bytes) => Ok(bytes),
             End::Unavailable(reason) => Err(reason),
-            End::Messages(_) | End::Name(_) => return Err(wrong_kind("an image", origin)),
+            End::Messages(_) | End::Name(_) => return Err(wrong_kind("a file", origin)),
         };
         Ok(Fetched {
             content,
@@ -36,7 +36,7 @@ impl Connection {
             End::Messages(messages) => Ok(convert::quoted_messages(messages)
                 .map_err(|failure| convert::failure(failure, false, Some(origin)))?),
             End::Unavailable(reason) => Err(reason),
-            End::Image(_) | End::Name(_) => return Err(wrong_kind("messages", origin)),
+            End::File(_) | End::Name(_) => return Err(wrong_kind("messages", origin)),
         };
         Ok(Fetched {
             content,
@@ -58,7 +58,7 @@ impl Connection {
                 Ok(name)
             }
             End::Unavailable(reason) => Err(reason),
-            End::Image(_) | End::Messages(_) => {
+            End::File(_) | End::Messages(_) => {
                 return Err(wrong_kind("a conversation name", origin));
             }
         };
@@ -90,7 +90,7 @@ impl Connection {
                 fault.origin = Some(origin);
                 fault
             };
-            let response = match step {
+            let exchanged = match step {
                 wire::FetchStep::Request(_) | wire::FetchStep::Download(_)
                     if responses.len() == limit as usize =>
                 {
@@ -100,14 +100,16 @@ impl Connection {
                     return Err(convert::failure(failure, false, Some(origin)).into());
                 }
                 wire::FetchStep::Request(request) => {
-                    transport.http(request).await.map_err(located)?
+                    let request = super::request_for(&transport.destinations, request)
+                        .map_err(|failure| convert::failure(failure, false, Some(origin)))?;
+                    transport.exchange(request, &transport.credentials).await
                 }
                 wire::FetchStep::Download(url) => {
                     // Content chose this address: outside the mapper's origins it only leaves
                     // the content unavailable, and it never carries the service's credentials.
-                    let url = match transport.destinations.download(&url) {
-                        Ok(url) => url,
-                        Err(refused) => return Ok((End::Unavailable(refused.message), origin)),
+                    let Some(url) = transport.destinations.download(&url) else {
+                        let reason = "Enco does not download files from this address";
+                        return Ok((End::Unavailable(reason.into()), origin));
                     };
                     let request = host::HttpRequest {
                         method: "GET".into(),
@@ -116,9 +118,9 @@ impl Connection {
                         body: None,
                         timeout_ms: None,
                     };
-                    transport.exchange(request, &[]).await.map_err(located)?
+                    transport.exchange(request, &[]).await
                 }
-                wire::FetchStep::Image(bytes) => return Ok((End::Image(bytes), origin)),
+                wire::FetchStep::File(bytes) => return Ok((End::File(bytes), origin)),
                 wire::FetchStep::Messages(messages) => {
                     return Ok((End::Messages(messages), origin));
                 }
@@ -126,6 +128,16 @@ impl Connection {
                 wire::FetchStep::Unavailable(reason) => {
                     return Ok((End::Unavailable(reason), origin));
                 }
+            };
+            let response = match exchanged {
+                Ok(response) => response,
+                // The same request meets the same limit again, so the content stays unavailable
+                // without a retry.
+                Err(failure) if matches!(failure.kind, host::HttpErrorKind::TooLarge) => {
+                    let reason = "too large for Enco to download";
+                    return Ok((End::Unavailable(reason.into()), origin));
+                }
+                Err(failure) => return Err(located(super::fault(failure)).into()),
             };
             recorded.push(transport.response_record(&response).await?);
             responses.push(response);

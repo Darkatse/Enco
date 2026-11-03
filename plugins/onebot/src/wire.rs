@@ -6,14 +6,19 @@ use enco_sdk::{
     types::{Failure, QuoteKind},
 };
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
+/// SnowLuma's answer to an action, or one frame of a streamed answer.
 #[derive(Deserialize)]
-struct Envelope {
-    status: String,
-    retcode: i32,
-    data: Value,
-    wording: Option<String>,
+#[serde(tag = "status", rename_all = "lowercase")]
+pub(super) enum Envelope {
+    /// It did what was asked; `data` is the result.
+    Ok { data: Value },
+    /// It refused; `wording` says why.
+    Failed {
+        retcode: i32,
+        wording: Option<String>,
+    },
 }
 
 /// Who a conversation reaches; its text is `private:<QQ number>` or `group:<group number>`.
@@ -46,11 +51,14 @@ impl std::fmt::Display for Conversation {
     }
 }
 
-/// What a locator handed to the host names; its text is `onebot:image:<URL>`,
-/// `onebot:reply:<message ID>` or `onebot:forward:<forward ID>`.
+/// What a locator handed to the host names: a media URL, file IDs or quoted messages.
 pub(super) enum Locator {
-    /// An image, at the address its segment gave.
-    Image(String),
+    /// Media at the address its segment gave, downloaded without service credentials.
+    Download(String),
+    /// A private file that SnowLuma resolves and downloads by ID and hash.
+    PrivateFile { file_id: String, file_hash: String },
+    /// A group file that SnowLuma resolves and downloads in its group.
+    GroupFile { group_id: u64, file_id: String },
     /// The messages a quote shows.
     Quote(Target),
 }
@@ -71,7 +79,13 @@ impl Locator {
             .and_then(|rest| rest.split_once(':'))
             .ok_or_else(|| invalid("locator"))?;
         match kind {
-            "image" => Ok(Self::Image(id.into())),
+            "download" => Ok(Self::Download(id.into())),
+            "private-file" => serde_json::from_str::<(String, String)>(id)
+                .map(|(file_id, file_hash)| Self::PrivateFile { file_id, file_hash })
+                .map_err(|_| invalid("private file locator")),
+            "group-file" => serde_json::from_str::<(u64, String)>(id)
+                .map(|(group_id, file_id)| Self::GroupFile { group_id, file_id })
+                .map_err(|_| invalid("group file locator")),
             "reply" => id
                 .parse()
                 .map(|id| Self::Quote(Target::Reply(id)))
@@ -85,7 +99,21 @@ impl Locator {
 impl std::fmt::Display for Locator {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Image(url) => write!(formatter, "onebot:image:{url}"),
+            Self::Download(url) => write!(formatter, "onebot:download:{url}"),
+            Self::PrivateFile { file_id, file_hash } => {
+                write!(
+                    formatter,
+                    "onebot:private-file:{}",
+                    json!([file_id, file_hash])
+                )
+            }
+            Self::GroupFile { group_id, file_id } => {
+                write!(
+                    formatter,
+                    "onebot:group-file:{}",
+                    json!([group_id, file_id])
+                )
+            }
             Self::Quote(Target::Reply(id)) => write!(formatter, "onebot:reply:{id}"),
             Self::Quote(Target::Forward(id)) => write!(formatter, "onebot:forward:{id}"),
         }
@@ -136,7 +164,7 @@ pub(super) fn request(action: &str, body: Value, timeout_ms: u32) -> Request {
     }
 }
 
-fn checked(response: &Response) -> Result<(), Fault> {
+pub(super) fn checked(response: &Response) -> Result<(), Fault> {
     if (200..300).contains(&response.status) {
         return Ok(());
     }
@@ -152,25 +180,22 @@ fn checked(response: &Response) -> Result<(), Fault> {
     })
 }
 
-pub(super) fn answer(response: Response) -> Result<Value, Fault> {
-    checked(&response)?;
-    let envelope: Envelope = serde_json::from_slice(&response.body).map_err(|_| Fault {
+/// The envelope of SnowLuma's `response` to an action; an HTTP failure or an unreadable envelope
+/// is a fault.
+pub(super) fn envelope(response: &Response) -> Result<Envelope, Fault> {
+    checked(response)?;
+    serde_json::from_slice(&response.body).map_err(|_| Fault {
         unknown: true,
         ..invalid("HTTP response envelope")
-    })?;
-    match envelope.status.as_str() {
-        "ok" => Ok(envelope.data),
-        "failed" => Err(fault(
+    })
+}
+
+pub(super) fn answer(response: Response) -> Result<Value, Fault> {
+    match envelope(&response)? {
+        Envelope::Ok { data } => Ok(data),
+        Envelope::Failed { retcode, wording } => Err(fault(
             "channel.request_failed",
-            format!(
-                "OneBot retcode {}: {}",
-                envelope.retcode,
-                envelope.wording.unwrap_or_default()
-            ),
+            format!("OneBot retcode {retcode}: {}", wording.unwrap_or_default()),
         )),
-        _ => Err(Fault {
-            unknown: true,
-            ..invalid("HTTP response status")
-        }),
     }
 }

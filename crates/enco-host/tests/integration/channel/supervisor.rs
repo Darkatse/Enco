@@ -143,6 +143,7 @@ async fn supervisor_follows_code_generations_after_settlement_and_has_one_owner_
         kernel.clone(),
         store.clone(),
         Arc::new(enco_host::SystemClock),
+        host_version(),
     );
     let original = receive(&mut openings).await.succeed();
     receive(&mut polling).await;
@@ -224,8 +225,12 @@ async fn a_retrying_opening_holds_up_no_other_connection_and_connects_once_the_s
         .await
         .unwrap(),
     );
-    let supervisor =
-        ChannelSupervisor::start(kernel.clone(), store, Arc::new(enco_host::SystemClock));
+    let supervisor = ChannelSupervisor::start(
+        kernel.clone(),
+        store,
+        Arc::new(enco_host::SystemClock),
+        host_version(),
+    );
     let first = receive(&mut openings).await;
     let second = receive(&mut openings).await;
     let (offline, ready) = if first.base_url.contains("offline") {
@@ -294,8 +299,12 @@ async fn a_changed_connection_cancels_its_pending_identification_and_a_rejected_
         .await
         .unwrap(),
     );
-    let supervisor =
-        ChannelSupervisor::start(kernel.clone(), store, Arc::new(enco_host::SystemClock));
+    let supervisor = ChannelSupervisor::start(
+        kernel.clone(),
+        store,
+        Arc::new(enco_host::SystemClock),
+        host_version(),
+    );
     let pending = receive(&mut openings).await;
     document["channel"]["only"]["context"] = json!(1);
     apply(dir.path(), &development, &registry, &document).await;

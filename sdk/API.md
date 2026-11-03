@@ -9,7 +9,7 @@ The host writes this crate to `sdk/` in every home, replacing any edits there; p
 it by path.
 
 - module `bindings` — Types and host functions generated from the WIT.
-- module `channel` — What every channel mapper shares: commands, decoded content, the activity card's wording and `multipart/form-data` uploads.
+- module `channel` — What every channel mapper shares: commands, decoded content, what attachments are called, the activity card's wording and `multipart/form-data` uploads.
 - module `host` — Host-owned logging and transport available to plugins.
 - module `protocol` — Helpers for plugins that call model services through the host's `http` import, including OpenAI-compatible Chat Completions and embeddings.
 - module `types` — Canonical data exchanged between the host and plugins.
@@ -116,8 +116,8 @@ Plugins built with `export!` use these same types, so values pass between a plug
 
 `src/channel.rs`
 
-What every channel mapper shares: commands, decoded content, the activity card's wording and
-`multipart/form-data` uploads.
+What every channel mapper shares: commands, decoded content, what attachments are called, the
+activity card's wording and `multipart/form-data` uploads.
 
 Each protocol marks commands and lays the card out its own way; the names, meanings and words
 are the same everywhere. `export!` gives a channel plugin these same types, so
@@ -127,7 +127,8 @@ name them from here.
 - struct `channel::ActivityEpilogue` — How a Run turned out, left in place of its view where the view was only for display.
 - enum `channel::ActivityUpdate` — What to do with a Run's view.
 - struct `channel::ActivityView` — What the Agent is doing while a Run goes on.
-- struct `channel::Attachment` — An image attachment described by its protocol locator.
+- struct `channel::Attachment` — An attachment, by the protocol's locator for fetching its bytes.
+- enum `channel::AttachmentKind` — What an attachment is, called the same way by every mapper when the protocol gives no filename people see.
 - enum `channel::CommandKind` — The commands the host understands.
 - struct `channel::Content` — The text and attachments of a message.
 - enum `channel::ConversationName` — A conversation's name, as far as the protocol carries it.
@@ -159,6 +160,9 @@ pub enum Action {
     Everyone(::core::option::Option<bool>),
     Halt(::core::option::Option<String>),
     Archive(::core::option::Option<String>),
+    Status,
+    Compact,
+    Clear,
 }
 ```
 
@@ -172,6 +176,9 @@ What an incoming message asks for, whatever the protocol's command syntax.
 - `Everyone` — Open this group to everyone or close it to the owner only; absent reports which.
 - `Halt` — Halt the named Session and its descendants, or the conversation's Session when absent.
 - `Archive` — Archive the named Session and its descendants, or list archivable Sessions when absent.
+- `Status` — Show the conversation's Session and its context.
+- `Compact` — Compact the conversation's history when its Session's next Run starts.
+- `Clear` — Start the conversation over; its earlier messages stay recorded.
 
 Implements:
 
@@ -296,14 +303,18 @@ impl PartialEq for ActivityView
 
 ```rust
 pub struct Attachment {
-    pub what: String,
+    pub name: String,
     pub locator: String,
 }
 ```
 
-An image attachment described by its protocol locator.
+An attachment, by the protocol's locator for fetching its bytes.
 
-- `what` — What the attachment is, for a message that cannot show it.
+- `name` — What it is called: the filename the protocol shows people, or what it is, such as
+  `voice message`, when there is none.
+
+  It carries no extension the protocol does not give, and describes the attachment when
+  it cannot be fetched.
 - `locator` — The opaque locator passed to `fetch`.
 
 Implements:
@@ -312,6 +323,53 @@ Implements:
 impl Clone for Attachment
 impl Debug for Attachment
 impl PartialEq for Attachment
+```
+
+## enum `channel::AttachmentKind`
+
+`src/channel.rs`
+
+```rust
+pub enum AttachmentKind {
+    Image,
+    VoiceMessage,
+    Audio,
+    Video,
+    VideoMessage,
+    Animation,
+    Sticker,
+    File,
+}
+```
+
+What an attachment is, called the same way by every mapper when the protocol gives no
+filename people see.
+
+- `Image` — A picture, such as a photo.
+- `VoiceMessage` — A recorded voice message.
+- `Audio` — A sound file, such as music.
+- `Video` — A video file.
+- `VideoMessage` — A short round video recorded in the chat, such as Telegram's video note.
+- `Animation` — A silent looping clip, such as a GIF.
+- `Sticker` — An image or animation sent as a sticker from a sticker set.
+- `File` — Any other file.
+
+### `channel::AttachmentKind::name`
+
+```rust
+pub fn name(self) -> &'static str
+```
+
+What an attachment of this kind is called, such as `voice message`.
+
+Implements:
+
+```rust
+impl Clone for AttachmentKind
+impl Copy for AttachmentKind
+impl Debug for AttachmentKind
+impl Eq for AttachmentKind
+impl PartialEq for AttachmentKind
 ```
 
 ## enum `channel::CommandKind`
@@ -326,6 +384,9 @@ pub enum CommandKind {
     Everyone,
     Halt,
     Archive,
+    Status,
+    Compact,
+    Clear,
 }
 ```
 
@@ -339,6 +400,9 @@ The commands the host understands.
   follows.
 - `Archive` — Archive the named Session and its descendants; with no name, list the Sessions that
   can be archived and archive nothing.
+- `Status` — Show the conversation's Session and its context.
+- `Compact` — Compact the conversation's history when its Session's next Run starts.
+- `Clear` — Start the conversation over; its earlier messages stay recorded.
 
 ### `channel::CommandKind::name`
 
@@ -390,7 +454,7 @@ impl PartialOrd for CommandKind
 ```rust
 pub struct Content {
     pub text: String,
-    pub images: Vec<Attachment>,
+    pub attachments: Vec<Attachment>,
     pub unviewable: Vec<Unviewable>,
     pub quote: ::core::option::Option<Quote>,
 }
@@ -400,7 +464,7 @@ The text and attachments of a message.
 
 - `text` — What the sender wrote as people in the chat see it; mentions use names where the
   protocol supplies them, and a leading mention of this bot is left out.
-- `images` — Images, by the protocol's locator for fetching them.
+- `attachments` — Its attachments in order; the host fetches each and keeps it as an image or a file.
 - `unviewable` — Parts of the content that cannot be shown, and why.
 - `quote` — The messages it replies to or forwards, when it does.
 
@@ -531,7 +595,7 @@ pub struct QuotedMessage {
     pub conversation_name: ::core::option::Option<String>,
     pub sent_at: ::core::option::Option<Datetime>,
     pub text: String,
-    pub images: Vec<Attachment>,
+    pub attachments: Vec<Attachment>,
     pub unviewable: Vec<Unviewable>,
 }
 ```
@@ -544,7 +608,7 @@ A message shown inside another, as the protocol showed it.
 - `conversation_name` — The name of the original conversation, when it was elsewhere and the protocol names it.
 - `sent_at` — When it was first sent, when reported.
 - `text` — What the sender wrote as people in the chat see it, mentions of this bot included.
-- `images` — Images, by their protocol locators.
+- `attachments` — Its attachments, by their protocol locators.
 - `unviewable` — Content that could not be shown, and why.
 
 ### `channel::QuotedMessage::new`
@@ -720,7 +784,7 @@ OpenAI-compatible Chat Completions and embeddings.
 - struct `protocol::Request` — The frozen messages, disclosed tools and output budget for one completion.
 - struct `protocol::Settings` — same as `types::Settings`
 - enum `protocol::StopReason` — The service-reported reason that generation stopped.
-- struct `protocol::Usage` — Token counts reported by the service, including cache hits when available.
+- struct `protocol::Usage` — same as `types::Usage`
 - fn `protocol::apply_options` — Merge `raw`, a JSON object of caller options, into `body`; options may only add fields, and never one named in `reserved`.
 - fn `protocol::bad` — A non-retryable `provider.bad_response` failure: the reply is malformed or not what the protocol promises.
 - fn `protocol::bad_request` — A non-retryable `provider.bad_request` failure: the request cannot succeed as written.
@@ -811,33 +875,6 @@ impl Eq for StopReason
 impl Ord for StopReason
 impl PartialEq for StopReason
 impl PartialOrd for StopReason
-```
-
-## struct `protocol::Usage`
-
-`src/lib.rs`
-
-```rust
-pub struct Usage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cached_input_tokens: ::core::option::Option<u64>,
-}
-```
-
-Token counts reported by the service, including cache hits when available.
-
-- `input_tokens` — Tokens the request used.
-- `output_tokens` — Tokens the reply used.
-- `cached_input_tokens` — The part of `input-tokens` served from the service's cache, when it reports one.
-
-Implements:
-
-```rust
-impl Clone for Usage
-impl Copy for Usage
-impl Debug for Usage
-impl PartialEq for Usage
 ```
 
 ## fn `protocol::apply_options`
@@ -1163,8 +1200,9 @@ Canonical data exchanged between the host and plugins.
 - struct `types::ToolCall` — A proposed tool invocation.
 - struct `types::ToolResult` — A tool settlement.
 - struct `types::ToolSpec` — A tool disclosed to the model.
-- struct `types::Unviewable` — Part of a message's content kept only as a description, such as an attachment.
-- enum `types::UnviewableReason` — Why an attachment did not become an image.
+- struct `types::Unviewable` — Part of a message's content kept only as a description, such as a location or an attachment that could not be fetched.
+- enum `types::UnviewableReason` — Why part of a message is kept only as a description.
+- struct `types::Usage` — Token counts reported by the service, including cache hits when available.
 - type `types::Json` — A JSON document encoded as UTF-8 text.
 
 ## struct `types::Datetime`
@@ -1499,7 +1537,7 @@ How a Run ended.
 - `BudgetExhausted` — It used every Round it was allowed.
 - `Interrupted` — The process stopped before it finished.
 - `Cancelled` — It was cancelled.
-- `Backtracked` — The owner went back to an earlier message, which stopped it.
+- `Backtracked` — The owner went back in the conversation, which stopped it.
 - `Failed` — Execution stopped with this recorded failure.
 - `Halted` — A halt of this Session or an ancestor stopped it.
 
@@ -1644,12 +1682,14 @@ pub struct Unviewable {
 }
 ```
 
-Part of a message's content kept only as a description, such as an attachment.
+Part of a message's content kept only as a description, such as a location or an
+attachment that could not be fetched.
 
 Facts about the message, such as who sent it, are not content: one that cannot be read is
 absent instead.
 
-- `what` — A plain description such as voice message or file report.pdf, not a protocol type name.
+- `what` — A plain description such as report.pdf, voice message or location, not a protocol type
+  name.
 - `reason` — Why it cannot be shown.
 
 ### `types::Unviewable::unavailable`
@@ -1677,15 +1717,13 @@ impl PartialEq for Unviewable
 ```rust
 pub enum UnviewableReason {
     Unsupported,
-    TooLarge,
     Unavailable(String),
 }
 ```
 
-Why an attachment did not become an image.
+Why part of a message is kept only as a description.
 
-- `Unsupported` — Its format is not an accepted image format.
-- `TooLarge` — It is larger than an image may be.
+- `Unsupported` — It is not a file Enco can keep, such as a location or a poll.
 - `Unavailable` — It could not be retrieved, for this reason.
 
 Implements:
@@ -1694,6 +1732,33 @@ Implements:
 impl Clone for UnviewableReason
 impl Debug for UnviewableReason
 impl PartialEq for UnviewableReason
+```
+
+## struct `types::Usage`
+
+`src/lib.rs`
+
+```rust
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: ::core::option::Option<u64>,
+}
+```
+
+Token counts reported by the service, including cache hits when available.
+
+- `input_tokens` — Tokens the request used.
+- `output_tokens` — Tokens the reply used.
+- `cached_input_tokens` — The part of `input-tokens` served from the service's cache, when it reports one.
+
+Implements:
+
+```rust
+impl Clone for Usage
+impl Copy for Usage
+impl Debug for Usage
+impl PartialEq for Usage
 ```
 
 ## type `types::Json`
@@ -1902,7 +1967,7 @@ impl PartialEq for Fault
 pub enum FetchStep {
     Request(Request),
     Download(String),
-    Image(Vec<u8>),
+    File(Vec<u8>),
     Messages(Vec<QuotedMessage>),
     Name(String),
     Unavailable(String),
@@ -1918,7 +1983,7 @@ The next step of fetching the content a locator names.
   The host sends it without credentials and only to one of the mapper's `origins`, so
   content never chooses a path on the service; an address elsewhere makes the attachment
   unavailable.
-- `Image` — The attachment's bytes.
+- `File` — The bytes of the file an attachment's locator names.
 - `Messages` — The messages a quote's locator names, listed as `quoted.messages` is.
 - `Name` — The nonempty name a `conversation-name` locator names.
 - `Unavailable` — The protocol refused it for good; the text says why.
@@ -2476,12 +2541,12 @@ Adapts canonical requests to a model service protocol.
 - struct `bindings::exports::enco::plugin::completion::Completion` — same as `protocol::Completion`
 - struct `bindings::exports::enco::plugin::completion::Request` — same as `protocol::Request`
 - enum `bindings::exports::enco::plugin::completion::StopReason` — same as `protocol::StopReason`
-- struct `bindings::exports::enco::plugin::completion::Usage` — same as `protocol::Usage`
 - trait `bindings::exports::enco::plugin::completion::Guest` — (no summary)
 - type `bindings::exports::enco::plugin::completion::Failure` — (no summary)
 - type `bindings::exports::enco::plugin::completion::Message` — (no summary)
 - type `bindings::exports::enco::plugin::completion::Settings` — (no summary)
 - type `bindings::exports::enco::plugin::completion::ToolSpec` — (no summary)
+- type `bindings::exports::enco::plugin::completion::Usage` — (no summary)
 
 ## trait `bindings::exports::enco::plugin::completion::Guest`
 
@@ -2533,6 +2598,14 @@ pub type Settings = super::super::super::super::enco::plugin::types::Settings;
 
 ```rust
 pub type ToolSpec = super::super::super::super::enco::plugin::types::ToolSpec;
+```
+
+## type `bindings::exports::enco::plugin::completion::Usage`
+
+`src/lib.rs`
+
+```rust
+pub type Usage = super::super::super::super::enco::plugin::types::Usage;
 ```
 
 # module `enco_sdk::bindings::exports::enco::plugin::lifecycle`

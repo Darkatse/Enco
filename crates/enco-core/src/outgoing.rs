@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Content addressed to a reply destination: Markdown text and at most one file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Outgoing<F = OutgoingFile> {
+pub struct Outgoing<F = File> {
     /// Markdown authored by the sender.
     pub text: String,
     /// Optional attachment, recorded by reference or carried as bytes at a boundary.
@@ -12,8 +12,8 @@ pub struct Outgoing<F = OutgoingFile> {
 
 /// A recorded file; the kernel stores the bytes before accepting this reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OutgoingFile {
-    /// Filename without its original directory.
+pub struct File {
+    /// What it is called: its filename, or what it is when it came without one.
     pub name: String,
     /// Original byte length.
     pub size: u64,

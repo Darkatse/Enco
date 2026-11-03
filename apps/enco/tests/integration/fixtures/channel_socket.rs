@@ -50,7 +50,7 @@ impl channel::Guest for Fixture {
                 result.messages.push(channel::Inbound {
                     key: seq.to_string(), conversation: "one".into(), realm: None, conversation_name: None, message: seq.to_string(), sender: Some("owner".into()), sender_name: None,
                     direct: true, addressed: true, reply_to: None, respond: Some(seq.to_string()),
-                    action: Action::Message(Content { text: frame, images: Vec::new(), unviewable: Vec::new(), quote: None }),
+                    action: Action::Message(Content { text: frame, attachments: Vec::new(), unviewable: Vec::new(), quote: None }),
                 });
                 if seq == 1 {
                     result.frames.push(json!({"op":"identify","token":null}).to_string());
@@ -66,7 +66,7 @@ impl channel::Guest for Fixture {
     }
     fn fetch(locator: String, responses: Vec<channel::Response>, _limit: u32) -> Result<channel::FetchStep, channel::Fault> {
         Ok(match responses.last() {
-            Some(response) if locator != "endless" => channel::FetchStep::Image(response.body.clone()),
+            Some(response) if locator != "endless" => channel::FetchStep::File(response.body.clone()),
             _ => channel::FetchStep::Download(format!("{CDN}/file")),
         })
     }

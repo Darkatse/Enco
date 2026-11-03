@@ -81,7 +81,7 @@ fn pending_and_consumed_inputs_produce_the_same_child_facts() {
         EventSource::Cli,
         EventBody::UserMessage {
             text: "let me take over".into(),
-            images: Vec::new(),
+            attachments: Vec::new(),
             unviewable: Vec::new(),
             earlier: Vec::new(),
             quote: None,
@@ -152,7 +152,7 @@ fn replies_halts_and_takeover_have_distinct_effects_on_the_parent_wait() {
         EventSource::Cli,
         EventBody::UserMessage {
             text: "continue with me".into(),
-            images: Vec::new(),
+            attachments: Vec::new(),
             unviewable: Vec::new(),
             earlier: Vec::new(),
             quote: None,
@@ -172,7 +172,7 @@ fn noninteractive_child_reports_do_not_take_the_reply_destination() {
         EventSource::Cli,
         EventBody::UserMessage {
             text: "research this".into(),
-            images: Vec::new(),
+            attachments: Vec::new(),
             unviewable: Vec::new(),
             earlier: Vec::new(),
             quote: None,

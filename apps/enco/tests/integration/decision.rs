@@ -114,7 +114,7 @@ async fn ask(daemon: &Daemon, session: &str, text: &str) -> Inspection {
         .unwrap();
     client
         .send(Command::Send {
-            images: Vec::new(),
+            files: Vec::new(),
             session: session.into(),
             text: text.into(),
             event_id: EventId::new(),

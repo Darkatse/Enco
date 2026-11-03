@@ -37,7 +37,7 @@ impl Connection {
                 pos,
                 receipt,
             }) => {
-                let body = EventBody::Backtrack { to: pos };
+                let body = EventBody::Backtrack { to: Some(pos) };
                 let refusal = self.submit(state, session, source, body, key, None).await?;
                 Ok(Some(refusal.unwrap_or_else(|| receipt.into())))
             }

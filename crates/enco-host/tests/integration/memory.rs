@@ -110,7 +110,10 @@ async fn an_input_without_text_recalls_nothing() {
         retryable: false,
     });
     let image = kernel
-        .store_image(include_bytes!("../../../enco-kernel/src/image/probe.png"))
+        .store_attachment(
+            "photo".into(),
+            include_bytes!("../../../enco-kernel/src/image/probe.png"),
+        )
         .await
         .unwrap();
     let session = kernel.open_session("main").await.unwrap();

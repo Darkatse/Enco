@@ -13,7 +13,7 @@
 - `sdk/`：随宿主分发的插件 SDK
 - `manual/`：由宿主根据当前运行代际自动生成的只读手册
 - `workspace/`：新 Session 的默认工作目录
-- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。数据库模式版本 19 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
+- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。数据库模式版本 20 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
 
 ### CLI 命令
 
@@ -22,7 +22,7 @@
 | 初始化主目录与 SDK | `enco init` |
 | 启动后台守护进程 | `enco serve` |
 | 进入交互式终端对话 | `enco chat [--session <name>]` |
-| 发送单条消息或图片 | `enco send [--session <name>] [--wait] [--image <path> ...] [text]` |
+| 发送单条消息或文件 | `enco send [--session <name>] [--wait] [--file <path> ...] [text]` |
 | 查看运行中、已登记与 home 三层状态 | `enco status [--json]` |
 | 构建并登记改动过的配置与插件源码 | `enco apply [--reason "..."] [--json]` |
 | 查看登记历史或对比差异 | `enco history [--from <point>] [--to <point>] [--json]` |
@@ -44,6 +44,10 @@
 
 每个会话使用的模型、工具范围与组装策略在 `[profile.<名字>]` 中定义（名字为不含 `/` 与空白的一段），可用 `description` 写一句角色用途说明。默认使用宿主自带的 `composer`（空选项），也可以指定 `composer = { plugin = "<名字>", options = {} }`。composer 会声明自己的选项 schema，登记配置时据此校验每个 profile；它只接收已记录的历史、常驻说明与召回的记忆，没有文件或网络权限。安全模式下固定使用二进制内嵌的出厂 composer 与空选项。
 
+默认 composer 用服务商回报的用量衡量上下文的长度，只估算上一次请求之后新增的部分；拿不到可用的回报时（例如工具变了，或上一次请求没有完成），按整份内容估算。
+
+压缩阈值可以按 profile 设置，例如 `composer = { plugin = "composer", options = { compact_at = 60 } }`。`compact_at` 是回复模型上下文窗口的百分比，取值 1 到 100，默认 80。压缩后原样保留的最近对话约为阈值的 3/8，默认约占窗口的 30%。安全模式使用默认阈值。
+
 关于主人的偏好与全局规矩写在 `AGENTS.md`，只给 `owner_context` 未关闭的会话；关于某个角色做什么、怎样做写在 `profiles/<名字>.md`，与 `AGENTS.md` 叠加且更具体（`owner_context = false` 的群会话同样生效），直接编辑文件即可在下一个 Round 生效。每个会话另有自己的工作目录（新建时为 `workspace/`），文件工具、`message_send` 的相对路径与 `shell_exec` 的默认目录都以它为起点，用 `enco working-dir <session> <path>` 修改：相对路径按执行命令时的当前目录补全，设置时不检查目录，用到时目录不可用，相关的调用才失败。
 
 ### Session 委派、叫停与归档
@@ -60,15 +64,31 @@ Agent 可以用 `session_send(to, text, profile)` 把任务委派给子 Session�
 
 `enco status` 按树显示未归档 Session 的 profile、工作目录与运行、等待名额、停止或空闲状态；`enco sessions` 输出未归档 Session 的 JSON 列表，`enco sessions --archived` 输出已归档的 Session。归档后日志仍保留，可按 ID 用 `enco log --session <id>` 与 `enco inspect --session <id>` 查看；当名字只对应已归档的 Session 时，命令会报错并列出它们的 ID。
 
-### 图片输入与文件发送
+### 文件与图片
 
-补全 endpoint 默认只接受文本，加上 `accepts = ["image"]` 后可开启图片输入。`enco send --image <path>` 支持发送一张或多张 PNG、JPEG、WebP 图片（单张上限 10 MB，单次请求合计上限 32 MB），也可以不附文字单独发送；Agent 还能用 `fs_read` 读取这些图片。
+聊天里发来的附件和 `enco send --file <path>` 附上的文件都会存进 Enco 的库，交给 Agent。`--file` 可以重复使用，也可以不附文字，例如 `enco send --file report.pdf` 或 `enco send --file photo.png`。
+
+附件是否作为图片保存，由文件的字节决定：PNG、JPEG 或 WebP，且不超过 10 MiB。补全 endpoint 默认只接受文本，开启 `accepts = ["image"]` 后，composer 可以把图片随请求发送，单次请求的图片合计上限为 32 MiB。
+
+其余文件，包括 PDF、语音、视频、超过 10 MiB 的照片、HEIC 和 GIF，Enco 把名字、大小和本地路径交给 Agent，由它用工具读取、转换格式或缩小。名字取聊天协议给出的文件名，没有时写它是什么，例如 `voice message`；CLI 用本地文件名。
+
+从聊天里取回的文件最大 32 MiB，Telegram 另限 20 MB，QQ 约 24 MiB。位置、投票、卡片等不是文件的内容只保留说明；超出上限或取不回的附件，Agent 会看到原因。群聊开启 `/everyone on` 后，群成员发来的文件同样收下。
 
 执行任务期间，Agent 可以通过 `message_send` 主动向你汇报进度或发送文件（支持 Markdown `text`、上限 50 MB 的单个 `file` 路径，或两者一起发），发送目标跟随当前会话的回复去向。Telegram 会直接展示受支持的媒体或发送原文件，`enco chat` 则打印本地文件路径；投递失败会在 `self_status` 中报告。
+
+### 会话状态与压缩
+
+Telegram、Discord 与 QQ 中，主人可以用 `/status` 查看当前会话的 Session、profile、工作目录和运行状态，以及最近一次回复请求回报的上下文用量与缓存命中率。用量对应那次请求，之后发生过压缩时会注明；还没有请求时也会直说。私聊里还显示 Enco 的版本与需要处理的情况。
+
+`/compact` 要求在下一个 Run 开始时先压缩对话，不打断正在运行的 Run，也不取代此前未处理的输入。没有可以压缩的内容时，回执会直说。
+
+会话命令（`/status`、`/compact`、`/clear`、`/cancel` 与不带名字的 `/halt`）作用于这个会话里普通消息所去的 Session，群里就是群自己的 Session，其他人发的命令不生效。原来的 Session 已归档时，回执先说明会话现在去哪个 Session；会话还没有 Session 时，命令不会新建，回执说明发第一条消息才会建立。
 
 ### 对话回溯
 
 聊歪了或者想换个方向重来时，可以在 Telegram 里回复那条消息发送 `/backtrack`，在 Discord 消息右键菜单里点击 **Backtrack here**，或者先用 `enco log` 查到条目的 `pos` 再执行 `enco backtrack <epoch>:<seq>`。对话会直接从那条消息往后接；如果退回的是你自己的消息，Agent 会重新回答一次。后面的消息仍留在日志里，随时可以再跳回去。回溯只移动对话位置，不会撤销文件、记忆、定时或插件的修改，系统也会把这一点明确告诉 Agent。
+
+在 Telegram、Discord 与 QQ 里，`/clear` 将当前对话回溯到开头，下一条消息从空白对话重新开始。正在运行的 Run 随之停下，此前未处理的输入不再回答。Session 的名字、profile、工作目录和子 Session 不变，记忆也保留。原记录仍在日志中，对清空前 Agent 的最后一条回复使用 `/backtrack`，即可回到清空之前。
 
 ## 接入 Telegram、Discord 与 QQ
 
@@ -76,7 +96,7 @@ Agent 可以用 `session_send(to, text, profile)` 把任务委派给子 Session�
 
 ### Telegram
 
-取消配置示例中 `[channel.telegram]` 段的注释，把 `owner` 设为你自己的用户 ID 字符串，并导出 `secrets` 指定的 token 环境变量。照片与图片文件会连同说明文字进入同一条消息，不支持的附件也会如实告知 Agent。私聊支持 `/session` 切换会话、`/cancel` 停止当前 Run、`/halt [<name>]` 叫停子树、`/archive <name>` 归档子树、回复消息发送 `/backtrack` 回溯，命令菜单会自动注册。
+取消配置示例中 `[channel.telegram]` 段的注释，把 `owner` 设为你自己的用户 ID 字符串，并导出 `secrets` 指定的 token 环境变量。文件与图片会连同说明文字进入同一条消息，取不回的附件会把原因告知 Agent。私聊支持 `/session` 切换会话、`/cancel` 停止当前 Run、`/halt [<name>]` 叫停子树、`/archive <name>` 归档子树、回复消息发送 `/backtrack` 回溯。命令菜单自动注册，其中的 `/status`、`/compact` 与 `/clear`（见「会话状态与压缩」）群里也可用。
 
 在 @BotFather 中开启私聊话题（Threaded Mode）后，每个私聊话题会自动建立一个带主人上下文的根 Session，名字取自话题标题，空白与 `/` 换成 `-`；重名时依次加 `-2`、`-3`；取不到标题时（例如开启之前就有的话题），名字用连接名加会话 ID。没有话题的私聊仍挂到 `main`，公开群的论坛话题则各自建立群 Session。话题里也可以用 `/session` 改绑已有的 Session。
 
@@ -88,7 +108,7 @@ Agent 可以用 `session_send(to, text, profile)` 把任务委派给子 Session�
 2. 在 Discord 设置中启用开发者模式，复制你的用户 ID 填入 `owner`。
 3. 邀请 bot 时勾选 `bot` 与 `applications.commands` 作用域，为它要服务的频道开启查看频道、发送消息、在线程中发送消息、读取消息历史、附加文件与嵌入链接权限；要显示子 Session，还需创建公开子区与管理子区的权限。
 
-私聊要求你与 bot 至少同在一个服务器里；bot 能读到的频道消息会进入映射记录，只开放必要的频道即可。Discord 使用原生 `/session`（私聊与声明为私有的服务器）、`/cancel`、`/halt`、`/archive`、`/everyone`（仅服务器）斜杠命令与消息右键菜单中的 **Backtrack here**，命令与按钮回执只有操作者自己可见，在普通消息里手打斜杠命令不会触发它。
+私聊要求你与 bot 至少同在一个服务器里；bot 能读到的频道消息会进入映射记录，只开放必要的频道即可。Discord 使用原生 `/session`（私聊与声明为私有的服务器）、`/cancel`、`/halt`、`/archive`、`/everyone`（仅服务器）斜杠命令与消息右键菜单中的 **Backtrack here**。原生菜单还有 `/status`、`/compact` 与 `/clear`（见「会话状态与压缩」），私信与服务器频道都可用。命令与按钮回执只有操作者自己可见，在普通消息里手打斜杠命令不会触发它。
 
 在 `[channel.discord]` 中设 `private_realms = ["<服务器 ID>"]`，可以声明只属于主人的服务器。其中的频道与子区各自建立带主人上下文的根 Session，名字取自频道或子区名。主人可以直接说话，使用 `/session`、`/archive` 与按名字 `/halt`；未声明的服务器按公开群处理。
 
@@ -112,7 +132,7 @@ context = 0
 
 `base_url` 使用实际启用 WebSocket 的 HTTP 服务地址。SnowLuma 与 Enco 部署在同一台机器时，只监听本机地址。启用群聊时，按下文配置独立的 `group_profile`。
 
-私聊使用文字命令 `/session`、`/cancel`、`/halt [<name>]`、`/archive <name>`、`/backtrack`；群里发送 `/everyone on|off` 开关成员提问。引用一条消息并发送 `/backtrack` 即可回溯。普通群消息以 @ bot 为准；QQ 引用回复通常附带 @，手动删除它之后就不触发提问。其他人的命令静默忽略，带附件的文字按普通消息处理。
+私聊使用文字命令 `/session`、`/cancel`、`/halt [<name>]`、`/archive <name>`、`/backtrack`；群里发送 `/everyone on|off` 开关成员提问。私聊和群里都可以用 `/status`、`/compact` 与 `/clear`（见「会话状态与压缩」）。引用一条消息并发送 `/backtrack` 即可回溯。普通群消息以 @ bot 为准；QQ 引用回复通常附带 @，手动删除它之后就不触发提问。其他人的命令静默忽略，带附件的文字按普通消息处理。
 
 回复以 Markdown 原文发送，长文字分段，图片随文字发送，其他文件单独上传。发送节奏由 `onebot` 插件给出，初始最短间隔 1.5 秒，再增加至多 1.5 秒随机延迟。Run 进行时，手机 QQ 私聊显示可能短暂间断的「正在输入」；Mac QQ 与群聊不显示，取消使用 `/cancel`。
 
@@ -120,13 +140,13 @@ Enco 停止或重连期间发来的 QQ 消息需要重发。SnowLuma 尚未就�
 
 ### 回复与转发的内容
 
-Telegram、Discord 与 QQ 的回复和转发会连同提问记录。Agent 看到原发送者、协议给出的时间、正文和图片；只有引用或转发、没有附言的消息也能作为输入。引用内容作为对话材料呈现，其中的 `/cancel` 等文字不会成为转发者的命令。
+Telegram、Discord 与 QQ 的回复和转发会连同提问记录。Agent 看到原发送者、协议给出的时间、正文和附件；只有引用或转发、没有附言的消息也能作为输入。引用内容作为对话材料呈现，其中的 `/cancel` 等文字不会成为转发者的命令。
 
 Telegram 与 Discord 使用消息里自带的引用内容。QQ 会读取 SnowLuma 保存的原消息与合并转发，嵌套转发在一次读取的请求范围内展开，其余内容注明未展开；部署前没有保存的消息可能取不到。Discord 已删除或没有随事件提供的引用同样会写明原因。取不到引用或某一部分内容格式不符时，其余输入照常处理。
 
-群里的触发规则保持不变：提问须按该渠道的方式发给 bot。Telegram 转发中的 @ 不算对 bot 的提及；群里的纯转发作为前文，私聊里作为输入。前文中的引用只带协议已经给出的内容，不另外请求图片或历史消息。Telegram 的局部引用与跨对话回复尚未接入。
+群里的触发规则保持不变：提问须按该渠道的方式发给 bot。Telegram 转发中的 @ 不算对 bot 的提及；群里的纯转发作为前文，私聊里作为输入。引用消息里的文件与图片同样取回并保存。前文中的引用只带协议已经给出的内容，不另外请求附件或历史消息。Telegram 的局部引用与跨对话回复尚未接入。
 
-提及尽量显示名字，提问开头用于呼叫 bot 的 @ 会省去，所以只 @ bot、没有文字、图片或引用的消息不会触发回复；被引用的消息保留其中的 @。QQ 的提及仍用号码，系统表情按随插件保存的表显示名字，未收录的保留编号。
+提及尽量显示名字，提问开头用于呼叫 bot 的 @ 会省去，所以只 @ bot、没有文字、附件或引用的消息不会触发回复；被引用的消息保留其中的 @。QQ 的提及仍用号码，系统表情按随插件保存的表显示名字，未收录的保留编号。
 
 ### 实时进度
 

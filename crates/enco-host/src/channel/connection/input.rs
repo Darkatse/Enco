@@ -3,14 +3,16 @@ use super::*;
 use enco_kernel::{ChannelCommand, ChannelCommandKind, NewSessionOrigin};
 use transport::Disposition;
 
-const NO_GROUP_PROFILE: &str =
+pub(super) const NO_GROUP_PROFILE: &str =
     "Set group_profile for this connection to use the Agent in group chats.";
 const GROUP_SESSION: &str = "A group chat always uses its own Session.";
 const REFUSAL: &str = "Only the owner can use this.";
 
 /// The commands the connection understands, as offered in the protocol's menus.
 fn commands() -> Vec<ChannelCommand> {
-    use ChannelCommandKind::{Archive, Backtrack, Cancel, Everyone, Halt, Session};
+    use ChannelCommandKind::{
+        Archive, Backtrack, Cancel, Clear, Compact, Everyone, Halt, Session, Status,
+    };
     [
         (
             Session,
@@ -19,6 +21,24 @@ fn commands() -> Vec<ChannelCommand> {
             false,
         ),
         (Cancel, "Stop the current work", true, true),
+        (
+            Status,
+            "Show this conversation's Session and its context",
+            true,
+            true,
+        ),
+        (
+            Compact,
+            "Compact the conversation before the next Run",
+            true,
+            true,
+        ),
+        (
+            Clear,
+            "Start the conversation over; /backtrack can return",
+            true,
+            true,
+        ),
         (
             Halt,
             "Halt a Session and its children, or this conversation's Session",
@@ -156,6 +176,9 @@ impl Connection {
             Action::Backtrack => {
                 return self.backtrack(state, &target, source, key, reply_to).await;
             }
+            Action::Status => return self.status(state, key, &target, &kind).await,
+            Action::Compact => return self.compact(state, key, source, &target, &kind).await,
+            Action::Clear => return self.clear(state, key, source, &target, &kind).await,
             Action::SelectSession(_) | Action::Sessions if !private => GROUP_SESSION.into(),
             Action::SelectSession(name) => match self.kernel.open_session(&name).await {
                 Ok(session) => {
@@ -166,15 +189,15 @@ impl Connection {
                 Err(error) => return Err(error.into()),
             },
             Action::Sessions => self.sessions(&target).await?,
-            Action::Cancel => return self.cancel_session(state, key, &target).await,
+            Action::Cancel => return self.cancel_session(state, key, (&target, &kind)).await,
             Action::Halt(name) => {
                 return self
-                    .stop_session(state, key, source, (&target, private), name, false)
+                    .stop_session(state, key, source, (&target, &kind), name, false)
                     .await;
             }
             Action::Archive(name) => {
                 return self
-                    .stop_session(state, key, source, (&target, private), name, true)
+                    .stop_session(state, key, source, (&target, &kind), name, true)
                     .await;
             }
             Action::Everyone(open) => everyone(&mut state, &target, private, open),
@@ -182,29 +205,24 @@ impl Connection {
         self.receipt(state, key, receipt).await
     }
 
-    /// Route a message to its conversation's Session; without a live route, the conversation's
-    /// kind decides: `main`, or a root or group Session of its own created now.
+    /// Route a message to the Session `destination` gives, creating `main` or the conversation's
+    /// own Session when it does not exist yet.
     async fn message(
         &mut self,
         mut state: State,
         key: String,
         source: EventSource,
         (target, kind): (&str, transport::ConversationKind),
-        content: enco_kernel::ChannelContent<Image, Quote>,
+        content: enco_kernel::ChannelContent<Attachment, Quote>,
     ) -> Result<Option<String>, ChannelError> {
-        let (profile, name) = match kind {
-            transport::ConversationKind::Main => (None, None),
-            transport::ConversationKind::Root { name } => (Some(ProfileName::default()), name),
-            transport::ConversationKind::Group => match self.settings.group_profile.clone() {
-                Some(profile) => (Some(profile), None),
-                None => return self.receipt(state, key, NO_GROUP_PROFILE.into()).await,
-            },
+        let routed = match self.destination(&state, target, &kind).await? {
+            Ok(routed) => routed,
+            Err(refusal) => return self.receipt(state, key, refusal).await,
         };
-        let route = Route::of(&self.kernel, &state.chats, target).await?;
-        let (session, created) = match (&route, profile) {
-            (Route::Live(session), _) => (*session, None),
-            (_, None) => (self.kernel.open_session("main").await?.id, None),
-            (_, Some(profile)) => {
+        let (session, created) = match routed.destination {
+            conversation::Destination::Routed(session) => (session, None),
+            conversation::Destination::Main => (self.kernel.open_session("main").await?.id, None),
+            conversation::Destination::New { profile, name } => {
                 let name = self.session_name(target, name.as_deref())?;
                 let created = self.root_session(name, profile)?;
                 (created.id, Some(created))
@@ -214,7 +232,7 @@ impl Connection {
         let earlier = state.context.remove(target).unwrap_or_default();
         let body = EventBody::UserMessage {
             text: content.text,
-            images: content.images,
+            attachments: content.attachments,
             unviewable: content.unviewable,
             earlier,
             quote: content.quote,
@@ -226,15 +244,7 @@ impl Connection {
             return Ok(Some(refusal));
         }
         // The owner learns where a conversation whose Session was archived goes now.
-        Ok(match route {
-            Route::Archived(archived) => {
-                let now = self.kernel.session(session).await?.name;
-                Some(format!(
-                    "Session {archived} is archived; this conversation now goes to Session {now}."
-                ))
-            }
-            Route::Unrouted | Route::Live(_) => None,
-        })
+        self.rerouted(routed.archived, session).await
     }
 
     /// The name of a Session that `target` creates: the conversation's own name as one segment,

@@ -33,7 +33,12 @@ pub struct ChannelSupervisor {
 
 impl ChannelSupervisor {
     /// Follow the registry's active view, opening accounts through their fixed mapper generation.
-    pub fn start(kernel: Arc<Kernel>, store: Arc<dyn Store>, clock: Arc<dyn Clock>) -> Self {
+    pub fn start(
+        kernel: Arc<Kernel>,
+        store: Arc<dyn Store>,
+        clock: Arc<dyn Clock>,
+        build: crate::status::HostBuild,
+    ) -> Self {
         let views = kernel.registry().subscribe();
         let current = Arc::new(Mutex::new(BTreeMap::new()));
         let stop = CancellationToken::new();
@@ -41,6 +46,7 @@ impl ChannelSupervisor {
             kernel,
             store,
             clock,
+            build,
             current: current.clone(),
             stop: stop.clone(),
             openings: JoinSet::new(),
@@ -108,6 +114,7 @@ struct Supervision {
     kernel: Arc<Kernel>,
     store: Arc<dyn Store>,
     clock: Arc<dyn Clock>,
+    build: crate::status::HostBuild,
     current: Arc<Mutex<BTreeMap<String, Slot>>>,
     stop: CancellationToken,
     openings: JoinSet<Opened>,
@@ -228,6 +235,7 @@ impl Supervision {
                         settings,
                         opening.generation,
                         self.clock.clone(),
+                        self.build.clone(),
                     ))),
                 }
             }

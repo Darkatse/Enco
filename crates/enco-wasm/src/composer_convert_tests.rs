@@ -1,7 +1,8 @@
 //! Checks recorded input projection and parsing of identities returned in a guest plan.
 use super::{composition, wire};
 use enco_core::*;
-use enco_kernel::{LocatedImage, TranscriptItem};
+use enco_kernel::TranscriptItem;
+use std::{collections::HashMap, path::PathBuf};
 
 fn reply(hash: String, node: String) -> wire::Composition {
     wire::Composition::Reply(wire::Plan {
@@ -37,7 +38,7 @@ fn malformed_guest_identities_are_contract_failures() {
     );
 }
 
-fn quoted(images: Vec<Image>, depth: u8) -> QuotedMessage<Image> {
+fn quoted<A>(attachments: Vec<A>, depth: u8) -> QuotedMessage<A> {
     QuotedMessage {
         depth,
         sender: Some("42".into()),
@@ -47,111 +48,155 @@ fn quoted(images: Vec<Image>, depth: u8) -> QuotedMessage<Image> {
         conversation_name: None,
         sent_at: None,
         text: "Look here".into(),
-        images,
+        attachments,
         unviewable: vec![],
     }
 }
 
-fn quoted_event() -> Event {
-    let at: DateTime<Utc> = "2026-10-29T12:00:00Z".parse().unwrap();
-    let image = |size| Image {
+fn image(size: u8) -> Image {
+    Image {
         format: ImageFormat::Png,
-        size,
-        content: ContentHash::of(&[u8::try_from(size).unwrap()]),
-    };
-    let origin = MappingOrigin {
-        call: ContentHash::of(b"mapping"),
-        index: 0,
-    };
-    Event {
-        id: EventId::new(),
-        session: SessionId::new(),
-        received_at: at,
-        source: EventSource::Channel {
-            protocol: "test".into(),
-            account: "9".into(),
-            conversation: "chat".into(),
-            sender: "42".into(),
-            sender_name: Some("Ada".into()),
-            owner: true,
-            origin,
-            message: "message-1".into(),
-        },
-        body: EventBody::UserMessage {
-            text: "Describe these".into(),
-            images: vec![image(4)],
-            unviewable: vec![],
-            earlier: vec![],
-            quote: Some(Quote {
-                kind: QuoteKind::Forward,
-                messages: Quoted::Messages(vec![
-                    quoted(vec![image(1)], 0),
-                    quoted(vec![image(2), image(3)], 1),
-                ]),
-                fetched: Some(origin),
-            }),
-        },
+        size: u64::from(size),
+        content: ContentHash::of(&[size]),
     }
 }
 
-#[test]
-fn recorded_quote_images_keep_their_locations_and_do_not_become_own_images() {
-    let event = quoted_event();
-    let canonical = event.canonical_message();
-    let message = Message {
-        role: canonical.role,
-        parts: canonical
-            .parts
-            .into_iter()
-            .map(|part| {
-                part.retype().unwrap_or_else(|image: Image| {
-                    Part::Image(LocatedImage {
-                        path: format!("/images/{}.png", image.size).into(),
-                        image,
-                    })
-                })
-            })
-            .collect(),
-    };
-    let item = super::transcript_item(&TranscriptItem {
+fn file(size: u8) -> File {
+    File {
+        name: format!("report-{size}.pdf"),
+        size: u64::from(size),
+        content: ContentHash::of(&[size]),
+    }
+}
+
+fn event(body: EventBody) -> Event {
+    Event {
+        id: EventId::new(),
+        session: SessionId::new(),
+        received_at: "2026-10-29T12:00:00Z".parse().unwrap(),
+        source: EventSource::Cli,
+        body,
+    }
+}
+
+fn transcript_item(event: Event) -> TranscriptItem {
+    TranscriptItem {
         pos: LogPos {
             epoch: Epoch(1),
             seq: Seq(1),
         },
-        message,
+        message: event.canonical_message(),
         generation: None,
         event: Some(event),
-        file_path: None,
-    })
-    .unwrap();
+    }
+}
+
+#[test]
+fn recorded_attachments_keep_their_order_and_locations_in_inputs_and_quotes() {
+    let event = event(EventBody::UserMessage {
+        text: "Describe these".into(),
+        attachments: vec![Attachment::Image(image(4)), Attachment::File(file(5))],
+        unviewable: vec![],
+        earlier: vec![EarlierMessage {
+            received_at: "2026-10-29T11:00:00Z".parse().unwrap(),
+            sender: None,
+            sender_name: None,
+            owner: false,
+            text: "Earlier".into(),
+            attachments: vec![],
+            origin: MappingOrigin {
+                call: ContentHash::of(b"earlier"),
+                index: 0,
+            },
+            quote: Some(EarlierQuote {
+                kind: QuoteKind::Reply,
+                messages: Some(Quoted::Messages(vec![quoted(
+                    vec!["voice message".into()],
+                    0,
+                )])),
+            }),
+        }],
+        quote: Some(Quote {
+            kind: QuoteKind::Forward,
+            messages: Quoted::Messages(vec![
+                quoted(
+                    vec![Attachment::File(file(1)), Attachment::Image(image(2))],
+                    0,
+                ),
+                quoted(
+                    vec![Attachment::Image(image(3)), Attachment::File(file(6))],
+                    1,
+                ),
+            ]),
+            fetched: None,
+        }),
+    });
+    let paths = (1..=6)
+        .map(|size| {
+            (
+                ContentHash::of(&[size]),
+                PathBuf::from(format!("/blobs/{size}")),
+            )
+        })
+        .collect();
+    let item = super::transcript_item(&transcript_item(event), &paths).unwrap();
     let wire::EventBody::UserMessage(message) = item.event.unwrap().body else {
         panic!("user input")
     };
     assert_eq!(
-        message
-            .images
-            .iter()
-            .map(|image| image.path.as_str())
-            .collect::<Vec<_>>(),
-        ["/images/4.png"]
+        attachment_paths(&message.attachments),
+        ["/blobs/4", "/blobs/5"]
     );
+    let wire::AttachmentRef::File(file) = &message.attachments[1] else {
+        panic!("file attachment")
+    };
+    assert_eq!((file.name.as_str(), file.size), ("report-5.pdf", 5));
+    assert_eq!(file.content, ContentHash::of(&[5]).to_string());
     let wire::Quoted::Messages(messages) = message.quote.unwrap().messages else {
         panic!("quoted messages")
     };
     assert_eq!(
-        messages[0]
-            .images
-            .iter()
-            .map(|image| image.path.as_str())
-            .collect::<Vec<_>>(),
-        ["/images/1.png"]
+        attachment_paths(&messages[0].attachments),
+        ["/blobs/1", "/blobs/2"]
     );
     assert_eq!(
-        messages[1]
-            .images
-            .iter()
-            .map(|image| image.path.as_str())
-            .collect::<Vec<_>>(),
-        ["/images/2.png", "/images/3.png"]
+        attachment_paths(&messages[1].attachments),
+        ["/blobs/3", "/blobs/6"]
     );
+    let wire::EarlierQuoted::Messages(messages) = message.earlier[0]
+        .quote
+        .as_ref()
+        .unwrap()
+        .messages
+        .as_ref()
+        .unwrap()
+    else {
+        panic!("earlier quoted messages")
+    };
+    assert_eq!(messages[0].attachments, ["voice message"]);
+}
+
+fn attachment_paths(attachments: &[wire::AttachmentRef]) -> Vec<&str> {
+    attachments
+        .iter()
+        .map(|attachment| match attachment {
+            wire::AttachmentRef::Image(image) => image.path.as_str(),
+            wire::AttachmentRef::File(file) => file.path.as_str(),
+        })
+        .collect()
+}
+
+#[test]
+fn session_files_use_the_same_content_addressed_paths() {
+    let item = transcript_item(event(EventBody::SessionMessage(Outgoing {
+        text: "Done".into(),
+        file: Some(file(7)),
+    })));
+    let paths = [(ContentHash::of(&[7]), PathBuf::from("/blobs/7"))].into();
+    let projected = super::transcript_item(&item, &paths).unwrap();
+    let wire::EventBody::SessionMessage(message) = projected.event.unwrap().body else {
+        panic!("Session message")
+    };
+    assert_eq!(message.file.unwrap().path, "/blobs/7");
+    assert!(super::transcript_item(&item, &HashMap::new()).is_err());
 }

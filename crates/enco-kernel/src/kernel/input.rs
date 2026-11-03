@@ -8,7 +8,7 @@ impl Kernel {
         session: SessionId,
         event_id: EventId,
         text: String,
-        images: Vec<Image>,
+        attachments: Vec<Attachment>,
     ) -> Result<Accepted, KernelError> {
         let accepted = self
             .accept(
@@ -18,7 +18,7 @@ impl Kernel {
                     source: EventSource::Cli,
                     body: EventBody::UserMessage {
                         text,
-                        images,
+                        attachments,
                         unviewable: vec![],
                         earlier: vec![],
                         quote: None,
@@ -31,14 +31,14 @@ impl Kernel {
         Ok(accepted[0])
     }
 
-    /// Take the conversation back to a recorded position, as the owner asked from the CLI.
+    /// Take the conversation back to a recorded position, or its start when `to` is absent.
     ///
     /// Like `submit`, a repeated event ID is accepted once.
     pub async fn backtrack(
         &self,
         session: SessionId,
         event_id: EventId,
-        to: LogPos,
+        to: Option<LogPos>,
     ) -> Result<Accepted, KernelError> {
         let accepted = self
             .accept(
@@ -60,8 +60,8 @@ impl Kernel {
     /// A Session the connection creates with this acceptance starts once it is committed. An
     /// input to an archived Session is not written and its result says so; the connection
     /// progress commits all the same. A backtrack must point at a recorded position other than a
-    /// command; a newly accepted command signals the Session's current Run, which stops at its
-    /// next boundary.
+    /// command; a newly accepted backtrack or halt signals the Session's current Run, which stops
+    /// at its next boundary.
     pub async fn accept(
         &self,
         events: &[Event],
@@ -77,7 +77,7 @@ impl Kernel {
             {
                 return Err(KernelError::SessionStopped(event.session, reason));
             }
-            if let EventBody::Backtrack { to } = event.body {
+            if let EventBody::Backtrack { to: Some(to) } = event.body {
                 self.check_backtrack(event.session, to).await?;
             }
         }
@@ -104,13 +104,24 @@ impl Kernel {
             handle.wake.notify_one();
             // A resent command already took effect; the Run now going may be a later one.
             if *accepted == Accepted::New
-                && crate::transcript::is_command(event)
+                && event.body.supersedes_inputs()
                 && let Some(token) = lock(&handle.run_cancel).as_ref()
             {
                 token.cancel();
             }
         }
         Ok(accepted.events)
+    }
+
+    /// Whether `session` can accept a compaction request now: it is running, or its current
+    /// conversation has a complete Round to compact.
+    pub async fn can_request_compaction(&self, session: SessionId) -> Result<bool, KernelError> {
+        if super::running(&lock(&self.sessions), session) {
+            return Ok(true);
+        }
+        let entries = self.deps.store.log(session, None).await?;
+        let conversation = crate::transcript::conversation(&entries);
+        Ok(crate::transcript::has_compactable_round(&conversation))
     }
 
     async fn check_backtrack(&self, session: SessionId, to: LogPos) -> Result<(), KernelError> {
@@ -125,20 +136,9 @@ impl Kernel {
             .find(|entry| entry.pos == to)
             .ok_or_else(|| rejected("the position is not in its Log"))?;
         match &entry.body {
-            EntryBody::EventConsumed {
-                event:
-                    Event {
-                        body: EventBody::Halt(..),
-                        ..
-                    },
-            } => Err(rejected("the position is a halt")),
-            EntryBody::EventConsumed {
-                event:
-                    Event {
-                        body: EventBody::Backtrack { .. },
-                        ..
-                    },
-            } => Err(rejected("the position is another backtrack")),
+            EntryBody::EventConsumed { event } if event.body.is_command() => {
+                Err(rejected("the position is a command"))
+            }
             _ => Ok(()),
         }
     }

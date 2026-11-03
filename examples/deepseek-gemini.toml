@@ -14,8 +14,9 @@ max_output_tokens = 8192
 [profile.default]
 reply = ["chat"]
 compaction = ["chat"]
-# Defaults to the factory composer; another composer declares its own options schema.
-# composer = { plugin = "composer", options = {} }
+# The factory composer compacts at this percentage of the reply model's window (1 to 100).
+# composer = { plugin = "composer", options = { compact_at = 80 } }
+# Another composer declares its own options schema.
 
 [endpoint.embed]
 plugin = "openai-compatible"

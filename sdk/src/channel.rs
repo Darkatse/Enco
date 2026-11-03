@@ -1,5 +1,5 @@
-//! What every channel mapper shares: commands, decoded content, the activity card's wording and
-//! `multipart/form-data` uploads.
+//! What every channel mapper shares: commands, decoded content, what attachments are called, the
+//! activity card's wording and `multipart/form-data` uploads.
 //!
 //! Each protocol marks commands and lays the card out its own way; the names, meanings and words
 //! are the same everywhere. [`export!`](crate::export) gives a channel plugin these same types, so
@@ -19,7 +19,7 @@ impl Default for Content {
     fn default() -> Self {
         Self {
             text: String::new(),
-            images: vec![],
+            attachments: vec![],
             unviewable: vec![],
             quote: None,
         }
@@ -30,7 +30,7 @@ impl Content {
     /// Whether it shows nothing: no text, attachments or quote.
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
-            && self.images.is_empty()
+            && self.attachments.is_empty()
             && self.unviewable.is_empty()
             && self.quote.is_none()
     }
@@ -48,7 +48,7 @@ impl QuotedMessage {
             conversation_name: None,
             sent_at: None,
             text: content.text,
-            images: content.images,
+            attachments: content.attachments,
             unviewable: content.unviewable,
         }
     }
@@ -94,6 +94,44 @@ pub fn decode_part<T: DeserializeOwned>(
         .ok()
 }
 
+/// What an attachment is, called the same way by every mapper when the protocol gives no
+/// filename people see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentKind {
+    /// A picture, such as a photo.
+    Image,
+    /// A recorded voice message.
+    VoiceMessage,
+    /// A sound file, such as music.
+    Audio,
+    /// A video file.
+    Video,
+    /// A short round video recorded in the chat, such as Telegram's video note.
+    VideoMessage,
+    /// A silent looping clip, such as a GIF.
+    Animation,
+    /// An image or animation sent as a sticker from a sticker set.
+    Sticker,
+    /// Any other file.
+    File,
+}
+
+impl AttachmentKind {
+    /// What an attachment of this kind is called, such as `voice message`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::VoiceMessage => "voice message",
+            Self::Audio => "audio",
+            Self::Video => "video",
+            Self::VideoMessage => "video message",
+            Self::Animation => "animation",
+            Self::Sticker => "sticker",
+            Self::File => "file",
+        }
+    }
+}
+
 impl CommandKind {
     /// The shared name, without a leading `/` or a protocol's decoration.
     pub fn name(self) -> &'static str {
@@ -104,6 +142,9 @@ impl CommandKind {
             Self::Everyone => "everyone",
             Self::Halt => "halt",
             Self::Archive => "archive",
+            Self::Status => "status",
+            Self::Compact => "compact",
+            Self::Clear => "clear",
         }
     }
 
@@ -116,6 +157,9 @@ impl CommandKind {
             Self::Everyone,
             Self::Halt,
             Self::Archive,
+            Self::Status,
+            Self::Compact,
+            Self::Clear,
         ]
         .into_iter()
         .find(|kind| kind.name() == name)
@@ -133,6 +177,9 @@ impl CommandKind {
             (Self::Archive, name) => Some(Action::Archive(Some(name.into()))),
             (Self::Cancel, "") => Some(Action::Cancel),
             (Self::Backtrack, "") => Some(Action::Backtrack),
+            (Self::Status, "") => Some(Action::Status),
+            (Self::Compact, "") => Some(Action::Compact),
+            (Self::Clear, "") => Some(Action::Clear),
             (Self::Everyone, "") => Some(Action::Everyone(None)),
             (Self::Everyone, "on") => Some(Action::Everyone(Some(true))),
             (Self::Everyone, "off") => Some(Action::Everyone(Some(false))),

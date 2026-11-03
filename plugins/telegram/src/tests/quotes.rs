@@ -1,20 +1,6 @@
 //! Replies and forwards keep their original speakers, and a malformed part stays local.
 use super::*;
 
-fn receive_message(message: Value) -> Result<crate::channel::Inbound, String> {
-    let body = json!({"ok": true, "result": [{"update_id": 300, "message": message}]}).to_string();
-    Plugin::received(
-        identity()?,
-        None,
-        Arrival::Response(response(200, body.as_bytes())),
-    )
-    .map_err(|error| error.failure.message)?
-    .messages
-    .into_iter()
-    .next()
-    .ok_or("missing message".into())
-}
-
 #[test]
 fn forwarded_speech_keeps_all_origin_kinds_and_never_becomes_a_command() -> Result<(), String> {
     use enco_sdk::{channel::Quoted, types::QuoteKind};
@@ -54,7 +40,7 @@ fn forwarded_speech_keeps_all_origin_kinds_and_never_becomes_a_command() -> Resu
         let Action::Message(content) = inbound.action else {
             return Err("forward became command".into());
         };
-        assert!(content.text.is_empty() && content.images.is_empty());
+        assert!(content.text.is_empty() && content.attachments.is_empty());
         let quote = content.quote.ok_or("missing quote")?;
         assert_eq!(quote.kind, QuoteKind::Forward);
         let Quoted::Messages(messages) = quote.messages else {
@@ -100,7 +86,7 @@ fn replies_share_image_decoding_and_strip_only_leading_bot_mentions() -> Result<
     };
     assert_eq!(messages[0].text, "@helperbot a photo");
     // The sizes are one picture: a malformed size is not shown missing while another works.
-    assert_eq!(messages[0].images[0].locator, "large");
+    assert_eq!(messages[0].attachments[0].locator, "large");
     assert!(messages[0].unviewable.is_empty());
     Ok(())
 }
@@ -174,14 +160,14 @@ fn a_private_photo_forward_has_only_quoted_content() -> Result<(), String> {
     let Action::Message(content) = inbound.action else {
         return Err("missing content".into());
     };
-    assert!(content.text.is_empty() && content.images.is_empty());
+    assert!(content.text.is_empty() && content.attachments.is_empty());
     let enco_sdk::channel::Quoted::Messages(messages) =
         content.quote.ok_or("missing quote")?.messages
     else {
         return Err("missing messages".into());
     };
     assert_eq!(messages[0].text, "Trip map");
-    assert_eq!(messages[0].images[0].locator, "quoted-image");
+    assert_eq!(messages[0].attachments[0].locator, "quoted-image");
     Ok(())
 }
 
@@ -226,8 +212,63 @@ fn a_malformed_forward_origin_keeps_the_forwarded_content() -> Result<(), String
         return Err("missing messages".into());
     };
     assert_eq!(messages[0].text, "Trip map");
-    assert_eq!(messages[0].images[0].locator, "map");
+    assert_eq!(messages[0].attachments[0].locator, "map");
     assert!(messages[0].sender.is_none() && messages[0].sender_name.is_none());
     assert!(messages[0].unviewable.is_empty());
+    Ok(())
+}
+
+#[test]
+fn replies_keep_documents_and_nonfile_content_stays_descriptive() -> Result<(), String> {
+    let inbound = receive_message(json!({
+        "message_id":21, "date":1793361600, "chat":{"id":9,"type":"private"},
+        "from":{"id":7,"is_bot":false,"first_name":"Ada"}, "text":"Read this",
+        "reply_to_message":{
+            "message_id":20, "date":1793361500, "chat":{"id":9,"type":"private"},
+            "from":{"id":7,"is_bot":false,"first_name":"Ada"},
+            "document":{"file_id":"pdf", "file_unique_id":"pdf-unique", "file_name":"report.pdf", "mime_type":"application/pdf"},
+        },
+    }))?;
+    let Action::Message(content) = inbound.action else {
+        return Err("message".into());
+    };
+    let enco_sdk::channel::Quoted::Messages(messages) = content.quote.ok_or("quote")?.messages
+    else {
+        return Err("quoted message".into());
+    };
+    assert_eq!(messages[0].attachments[0].name, "report.pdf");
+    assert_eq!(messages[0].attachments[0].locator, "pdf");
+    for (field, data, name) in [
+        (
+            "contact",
+            json!({"phone_number":"12345", "first_name":"Ada"}),
+            "contact",
+        ),
+        (
+            "location",
+            json!({"latitude":1.0, "longitude":2.0}),
+            "location",
+        ),
+        (
+            "poll",
+            json!({"id":"poll", "question":"When?", "options":[{"text":"Today","voter_count":0},{"text":"Tomorrow","voter_count":0}], "total_voter_count":0, "is_closed":false, "is_anonymous":true, "type":"regular", "allows_multiple_answers":false}),
+            "poll",
+        ),
+    ] {
+        let mut message = json!({
+            "message_id":22, "date":1793361600, "chat":{"id":9,"type":"private"},
+            "from":{"id":7,"is_bot":false,"first_name":"Ada"},
+        });
+        message[field] = data;
+        let Action::Message(content) = receive_message(message)?.action else {
+            return Err("message".into());
+        };
+        assert!(content.attachments.is_empty());
+        assert_eq!(content.unviewable[0].what, name);
+        assert_eq!(
+            content.unviewable[0].reason,
+            enco_sdk::types::UnviewableReason::Unsupported
+        );
+    }
     Ok(())
 }

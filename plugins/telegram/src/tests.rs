@@ -21,6 +21,20 @@ fn identity() -> Result<Identity, String> {
         .map_err(|fault| fault.failure.message)
 }
 
+fn receive_message(message: Value) -> Result<crate::channel::Inbound, String> {
+    let body = json!({"ok": true, "result": [{"update_id": 300, "message": message}]}).to_string();
+    Plugin::received(
+        identity()?,
+        None,
+        Arrival::Response(response(200, body.as_bytes())),
+    )
+    .map_err(|error| error.failure.message)?
+    .messages
+    .into_iter()
+    .next()
+    .ok_or("missing message".into())
+}
+
 #[test]
 fn updates_translate_group_addressing_senders_and_attachment_locators() -> Result<(), String> {
     let updates = Plugin::received(
@@ -46,15 +60,15 @@ fn updates_translate_group_addressing_senders_and_attachment_locators() -> Resul
     let Action::Message(photo) = &messages[6].action else {
         return Err("expected photo".into());
     };
-    assert_eq!(photo.images[0].locator, "large");
+    assert_eq!(photo.attachments[0].locator, "large");
     let Action::Message(document) = &messages[7].action else {
         return Err("expected document".into());
     };
-    assert_eq!(document.images[0].locator, "doc");
+    assert_eq!(document.attachments[0].locator, "doc");
     let Action::Message(voice) = &messages[8].action else {
         return Err("expected voice".into());
     };
-    assert_eq!(voice.unviewable[0].what, "voice message");
+    assert_eq!(voice.attachments[0].name, "voice message");
     let ReadStep::Request(poll) =
         Plugin::read(identity()?, updates.state).map_err(|fault| fault.failure.message)?
     else {
@@ -63,40 +77,6 @@ fn updates_translate_group_addressing_senders_and_attachment_locators() -> Resul
     let body: Value = serde_json::from_slice(&poll.body.ok_or("missing poll body")?)
         .map_err(|error| error.to_string())?;
     assert_eq!(body["offset"], 109);
-    Ok(())
-}
-
-#[test]
-fn fetch_drives_two_requests_and_keeps_permanent_file_rejection_local() -> Result<(), String> {
-    let FetchStep::Request(first) =
-        Plugin::fetch("image-id".into(), vec![], 2).map_err(|fault| fault.failure.message)?
-    else {
-        return Err("expected getFile".into());
-    };
-    assert_eq!(first.url, "/bot/getFile");
-    let metadata = response(
-        200,
-        br#"{"ok":true,"result":{"file_path":"photos/a b.jpg"}}"#,
-    );
-    let FetchStep::Request(download) = Plugin::fetch("image-id".into(), vec![metadata.clone()], 2)
-        .map_err(|fault| fault.failure.message)?
-    else {
-        return Err("expected download".into());
-    };
-    assert_eq!(download.url, "/file/bot/photos/a%20b.jpg");
-    assert_eq!(
-        Plugin::fetch(
-            "image-id".into(),
-            vec![metadata, response(200, b"image bytes")],
-            2
-        )
-        .map_err(|fault| fault.failure.message)?,
-        FetchStep::Image(b"image bytes".to_vec())
-    );
-    assert!(matches!(
-        Plugin::fetch("missing".into(), vec![response(400, b"not JSON")], 2),
-        Ok(FetchStep::Unavailable(_))
-    ));
     Ok(())
 }
 
@@ -138,6 +118,9 @@ fn protocol_faults_preserve_delivery_evidence_and_retry_delay() {
 fn private_commands_and_group_commands_target_only_this_bot() -> Result<(), String> {
     let cases = [
         ("private", "/session work", true),
+        ("private", "/status", true),
+        ("supergroup", "/compact@helperbot", true),
+        ("private", "/clear", true),
         ("supergroup", "/cancel@helperbot", true),
         ("supergroup", "/backtrack", true),
         ("supergroup", "/everyone off", true),
@@ -159,6 +142,9 @@ fn private_commands_and_group_commands_target_only_this_bot() -> Result<(), Stri
             }
             "/cancel@helperbot" => assert!(matches!(message.action, Action::Cancel)),
             "/backtrack" => assert!(matches!(message.action, Action::Backtrack)),
+            "/status" => assert_eq!(message.action, Action::Status),
+            "/compact@helperbot" => assert_eq!(message.action, Action::Compact),
+            "/clear" => assert_eq!(message.action, Action::Clear),
             "/everyone off" => assert!(matches!(message.action, Action::Everyone(Some(false)))),
             _ => assert!(matches!(message.action, Action::Message(_))),
         }
@@ -241,6 +227,24 @@ fn menus_use_chat_scopes_and_runs_show_typing_and_a_card_with_cancel() -> Result
                 group: false,
             },
             Command {
+                kind: CommandKind::Status,
+                description: "Show status".into(),
+                direct: true,
+                group: true,
+            },
+            Command {
+                kind: CommandKind::Compact,
+                description: "Compact conversation".into(),
+                direct: true,
+                group: true,
+            },
+            Command {
+                kind: CommandKind::Clear,
+                description: "Clear conversation".into(),
+                direct: true,
+                group: true,
+            },
+            Command {
                 kind: CommandKind::Everyone,
                 description: "Open group".into(),
                 direct: false,
@@ -258,7 +262,13 @@ fn menus_use_chat_scopes_and_runs_show_typing_and_a_card_with_cancel() -> Result
     assert_eq!(bodies[0]["scope"]["type"], "all_private_chats");
     assert_eq!(bodies[0]["commands"][0]["command"], "session");
     assert_eq!(bodies[1]["scope"]["type"], "all_group_chats");
-    assert_eq!(bodies[1]["commands"][0]["command"], "everyone");
+    assert_eq!(bodies[1]["commands"][3]["command"], "everyone");
+    for body in &bodies {
+        let commands = body["commands"].as_array().ok_or("commands")?;
+        for name in ["status", "compact", "clear"] {
+            assert!(commands.iter().any(|command| command["command"] == name));
+        }
+    }
     let card = Plugin::activity(
         "-100".into(),
         true,
@@ -355,4 +365,5 @@ fn callback_cancel_requests_no_acknowledgment_at_reception() -> Result<(), Strin
 mod quotes;
 
 mod activity;
+mod attachments;
 mod topics;

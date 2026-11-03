@@ -91,14 +91,7 @@ impl SessionActor {
         let mut selection = self.select(profile, safe_mode);
         let reply = selection.reply_target()?;
         let now = self.deps.clock.now();
-        let context::Gathered {
-            owner_instructions,
-            profile_instructions,
-            memories,
-            omitted,
-            previous_plan,
-            transcript,
-        } = self
+        let gathered = self
             .gather(&snapshot, safe_mode, owner_context, token)
             .await?;
         let mut input = ComposeInput {
@@ -113,13 +106,16 @@ impl SessionActor {
             } else {
                 Vec::new()
             },
-            transcript,
-            previous_plan,
+            transcript: gathered.transcript,
+            blob_paths: gathered.blob_paths,
+            previous_plan: gathered.previous_plan,
+            previous_usage: gathered.previous_usage,
+            compaction_requested: gathered.compaction_requested,
             owner_context,
-            owner_instructions,
-            profile_instructions,
-            memories,
-            omitted,
+            owner_instructions: gathered.owner_instructions,
+            profile_instructions: gathered.profile_instructions,
+            memories: gathered.memories,
+            omitted: gathered.omitted,
             tools: snapshot
                 .tools
                 .iter()
@@ -164,7 +160,11 @@ impl SessionActor {
             };
             if let AttemptKind::Compaction(_) = planned.kind {
                 input.compactions_left -= 1;
-                input.transcript = self.located_transcript();
+                (
+                    input.transcript,
+                    input.blob_paths,
+                    input.compaction_requested,
+                ) = self.transcript();
                 selection = self.retarget(profile, safe_mode, &mut input)?;
                 continue;
             }
@@ -195,7 +195,7 @@ impl SessionActor {
         plan: ContextPlan,
         kind: AttemptKind,
         composer: GenerationId,
-        transcript: &Transcript<LocatedImage>,
+        transcript: &Transcript,
         selection: &Selection<'_>,
         choice: &Choice<'_>,
     ) -> Result<PlannedAttempt, RoundError> {

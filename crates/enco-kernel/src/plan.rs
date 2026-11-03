@@ -1,6 +1,6 @@
 use crate::{ComposeInput, CompositionItem, CompositionPlan, Exports, ProviderRequest, Transcript};
 use enco_core::*;
-use std::{borrow::Borrow, collections::HashSet};
+use std::collections::HashSet;
 
 #[derive(Debug, thiserror::Error)]
 #[error("invalid context plan: {0}")]
@@ -82,9 +82,9 @@ pub(crate) fn bind(
     Ok(plan)
 }
 
-pub(crate) fn resolve<I: Borrow<Image> + Clone>(
+pub(crate) fn resolve(
     plan: &ContextPlan,
-    transcript: &Transcript<I>,
+    transcript: &Transcript,
     exports: &Exports,
     target: PluginId,
 ) -> Result<ProviderRequest<Image>, PlanError> {
@@ -111,9 +111,9 @@ pub(crate) fn resolve<I: Borrow<Image> + Clone>(
 
 /// An entry with nothing left once its images stay behind, such as a photo alone, sends no
 /// message; the composer's note before it describes the entry.
-fn messages<I: Borrow<Image> + Clone>(
+fn messages(
     plan: &ContextPlan,
-    transcript: &Transcript<I>,
+    transcript: &Transcript,
 ) -> Result<Vec<(Message, Option<GenerationId>)>, PlanError> {
     let mut messages = Vec::with_capacity(plan.items.len());
     for item in &plan.items {
@@ -135,11 +135,8 @@ fn messages<I: Borrow<Image> + Clone>(
                         .message
                         .parts
                         .iter()
+                        .filter(|part| *images || !matches!(part, Part::Image(_)))
                         .cloned()
-                        .filter_map(|part| match part.retype() {
-                            Ok(part) => Some(part),
-                            Err(image) => images.then(|| Part::Image(image.borrow().clone())),
-                        })
                         .collect(),
                 };
                 if !message.parts.is_empty() {

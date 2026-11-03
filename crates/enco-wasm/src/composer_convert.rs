@@ -9,8 +9,9 @@ use crate::{
 use enco_core::*;
 use enco_kernel::{
     Budget, ComposeInput, Composition, CompositionItem, CompositionPlan, EndpointFailure,
-    LocatedImage, ReplyTarget, SafeMode, Transcript, TranscriptItem,
+    ReplyTarget, SafeMode, Transcript, TranscriptItem,
 };
+use std::{collections::HashMap, path::PathBuf};
 
 pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure> {
     let ComposeInput {
@@ -23,7 +24,10 @@ pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure>
         children,
         profiles,
         transcript,
+        blob_paths,
         previous_plan,
+        previous_usage,
+        compaction_requested,
         owner_context,
         owner_instructions,
         profile_instructions,
@@ -43,8 +47,10 @@ pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure>
         profiles: profiles.iter().map(profile).collect(),
         timezone: timezone.to_string(),
         home: home.to_string_lossy().into_owned(),
-        transcript: transcript_record(transcript)?,
+        transcript: transcript_record(transcript, blob_paths)?,
         previous: previous_plan.as_ref().map(previous),
+        previous_usage: previous_usage.as_ref().map(convert::usage_record),
+        compaction_requested: *compaction_requested,
         owner_context: *owner_context,
         owner_instructions: owner_instructions.clone(),
         profile_instructions: profile_instructions.clone(),
@@ -160,7 +166,10 @@ fn reply_target(reply: &ReplyTarget) -> wire::ReplyTarget {
     }
 }
 
-fn transcript_record(transcript: &Transcript<LocatedImage>) -> Result<wire::Transcript, Failure> {
+fn transcript_record(
+    transcript: &Transcript,
+    paths: &HashMap<ContentHash, PathBuf>,
+) -> Result<wire::Transcript, Failure> {
     let Transcript {
         summary,
         items,
@@ -171,7 +180,7 @@ fn transcript_record(transcript: &Transcript<LocatedImage>) -> Result<wire::Tran
         summary: summary.clone(),
         items: items
             .iter()
-            .map(transcript_item)
+            .map(|item| transcript_item(item, paths))
             .collect::<Result<_, _>>()?,
         round_ends: round_ends.iter().copied().map(event::pos).collect(),
         run_ends: run_ends
@@ -184,44 +193,43 @@ fn transcript_record(transcript: &Transcript<LocatedImage>) -> Result<wire::Tran
     })
 }
 
-fn transcript_item(item: &TranscriptItem<LocatedImage>) -> Result<wire::TranscriptItem, Failure> {
+fn transcript_item(
+    item: &TranscriptItem,
+    paths: &HashMap<ContentHash, PathBuf>,
+) -> Result<wire::TranscriptItem, Failure> {
     // The producing Provider generation only decides which plugin its extensions replay to.
     let TranscriptItem {
         pos,
         message: recorded,
         generation: _,
         event: input,
-        file_path,
     } = item;
-    let message = message(recorded);
-    let images: Vec<_> = message
-        .parts
-        .iter()
-        .filter_map(|part| match part {
-            wire::Part::Image(image) => Some(image.clone()),
-            _ => None,
-        })
-        .collect();
     Ok(wire::TranscriptItem {
         pos: event::pos(*pos),
         event: input
             .as_ref()
-            .map(|value| event::event(value, &images, file_path.as_deref()))
+            .map(|value| event::event(value, paths))
             .transpose()?,
-        message,
+        message: message(recorded, paths)?,
     })
 }
 
-fn message(message: &Message<LocatedImage>) -> wire::Message {
+fn message(
+    message: &Message,
+    paths: &HashMap<ContentHash, PathBuf>,
+) -> Result<wire::Message, Failure> {
     let Message { role, parts } = message;
-    wire::Message {
+    Ok(wire::Message {
         role: (*role).into(),
-        parts: parts.iter().map(part).collect(),
-    }
+        parts: parts
+            .iter()
+            .map(|value| part(value, paths))
+            .collect::<Result<_, _>>()?,
+    })
 }
 
-fn part(part: &Part<LocatedImage>) -> wire::Part {
-    match part {
+fn part(part: &Part, paths: &HashMap<ContentHash, PathBuf>) -> Result<wire::Part, Failure> {
+    Ok(match part {
         Part::Text { text } => wire::Part::Text(text.clone()),
         // The service's call IDs matter only to the Provider that replays them.
         Part::ToolCall(ToolCall {
@@ -246,21 +254,8 @@ fn part(part: &Part<LocatedImage>) -> wire::Part {
         }),
         // Adapter fields belong to the plugin that wrote them; the composer sees only their size.
         Part::Extension(Extension { data }) => wire::Part::Extension(data.to_string().len() as u64),
-        Part::Image(LocatedImage {
-            image:
-                Image {
-                    format,
-                    size,
-                    content,
-                },
-            path,
-        }) => wire::Part::Image(wire::ImageRef {
-            format: (*format).into(),
-            size: *size,
-            content: content.to_string(),
-            path: path.to_string_lossy().into_owned(),
-        }),
-    }
+        Part::Image(image) => wire::Part::Image(event::image_ref(image, paths)?),
+    })
 }
 
 fn capability(id: &CapabilityId) -> wire::CapabilityId {
@@ -322,7 +317,21 @@ fn previous(plan: &ContextPlan) -> wire::Plan {
                 }),
             })
             .collect(),
-        tools: tools.iter().map(|(id, _)| capability(id)).collect(),
+        // The previous plan carries IDs; this Round's capability records supply their definitions.
+        tools: tools
+            .iter()
+            .map(
+                |(
+                    id,
+                    DisclosedTool {
+                        name: _,
+                        description: _,
+                        input_schema: _,
+                        effect: _,
+                    },
+                )| capability(id),
+            )
+            .collect(),
         max_output_tokens: *max_output_tokens,
         omitted: omitted.iter().map(omission).collect(),
     }

@@ -1,4 +1,4 @@
-//! Reads an input's images and quoted messages through its mapper; earlier context fetches nothing.
+//! Reads an input's attachments and quoted messages through its mapper; earlier context fetches nothing.
 use super::*;
 use enco_kernel::{ChannelAttachment, ChannelQuote, ChannelQuoted, ChannelQuotedMessage, Fetched};
 
@@ -15,8 +15,8 @@ impl Identities<'_> {
         sender == Some(self.owner)
     }
 
-    /// The message with these images in place of its protocol attachments.
-    fn quoted<A>(self, message: ChannelQuotedMessage, images: Vec<A>) -> QuotedMessage<A> {
+    /// The message with these attachments in place of its protocol attachments.
+    fn quoted<A>(self, message: ChannelQuotedMessage, attachments: Vec<A>) -> QuotedMessage<A> {
         let ChannelQuotedMessage {
             depth,
             sender,
@@ -24,7 +24,7 @@ impl Identities<'_> {
             conversation_name,
             sent_at,
             text,
-            images: _,
+            attachments: _,
             unviewable,
         } = message;
         QuotedMessage {
@@ -36,13 +36,13 @@ impl Identities<'_> {
             conversation_name,
             sent_at,
             text,
-            images,
+            attachments,
             unviewable,
         }
     }
 }
 
-/// Earlier context keeps what the protocol carried, with images as descriptions.
+/// Earlier context keeps what the protocol carried, with attachments as descriptions.
 pub(super) fn earlier(quote: ChannelQuote, identities: Identities<'_>) -> EarlierQuote {
     let ChannelQuote { kind, messages } = quote;
     let messages = match messages {
@@ -52,9 +52,12 @@ pub(super) fn earlier(quote: ChannelQuote, identities: Identities<'_>) -> Earlie
             messages
                 .into_iter()
                 .map(|mut message| {
-                    let images = std::mem::take(&mut message.images);
-                    let images = images.into_iter().map(|image| image.what).collect();
-                    identities.quoted(message, images)
+                    let attachments = std::mem::take(&mut message.attachments);
+                    let attachments = attachments
+                        .into_iter()
+                        .map(|attachment| attachment.name)
+                        .collect();
+                    identities.quoted(message, attachments)
                 })
                 .collect(),
         )),
@@ -63,15 +66,15 @@ pub(super) fn earlier(quote: ChannelQuote, identities: Identities<'_>) -> Earlie
 }
 
 impl Reader {
-    /// Store the images of a message that may drive a Session, and of the messages it quotes.
+    /// Store the attachments of a message that may drive a Session, and of the messages it quotes.
     pub(super) async fn content(
         &self,
         content: ChannelContent<ChannelAttachment>,
         identities: Identities<'_>,
-    ) -> Result<ChannelContent<Image, Quote>, ChannelError> {
+    ) -> Result<ChannelContent<Attachment, Quote>, ChannelError> {
         let ChannelContent {
             text,
-            images,
+            attachments,
             mut unviewable,
             quote,
         } = content;
@@ -81,7 +84,7 @@ impl Reader {
         };
         Ok(ChannelContent {
             text,
-            images: self.pictures(images, &mut unviewable).await?,
+            attachments: self.attachments(attachments, &mut unviewable).await?,
             unviewable,
             quote,
         })
@@ -107,9 +110,11 @@ impl Reader {
             Ok(messages) => {
                 let mut prepared = Vec::with_capacity(messages.len());
                 for mut message in messages {
-                    let images = std::mem::take(&mut message.images);
-                    let images = self.pictures(images, &mut message.unviewable).await?;
-                    prepared.push(identities.quoted(message, images));
+                    let attachments = std::mem::take(&mut message.attachments);
+                    let attachments = self
+                        .attachments(attachments, &mut message.unviewable)
+                        .await?;
+                    prepared.push(identities.quoted(message, attachments));
                 }
                 Quoted::Messages(prepared)
             }
@@ -121,29 +126,28 @@ impl Reader {
         })
     }
 
-    async fn pictures(
+    async fn attachments(
         &self,
-        images: Vec<ChannelAttachment>,
+        attachments: Vec<ChannelAttachment>,
         unviewable: &mut Vec<Unviewable>,
-    ) -> Result<Vec<Image>, ChannelError> {
-        let mut prepared = Vec::with_capacity(images.len());
-        for ChannelAttachment { what, locator } in images {
-            let fetched = self.read(|| self.adapter.fetch_image(&locator)).await?;
-            let reason = match fetched.content {
-                Err(reason) => UnviewableReason::Unavailable(reason),
-                Ok(bytes) => match self.kernel.store_image(&bytes).await {
-                    Ok(image) => {
-                        prepared.push(image);
-                        continue;
-                    }
-                    Err(ImageError::Unsupported) => UnviewableReason::Unsupported,
-                    Err(ImageError::TooLarge { .. }) => UnviewableReason::TooLarge,
-                    Err(ImageError::Store(error)) => {
-                        return Err(ChannelError::Kernel(error.into()));
-                    }
-                },
-            };
-            unviewable.push(Unviewable { what, reason });
+    ) -> Result<Vec<Attachment>, ChannelError> {
+        let mut prepared = Vec::with_capacity(attachments.len());
+        for ChannelAttachment { name, locator } in attachments {
+            let fetched = self.read(|| self.adapter.fetch_file(&locator)).await?;
+            match fetched.content {
+                Ok(bytes) => {
+                    let stored = self
+                        .kernel
+                        .store_attachment(name, &bytes)
+                        .await
+                        .map_err(KernelError::from)?;
+                    prepared.push(stored);
+                }
+                Err(reason) => unviewable.push(Unviewable {
+                    what: name,
+                    reason: UnviewableReason::Unavailable(reason),
+                }),
+            }
         }
         Ok(prepared)
     }

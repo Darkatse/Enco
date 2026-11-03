@@ -74,11 +74,11 @@ async fn receive_inputs(adapter: Arc<dyn ChannelAdapter>) {
     assert_eq!(content.text, "hello");
     // Read locators from mapper output: external links, including the API, stay unviewable.
     // The server fails if any of these content links reach it as an API request.
-    assert_eq!(content.images.len(), 2);
-    for image in &content.images {
+    assert_eq!(content.attachments.len(), 2);
+    for image in &content.attachments {
         assert!(
             adapter
-                .fetch_image(&image.locator)
+                .fetch_file(&image.locator)
                 .await
                 .unwrap()
                 .content

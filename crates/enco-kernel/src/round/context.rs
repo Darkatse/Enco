@@ -1,4 +1,5 @@
 use super::*;
+use std::{collections::HashMap, path::PathBuf};
 
 /// Facts gathered once per Round; a later composition changes only its targets and Transcript.
 pub(super) struct Gathered {
@@ -7,7 +8,10 @@ pub(super) struct Gathered {
     pub memories: Vec<Memory>,
     pub omitted: Vec<Omission>,
     pub previous_plan: Option<ContextPlan>,
-    pub transcript: Transcript<LocatedImage>,
+    pub previous_usage: Option<Usage>,
+    pub compaction_requested: bool,
+    pub transcript: Transcript,
+    pub blob_paths: HashMap<ContentHash, PathBuf>,
 }
 
 impl SessionActor {
@@ -49,66 +53,80 @@ impl SessionActor {
             )
         };
         let mut omitted = offered.omitted;
-        let previous_plan = self.previous_plan(&conversation, &mut omitted).await?;
+        let (previous_plan, previous_usage) =
+            self.previous_plan(&conversation, &mut omitted).await?;
+        let (transcript, blob_paths, compaction_requested) = self.transcript();
         Ok(Gathered {
             owner_instructions,
             profile_instructions,
             memories: offered.memories,
             omitted,
             previous_plan,
-            transcript: self.located_transcript(),
+            previous_usage,
+            compaction_requested,
+            transcript,
+            blob_paths,
         })
     }
 
-    pub(super) fn located_transcript(&self) -> Transcript<LocatedImage> {
+    /// The conversation's transcript, where each blob it refers to is stored, and whether it
+    /// carries the owner's compaction request; a compaction changes all three.
+    pub(super) fn transcript(&self) -> (Transcript, HashMap<ContentHash, PathBuf>, bool) {
         let conversation = crate::transcript::conversation(&self.entries);
-        let mut transcript =
-            crate::transcript::project(&conversation).map_images(|image| LocatedImage {
-                path: self.deps.store.blob_path(&image.content),
-                image,
-            });
-        for item in &mut transcript.items {
-            if let Some(Event {
-                body:
-                    EventBody::SessionMessage(Outgoing {
-                        file: Some(file), ..
-                    }),
-                ..
-            }) = &item.event
-            {
-                item.file_path = Some(self.deps.store.blob_path(&file.content));
-            }
-        }
-        transcript
+        let transcript = crate::transcript::project(&conversation);
+        let blob_paths = transcript
+            .items
+            .iter()
+            .flat_map(|item| {
+                let images = item.message.parts.iter().filter_map(|part| match part {
+                    Part::Image(image) => Some(image.content),
+                    _ => None,
+                });
+                images.chain(item.event.iter().flat_map(Event::blobs))
+            })
+            .map(|content| (content, self.deps.store.blob_path(&content)))
+            .collect();
+        let requested = crate::transcript::compaction_requested(&conversation, &[]);
+        (transcript, blob_paths, requested)
     }
 
     async fn previous_plan(
         &self,
         conversation: &[&Entry],
         omitted: &mut Vec<Omission>,
-    ) -> Result<Option<ContextPlan>, RoundError> {
-        let Some(hash) = conversation
+    ) -> Result<(Option<ContextPlan>, Option<Usage>), RoundError> {
+        let Some((attempt, hash)) = conversation
             .iter()
             .rev()
             .find_map(|entry| match &entry.body {
                 EntryBody::AttemptStarted {
                     purpose: AttemptPurpose::Reply,
                     plan,
+                    attempt,
                     ..
-                } => Some(plan),
+                } => Some((attempt, plan)),
                 _ => None,
             })
         else {
-            return Ok(None);
+            return Ok((None, None));
         };
         match self.deps.store.plan(hash).await {
-            Ok(plan) => Ok(Some(plan)),
+            Ok(plan) => {
+                let usage = conversation.iter().find_map(|entry| match &entry.body {
+                    EntryBody::AttemptSettled {
+                        attempt: settled,
+                        result: AttemptResult::Completed { usage, .. },
+                    } if settled == attempt => Some(usage.clone()),
+                    _ => None,
+                });
+                Ok((Some(plan), usage))
+            }
             Err(StoreError::Plan { .. }) => {
                 omitted.push(Omission {
                     source: format!("previous-plan:{hash}"),
                     reason: "previous plan is missing or corrupt".into(),
                 });
-                Ok(None)
+                Ok((None, None))
             }
             Err(error) => Err(error.into()),
         }

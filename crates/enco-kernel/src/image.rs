@@ -1,9 +1,9 @@
 use crate::{IMAGE_MAX_BYTES, Kernel, ProviderRequest, Store, StoreError};
 use enco_core::*;
 
-/// Image ingestion either rejects its input or reports a storage failure.
+/// Why bytes are not an image a model may be shown.
 #[derive(Debug, thiserror::Error)]
-pub enum ImageError {
+pub(crate) enum ImageError {
     /// The bytes have no supported image signature.
     #[error("unsupported image format; use PNG, JPEG or WebP")]
     Unsupported,
@@ -13,30 +13,57 @@ pub enum ImageError {
         /// Original byte length.
         size: u64,
     },
-    /// The content store could not accept the image.
-    #[error(transparent)]
-    Store(#[from] StoreError),
 }
 
 impl Kernel {
-    /// Store image bytes through the same ingestion boundary used by tool settlement.
-    pub async fn store_image(&self, bytes: &[u8]) -> Result<Image, ImageError> {
-        store(self.deps.store.as_ref(), bytes).await
+    /// Store an attachment as an image when its bytes are an image a model may be shown, or as a
+    /// file with `name` otherwise.
+    pub async fn store_attachment(
+        &self,
+        name: String,
+        bytes: &[u8],
+    ) -> Result<Attachment, StoreError> {
+        let size = bytes.len() as u64;
+        let content = self.deps.store.put_blob(bytes).await?;
+        Ok(match accepted(bytes) {
+            Ok(format) => Attachment::Image(Image {
+                format,
+                size,
+                content,
+            }),
+            Err(_) => Attachment::File(File {
+                name,
+                size,
+                content,
+            }),
+        })
     }
 }
 
-pub(crate) async fn store(store: &dyn Store, bytes: &[u8]) -> Result<Image, ImageError> {
+/// Store bytes that are an image a model may be shown; the inner error says why they are not.
+pub(crate) async fn store(
+    store: &dyn Store,
+    bytes: &[u8],
+) -> Result<Result<Image, ImageError>, StoreError> {
+    let format = match accepted(bytes) {
+        Ok(format) => format,
+        Err(rejected) => return Ok(Err(rejected)),
+    };
+    let content = store.put_blob(bytes).await?;
+    Ok(Ok(Image {
+        format,
+        size: bytes.len() as u64,
+        content,
+    }))
+}
+
+/// The bytes' image format, or why they are not an image a model may be shown.
+fn accepted(bytes: &[u8]) -> Result<ImageFormat, ImageError> {
     let size = bytes.len() as u64;
     if size > IMAGE_MAX_BYTES {
         return Err(ImageError::TooLarge { size });
     }
-    let format = ImageFormat::detect(bytes).ok_or(ImageError::Unsupported)?;
-    let content = store.put_blob(bytes).await?;
-    Ok(Image {
-        format,
-        size,
-        content,
-    })
+    ImageFormat::detect(bytes).ok_or(ImageError::Unsupported)
 }
 
 /// Resolve bytes once when freezing a plan; retries retain this same request value.

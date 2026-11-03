@@ -243,7 +243,7 @@ fn configuration<'a>(
     }
 }
 
-fn execution<'a>(node: &'a enco_kernel::Status, out: &mut Vec<Attention<'a>>) {
+pub(super) fn execution<'a>(node: &'a enco_kernel::Status, out: &mut Vec<Attention<'a>>) {
     if node.safe_mode {
         out.push(Attention {
             kind: AttentionKind::SafeMode,

@@ -26,10 +26,9 @@ pub struct Status {
 /// This host: its build, its home, and what it executes.
 #[derive(Serialize)]
 pub struct Node {
-    /// Release version of the host, such as `0.1.0`.
-    pub version: String,
-    /// Git commit the host was built from; a build with uncommitted edits shows the same commit.
-    pub revision: String,
+    /// The build running; in JSON its fields sit directly in `node`.
+    #[serde(flatten)]
+    pub build: HostBuild,
     /// The Enco home directory this host runs from.
     pub home: PathBuf,
     /// Execution state from the kernel, such as safe mode, Sessions and the Scheduler; in JSON
@@ -40,6 +39,23 @@ pub struct Node {
     pub channels: Vec<ChannelStatus>,
     /// The profile-instructions files in the home.
     pub profile_instructions: crate::ProfileInstructionFiles,
+}
+
+/// The host's build: its release version and the commit it was built from.
+#[derive(Debug, Clone, Serialize)]
+pub struct HostBuild {
+    /// Release version of the host, such as `0.1.0`.
+    pub version: String,
+    /// Git commit the host was built from; a build with uncommitted edits shows the same commit.
+    pub revision: String,
+}
+
+/// The situations in the kernel's execution facts alone: safe mode, a stopped Scheduler, and
+/// stopped Sessions, as `Status::attention` derives them.
+pub(crate) fn execution_attention(node: &enco_kernel::Status) -> Vec<Attention<'_>> {
+    let mut out = Vec::new();
+    attention::execution(node, &mut out);
+    out
 }
 
 impl Status {

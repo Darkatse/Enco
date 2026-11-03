@@ -138,7 +138,10 @@ impl channel::Guest for Plugin {
         match fetch_step(&locator, responses) {
             // Telegram rejected this file for good; the connection itself is still usable.
             Err(fault) if !fault.fatal && !fault.unknown && !fault.failure.retryable => {
-                Ok(FetchStep::Unavailable(fault.failure.message))
+                Ok(FetchStep::Unavailable(format!(
+                    "Telegram did not hand over this file: {}",
+                    fault.failure.message
+                )))
             }
             result => result,
         }
@@ -243,9 +246,14 @@ fn fetch_step(locator: &str, responses: Vec<Response>) -> Result<FetchStep, Faul
         }));
     };
     if !(200..300).contains(&response.status) {
-        return Err(wire::http_error("download file", response.status, None));
+        return Err(wire::http_error(
+            "download file",
+            response.status,
+            None,
+            None,
+        ));
     }
-    Ok(FetchStep::Image(response.body))
+    Ok(FetchStep::File(response.body))
 }
 
 #[cfg(test)]

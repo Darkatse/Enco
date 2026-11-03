@@ -3,10 +3,10 @@
 use crate::bindings;
 pub use crate::http::{apply_options, post};
 pub use bindings::enco::plugin::{host, types};
-pub use bindings::exports::enco::plugin::completion::{Completion, Request, StopReason, Usage};
+pub use bindings::exports::enco::plugin::completion::{Completion, Request, StopReason};
 use serde_json::{Map, Value, json};
-pub use types::Settings;
 use types::{Failure, Message, Part, Role};
+pub use types::{Settings, Usage};
 mod messages;
 
 /// A failure with the given code; `retryable` means the same request may succeed later.

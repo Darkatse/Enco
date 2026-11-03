@@ -130,7 +130,7 @@ impl channel::Guest for Plugin {
             return Ok(FetchStep::Download(locator));
         };
         match wire::checked(&response) {
-            Ok(()) => Ok(FetchStep::Image(response.body)),
+            Ok(()) => Ok(FetchStep::File(response.body)),
             Err(error) if !error.fatal && !error.unknown && !error.failure.retryable => {
                 Ok(FetchStep::Unavailable(error.failure.message))
             }

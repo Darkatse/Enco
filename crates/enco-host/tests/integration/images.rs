@@ -15,7 +15,12 @@ async fn send(kernel: &Kernel, images: Vec<Image>) -> (SessionId, Vec<Entry>) {
     let session = kernel.open_session("pictures").await.unwrap();
     let mut events = kernel.subscribe(session.id).await.unwrap();
     kernel
-        .submit(session.id, EventId::new(), String::new(), images)
+        .submit(
+            session.id,
+            EventId::new(),
+            String::new(),
+            images.into_iter().map(Attachment::Image).collect(),
+        )
         .await
         .unwrap();
     (session.id, finish(&mut events).await)
@@ -45,11 +50,14 @@ async fn owner_and_tool_images_are_recorded_by_reference_and_resolved_for_reques
     let (kernel, store) =
         kernel_configured(root.path(), provider.clone(), document, vec![], |_| {}).await;
     std::fs::write(root.path().join("workspace/picture.png"), PNG).unwrap();
-    let image = kernel.store_image(PNG).await.unwrap();
+    let Attachment::Image(image) = kernel.store_attachment("photo".into(), PNG).await.unwrap()
+    else {
+        panic!("PNG must be an image")
+    };
     let (session, log) = send(&kernel, vec![image.clone()]).await;
     assert!(log.iter().any(|entry| matches!(&entry.body,
-        EntryBody::EventConsumed { event: Event { body: EventBody::UserMessage { images, .. }, .. } }
-        if images == std::slice::from_ref(&image))));
+        EntryBody::EventConsumed { event: Event { body: EventBody::UserMessage { attachments, .. }, .. } }
+        if attachments == &[Attachment::Image(image.clone())])));
     assert!(log.iter().any(|entry| matches!(&entry.body,
         EntryBody::ToolCallSettled { outcome: Settlement::Ok, images, .. } if images == std::slice::from_ref(&image))));
     assert_eq!(store.get_blob(&image.content).await.unwrap(), PNG);
@@ -94,7 +102,10 @@ async fn fallback_recomposes_the_plan_for_the_new_endpoints_modalities() {
     document["profile"]["default"]["reply"] = json!(["reply", "backup"]);
     let (kernel, _) =
         kernel_configured(root.path(), provider.clone(), document, vec![], |_| {}).await;
-    let image = kernel.store_image(PNG).await.unwrap();
+    let Attachment::Image(image) = kernel.store_attachment("photo".into(), PNG).await.unwrap()
+    else {
+        panic!("PNG must be an image")
+    };
     send(&kernel, vec![image]).await;
     let requests = provider.requests.lock().unwrap().clone();
     assert_eq!(pictures(&requests[0]).len(), 1);
@@ -111,7 +122,10 @@ async fn missing_image_content_fails_before_an_attempt_and_leaves_provider_healt
     let (kernel, store) =
         kernel_configured(root.path(), provider.clone(), document, vec![], |_| {}).await;
     let before = store.registry().await.unwrap().generations;
-    let image = kernel.store_image(PNG).await.unwrap();
+    let Attachment::Image(image) = kernel.store_attachment("photo".into(), PNG).await.unwrap()
+    else {
+        panic!("PNG must be an image")
+    };
     std::fs::remove_file(store.blob_path(&image.content)).unwrap();
     let (_, log) = send(&kernel, vec![image]).await;
     assert!(provider.requests.lock().unwrap().is_empty());
@@ -158,7 +172,10 @@ async fn a_plan_cannot_send_images_to_a_text_endpoint() {
         |_| {},
     )
     .await;
-    let image = kernel.store_image(PNG).await.unwrap();
+    let Attachment::Image(image) = kernel.store_attachment("photo".into(), PNG).await.unwrap()
+    else {
+        panic!("PNG must be an image")
+    };
     let (_, log) = send(&kernel, vec![image]).await;
     assert!(provider.requests.lock().unwrap().is_empty());
     assert!(matches!(&log.last().unwrap().body, EntryBody::RunEnded {

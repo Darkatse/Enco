@@ -20,7 +20,7 @@ pub(super) fn reply_items(
     selected_images: &BTreeSet<(u64, u64)>,
     memory_budget: &mut u32,
     omitted: &mut Vec<Omission>,
-) -> Vec<PlanItem> {
+) -> (Vec<PlanItem>, Option<usize>) {
     let previous = input.previous.as_ref().filter(|plan| {
         plan.items.first() == Some(&head)
             && plan.items.iter().all(|item| match item {
@@ -93,7 +93,7 @@ pub(super) fn reply_items(
         }));
     }
     items.extend(status);
-    items
+    (items, previous.map(|plan| plan.items.len()))
 }
 
 /// One note with the child Sessions and profiles whose text differs from what `items` last showed;
@@ -150,29 +150,37 @@ pub(super) fn sizes(
     let mut sizes = vec![];
     let mut pending = 0u32;
     for item in items {
-        match item {
-            PlanItem::Message(message) => {
-                pending = pending.saturating_add(tokens(
-                    message.text.len() + MESSAGE_OVERHEAD_BYTES + PART_OVERHEAD_BYTES,
-                ))
-            }
-            PlanItem::Log(reference) => {
-                let index = transcript
-                    .items
-                    .binary_search_by_key(&key(&reference.pos), |item| key(&item.pos))
-                    .map_err(|_| {
-                        crate::failed(format!("Log position {:?} is not visible", reference.pos))
-                    })?;
-                let size = pending.saturating_add(images::message_tokens(
-                    &transcript.items[index].message,
-                    reference.images,
-                ));
-                sizes.push((reference.pos, size));
-                pending = 0;
-            }
+        pending = pending.saturating_add(item_tokens(item, transcript)?);
+        if let PlanItem::Log(reference) = item {
+            sizes.push((reference.pos, pending));
+            pending = 0;
         }
     }
     Ok((sizes, pending))
+}
+
+/// Estimate only newly appended items; a measured prefix already includes its own envelopes.
+pub(super) fn appended_tokens(items: &[PlanItem], transcript: &Transcript) -> Result<u32, Failure> {
+    items.iter().try_fold(0u32, |total, item| {
+        Ok(total.saturating_add(item_tokens(item, transcript)?))
+    })
+}
+
+fn item_tokens(item: &PlanItem, transcript: &Transcript) -> Result<u32, Failure> {
+    Ok(match item {
+        PlanItem::Message(message) => {
+            tokens(message.text.len() + MESSAGE_OVERHEAD_BYTES + PART_OVERHEAD_BYTES)
+        }
+        PlanItem::Log(reference) => {
+            let index = transcript
+                .items
+                .binary_search_by_key(&key(&reference.pos), |item| key(&item.pos))
+                .map_err(|_| {
+                    crate::failed(format!("Log position {:?} is not visible", reference.pos))
+                })?;
+            images::message_tokens(&transcript.items[index].message, reference.images)
+        }
+    })
 }
 
 pub(super) fn instant(datetime: &Datetime) -> Result<chrono::DateTime<Utc>, Failure> {
@@ -288,13 +296,14 @@ fn producer(
             Some("The next message is a notice from the plugin registry.".into())
         }
         // The agent cannot see what the owner left, only that the world may not match the history.
-        EventBody::Backtrack(to) => {
-            let input = input
+        EventBody::Backtrack(None) => Some(STARTED_OVER.into()),
+        EventBody::Backtrack(Some(to)) => {
+            let is_input = input
                 .transcript
                 .items
                 .iter()
                 .any(|item| key(&item.pos) == key(to) && item.event.is_some());
-            let back = if input {
+            let back = if is_input {
                 "The owner went back to the message above and asks for a reply to it."
             } else {
                 "The owner went back to the message above to continue from it."
@@ -332,7 +341,7 @@ fn child_ended(event: &Event, end: &RunEnd) -> Result<String, Failure> {
     // The owner went back in the child's conversation, so the child now answers the owner.
     if matches!(end, RunEnd::Backtracked) {
         return Ok(format!(
-            "`{child}` stopped before finishing: the owner went back to an earlier message in its conversation, so its replies now go to the owner. What it did stays in its own history and in its working directory."
+            "`{child}` stopped before finishing: the owner went back in its conversation, so its replies now go to the owner. What it did stays in its own history and in its working directory."
         ));
     }
     // A child answers a completed Run with its reply.
@@ -349,7 +358,7 @@ fn run_end_reason(end: &RunEnd) -> Option<String> {
         RunEnd::Completed => return None,
         RunEnd::Interrupted => "was interrupted".into(),
         RunEnd::Cancelled => "was cancelled".into(),
-        RunEnd::Backtracked => "was stopped when the owner went back to an earlier message".into(),
+        RunEnd::Backtracked => "was stopped when the owner went back in the conversation".into(),
         RunEnd::Halted => "was halted".into(),
         RunEnd::BudgetExhausted => "reached the step limit".into(),
         RunEnd::Failed(failure) => format!("failed ({}: {})", failure.code, failure.message),
@@ -462,3 +471,4 @@ fn channel_input(
 }
 
 const BACKTRACK_STATE: &str = "Anything changed since then stays changed: files, memories, schedules, plugins and other state outside this conversation may not match what it shows, so check them before relying on them.";
+const STARTED_OVER: &str = "The owner started this conversation over from here. Earlier work is no longer shown, but what it changed stays changed: files, memories, schedules, plugins and other state outside this conversation, so check them before relying on them.";

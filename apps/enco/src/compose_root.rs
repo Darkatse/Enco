@@ -6,9 +6,10 @@ use enco_host::{
     development::{Development, FactorySources, Following, Manual},
     development_tool_specs, development_tools, memory_tool_specs, memory_tools, native_tools,
     self_status_spec,
+    status::HostBuild,
 };
-use enco_kernel::{FactoryPlugin, Kernel, KernelDeps, RegistryDeps, Store};
-use enco_wasm::WasmRuntime;
+use enco_kernel::{FactoryPlugin, Kernel, KernelDeps, RegistryDeps, Store, Tool};
+use enco_wasm::{WasmRuntime, plugin_limits};
 use std::sync::Arc;
 
 include!(concat!(env!("OUT_DIR"), "/sdk.rs"));
@@ -20,6 +21,7 @@ include!(concat!(env!("OUT_DIR"), "/manual.rs"));
 include!(concat!(env!("OUT_DIR"), "/factory_sources.rs"));
 
 pub(crate) struct Application {
+    pub build: HostBuild,
     pub kernel: Arc<Kernel>,
     pub memories: Arc<Memories>,
     pub development: Arc<Development>,
@@ -30,37 +32,22 @@ pub(crate) struct Application {
 
 pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
     tokio::fs::create_dir_all(paths.workspace()).await?;
-    let store = Arc::new(
-        SqliteStore::open(
-            StorePaths {
-                db: paths.db(),
-                blobs: paths.blobs(),
-                artifacts: paths.artifacts(),
-            },
-            paths.workspace(),
-        )
-        .await?,
-    );
+    let store = SqliteStore::open(
+        StorePaths {
+            db: paths.db(),
+            blobs: paths.blobs(),
+            artifacts: paths.artifacts(),
+        },
+        paths.workspace(),
+    )
+    .await?;
+    let store = Arc::new(store);
     let clock = Arc::new(SystemClock);
     let mut tools = native_tools(store.node().await?.id)?;
-    let host_tool_names = tools
-        .iter()
-        .map(|tool| tool.spec())
-        .chain(memory_tool_specs()?)
-        .chain(development_tool_specs()?)
-        .chain([self_status_spec()])
-        .chain(enco_kernel::builtin_tool_specs()?)
-        .map(|spec| spec.name)
-        .collect();
     let runtime = Arc::new(WasmRuntime::new()?);
     let sdk = sdk()?;
     sdk.write(&paths.home).await?;
-    let manual = Manual::new(
-        &paths.home,
-        MANUAL_FILES,
-        enco_wasm::plugin_limits(),
-        store.clone(),
-    )?;
+    let manual = Manual::new(&paths.home, MANUAL_FILES, plugin_limits(), store.clone())?;
     let development = Development::new(
         paths.home.clone(),
         sdk,
@@ -71,7 +58,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
     );
     let registry = development
         .open(RegistryDeps {
-            host_tool_names,
+            host_tool_names: host_tool_names(&tools)?,
             lifeline: LIFELINE.iter().map(|s| s.to_string()).collect(),
             store: store.clone(),
             runtime,
@@ -97,7 +84,7 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
     tools.extend(development_tools(development.clone(), registry.clone())?);
     let status = Arc::new(crate::status::StatusTool::default());
     tools.push(status.clone());
-    let kernel = Kernel::start(KernelDeps {
+    let deps = KernelDeps {
         store: store.clone(),
         registry,
         home: paths.home.clone(),
@@ -106,15 +93,23 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
         memories: Arc::new(MemoryContextSource::new(memories.clone())),
         tools,
         clock: clock.clone(),
-    })
-    .await?;
-    let kernel = Arc::new(kernel);
-    let channels = enco_host::channel::ChannelSupervisor::start(kernel.clone(), store, clock);
+    };
+    let kernel = Arc::new(Kernel::start(deps).await?);
+    let build = HostBuild {
+        version: env!("CARGO_PKG_VERSION").into(),
+        revision: env!("ENCO_REVISION").into(),
+    };
     let application = Arc::new(Application {
+        channels: enco_host::channel::ChannelSupervisor::start(
+            kernel.clone(),
+            store,
+            clock,
+            build.clone(),
+        ),
+        build,
         kernel,
         memories,
         development,
-        channels,
         manual,
         paths: paths.clone(),
     });
@@ -137,4 +132,17 @@ fn factory() -> Result<Vec<FactoryPlugin>> {
             })
         })
         .collect()
+}
+
+/// Every tool name the host provides, which plugins may not take.
+fn host_tool_names(tools: &[Arc<dyn Tool>]) -> Result<Vec<String>> {
+    Ok(tools
+        .iter()
+        .map(|tool| tool.spec())
+        .chain(memory_tool_specs()?)
+        .chain(development_tool_specs()?)
+        .chain([self_status_spec()])
+        .chain(enco_kernel::builtin_tool_specs()?)
+        .map(|spec| spec.name)
+        .collect())
 }

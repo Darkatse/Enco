@@ -39,7 +39,7 @@ fn replies_translate_mentions_emoji_and_quoted_images() -> Result<(), String> {
     // Only the incoming message drops its leading mention of this bot.
     assert_eq!(messages[0].text, "@Helper look :wave:");
     assert_eq!(
-        messages[0].images[0].locator,
+        messages[0].attachments[0].locator,
         "https://cdn.discordapp.com/attachments/trip.png"
     );
     assert_eq!(
@@ -119,7 +119,7 @@ fn deleted_replies_and_broken_content_do_not_fail_message_identity() -> Result<(
     let Action::Message(content) = &reading.messages[0].action else {
         return Err("missing content".into());
     };
-    assert_eq!(content.images.len(), 1);
+    assert_eq!(content.attachments.len(), 1);
     assert_eq!(content.unviewable.len(), 1);
     assert!(
         matches!(&content.quote.as_ref().ok_or("missing quote")?.messages, Quoted::Unavailable(reason) if reason.contains("deleted"))

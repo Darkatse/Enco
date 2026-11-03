@@ -1,6 +1,6 @@
 use crate::{
-    DateTime, EarlierQuote, EventId, Image, LogPos, MappingOrigin, Message, Part, Quote, Role,
-    RolledBack, ScheduleId, SessionId, Unviewable, Utc,
+    Attachment, ContentHash, DateTime, EarlierQuote, EventId, LogPos, MappingOrigin, Message, Part,
+    Quote, Role, RolledBack, ScheduleId, SessionId, Unviewable, Utc,
 };
 use serde::{Deserialize, Serialize};
 
@@ -70,13 +70,13 @@ pub enum EventBody {
     UserMessage {
         /// Text supplied by the sender.
         text: String,
-        /// Images stored before this Event was accepted.
-        images: Vec<Image>,
-        /// Attachments whose content could not be accepted as images.
+        /// Attachments stored before this Event was accepted.
+        attachments: Vec<Attachment>,
+        /// Content kept only as a description, and why.
         unviewable: Vec<Unviewable>,
         /// Earlier messages quoted for context; excluded from the canonical message.
         earlier: Vec<EarlierMessage>,
-        /// Messages this input replies to or forwards, with their stored images.
+        /// Messages this input replies to or forwards, with their stored attachments.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         quote: Option<Quote>,
     },
@@ -91,13 +91,13 @@ pub enum EventBody {
         /// Reminder text copied from its Schedule.
         text: String,
     },
-    /// The owner took the conversation back to a recorded position and continues from there.
+    /// The owner went back to a recorded position or the start of the conversation.
     ///
     /// It carries no text: the composer narrates it. Changes made after the position outside the
     /// conversation stay as they are.
     Backtrack {
-        /// The position the owner pointed at; the kernel derives what the conversation keeps.
-        to: LogPos,
+        /// The position the owner pointed at; absent means the start of the conversation.
+        to: Option<LogPos>,
     },
     /// Words and an optional file from another Session.
     SessionMessage(crate::Outgoing),
@@ -106,6 +106,8 @@ pub enum EventBody {
         /// Recorded terminal result, distinct from the child's own words.
         end: crate::RunEnd,
     },
+    /// The owner asked for the conversation to be compacted before the next Run's reply.
+    Compact,
     /// A command stopping this Session's subtree without moving its reply destination.
     Halt(Halt),
 }
@@ -155,12 +157,50 @@ pub struct EarlierMessage {
     pub attachments: Vec<String>,
     /// The recorded protocol translation that produced this message.
     pub origin: MappingOrigin,
-    /// Messages this earlier input quoted; images remain descriptions and no reads are made.
+    /// Messages this earlier input quoted; attachments remain descriptions and no reads are made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quote: Option<EarlierQuote>,
 }
 
+impl EventBody {
+    /// Whether this is a command about the conversation rather than input to answer: a backtrack,
+    /// a halt or a compaction request. Commands are consumed between Runs.
+    pub fn is_command(&self) -> bool {
+        matches!(
+            self,
+            Self::Backtrack { .. } | Self::Halt(..) | Self::Compact
+        )
+    }
+
+    /// Whether this command stops the current Run and supersedes the inputs before it: a
+    /// backtrack or a halt.
+    ///
+    /// The Run stops at its next boundary, and the superseded inputs are not answered.
+    pub fn supersedes_inputs(&self) -> bool {
+        matches!(self, Self::Backtrack { .. } | Self::Halt(..))
+    }
+}
+
 impl Event {
+    /// The recorded blobs this input refers to: its attachments, those of the messages it
+    /// quotes, and the file of a Session message.
+    pub fn blobs(&self) -> Vec<ContentHash> {
+        match &self.body {
+            EventBody::UserMessage {
+                attachments, quote, ..
+            } => quote
+                .iter()
+                .flat_map(Quote::attachments)
+                .chain(attachments)
+                .map(Attachment::content)
+                .collect(),
+            EventBody::SessionMessage(message) => {
+                message.file.iter().map(|file| file.content).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Whether this input's sender waits for a reply and moves the reply destination to itself.
     pub fn is_interactive(&self) -> bool {
         self.reply_destination().is_some()
@@ -169,8 +209,8 @@ impl Event {
     /// The destination selected by this input, absent when it does not ask for a reply.
     pub fn reply_destination(&self) -> Option<ReplyDestination> {
         use EventBody::{
-            Backtrack, ChildRunEnded, GenerationRolledBack, Halt, Reminder, SessionMessage,
-            UserMessage,
+            Backtrack, ChildRunEnded, Compact, GenerationRolledBack, Halt, Reminder,
+            SessionMessage, UserMessage,
         };
         use EventSource::{Channel, Child, Cli, Parent, Registry, Scheduler};
         match (&self.source, &self.body) {
@@ -195,7 +235,8 @@ impl Event {
                 | Reminder { .. }
                 | SessionMessage(..)
                 | ChildRunEnded { .. }
-                | Halt(..),
+                | Halt(..)
+                | Compact,
             )
             | (
                 Parent,
@@ -204,7 +245,8 @@ impl Event {
                 | GenerationRolledBack { .. }
                 | Reminder { .. }
                 | ChildRunEnded { .. }
-                | Halt(..),
+                | Halt(..)
+                | Compact,
             )
             | (
                 Scheduler | Registry | Child(..),
@@ -214,7 +256,8 @@ impl Event {
                 | Reminder { .. }
                 | SessionMessage(..)
                 | ChildRunEnded { .. }
-                | Halt(..),
+                | Halt(..)
+                | Compact,
             ) => None,
         }
     }
@@ -224,20 +267,21 @@ impl Event {
     /// The composer narrates the circumstances, such as arrival and planned times. Input without
     /// text, such as a photo alone or a backtrack, has no text part.
     pub fn canonical_message(&self) -> Message {
-        let (text, quote, images) = match &self.body {
+        let (text, quote, attachments) = match &self.body {
             EventBody::UserMessage {
                 text,
                 quote,
-                images,
+                attachments,
                 ..
-            } => (text.as_str(), quote.as_ref(), images.as_slice()),
+            } => (text.as_str(), quote.as_ref(), attachments.as_slice()),
             EventBody::GenerationRolledBack { text, .. } | EventBody::Reminder { text, .. } => {
                 (text.as_str(), None, &[][..])
             }
             EventBody::SessionMessage(message) => (message.text.as_str(), None, &[][..]),
-            EventBody::Backtrack { .. } | EventBody::ChildRunEnded { .. } | EventBody::Halt(..) => {
-                ("", None, &[][..])
-            }
+            EventBody::Backtrack { .. }
+            | EventBody::ChildRunEnded { .. }
+            | EventBody::Halt(..)
+            | EventBody::Compact => ("", None, &[][..]),
         };
         let text = (!text.is_empty()).then(|| Part::Text { text: text.into() });
         Message {
@@ -248,7 +292,7 @@ impl Event {
                     quote
                         .into_iter()
                         .flat_map(Quote::images)
-                        .chain(images)
+                        .chain(attachments.iter().filter_map(Attachment::image))
                         .cloned()
                         .map(Part::Image),
                 )
@@ -256,3 +300,6 @@ impl Event {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

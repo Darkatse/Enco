@@ -199,6 +199,7 @@ impl Channel {
         settings: ConnectionSettings,
         generation: GenerationId,
         clock: Arc<dyn Clock>,
+        build: crate::status::HostBuild,
     ) -> Self {
         let name = settings.name.clone();
         let key = adapter.identity().key();
@@ -212,7 +213,7 @@ impl Channel {
             let key = key.clone();
             let menu_failure = menu_failure.clone();
             async move {
-                let exit = connection::run(
+                let exit = connection::run(connection::Start {
                     kernel,
                     adapter,
                     settings,
@@ -220,7 +221,8 @@ impl Channel {
                     clock,
                     stop,
                     menu_failure,
-                )
+                    build,
+                })
                 .await;
                 let failure = exit
                     .stopped

@@ -213,7 +213,11 @@ fn option(kind: CommandKind) -> Option<(&'static str, &'static str, &'static [&'
         CommandKind::Halt => ("name", "Session to halt", &[]),
         CommandKind::Archive => ("name", "Session to archive", &[]),
         CommandKind::Everyone => ("open", "Open the group to everyone", &["on", "off"]),
-        CommandKind::Cancel | CommandKind::Backtrack => return None,
+        CommandKind::Cancel
+        | CommandKind::Backtrack
+        | CommandKind::Status
+        | CommandKind::Compact
+        | CommandKind::Clear => return None,
     })
 }
 
@@ -232,7 +236,10 @@ fn command(command: Command) -> Value {
         | CommandKind::Cancel
         | CommandKind::Everyone
         | CommandKind::Halt
-        | CommandKind::Archive => (command.kind.name(), 1),
+        | CommandKind::Archive
+        | CommandKind::Status
+        | CommandKind::Compact
+        | CommandKind::Clear => (command.kind.name(), 1),
     };
     let mut value = json!({
         "name": name,

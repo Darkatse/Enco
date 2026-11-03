@@ -1,6 +1,8 @@
 mod input;
 mod lifecycle;
+mod overview;
 pub use lifecycle::{Halted, SessionLookupError};
+pub use overview::{ContextUsage, LastRequest, ReplyModel, RunState, SessionOverview};
 
 use crate::{
     session::{SessionDeps, SessionHandle, lock},
@@ -71,6 +73,13 @@ pub struct SessionStatus {
     pub waiting: Option<usize>,
     /// Storage failure that stopped this actor, if any.
     pub stopped: Option<String>,
+}
+
+/// Whether the Session's actor is executing a Run now.
+fn running(handles: &HashMap<SessionId, Arc<SessionHandle>>, session: SessionId) -> bool {
+    handles
+        .get(&session)
+        .is_some_and(|handle| lock(&handle.run_cancel).is_some())
 }
 
 /// Public command failure; Round failures are recorded in the Log instead.
@@ -369,15 +378,7 @@ impl Kernel {
         let handles = lock(&self.sessions);
         let sessions = records
             .into_iter()
-            .map(|session| {
-                let handle = handles.get(&session.id);
-                SessionStatus {
-                    waiting: self.deps.slots.position(session.id),
-                    running: handle.is_some_and(|h| lock(&h.run_cancel).is_some()),
-                    stopped: handle.and_then(|h| lock(&h.stopped).clone()),
-                    session,
-                }
-            })
+            .map(|session| self.session_status(&handles, session))
             .collect();
         Ok(Status {
             timezone: view.config.kernel.timezone,
@@ -387,6 +388,22 @@ impl Kernel {
             sessions,
             scheduler_stopped: self.schedules.stopped(),
         })
+    }
+
+    /// A Session's live execution status from its actor and the child slot queue.
+    fn session_status(
+        &self,
+        handles: &HashMap<SessionId, Arc<SessionHandle>>,
+        session: SessionRecord,
+    ) -> SessionStatus {
+        SessionStatus {
+            waiting: self.deps.slots.position(session.id),
+            running: running(handles, session.id),
+            stopped: handles
+                .get(&session.id)
+                .and_then(|h| lock(&h.stopped).clone()),
+            session,
+        }
     }
 
     /// Read durable Session metadata.

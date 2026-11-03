@@ -11,7 +11,7 @@ pub(crate) async fn wait(
     paths: &Paths,
     session: String,
     text: String,
-    images: Vec<std::path::PathBuf>,
+    files: Vec<std::path::PathBuf>,
 ) -> Result<Value> {
     let mut client = Client::connect(&paths.socket()).await?;
     client
@@ -24,7 +24,7 @@ pub(crate) async fn wait(
         .send(Command::Send {
             session: session.clone(),
             text,
-            images,
+            files,
             event_id,
         })
         .await?;

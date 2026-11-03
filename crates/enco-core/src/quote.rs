@@ -1,19 +1,19 @@
-//! Quoted messages are input facts; their images and retrieval evidence stay with the input.
-use crate::{DateTime, Image, MappingOrigin, Unviewable, Utc};
+//! Quoted messages are input facts; their attachments and retrieval evidence stay with the input.
+use crate::{Attachment, DateTime, Image, MappingOrigin, Unviewable, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Messages that an input replies to or forwards, with their stored images.
+/// Messages that an input replies to or forwards, with their stored attachments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Quote {
     /// How the input relates to these messages.
     pub kind: QuoteKind,
     /// The quoted content, or why it was not obtained.
-    pub messages: Quoted<Image>,
+    pub messages: Quoted<Attachment>,
     /// The fetch that produced this content; absent when it arrived with the input itself.
     pub fetched: Option<MappingOrigin>,
 }
 
-/// Messages that an earlier message quoted; images stay descriptions and nothing is fetched.
+/// Messages that an earlier message quoted; attachments stay descriptions and nothing is fetched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EarlierQuote {
     /// How the earlier message relates to these messages.
@@ -61,19 +61,24 @@ pub struct QuotedMessage<A> {
     pub sent_at: Option<DateTime<Utc>>,
     /// What the sender wrote, in the protocol's readable form.
     pub text: String,
-    /// Stored images for an input, or image descriptions for an earlier message.
-    pub images: Vec<A>,
+    /// Stored attachments for an input, or attachment descriptions for an earlier message.
+    pub attachments: Vec<A>,
     /// Content that could not be shown, and why.
     pub unviewable: Vec<Unviewable>,
 }
 
 impl Quote {
-    /// The quoted images in the order their messages are listed.
-    pub fn images(&self) -> impl Iterator<Item = &Image> {
+    /// The quoted attachments in the order their messages are listed.
+    pub fn attachments(&self) -> impl Iterator<Item = &Attachment> {
         let messages = match &self.messages {
             Quoted::Messages(messages) => messages.as_slice(),
             Quoted::Unavailable(_) => &[],
         };
-        messages.iter().flat_map(|message| &message.images)
+        messages.iter().flat_map(|message| &message.attachments)
+    }
+
+    /// The quoted images in the order their messages are listed.
+    pub fn images(&self) -> impl Iterator<Item = &Image> {
+        self.attachments().filter_map(Attachment::image)
     }
 }

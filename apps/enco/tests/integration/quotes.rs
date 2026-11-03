@@ -179,7 +179,7 @@ async fn telegram_reply_images_reach_the_recorded_request() {
     .await;
     let EventBody::UserMessage {
         text,
-        images,
+        attachments,
         quote: Some(quote),
         ..
     } = input(&entries)
@@ -187,7 +187,7 @@ async fn telegram_reply_images_reach_the_recorded_request() {
         panic!("missing quote")
     };
     assert_eq!(text, "explain this");
-    assert!(images.is_empty());
+    assert!(attachments.is_empty());
     assert_eq!(quote.kind, QuoteKind::Reply);
     assert!(quote.fetched.is_none());
     let Quoted::Messages(messages) = &quote.messages else {
@@ -195,7 +195,9 @@ async fn telegram_reply_images_reach_the_recorded_request() {
     };
     assert!(messages[0].yours && !messages[0].owner);
     assert_eq!(messages[0].text, "A quoted photo");
-    let image = &messages[0].images[0];
+    let enco_core::Attachment::Image(image) = &messages[0].attachments[0] else {
+        panic!("missing quoted image")
+    };
     assert!(
         inspection
             .request

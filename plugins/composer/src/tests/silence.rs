@@ -13,7 +13,7 @@ fn only_noninteractive_inputs_offer_silence_when_the_tool_is_available() {
     let cases = [
         (EventSource::Cli, message.clone(), true),
         (member(false), message, true),
-        (EventSource::Cli, EventBody::Backtrack(pos(1)), true),
+        (EventSource::Cli, EventBody::Backtrack(Some(pos(1))), true),
         (EventSource::Parent, session_message.clone(), true),
         (
             EventSource::Scheduler,

@@ -31,9 +31,8 @@ impl SessionActor {
         let mut stored = Vec::new();
         if let Outcome::Ok { images, .. } = &outcome {
             for bytes in images {
-                match crate::image::store(self.deps.store.as_ref(), bytes).await {
+                match crate::image::store(self.deps.store.as_ref(), bytes).await? {
                     Ok(image) => stored.push(image),
-                    Err(crate::ImageError::Store(error)) => return Err(error),
                     Err(error) => {
                         outcome = Outcome::Failed {
                             failure: Failure {
@@ -70,7 +69,7 @@ impl SessionActor {
         }
         for image in &stored {
             content.push_str(&format!(
-                "\n[image: {}, {} bytes; file: {}]",
+                "\n[image: {}, {} bytes, at {}]",
                 image.format.mime(),
                 image.size,
                 self.deps.store.blob_path(&image.content).display()

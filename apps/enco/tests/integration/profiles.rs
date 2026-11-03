@@ -17,7 +17,7 @@ async fn ask(daemon: &Daemon, session: &str) -> Inspection {
         .request(Command::Send {
             session: session.into(),
             text: "hello".into(),
-            images: vec![],
+            files: vec![],
             event_id: EventId::new(),
         })
         .await

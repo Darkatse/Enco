@@ -8,6 +8,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - module `code` — Stable failure codes shared with WIT plugins.
 - struct `ArgumentError` — Why a call's arguments do not fit the tool's schema, naming the argument.
 - enum `Arguments` — The single normalization step for raw tool arguments, used by dispatch.
+- enum `Attachment` — A recorded attachment: an image a model may view, or any other file.
 - struct `AttemptId` — Identity of one provider attempt, including failed attempts.
 - enum `AttemptPurpose` — Whether the model is replying or summarizing prior rounds.
 - enum `AttemptResult` — The durable settlement of a provider attempt.
@@ -30,7 +31,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `DeliverySettlement` — Final outcome, committed atomically with the connection's outbound progress.
 - struct `DisclosedTool` — A tool as a plan disclosed it to the model, kept verbatim.
 - struct `EarlierMessage` — A prior chat message quoted as context, without starting a Session Run.
-- struct `EarlierQuote` — Messages that an earlier message quoted; images stay descriptions and nothing is fetched.
+- struct `EarlierQuote` — Messages that an earlier message quoted; attachments stay descriptions and nothing is fetched.
 - enum `Effect` — Describes external effects so recovery can settle an interrupted invocation honestly.
 - struct `Entry` — One immutable fact at a structurally ordered position.
 - enum `EntryBody` — Facts accepted by the Session owner.
@@ -41,6 +42,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - enum `EventSource` — The producer of an Inbox input.
 - struct `Extension` — Opaque provider-owned message fields retained for subsequent requests.
 - struct `Failure` — Stable machine-readable classification with contextual diagnostic text.
+- struct `File` — A recorded file; the kernel stores the bytes before accepting this reference.
 - struct `FileData` — File bytes handed to the kernel at settlement, or resolved for one delivery.
 - struct `GenerationId` — Registry-global generation number, ordered by commit rather than time.
 - struct `GenerationRecord` — One immutable generation identity, with a mutable availability status.
@@ -71,7 +73,6 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - enum `Origin` — Source of a registered generation.
 - enum `Outcome` — Known success, known failure, or an effect whose outcome is uncertain.
 - struct `Outgoing` — Content addressed to a reply destination: Markdown text and at most one file.
-- struct `OutgoingFile` — A recorded file; the kernel stores the bytes before accepting this reference.
 - enum `Part` — Typed content of a canonical message.
 - enum `PlanItem` — Inline content or a reference to an immutable canonical message.
 - struct `PluginActivation` — A current or retained code reference, distinct from the generation's creation provenance.
@@ -81,7 +82,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `PluginSettings` — The complete `[plugin.<name>]` table. Only `config` is visible to the plugin.
 - struct `ProfileName` — A validated profile name, also used to select its profile instructions.
 - struct `ProviderSettings` — Per-call provider settings recorded before invocation. Credential values belong only to the host transport.
-- struct `Quote` — Messages that an input replies to or forwards, with their stored images.
+- struct `Quote` — Messages that an input replies to or forwards, with their stored attachments.
 - enum `QuoteKind` — How a message relates to the messages it quotes.
 - enum `Quoted` — Quoted content, or why the protocol could not supply it.
 - struct `QuotedMessage` — One message inside a reply or forward, with the identity facts recorded at acceptance.
@@ -113,8 +114,8 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `ToolCall` — A proposed invocation; arguments are normalized only when dispatched.
 - struct `ToolResult` — Model-facing settlement linked to the original provider call ID.
 - struct `ToolSpec` — A model-facing tool contract; its name is unique within a Round snapshot.
-- struct `Unviewable` — An attachment the owner sent but this host could not make visible as an image.
-- enum `UnviewableReason` — Expected attachment failures remain part of their input Event.
+- struct `Unviewable` — Part of a message's content kept only as a description, such as a location or an attachment that could not be fetched.
+- enum `UnviewableReason` — Why part of a message is kept only as a description.
 - struct `Usage` — Token counts reported by the provider.
 - struct `WorkingDir` — A node's absolute UTF-8 directory path; availability is checked only when a tool needs it.
 - fn `is_name_segment` — Whether a name is one nonempty segment, without slashes, whitespace or controls, and not `.` or `..`.
@@ -184,6 +185,49 @@ impl Debug for Arguments
 impl<'de> Deserialize<'de> for Arguments
 impl PartialEq for Arguments
 impl Serialize for Arguments
+```
+
+## enum `Attachment`
+
+`src/image.rs`
+
+```rust
+pub enum Attachment {
+    Image(Image),
+    File(crate::File),
+}
+```
+
+A recorded attachment: an image a model may view, or any other file.
+
+- `Image` — Bytes in an accepted image format, within the image limit.
+- `File` — Any other file.
+
+### `Attachment::image`
+
+```rust
+pub fn image(&self) -> Option<&Image>
+```
+
+The recorded image, when this attachment is one.
+
+### `Attachment::content`
+
+```rust
+pub fn content(&self) -> ContentHash
+```
+
+The address of its bytes in the blob store.
+
+Implements:
+
+```rust
+impl Clone for Attachment
+impl Debug for Attachment
+impl<'de> Deserialize<'de> for Attachment
+impl Eq for Attachment
+impl PartialEq for Attachment
+impl Serialize for Attachment
 ```
 
 ## struct `AttemptId`
@@ -914,7 +958,7 @@ A prior chat message quoted as context, without starting a Session Run.
 - `text` — Quoted text, never an instruction from the owner on another sender's behalf.
 - `attachments` — Attachment descriptions; their content is not fetched for context.
 - `origin` — The recorded protocol translation that produced this message.
-- `quote` — Messages this earlier input quoted; images remain descriptions and no reads are made.
+- `quote` — Messages this earlier input quoted; attachments remain descriptions and no reads are made.
 
 Implements:
 
@@ -937,7 +981,7 @@ pub struct EarlierQuote {
 }
 ```
 
-Messages that an earlier message quoted; images stay descriptions and nothing is fetched.
+Messages that an earlier message quoted; attachments stay descriptions and nothing is fetched.
 
 - `kind` — How the earlier message relates to these messages.
 - `messages` — The content the protocol carried, or why it could not; absent when it needed a request.
@@ -1186,6 +1230,15 @@ A deduplicated input delivered through the Inbox.
 - `body` — Content that needs a Session Run.
 - `received_at` — Reception time for display, not Inbox ordering.
 
+### `Event::blobs`
+
+```rust
+pub fn blobs(&self) -> Vec<ContentHash>
+```
+
+The recorded blobs this input refers to: its attachments, those of the messages it
+quotes, and the file of a Session message.
+
 ### `Event::is_interactive`
 
 ```rust
@@ -1235,7 +1288,7 @@ pub enum EventBody {
     },
     UserMessage {
         text: String,
-        images: Vec<crate::Image>,
+        attachments: Vec<crate::Attachment>,
         unviewable: Vec<crate::Unviewable>,
         earlier: Vec<EarlierMessage>,
         quote: Option<crate::Quote>,
@@ -1247,12 +1300,13 @@ pub enum EventBody {
         text: String,
     },
     Backtrack {
-        to: crate::LogPos,
+        to: Option<crate::LogPos>,
     },
     SessionMessage(crate::Outgoing),
     ChildRunEnded {
         end: crate::RunEnd,
     },
+    Compact,
     Halt(Halt),
 }
 ```
@@ -1264,24 +1318,45 @@ Input to a Session, consumed in Inbox order.
   - `text` — Notice written by the Registry when the rollback committed.
 - `UserMessage` — A message that drives this Session, with quoted context from its conversation.
   - `text` — Text supplied by the sender.
-  - `images` — Images stored before this Event was accepted.
-  - `unviewable` — Attachments whose content could not be accepted as images.
+  - `attachments` — Attachments stored before this Event was accepted.
+  - `unviewable` — Content kept only as a description, and why.
   - `earlier` — Earlier messages quoted for context; excluded from the canonical message.
-  - `quote` — Messages this input replies to or forwards, with their stored images.
+  - `quote` — Messages this input replies to or forwards, with their stored attachments.
 - `Reminder` — A reminder reaching its scheduled time.
   - `schedule` — The Schedule which produced this input.
   - `due_at` — Planned time in UTC; this occurrence's identity together with the schedule.
   - `skipped` — Earlier missed occurrences omitted when delivering only the latest one.
   - `text` — Reminder text copied from its Schedule.
-- `Backtrack` — The owner took the conversation back to a recorded position and continues from there.
+- `Backtrack` — The owner went back to a recorded position or the start of the conversation.
 
   It carries no text: the composer narrates it. Changes made after the position outside the
   conversation stay as they are.
-  - `to` — The position the owner pointed at; the kernel derives what the conversation keeps.
+  - `to` — The position the owner pointed at; absent means the start of the conversation.
 - `SessionMessage` — Words and an optional file from another Session.
 - `ChildRunEnded` — A child's Run that ended without completing.
   - `end` — Recorded terminal result, distinct from the child's own words.
+- `Compact` — The owner asked for the conversation to be compacted before the next Run's reply.
 - `Halt` — A command stopping this Session's subtree without moving its reply destination.
+
+### `EventBody::is_command`
+
+```rust
+pub fn is_command(&self) -> bool
+```
+
+Whether this is a command about the conversation rather than input to answer: a backtrack,
+a halt or a compaction request. Commands are consumed between Runs.
+
+### `EventBody::supersedes_inputs`
+
+```rust
+pub fn supersedes_inputs(&self) -> bool
+```
+
+Whether this command stops the current Run and supersedes the inputs before it: a
+backtrack or a halt.
+
+The Run stops at its next boundary, and the superseded inputs are not answered.
 
 Implements:
 
@@ -1432,6 +1507,35 @@ impl Debug for Failure
 impl<'de> Deserialize<'de> for Failure
 impl PartialEq for Failure
 impl Serialize for Failure
+```
+
+## struct `File`
+
+`src/outgoing.rs`
+
+```rust
+pub struct File {
+    pub name: String,
+    pub size: u64,
+    pub content: crate::ContentHash,
+}
+```
+
+A recorded file; the kernel stores the bytes before accepting this reference.
+
+- `name` — What it is called: its filename, or what it is when it came without one.
+- `size` — Original byte length.
+- `content` — Address of the original bytes in the blob store.
+
+Implements:
+
+```rust
+impl Clone for File
+impl Debug for File
+impl<'de> Deserialize<'de> for File
+impl Eq for File
+impl PartialEq for File
+impl Serialize for File
 ```
 
 ## struct `FileData`
@@ -2367,7 +2471,7 @@ impl Serialize for Outcome
 `src/outgoing.rs`
 
 ```rust
-pub struct Outgoing<F = OutgoingFile> {
+pub struct Outgoing<F = File> {
     pub text: String,
     pub file: Option<F>,
 }
@@ -2387,35 +2491,6 @@ impl<'de, F> Deserialize<'de> for Outgoing<F> where F: Deserialize<'de>
 impl<F: Eq> Eq for Outgoing<F>
 impl<F: PartialEq> PartialEq for Outgoing<F>
 impl<F> Serialize for Outgoing<F> where F: Serialize
-```
-
-## struct `OutgoingFile`
-
-`src/outgoing.rs`
-
-```rust
-pub struct OutgoingFile {
-    pub name: String,
-    pub size: u64,
-    pub content: crate::ContentHash,
-}
-```
-
-A recorded file; the kernel stores the bytes before accepting this reference.
-
-- `name` — Filename without its original directory.
-- `size` — Original byte length.
-- `content` — Address of the original bytes in the blob store.
-
-Implements:
-
-```rust
-impl Clone for OutgoingFile
-impl Debug for OutgoingFile
-impl<'de> Deserialize<'de> for OutgoingFile
-impl Eq for OutgoingFile
-impl PartialEq for OutgoingFile
-impl Serialize for OutgoingFile
 ```
 
 ## enum `Part`
@@ -2743,16 +2818,24 @@ impl Serialize for ProviderSettings
 ```rust
 pub struct Quote {
     pub kind: QuoteKind,
-    pub messages: Quoted<crate::Image>,
+    pub messages: Quoted<crate::Attachment>,
     pub fetched: Option<crate::MappingOrigin>,
 }
 ```
 
-Messages that an input replies to or forwards, with their stored images.
+Messages that an input replies to or forwards, with their stored attachments.
 
 - `kind` — How the input relates to these messages.
 - `messages` — The quoted content, or why it was not obtained.
 - `fetched` — The fetch that produced this content; absent when it arrived with the input itself.
+
+### `Quote::attachments`
+
+```rust
+pub fn attachments(&self) -> impl Iterator<Item = &Attachment>
+```
+
+The quoted attachments in the order their messages are listed.
 
 ### `Quote::images`
 
@@ -2840,7 +2923,7 @@ pub struct QuotedMessage<A> {
     pub conversation_name: Option<String>,
     pub sent_at: Option<crate::DateTime<crate::Utc>>,
     pub text: String,
-    pub images: Vec<A>,
+    pub attachments: Vec<A>,
     pub unviewable: Vec<crate::Unviewable>,
 }
 ```
@@ -2855,7 +2938,7 @@ One message inside a reply or forward, with the identity facts recorded at accep
 - `conversation_name` — The named original conversation, when it was elsewhere.
 - `sent_at` — When the message was first sent, when reported.
 - `text` — What the sender wrote, in the protocol's readable form.
-- `images` — Stored images for an input, or image descriptions for an earlier message.
+- `attachments` — Stored attachments for an input, or attachment descriptions for an earlier message.
 - `unviewable` — Content that could not be shown, and why.
 
 Implements:
@@ -3227,7 +3310,7 @@ Why this Run stopped.
 - `BudgetExhausted` — The Run exhausted its Round allowance.
 - `Interrupted` — The previous process ended before settlement.
 - `Cancelled` — Cancellation was requested and work has stopped.
-- `Backtracked` — The owner went back to an earlier message, which stopped it.
+- `Backtracked` — The owner went back in the conversation, which stopped it.
 - `Halted` — A halt of this Session or an ancestor stopped it.
 - `Failed` — The operation stopped with a known failure.
   - `failure` — Classification and details of the failure.
@@ -3855,10 +3938,12 @@ pub struct Unviewable {
 }
 ```
 
-An attachment the owner sent but this host could not make visible as an image.
+Part of a message's content kept only as a description, such as a location or an attachment
+that could not be fetched.
 
-- `what` — Protocol-provided description of the attachment.
-- `reason` — Recorded reason it was not accepted as an image.
+- `what` — A plain description such as report.pdf, voice message or location, not a protocol type
+  name.
+- `reason` — Why it cannot be shown.
 
 Implements:
 
@@ -3878,16 +3963,14 @@ impl Serialize for Unviewable
 ```rust
 pub enum UnviewableReason {
     Unsupported,
-    TooLarge,
     Unavailable(String),
 }
 ```
 
-Expected attachment failures remain part of their input Event.
+Why part of a message is kept only as a description.
 
-- `Unsupported` — The attachment is not a supported image encoding.
-- `TooLarge` — Its original bytes exceed the image limit.
-- `Unavailable` — The service permanently refused retrieval, with its diagnostic context.
+- `Unsupported` — It is not a file Enco can keep, such as a location or a poll.
+- `Unavailable` — It could not be retrieved, for this reason.
 
 Implements:
 

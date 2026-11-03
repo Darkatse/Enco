@@ -73,17 +73,20 @@ fn outgoing(content: Deliverable) -> Outgoing {
     let text = match content {
         Deliverable::Message(outgoing) => return outgoing,
         Deliverable::Reply(text) => text,
-        Deliverable::RunEnded(end) => match end {
-            RunEnd::Cancelled => "Run cancelled.".into(),
-            RunEnd::Backtracked => "Run stopped to go back to an earlier message.".into(),
-            RunEnd::Interrupted => {
-                "Run interrupted by a restart; check `enco log` for details.".into()
-            }
-            RunEnd::BudgetExhausted => "Run reached its Round limit.".into(),
-            RunEnd::Failed { failure } => format!("Run failed: {}", failure.message),
-            RunEnd::Halted => "Run halted.".into(),
-            RunEnd::Completed => "Run completed.".into(),
-        },
+        Deliverable::RunEnded(end) => format!("Run {}.", run_ended(&end)),
     };
     Outgoing { text, file: None }
+}
+
+/// How a Run ended, as the owner reads it after "Run".
+pub(super) fn run_ended(end: &RunEnd) -> String {
+    match end {
+        RunEnd::Cancelled => "cancelled".into(),
+        RunEnd::Backtracked => "stopped to go back in the conversation".into(),
+        RunEnd::Interrupted => "interrupted by a restart; check `enco log` for details".into(),
+        RunEnd::BudgetExhausted => "reached its Round limit".into(),
+        RunEnd::Failed { failure } => format!("failed: {}", failure.message),
+        RunEnd::Halted => "halted".into(),
+        RunEnd::Completed => "completed".into(),
+    }
 }

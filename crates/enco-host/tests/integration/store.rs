@@ -24,7 +24,7 @@ async fn main_session(root: &Path) -> (SqliteStore, Event) {
         source: EventSource::Cli,
         body: EventBody::UserMessage {
             quote: None,
-            images: Vec::new(),
+            attachments: Vec::new(),
             unviewable: Vec::new(),
             earlier: Vec::new(),
             text: "hello".into(),

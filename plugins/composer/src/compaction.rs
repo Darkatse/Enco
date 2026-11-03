@@ -91,7 +91,7 @@ impl Compaction {
         input: &ComposeInput,
         sizes: &[(LogPos, u32)],
         history_tokens: u32,
-        keep: u32,
+        keep: u64,
     ) -> Option<LogPos> {
         let first = key(&self.chunks.first()?.0);
         let window = self.window;
@@ -118,7 +118,7 @@ impl Compaction {
                 break;
             }
             fitting = Some(*end);
-            if tail <= keep {
+            if u64::from(tail) <= keep {
                 break;
             }
         }

@@ -29,11 +29,16 @@ fn identity() -> Result<Identity, String> {
 }
 
 fn frame(segments: Value, direct: bool) -> Value {
-    json!({
+    let mut message = json!({
         "post_type": "message", "message_type": if direct { "private" } else { "group" },
-        "message_id": -7, "user_id": 10002_u64, "group_id": 20001,
-        "sender": {"nickname": "Owner", "card": "Group name"}, "message": segments,
-    })
+        "message_id": -7, "user_id": 10002_u64,
+        "sender": {"nickname": "Owner"}, "message": segments,
+    });
+    if !direct {
+        message["group_id"] = json!(20001);
+        message["sender"]["card"] = json!("Group name");
+    }
+    message
 }
 
 fn received(value: Value) -> Result<super::channel::Reading, String> {
@@ -71,6 +76,9 @@ fn commands_follow_a_leading_mention_and_attachments_keep_them_as_messages() -> 
     for (text, expected) in [
         (" /session work", Action::SelectSession("work".into())),
         (" /cancel", Action::Cancel),
+        (" /status", Action::Status),
+        (" /compact", Action::Compact),
+        (" /clear", Action::Clear),
     ] {
         let reading = received(frame(
             json!([
@@ -92,12 +100,12 @@ fn commands_follow_a_leading_mention_and_attachments_keep_them_as_messages() -> 
     let reading = received(frame(
         json!([
             {"type":"text","data":{"text":"/cancel"}},
-            {"type":"file","data":{"name":"report.pdf"}},
+            {"type":"file","data":{"name":"report.pdf", "file_id":"id", "file_hash":"hash"}},
         ]),
         true,
     ))?;
     assert!(
-        matches!(&reading.messages[0].action, Action::Message(content) if content.unviewable.len() == 1)
+        matches!(&reading.messages[0].action, Action::Message(content) if content.attachments.len() == 1)
     );
     let reading = received(frame(
         json!([
@@ -164,22 +172,22 @@ fn images_and_unsupported_segments_preserve_attachment_evidence() -> Result<(), 
     };
     // A face the pinned table does not name is still text.
     assert_eq!(content.text, "look@all[face: 微笑][face 4294967295]");
-    assert_eq!(content.images.len(), 1);
+    assert_eq!(content.attachments.len(), 1);
     assert_eq!(content.unviewable.len(), 3);
-    let locator = content.images[0].locator.clone();
+    let locator = content.attachments[0].locator.clone();
     // The address came from the message, so the host reaches it as content, without credentials.
     assert!(
         matches!(Plugin::fetch(locator.clone(), vec![], LIMIT).map_err(|e| e.failure.message)?, FetchStep::Download(url) if url == "https://multimedia.nt.qq.com.cn/download?fileid=x")
     );
     assert!(
-        matches!(Plugin::fetch(locator, vec![response("image bytes")], LIMIT).map_err(|e| e.failure.message)?, FetchStep::Image(bytes) if bytes == b"image bytes")
+        matches!(Plugin::fetch(locator, vec![response("image bytes")], LIMIT).map_err(|e| e.failure.message)?, FetchStep::File(bytes) if bytes == b"image bytes")
     );
     Ok(())
 }
 
 #[test]
 fn image_download_status_never_judges_the_connection() -> Result<(), String> {
-    let locator = "onebot:image:https://multimedia.nt.qq.com.cn/download?fileid=x";
+    let locator = "onebot:download:https://multimedia.nt.qq.com.cn/download?fileid=x";
     for code in [400, 401, 403, 404, 410] {
         let step = Plugin::fetch(locator.into(), vec![status(code)], LIMIT)
             .map_err(|e| e.failure.message)?;
@@ -410,3 +418,5 @@ fn a_sender_without_a_name_still_commands() -> Result<(), String> {
     assert!(matches!(reading.messages[0].action, Action::Cancel));
     Ok(())
 }
+
+mod files;

@@ -141,7 +141,7 @@ async fn a_backtrack_to_a_reply_continues_from_it_and_can_return_to_the_left_par
         })
         .unwrap();
     kernel
-        .backtrack(session, EventId::new(), first)
+        .backtrack(session, EventId::new(), Some(first))
         .await
         .unwrap();
     let backtrack = consumed_backtrack(&mut rx).await;
@@ -158,7 +158,7 @@ async fn a_backtrack_to_a_reply_continues_from_it_and_can_return_to_the_left_par
     );
     // What the conversation left stays recorded, so it can be returned to.
     kernel
-        .backtrack(session, EventId::new(), second)
+        .backtrack(session, EventId::new(), Some(second))
         .await
         .unwrap();
     consumed_backtrack(&mut rx).await;
@@ -174,7 +174,7 @@ async fn a_backtrack_to_a_reply_continues_from_it_and_can_return_to_the_left_par
     };
     for to in [missing, backtrack] {
         assert!(matches!(
-            kernel.backtrack(session, EventId::new(), to).await,
+            kernel.backtrack(session, EventId::new(), Some(to)).await,
             Err(KernelError::Backtrack { .. })
         ));
     }
@@ -192,7 +192,7 @@ async fn a_backtrack_to_an_input_replies_to_it_again() {
     finish(&mut rx).await;
     let log = kernel.log(session, None).await.unwrap();
     kernel
-        .backtrack(session, EventId::new(), input(&log, "one"))
+        .backtrack(session, EventId::new(), Some(input(&log, "one")))
         .await
         .unwrap();
     finish(&mut rx).await;
@@ -224,7 +224,7 @@ async fn a_backtrack_stops_the_running_run_and_supersedes_the_inputs_before_it()
         .unwrap();
     send(&kernel, session, "three").await;
     kernel
-        .backtrack(session, EventId::new(), first)
+        .backtrack(session, EventId::new(), Some(first))
         .await
         .unwrap();
     let ended = finish(&mut rx).await;
@@ -259,7 +259,7 @@ async fn a_resent_backtrack_leaves_a_later_run_running() {
     finish(&mut rx).await;
     let first = run_replies(&kernel.log(session, None).await.unwrap())[0];
     let id = EventId::new();
-    kernel.backtrack(session, id, first).await.unwrap();
+    kernel.backtrack(session, id, Some(first)).await.unwrap();
     consumed_backtrack(&mut rx).await;
     gate.armed.store(true, Ordering::SeqCst);
     send(&kernel, session, "two").await;
@@ -267,7 +267,7 @@ async fn a_resent_backtrack_leaves_a_later_run_running() {
         .await
         .unwrap();
     assert_eq!(
-        kernel.backtrack(session, id, first).await.unwrap(),
+        kernel.backtrack(session, id, Some(first)).await.unwrap(),
         Accepted::Duplicate
     );
     gate.release.notify_one();
@@ -313,7 +313,7 @@ async fn a_backtrack_before_a_compaction_restores_the_full_history() {
     let (kernel, _) = support::kernel(dir.path(), provider.clone()).await;
     let mut rx = kernel.subscribe(session).await.unwrap();
     kernel
-        .backtrack(session, EventId::new(), before)
+        .backtrack(session, EventId::new(), Some(before))
         .await
         .unwrap();
     consumed_backtrack(&mut rx).await;
@@ -348,7 +348,7 @@ async fn a_backtrack_accepted_before_a_restart_takes_effect_once() {
                 id: EventId::new(),
                 session,
                 source: EventSource::Cli,
-                body: EventBody::Backtrack { to },
+                body: EventBody::Backtrack { to: Some(to) },
                 received_at: Utc::now(),
             }],
             None,

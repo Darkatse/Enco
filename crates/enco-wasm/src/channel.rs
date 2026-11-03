@@ -153,7 +153,9 @@ impl Transport {
     async fn http(&self, request: wire::Request) -> Result<wire::Response, ChannelFault> {
         let request = request_for(&self.destinations, request)
             .map_err(|failure| convert::failure(failure, false, None))?;
-        self.exchange(request, &self.credentials).await
+        self.exchange(request, &self.credentials)
+            .await
+            .map_err(fault)
     }
 
     /// Send a request whose destination is already allowed, with these credentials.
@@ -161,33 +163,12 @@ impl Transport {
         &self,
         request: host::HttpRequest,
         credentials: &[CallCredential],
-    ) -> Result<wire::Response, ChannelFault> {
-        let response = host_imports::http(&self.mapper.plugin.http, credentials, request)
-            .await
-            .map_err(|failure| {
-                let invalid = matches!(failure.kind, host::HttpErrorKind::InvalidRequest);
-                ChannelFault {
-                    failure: Failure {
-                        code: if invalid {
-                            code::PLUGIN_CONTRACT
-                        } else {
-                            code::CHANNEL_NETWORK
-                        }
-                        .into(),
-                        message: failure.message,
-                        retryable: !invalid,
-                    },
-                    unknown: failure.request_sent,
-                    fatal: invalid,
-                    retry_after: None,
-                    origin: None,
-                }
-            })?;
+    ) -> Result<wire::Response, host::HttpFailure> {
         let host::HttpResponse {
             status,
             headers,
             body,
-        } = response;
+        } = host_imports::http(&self.mapper.plugin.http, credentials, request).await?;
         Ok(wire::Response {
             status,
             headers,
@@ -231,8 +212,8 @@ impl ChannelAdapter for Connection {
         receiver::receive(self, protocol, readings, stop).await
     }
 
-    async fn fetch_image(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError> {
-        self.image(locator).await
+    async fn fetch_file(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError> {
+        self.file(locator).await
     }
 
     async fn fetch_quote(
@@ -429,6 +410,27 @@ impl Transport {
             retry_after: None,
             origin: None,
         })
+    }
+}
+
+/// A failed exchange as the connection's fault; a request the host refuses breaks the contract.
+fn fault(failure: host::HttpFailure) -> ChannelFault {
+    let invalid = matches!(failure.kind, host::HttpErrorKind::InvalidRequest);
+    ChannelFault {
+        failure: Failure {
+            code: if invalid {
+                code::PLUGIN_CONTRACT
+            } else {
+                code::CHANNEL_NETWORK
+            }
+            .into(),
+            message: failure.message,
+            retryable: !invalid,
+        },
+        unknown: failure.request_sent,
+        fatal: invalid,
+        retry_after: None,
+        origin: None,
     }
 }
 

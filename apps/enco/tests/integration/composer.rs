@@ -122,7 +122,7 @@ async fn send(daemon: &Daemon, session: &str, text: &str) -> Vec<Entry> {
         .request(Command::Send {
             session: session.into(),
             text: text.into(),
-            images: vec![],
+            files: vec![],
             event_id: EventId::new(),
         })
         .await

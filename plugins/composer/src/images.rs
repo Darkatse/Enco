@@ -44,38 +44,43 @@ pub(super) fn selected(input: &ComposeInput, omitted: &mut Vec<Omission>) -> BTr
 pub(super) fn attachments(body: &EventBody) -> Option<String> {
     match body {
         EventBody::UserMessage(message) => {
-            let lines = descriptions(&message.images, &message.unviewable);
+            let lines = descriptions(&message.attachments, &message.unviewable);
             (!lines.is_empty()).then(|| lines.join("\n"))
         }
-        EventBody::SessionMessage(message) => message.file.as_ref().map(|file| {
-            format!(
-                "[file: {}, {} bytes, at {}]",
-                file.name, file.size, file.path
-            )
-        }),
+        EventBody::SessionMessage(message) => message.file.as_ref().map(file_description),
         _ => None,
     }
 }
 
-pub(super) fn descriptions(images: &[ImageRef], unviewable: &[Unviewable]) -> Vec<String> {
-    images
+pub(super) fn descriptions(
+    attachments: &[AttachmentRef],
+    unviewable: &[Unviewable],
+) -> Vec<String> {
+    attachments
         .iter()
-        .map(|image| {
-            format!(
-                "[image: {}, {} bytes; file: {}]",
+        .map(|attachment| match attachment {
+            AttachmentRef::Image(image) => format!(
+                "[image: {}, {} bytes, at {}]",
                 image.format.mime(),
                 image.size,
                 image.path
-            )
+            ),
+            AttachmentRef::File(file) => file_description(file),
         })
         .chain(unviewable.iter().map(self::unviewable))
         .collect()
 }
 
+pub(super) fn file_description(file: &FileRef) -> String {
+    format!(
+        "[file: {}, {} bytes, at {}]",
+        file.name, file.size, file.path
+    )
+}
+
 pub(super) fn unviewable(attachment: &Unviewable) -> String {
     let reason = match &attachment.reason {
         UnviewableReason::Unsupported => "Enco cannot read this kind of content",
-        UnviewableReason::TooLarge => "too large to view as an image",
         UnviewableReason::Unavailable(message) => message,
     };
     format!("[not shown: {}; {reason}]", attachment.what)

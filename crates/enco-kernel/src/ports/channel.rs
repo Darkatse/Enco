@@ -131,6 +131,12 @@ pub enum ChannelAction<T = ChannelAttachment, Q = ChannelQuote> {
     Cancel,
     /// Return to the message named by the input's reply target.
     Backtrack,
+    /// Show the conversation's Session and its context.
+    Status,
+    /// Compact the conversation's history when its Session's next Run starts.
+    Compact,
+    /// Start the conversation over; its earlier messages stay recorded.
+    Clear,
     /// Open or close a group to members; absent queries its current setting.
     Everyone(Option<bool>),
     /// Halt a named subtree, or the conversation Session when absent.
@@ -139,11 +145,11 @@ pub enum ChannelAction<T = ChannelAttachment, Q = ChannelQuote> {
     Archive(Option<String>),
 }
 
-/// An image still held by the protocol.
+/// An attachment still held by the protocol.
 #[derive(Debug)]
 pub struct ChannelAttachment {
-    /// A description, such as a file name and media type.
-    pub what: String,
+    /// What the attachment is called: its filename, or what it is when it came without one.
+    pub name: String,
     /// The mapper's opaque locator for fetching it.
     pub locator: String,
 }
@@ -178,7 +184,7 @@ pub enum ChannelQuoted {
     Unavailable(String),
 }
 
-/// One quoted message before the host reads images and records owner identity.
+/// One quoted message before the host reads attachments and records owner identity.
 #[derive(Debug)]
 pub struct ChannelQuotedMessage {
     /// Nesting depth; nested forwards follow their parent one level deeper.
@@ -193,8 +199,8 @@ pub struct ChannelQuotedMessage {
     pub sent_at: Option<DateTime<Utc>>,
     /// The protocol's readable message text.
     pub text: String,
-    /// Images still held by the protocol, in message order.
-    pub images: Vec<ChannelAttachment>,
+    /// Attachments still held by the protocol, in message order.
+    pub attachments: Vec<ChannelAttachment>,
     /// Content that could not be shown, and why.
     pub unviewable: Vec<Unviewable>,
 }
@@ -203,9 +209,9 @@ pub struct ChannelQuotedMessage {
 pub struct ChannelContent<T, Q = ChannelQuote> {
     /// The message's text.
     pub text: String,
-    /// Images in protocol order, before or after attachment fetching.
-    pub images: Vec<T>,
-    /// Other attachments and why they cannot be viewed.
+    /// Attachments in protocol order, before or after attachment fetching.
+    pub attachments: Vec<T>,
+    /// Content kept only as a description, and why.
     pub unviewable: Vec<Unviewable>,
     /// The messages this input replies to or forwards.
     pub quote: Option<Q>,
@@ -215,7 +221,7 @@ impl<T, Q> From<String> for ChannelContent<T, Q> {
     fn from(text: String) -> Self {
         Self {
             text,
-            images: Vec::new(),
+            attachments: Vec::new(),
             unviewable: Vec::new(),
             quote: None,
         }
@@ -290,6 +296,12 @@ pub enum ChannelCommandKind {
     Cancel,
     /// Return to a previous message.
     Backtrack,
+    /// Show the conversation's Session and its context.
+    Status,
+    /// Compact the conversation's history when its Session's next Run starts.
+    Compact,
+    /// Start the conversation over; its earlier messages stay recorded.
+    Clear,
     /// Change who can address the Agent in a group.
     Everyone,
     /// Halt a Session subtree.
@@ -401,9 +413,9 @@ pub trait ChannelAdapter: Send + Sync {
         readings: mpsc::UnboundedSender<ChannelReading>,
         stop: CancellationToken,
     ) -> Result<(), ChannelCallError>;
-    /// Fetch the image at an attachment's locator; an address from content outside the mapper's
+    /// Fetch the file at an attachment's locator; an address from content outside the mapper's
     /// origins is unavailable. Reads have no external effects.
-    async fn fetch_image(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError>;
+    async fn fetch_file(&self, locator: &str) -> Result<Fetched<Vec<u8>>, ChannelCallError>;
     /// Fetch the messages at a quote's locator, in protocol order. Reads have no external effects.
     async fn fetch_quote(
         &self,

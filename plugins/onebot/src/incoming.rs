@@ -71,7 +71,7 @@ pub(super) fn message(frame: &str, account: &str) -> Result<Option<Inbound>, Fau
             "message array; set SnowLuma messageFormat to array",
         ));
     };
-    let decoded = content::decode(segments, Some(account));
+    let decoded = content::decode(segments, Some(account), message.group_id);
     let mut content = decoded.content;
     let reply_to = match &decoded.quote {
         Some(Target::Reply(id)) => Some(id.to_string()),
@@ -81,7 +81,7 @@ pub(super) fn message(frame: &str, account: &str) -> Result<Option<Inbound>, Fau
     if content.is_empty() {
         return Ok(None);
     }
-    let command = if content.images.is_empty() && content.unviewable.is_empty() {
+    let command = if content.attachments.is_empty() && content.unviewable.is_empty() {
         command(&content.text)
     } else {
         None

@@ -1,6 +1,7 @@
 //! The document that `self_history` returns: the registrations, then the comparison asked for.
-use super::{actions, caller, code, fence, next, path, quoted, step, time};
+use super::{actions, caller, code, fence, next, path, quoted, step};
 use crate::{
+    clock::local_time,
     development::{
         Comparison, ComparisonMode, ContentFailure, ContentUnavailable, FileDifference,
         HISTORY_PAGE_SIZE, History, HistoryPoint,
@@ -137,7 +138,7 @@ pub(super) fn entries(entries: &[RegistrationDetails], timezone: Tz) -> String {
 fn provenance(entry: &RegistrationDetails, timezone: Tz) -> String {
     let mut text = format!(
         "{} · {}",
-        time(entry.created_at, timezone),
+        local_time(entry.created_at, timezone),
         caller(&entry.initiator)
     );
     if let Some(reason) = entry.initiator.reason() {
