@@ -20,19 +20,6 @@ pub(super) fn datetime(time: DateTime<Utc>) -> Result<types::Datetime, Failure> 
     })
 }
 
-pub(super) fn failure(failure: &Failure) -> types::Failure {
-    let Failure {
-        code,
-        message,
-        retryable,
-    } = failure;
-    types::Failure {
-        code: code.clone(),
-        message: message.clone(),
-        retryable: *retryable,
-    }
-}
-
 pub(super) fn event(
     event: &Event,
     located: &[wire::ImageRef],
@@ -133,7 +120,7 @@ fn event_body(
             plugin: plugin.to_string(),
             trial: from.0,
             replacement: to.map(|generation| generation.0),
-            failure: failure(fault),
+            failure: crate::convert::failure_record(fault),
             text: text.clone(),
         }),
         EventBody::SessionMessage(Outgoing { text, file }) => {
@@ -145,7 +132,9 @@ fn event_body(
                     .transpose()?,
             })
         }
-        EventBody::ChildRunEnded { end } => wire::EventBody::ChildRunEnded(run_end(end)),
+        EventBody::ChildRunEnded { end } => {
+            wire::EventBody::ChildRunEnded(crate::convert::run_end(end))
+        }
         EventBody::Halt(value) => wire::EventBody::Halt(halt(value)),
         EventBody::Backtrack { to } => wire::EventBody::Backtrack(pos(*to)),
     };
@@ -299,18 +288,6 @@ fn unviewable(item: &Unviewable) -> types::Unviewable {
                 types::UnviewableReason::Unavailable(reason.clone())
             }
         },
-    }
-}
-
-pub(super) fn run_end(end: &RunEnd) -> wire::RunEnd {
-    match end {
-        RunEnd::Completed => wire::RunEnd::Completed,
-        RunEnd::BudgetExhausted => wire::RunEnd::BudgetExhausted,
-        RunEnd::Interrupted => wire::RunEnd::Interrupted,
-        RunEnd::Cancelled => wire::RunEnd::Cancelled,
-        RunEnd::Backtracked => wire::RunEnd::Backtracked,
-        RunEnd::Halted => wire::RunEnd::Halted,
-        RunEnd::Failed { failure: value } => wire::RunEnd::Failed(failure(value)),
     }
 }
 

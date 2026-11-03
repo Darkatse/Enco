@@ -12,7 +12,7 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
     let provider = ScriptedProvider::new(vec![calls(vec![write.clone()]), reply("done")]);
     let (kernel, _) = kernel(dir.path(), provider.clone()).await;
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(
             session.id,
@@ -60,7 +60,7 @@ async fn recorded_requests_match_provider_input_and_tool_history_survives_restar
     let provider = ScriptedProvider::new(vec![reply("continued")]);
     let (kernel, _) = support::kernel(dir.path(), provider.clone()).await;
     assert_eq!(kernel.log(session.id, None).await.unwrap(), entries);
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "continue".into(), Vec::new())
         .await
@@ -95,7 +95,7 @@ async fn file_pages_preserve_complete_lines_and_oversized_lines_use_the_shared_f
         .collect();
     std::fs::write(dir.path().join("workspace/pages.txt"), expected.join("\n")).unwrap();
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     let mut offset = 1;
     let mut read_lines = vec![];
     loop {
@@ -196,7 +196,7 @@ async fn unavailable_calls_and_invalid_arguments_are_settled_without_dispatch() 
     ]);
     let (kernel, _) = kernel(dir.path(), provider).await;
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(
             session.id,
@@ -260,7 +260,7 @@ async fn retries_reuse_the_frozen_plan_and_nonretryable_failures_end_the_run() {
     ]);
     let (kernel, _) = kernel(dir.path(), provider.clone()).await;
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "hello".into(), Vec::new())
         .await
@@ -326,7 +326,7 @@ async fn capabilities_outside_the_round_are_rejected_before_any_provider_request
     )
     .await;
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "hello".into(), Vec::new())
         .await

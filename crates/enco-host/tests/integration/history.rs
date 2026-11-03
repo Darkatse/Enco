@@ -517,7 +517,7 @@ async fn large_history_results_keep_a_unit_summary_and_save_the_full_diff() {
     .await
     .unwrap();
     let session = kernel.open_session("review").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(
             session.id,

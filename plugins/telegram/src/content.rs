@@ -1,6 +1,6 @@
 //! Telegram text, attachments, replies and forwards; a part that breaks Telegram's rules becomes
 //! unviewable and the rest of the message stays.
-use crate::incoming::User;
+use crate::incoming::{User, root_title};
 use enco_sdk::channel::{
     Attachment, Content, Quote, Quoted, QuotedMessage, decode_part, invalid_part,
 };
@@ -42,7 +42,10 @@ pub(super) fn decode(body: &Map<String, Value>, account: &str, username: &str) -
     }
     let mut addressed = mentions(&mut content, body, account, username);
     let mut reply_to = None;
-    if let Some(value) = body.get("reply_to_message") {
+    // A reply to the topic's root only says that the message is in the topic.
+    if let Some(value) = body.get("reply_to_message")
+        && value.as_object().and_then(root_title).is_none()
+    {
         let messages = match Replied::deserialize(value) {
             Ok(replied) => {
                 addressed |= replied

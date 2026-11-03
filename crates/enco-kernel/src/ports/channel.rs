@@ -1,7 +1,8 @@
 use crate::{Store, StoreError};
 use async_trait::async_trait;
 use enco_core::{
-    DateTime, Failure, FileData, GenerationId, MappingOrigin, Outgoing, QuoteKind, Unviewable, Utc,
+    DateTime, Failure, FileData, GenerationId, MappingOrigin, Outgoing, QuoteKind, RunEnd,
+    Unviewable, Utc,
 };
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -79,10 +80,27 @@ pub struct ChannelMessage {
     pub origin: MappingOrigin,
 }
 
+/// A conversation's name carried by the protocol, or the locator to fetch it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelConversationName {
+    /// Carried with the incoming message.
+    Name(String),
+    /// An opaque locator passed to the mapper's fetch function.
+    Fetch(String),
+}
+
 /// An incoming message, before host authorization or attachment fetching.
 pub struct ChannelInput {
     /// The conversation where replies go.
     pub conversation: String,
+    /// The realm this conversation is in, such as a Discord server or a Telegram chat with topics;
+    /// `None` for a conversation on its own.
+    ///
+    /// The owner can declare a realm private.
+    pub realm: Option<String>,
+    /// The conversation's name, such as a topic's title, when the protocol gives one; it only
+    /// names a Session made for the conversation.
+    pub conversation_name: Option<ChannelConversationName>,
     /// This message's ID within its conversation.
     pub message: String,
     /// The sender's protocol ID, when reported.
@@ -257,9 +275,10 @@ pub struct ChannelCommand {
     pub kind: ChannelCommandKind,
     /// Menu explanation supplied by the host.
     pub description: String,
-    /// Applies in one-to-one conversations.
+    /// Applies in private conversations: one-to-one ones, and those in a realm the owner declared
+    /// private.
     pub direct: bool,
-    /// Applies in group conversations.
+    /// Applies in group conversations that are not private.
     pub group: bool,
 }
 
@@ -297,7 +316,7 @@ pub struct ChannelToolActivity {
     pub state: ChannelToolState,
     /// The values of the call's required arguments in its schema's order, on one line the host
     /// shortens; empty when it has none.
-    pub summary: String,
+    pub arguments: String,
 }
 
 /// A tool's current state in a progress view.
@@ -311,6 +330,32 @@ pub enum ChannelToolState {
     Failed,
     /// The call may have taken effect but its outcome is unknown.
     Unknown,
+}
+
+/// How a Run turned out, left in place of its view where the view was only for display.
+#[derive(Clone)]
+pub struct ChannelActivityEpilogue {
+    /// Whole seconds the Run took.
+    pub elapsed_seconds: u32,
+    /// Number of Rounds the Run used.
+    pub rounds: u32,
+    /// How the Run ended.
+    pub end: RunEnd,
+    /// Whether it finished without sending its last reply.
+    pub unsent: bool,
+    /// Shortened first line of its last reply, sent or not; empty when it has none.
+    pub excerpt: String,
+}
+
+/// How a Run's view in a conversation should be updated.
+#[derive(Clone)]
+pub enum ChannelActivityUpdate {
+    /// Show or refresh the live progress view.
+    View(ChannelActivity),
+    /// End the view with the Run's epilogue: rewrite the view, or create one when none is shown.
+    Epilogue(ChannelActivityEpilogue),
+    /// Remove the view.
+    Remove,
 }
 
 /// The time the host leaves before each protocol message sent through one connection.
@@ -364,6 +409,11 @@ pub trait ChannelAdapter: Send + Sync {
         &self,
         locator: &str,
     ) -> Result<Fetched<Vec<ChannelQuotedMessage>>, ChannelCallError>;
+    /// Fetch the conversation name at a locator. Reads have no external effects.
+    async fn fetch_conversation_name(
+        &self,
+        locator: &str,
+    ) -> Result<Fetched<String>, ChannelCallError>;
     /// Lay out all content as ordered protocol messages; at least one, none empty.
     async fn split(
         &self,
@@ -379,13 +429,26 @@ pub trait ChannelAdapter: Send + Sync {
     async fn commands(&self, commands: &[ChannelCommand]) -> Result<(), ChannelCallError>;
     /// Answer an accepted message after its receipt acknowledgment completes.
     async fn respond(&self, handle: &str, text: Option<&str>) -> Result<(), ChannelCallError>;
-    /// Create, refresh or remove an activity view; creation returns its recorded response, if any.
+    /// Create, refresh, rewrite or remove a Run's view; returns the recorded response, if any.
     async fn activity(
         &self,
         target: &str,
+        replies_here: bool,
         shown: Option<&str>,
-        activity: Option<&ChannelActivity>,
+        update: &ChannelActivityUpdate,
     ) -> Result<Option<ChannelSent>, ChannelCallError>;
-    /// Show in `target` that the Agent is working, when the protocol can; nothing is kept.
-    async fn presence(&self, target: &str) -> Result<(), ChannelCallError>;
+    /// Show in `target` that the Agent is working on `view`, when the protocol can; nothing is
+    /// kept.
+    async fn presence(&self, target: &str, view: &ChannelActivity) -> Result<(), ChannelCallError>;
+    /// Open a child Session's own conversation beside `beside`, returning its ID.
+    ///
+    /// `None` when the mapper knows the protocol cannot open one there; a protocol's refusal is an
+    /// error.
+    async fn open_conversation(
+        &self,
+        beside: &str,
+        session: &[String],
+    ) -> Result<Option<String>, ChannelCallError>;
+    /// Put away a conversation opened for a child Session once that Session is archived.
+    async fn close_conversation(&self, target: &str) -> Result<(), ChannelCallError>;
 }

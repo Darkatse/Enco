@@ -26,8 +26,8 @@ pub mod bindings {
         inline: "
             package enco:sdk;
             world sdk {
-                include enco:plugin/completion-plugin@0.12.0;
-                export enco:plugin/channel@0.12.0;
+                include enco:plugin/completion-plugin@0.13.0;
+                export enco:plugin/channel@0.13.0;
             }
         ",
         generate_all,
@@ -106,29 +106,32 @@ macro_rules! export {
     (composer, $implementation:ident) => { $crate::export!(@world "composer-plugin", $implementation, [PartialEq],); };
     (channel, $implementation:ident) => {
         $crate::export!(@bindings "channel-plugin", $implementation, [PartialEq],
-            "enco:plugin/channel@0.12.0/command-kind": enco_sdk::channel::CommandKind,
-            "enco:plugin/channel@0.12.0/action": enco_sdk::channel::Action,
-            "enco:plugin/channel@0.12.0/content": enco_sdk::channel::Content,
-            "enco:plugin/channel@0.12.0/attachment": enco_sdk::channel::Attachment,
-            "enco:plugin/channel@0.12.0/quote": enco_sdk::channel::Quote,
-            "enco:plugin/channel@0.12.0/quoted": enco_sdk::channel::Quoted,
-            "enco:plugin/channel@0.12.0/quoted-message": enco_sdk::channel::QuotedMessage,
-            "enco:plugin/channel@0.12.0/activity-view": enco_sdk::channel::ActivityView,
-            "enco:plugin/channel@0.12.0/tool-activity": enco_sdk::channel::ToolActivity,
-            "enco:plugin/channel@0.12.0/tool-state": enco_sdk::channel::ToolState,
+            "enco:plugin/channel@0.13.0/command-kind": enco_sdk::channel::CommandKind,
+            "enco:plugin/channel@0.13.0/action": enco_sdk::channel::Action,
+            "enco:plugin/channel@0.13.0/content": enco_sdk::channel::Content,
+            "enco:plugin/channel@0.13.0/attachment": enco_sdk::channel::Attachment,
+            "enco:plugin/channel@0.13.0/quote": enco_sdk::channel::Quote,
+            "enco:plugin/channel@0.13.0/quoted": enco_sdk::channel::Quoted,
+            "enco:plugin/channel@0.13.0/quoted-message": enco_sdk::channel::QuotedMessage,
+            "enco:plugin/channel@0.13.0/activity-epilogue": enco_sdk::channel::ActivityEpilogue,
+            "enco:plugin/channel@0.13.0/activity-update": enco_sdk::channel::ActivityUpdate,
+            "enco:plugin/channel@0.13.0/conversation-name": enco_sdk::channel::ConversationName,
+            "enco:plugin/channel@0.13.0/activity-view": enco_sdk::channel::ActivityView,
+            "enco:plugin/channel@0.13.0/tool-activity": enco_sdk::channel::ToolActivity,
+            "enco:plugin/channel@0.13.0/tool-state": enco_sdk::channel::ToolState,
         );
     };
     (@provider $world:literal, $implementation:ident) => {
         $crate::export!(@world $world, $implementation, [],
-            "enco:plugin/completion@0.12.0/request": enco_sdk::protocol::Request,
-            "enco:plugin/completion@0.12.0/completion": enco_sdk::protocol::Completion,
-            "enco:plugin/completion@0.12.0/usage": enco_sdk::protocol::Usage,
-            "enco:plugin/completion@0.12.0/stop-reason": enco_sdk::protocol::StopReason,
+            "enco:plugin/completion@0.13.0/request": enco_sdk::protocol::Request,
+            "enco:plugin/completion@0.13.0/completion": enco_sdk::protocol::Completion,
+            "enco:plugin/completion@0.13.0/usage": enco_sdk::protocol::Usage,
+            "enco:plugin/completion@0.13.0/stop-reason": enco_sdk::protocol::StopReason,
         );
     };
     (@world $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => {
         $crate::export!(@bindings $world, $implementation, [$($derives),*],
-            "enco:plugin/host@0.12.0": enco_sdk::host,
+            "enco:plugin/host@0.13.0": enco_sdk::host,
             $($types)*
         );
     };
@@ -142,7 +145,7 @@ macro_rules! export {
                 runtime_path: "enco_sdk::wit_bindgen::rt",
                 additional_derives: [$($derives),*],
                 with: {
-                    "enco:plugin/types@0.12.0": enco_sdk::types,
+                    "enco:plugin/types@0.13.0": enco_sdk::types,
                     $($types)*
                 },
             });

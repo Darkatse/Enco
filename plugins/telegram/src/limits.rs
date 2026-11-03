@@ -9,3 +9,5 @@ pub(super) const MESSAGE_CHARS: usize = 32768;
 pub(super) const PHOTO_MAX_BYTES: usize = 10_000_000;
 pub(super) const PHOTO_MAX_DIMENSION_SUM: u64 = 10_000;
 pub(super) const PHOTO_MAX_ASPECT_RATIO: u64 = 20;
+/// The most characters Telegram allows in a topic's name.
+pub(super) const TOPIC_NAME_CHARS: usize = 128;

@@ -13,7 +13,7 @@
 - `sdk/`：随宿主分发的插件 SDK
 - `manual/`：由宿主根据当前运行代际自动生成的只读手册
 - `workspace/`：新 Session 的默认工作目录
-- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。数据库模式版本 18 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
+- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。数据库模式版本 19 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
 
 ### CLI 命令
 
@@ -76,7 +76,9 @@ Agent 可以用 `session_send(to, text, profile)` 把任务委派给子 Session�
 
 ### Telegram
 
-取消配置示例中 `[channel.telegram]` 段的注释，把 `owner` 设为你自己的用户 ID 字符串，并导出 `secrets` 指定的 token 环境变量。照片与图片文件会连同说明文字进入同一条消息，不支持的附件也会如实告知 Agent。私聊支持 `/session` 切换会话、`/cancel` 停止当前 Run、`/halt [<name>]` 叫停子树、`/archive <name>` 归档子树、回复消息发送 `/backtrack` 回溯，命令菜单与正在输入的提示会自动注册。
+取消配置示例中 `[channel.telegram]` 段的注释，把 `owner` 设为你自己的用户 ID 字符串，并导出 `secrets` 指定的 token 环境变量。照片与图片文件会连同说明文字进入同一条消息，不支持的附件也会如实告知 Agent。私聊支持 `/session` 切换会话、`/cancel` 停止当前 Run、`/halt [<name>]` 叫停子树、`/archive <name>` 归档子树、回复消息发送 `/backtrack` 回溯，命令菜单会自动注册。
+
+在 @BotFather 中开启私聊话题（Threaded Mode）后，每个私聊话题会自动建立一个带主人上下文的根 Session，名字取自话题标题，空白与 `/` 换成 `-`；重名时依次加 `-2`、`-3`；取不到标题时（例如开启之前就有的话题），名字用连接名加会话 ID。没有话题的私聊仍挂到 `main`，公开群的论坛话题则各自建立群 Session。话题里也可以用 `/session` 改绑已有的 Session。
 
 ### Discord
 
@@ -84,9 +86,11 @@ Agent 可以用 `session_send(to, text, profile)` 把任务委派给子 Session�
 
 1. 在 [Discord 开发者后台](https://discord.com/developers/applications)创建应用与 bot，在 Bot 页面打开 **Message Content Intent**，并导出 `DISCORD_BOT_TOKEN`。
 2. 在 Discord 设置中启用开发者模式，复制你的用户 ID 填入 `owner`。
-3. 邀请 bot 时勾选 `bot` 与 `applications.commands` 作用域，为它要服务的频道开启查看频道、发送消息、在线程中发送消息、读取消息历史、附加文件与嵌入链接权限。
+3. 邀请 bot 时勾选 `bot` 与 `applications.commands` 作用域，为它要服务的频道开启查看频道、发送消息、在线程中发送消息、读取消息历史、附加文件与嵌入链接权限；要显示子 Session，还需创建公开子区与管理子区的权限。
 
-私聊要求你与 bot 至少同在一个服务器里；bot 能读到的频道消息会进入映射记录，只开放必要的频道即可。Discord 使用原生 `/session`（仅私聊）、`/cancel`、`/halt`、`/archive`、`/everyone`（仅服务器）斜杠命令与消息右键菜单中的 **Backtrack here**，命令与按钮回执只有操作者自己可见，在普通消息里手打斜杠命令不会触发它。
+私聊要求你与 bot 至少同在一个服务器里；bot 能读到的频道消息会进入映射记录，只开放必要的频道即可。Discord 使用原生 `/session`（私聊与声明为私有的服务器）、`/cancel`、`/halt`、`/archive`、`/everyone`（仅服务器）斜杠命令与消息右键菜单中的 **Backtrack here**，命令与按钮回执只有操作者自己可见，在普通消息里手打斜杠命令不会触发它。
+
+在 `[channel.discord]` 中设 `private_realms = ["<服务器 ID>"]`，可以声明只属于主人的服务器。其中的频道与子区各自建立带主人上下文的根 Session，名字取自频道或子区名。主人可以直接说话，使用 `/session`、`/archive` 与按名字 `/halt`；未声明的服务器按公开群处理。
 
 ### QQ（OneBot v11）
 
@@ -124,17 +128,25 @@ Telegram 与 Discord 使用消息里自带的引用内容。QQ 会读取 SnowLum
 
 提及尽量显示名字，提问开头用于呼叫 bot 的 @ 会省去，所以只 @ bot、没有文字、图片或引用的消息不会触发回复；被引用的消息保留其中的 @。QQ 的提及仍用号码，系统表情按随插件保存的表显示名字，未收录的保留编号。
 
-### 实时进度卡
+### 实时进度
 
-任务运行期间，Telegram 与 Discord 都会挂出 `Working` 进度卡，实时显示耗时，以及最近五个工具的名字、参数摘要与结局，并带一个只有主人能点的 `Cancel` 按钮，同时显示「正在输入」；最终回复送达后卡片自动删除。渠道状态以及最近失败或未知的投递都可以在 `enco status` 中查看。
+任务运行期间，进度显示耗时，以及最近五个工具的名字、必填参数的值与结局。Telegram 私聊在等回复时用带停止按钮的草稿显示进度，按下即可取消当前 Run，回复送达后草稿消失；沉默结束不留消息，草稿最多再保留 30 秒。Telegram 群与 Discord 使用带 `Cancel` 按钮的进度卡，同时显示「正在输入」，回复送达后删除卡片。渠道状态以及最近失败或未知的投递都可以在 `enco status` 中查看。
+
+### 子会话与接管
+
+父 Session 在渠道中委派工作后，连接会在父会话旁为开始运行的子 Session 建立话题（Telegram 私聊）或公开子区（Discord 频道）。子 Session 的进度静默显示在那里，不穿插到父的对话中；Run 结束后，进度卡改写成一行尾声：结局、用时、Round 数与回复的第一行，回复没有发出时注明 `not sent`。父在建不了子会话的地方时（例如 Discord 的私信、子区或论坛帖子），子 Session 不在渠道中显示。
+
+在子话题或子区里直接说话就是接管它，回复会留在那里；父之后再派任务时，回复回到父，进度仍显示在子会话。子会话里的 `/cancel` 取消该 Session 当前的 Run，不带名字的 `/halt` 叫停它的子树。
+
+归档子 Session 会自动删除 Telegram 中的子话题（包括消息），或归档并锁定 Discord 中的子区；过程仍可用 `enco log` 查看。主人自己开的会话不会被删除，用 `/session` 改绑给别的 Session 的子会话也不会。连接配置设 `show_children = false` 可关闭自动建立新的子会话，已经建立的照常显示到归档；也可以直接删掉某个子话题，使它不再显示、不再重建。
 
 ### 群聊与服务器频道隔离
 
-如果想把 bot 放进群聊或服务器频道，在连接上配置 `group_profile`，每个群、频道或线程就会分配到独立的 Session；不配则只响应私聊。
+公开群聊和未声明为私有的服务器需要在连接上配置 `group_profile`，每个群、频道或话题各有一个 Session。不配时只服务私聊与 `private_realms` 中声明的服务器。
 
 为了把群聊机器人与私人助理隔开，`group_profile` 必须设置 `owner_context = false`，并显式列出不含记忆工具的工具白名单（文件与 shell 工具仍可能读到机器上的私人文件，只开放结果适合在群里分享的工具即可；示例配置使用网页工具并设 `requires_lifeline = false`）。
 
-默认只有主人对 bot 说话才会驱动群会话，发送 `/everyone on` 可向其他群成员开放提问，`/everyone off` 恢复默认，成员提问会保留各自的身份。设置 `context = N` 会在提问时附带最多 N 条前文消息作为引用，设为零则不带（Telegram 需在 BotFather 中关闭隐私模式或把 bot 设为群管理员才能收到普通群消息；目前暂不支持论坛话题，回复会进入 General 话题）。
+默认只有主人对 bot 说话才会驱动群会话，发送 `/everyone on` 可向其他群成员开放提问，`/everyone off` 恢复默认，成员提问会保留各自的身份。设置 `context = N` 会在提问时附带最多 N 条前文消息作为引用，设为零则不带（Telegram 需在 BotFather 中关闭隐私模式或把 bot 设为群管理员才能收到普通群消息）。
 
 ## 开发与管理插件
 

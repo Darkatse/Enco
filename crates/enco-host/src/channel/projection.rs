@@ -24,7 +24,9 @@ pub(super) fn project(
         cursor.destination = boundary.destination.clone();
         let target = boundary
             .destination
-            .and_then(|destination| channel_target(destination, identity));
+            .as_ref()
+            .and_then(|destination| channel_target(destination, identity))
+            .map(str::to_owned);
         if let (Some(target), Some(content)) = (target, boundary.deliverable) {
             return Some((
                 Delivery {
@@ -52,13 +54,16 @@ pub(super) fn delivered(identity: &Identity, delivery: &Delivery) -> Cursor {
 }
 
 /// The conversation on this protocol account that a destination names, if it names one.
-pub(super) fn channel_target(destination: ReplyDestination, identity: &Identity) -> Option<String> {
+pub(super) fn channel_target<'a>(
+    destination: &'a ReplyDestination,
+    identity: &Identity,
+) -> Option<&'a str> {
     match destination {
         ReplyDestination::Channel {
             protocol,
             account,
             conversation,
-        } if protocol == identity.protocol && account == identity.account => Some(conversation),
+        } if *protocol == identity.protocol && *account == identity.account => Some(conversation),
         ReplyDestination::Channel { .. } | ReplyDestination::Cli | ReplyDestination::Parent => None,
     }
 }

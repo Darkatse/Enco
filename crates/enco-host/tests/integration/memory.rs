@@ -28,7 +28,7 @@ async fn open(root: &Path, embedding: Arc<dyn Embedding>) -> Arc<Memories> {
 }
 
 async fn send(kernel: &Kernel, session: SessionId, text: &str) {
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     kernel
         .submit(session, EventId::new(), text.into(), Vec::new())
         .await
@@ -114,7 +114,7 @@ async fn an_input_without_text_recalls_nothing() {
         .await
         .unwrap();
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), String::new(), vec![image])
         .await

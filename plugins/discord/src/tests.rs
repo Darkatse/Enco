@@ -6,7 +6,7 @@ use super::{
     },
 };
 use enco_sdk::channel::{Action, CommandKind, Quote, Quoted};
-use enco_sdk::channel::{ActivityView, ToolActivity, ToolState};
+use enco_sdk::channel::{ActivityUpdate, ActivityView, ToolActivity, ToolState};
 use serde_json::{Value, json};
 
 fn response(status: u16, body: Value) -> Response {
@@ -160,3 +160,5 @@ fn ready_disconnect_resume_and_invalid_session_follow_protocol_state() -> Result
 mod incoming;
 mod outgoing;
 mod quotes;
+
+mod conversations;

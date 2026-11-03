@@ -13,7 +13,7 @@ async fn recorded_channel_calls() {
     let server = MockServer::start().await;
     let (root, store, adapter) = channel::telegram(&server).await;
     let raw = json!({"ok": true, "result": [{"update_id": 12, "message": {
-        "message_id": 7, "from": {"id": 9, "first_name": "A"},
+        "message_id": 7, "from": {"id": 9, "is_bot": false, "first_name": "A"},
         "chat": {"id": 9, "type": "private"}, "text": "hello"
     }}]});
     Mock::given(path("/bot42:test-secret/getUpdates"))

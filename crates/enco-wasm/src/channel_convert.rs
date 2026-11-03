@@ -8,9 +8,10 @@ use enco_core::{
     Utc,
 };
 use enco_kernel::{
-    ChannelAction, ChannelAttachment, ChannelCommand, ChannelCommandKind, ChannelContent,
-    ChannelFault, ChannelIdentity, ChannelInput, ChannelMessage, ChannelPacingGap, ChannelQuote,
-    ChannelQuoted, ChannelQuotedMessage,
+    ChannelAction, ChannelActivityEpilogue, ChannelActivityUpdate, ChannelAttachment,
+    ChannelCommand, ChannelCommandKind, ChannelContent, ChannelConversationName, ChannelFault,
+    ChannelIdentity, ChannelInput, ChannelMessage, ChannelPacingGap, ChannelQuote, ChannelQuoted,
+    ChannelQuotedMessage,
 };
 use std::time::Duration;
 
@@ -79,6 +80,8 @@ pub(super) fn message(
     let wire::Inbound {
         key,
         conversation,
+        realm,
+        conversation_name,
         message,
         sender,
         sender_name,
@@ -91,6 +94,25 @@ pub(super) fn message(
     if key.is_empty() {
         return Err(convert::bad("channel message key is empty"));
     }
+    if realm.as_ref().is_some_and(String::is_empty) {
+        return Err(convert::bad("channel message realm is empty"));
+    }
+    let conversation_name = conversation_name
+        .map(|name| match name {
+            wire::ConversationName::Name(name) => {
+                if name.is_empty() {
+                    return Err(convert::bad("channel conversation name is empty"));
+                }
+                Ok(ChannelConversationName::Name(name))
+            }
+            wire::ConversationName::Fetch(locator) => {
+                if locator.is_empty() {
+                    return Err(convert::bad("channel conversation name locator is empty"));
+                }
+                Ok(ChannelConversationName::Fetch(locator))
+            }
+        })
+        .transpose()?;
     let action = match action {
         wire::Action::Message(content) => ChannelAction::Message(self::content(content)?),
         wire::Action::Sessions => ChannelAction::Sessions,
@@ -106,6 +128,8 @@ pub(super) fn message(
         origin,
         input: ChannelInput {
             conversation,
+            realm,
+            conversation_name,
             message,
             sender,
             sender_name,
@@ -285,10 +309,10 @@ pub(super) fn activity(value: &enco_kernel::ChannelActivity) -> wire::ActivityVi
                 |enco_kernel::ChannelToolActivity {
                      name,
                      state,
-                     summary,
+                     arguments,
                  }| wire::ToolActivity {
                     name: name.clone(),
-                    summary: summary.clone(),
+                    arguments: arguments.clone(),
                     state: match state {
                         enco_kernel::ChannelToolState::Running => wire::ToolState::Running,
                         enco_kernel::ChannelToolState::Ok => wire::ToolState::Ok,
@@ -298,6 +322,26 @@ pub(super) fn activity(value: &enco_kernel::ChannelActivity) -> wire::ActivityVi
                 },
             )
             .collect(),
+    }
+}
+
+pub(super) fn activity_update(value: &ChannelActivityUpdate) -> wire::ActivityUpdate {
+    match value {
+        ChannelActivityUpdate::View(view) => wire::ActivityUpdate::View(activity(view)),
+        ChannelActivityUpdate::Epilogue(ChannelActivityEpilogue {
+            elapsed_seconds,
+            rounds,
+            end,
+            unsent,
+            excerpt,
+        }) => wire::ActivityUpdate::Epilogue(wire::ActivityEpilogue {
+            elapsed_seconds: *elapsed_seconds,
+            rounds: *rounds,
+            end: convert::run_end(end),
+            unsent: *unsent,
+            excerpt: excerpt.clone(),
+        }),
+        ChannelActivityUpdate::Remove => wire::ActivityUpdate::Remove,
     }
 }
 
@@ -365,6 +409,51 @@ mod tests {
         assert!(quoted_messages(vec![]).is_err());
         assert!(quoted_messages(vec![message(1)]).is_err());
         assert!(quoted_messages(vec![message(0), message(2)]).is_err());
+    }
+
+    #[test]
+    fn optional_conversation_metadata_must_be_nonempty_when_present() {
+        let inbound = |realm: Option<&str>, conversation_name| wire::Inbound {
+            key: "event-1".into(),
+            conversation: "conversation-1".into(),
+            realm: realm.map(str::to_owned),
+            conversation_name,
+            message: "message-1".into(),
+            sender: None,
+            sender_name: None,
+            direct: true,
+            addressed: true,
+            reply_to: None,
+            respond: None,
+            action: wire::Action::Sessions,
+        };
+        let origin = MappingOrigin {
+            call: enco_core::ContentHash::of(b"received"),
+            index: 0,
+        };
+        for (realm, name) in [
+            (None, None),
+            (
+                Some("realm-1"),
+                Some(wire::ConversationName::Name("Topic".into())),
+            ),
+            (
+                None,
+                Some(wire::ConversationName::Fetch("channel-1".into())),
+            ),
+        ] {
+            assert!(message(inbound(realm, name), origin).is_ok());
+        }
+        for (realm, name) in [
+            (Some(""), None),
+            (None, Some(wire::ConversationName::Name(String::new()))),
+            (None, Some(wire::ConversationName::Fetch(String::new()))),
+        ] {
+            let Err(failure) = message(inbound(realm, name), origin) else {
+                panic!("empty metadata was accepted");
+            };
+            assert_eq!(failure.code, enco_core::code::PLUGIN_CONTRACT);
+        }
     }
 
     #[test]

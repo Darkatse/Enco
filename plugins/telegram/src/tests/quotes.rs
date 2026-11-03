@@ -77,11 +77,11 @@ fn replies_share_image_decoding_and_strip_only_leading_bot_mentions() -> Result<
     use enco_sdk::{channel::Quoted, types::QuoteKind};
     let inbound = receive_message(json!({
         "message_id":11,"date":1793361600,"chat":{"id":-100,"type":"supergroup"},
-        "from":{"id":7,"first_name":"Ada"},"text":"@helperbot @helperbot what about @helperbot?",
+        "from":{"id":7,"is_bot":false,"first_name":"Ada"},"text":"@helperbot @helperbot what about @helperbot?",
         "entities":[{"type":"mention","offset":0,"length":10},{"type":"mention","offset":11,"length":10},
             {"type":"mention","offset":33,"length":10}],
         "reply_to_message":{"message_id":9,"date":1793275200,"chat":{"id":-100,"type":"supergroup"},
-            "from":{"id":80,"first_name":"Bob"},"caption":"@helperbot a photo",
+            "from":{"id":80,"is_bot":false,"first_name":"Bob"},"caption":"@helperbot a photo",
             "caption_entities":[{"type":"mention","offset":0,"length":10}],
             "photo":[{"file_id":"small","file_unique_id":"small-unique","width":90,"height":90},
                 {"file_id":"large","file_unique_id":"large-unique","width":640,"height":480},
@@ -108,10 +108,10 @@ fn replies_share_image_decoding_and_strip_only_leading_bot_mentions() -> Result<
 #[test]
 fn malformed_content_is_visible_without_blocking_the_message() -> Result<(), String> {
     let message = json!({"message_id":12,"date":1793361600,"chat":{"id":9,"type":"private"},
-        "from":{"id":7,"first_name":"Ada"},"caption":"keep this",
+        "from":{"id":7,"is_bot":false,"first_name":"Ada"},"caption":"keep this",
         "caption_entities":[{"type":"bold","length":4}],"document":{"file_name":"broken.png"},
         "reply_to_message":{"message_id":9,"date":1793275200,"chat":{"id":9,"type":"private"},
-            "from":{"id":80,"first_name":"Bob"},"caption":"quoted","photo":[{"width":10}]}});
+            "from":{"id":80,"is_bot":false,"first_name":"Bob"},"caption":"quoted","photo":[{"width":10}]}});
     let inbound = receive_message(message.clone())?;
     let Action::Message(content) = inbound.action else {
         return Err("missing content".into());
@@ -139,10 +139,10 @@ fn malformed_content_is_visible_without_blocking_the_message() -> Result<(), Str
 fn replying_to_a_forward_uses_the_original_speaker() -> Result<(), String> {
     let inbound = receive_message(json!({
         "message_id":13,"date":1793361600,"chat":{"id":9,"type":"private"},
-        "from":{"id":7,"first_name":"Ada"},"text":"What does this mean?",
+        "from":{"id":7,"is_bot":false,"first_name":"Ada"},"text":"What does this mean?",
         "reply_to_message":{"message_id":12,"date":1793361500,"chat":{"id":9,"type":"private"},
-            "from":{"id":7,"first_name":"Ada"},"text":"/cancel",
-            "forward_origin":{"type":"user","date":1793275200,"sender_user":{"id":80,"first_name":"Bob"}}}
+            "from":{"id":7,"is_bot":false,"first_name":"Ada"},"text":"/cancel",
+            "forward_origin":{"type":"user","date":1793275200,"sender_user":{"id":80,"is_bot":false,"first_name":"Bob"}}}
     }))?;
     let Action::Message(content) = inbound.action else {
         return Err("missing content".into());
@@ -166,7 +166,7 @@ fn replying_to_a_forward_uses_the_original_speaker() -> Result<(), String> {
 fn a_private_photo_forward_has_only_quoted_content() -> Result<(), String> {
     let inbound = receive_message(json!({
         "message_id":14,"date":1793361600,"chat":{"id":9,"type":"private"},
-        "from":{"id":7,"first_name":"Ada"},"caption":"Trip map",
+        "from":{"id":7,"is_bot":false,"first_name":"Ada"},"caption":"Trip map",
         "photo":[{"file_id":"quoted-image","file_unique_id":"unique","width":640,"height":480}],
         "forward_origin":{"type":"channel","date":1793275200,"chat":{"id":-300,"type":"channel","title":"Trip news"},"message_id":17}
     }))?;
@@ -189,7 +189,7 @@ fn a_private_photo_forward_has_only_quoted_content() -> Result<(), String> {
 fn a_reply_to_an_anonymous_admin_is_by_the_group_it_was_sent_as() -> Result<(), String> {
     let inbound = receive_message(json!({
         "message_id":15,"date":1793361600,"chat":{"id":-100,"type":"supergroup","title":"Trip group"},
-        "from":{"id":7,"first_name":"Ada"},"text":"Which day?",
+        "from":{"id":7,"is_bot":false,"first_name":"Ada"},"text":"Which day?",
         "reply_to_message":{"message_id":14,"date":1793275200,
             "chat":{"id":-100,"type":"supergroup","title":"Trip group"},
             "from":{"id":1087968824,"is_bot":true,"first_name":"Group","username":"GroupAnonymousBot"},
@@ -213,7 +213,7 @@ fn a_reply_to_an_anonymous_admin_is_by_the_group_it_was_sent_as() -> Result<(), 
 fn a_malformed_forward_origin_keeps_the_forwarded_content() -> Result<(), String> {
     let inbound = receive_message(json!({
         "message_id":16,"date":1793361600,"chat":{"id":9,"type":"private"},
-        "from":{"id":7,"first_name":"Ada"},"caption":"Trip map",
+        "from":{"id":7,"is_bot":false,"first_name":"Ada"},"caption":"Trip map",
         "photo":[{"file_id":"map","file_unique_id":"map-unique","width":640,"height":480}],
         "forward_origin":{"type":"user","date":1793275200}
     }))?;

@@ -13,9 +13,25 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+/// The routing state the reader prepares the next message against: the connection sends it
+/// back with each commit, so it is the state after the previous one.
+///
+/// The connection may change routes in between, such as opening a child's conversation, so the
+/// reader uses `chats` only to decide whether to fetch a conversation's name; where a message
+/// goes is the connection's decision.
 pub(super) struct Policy {
     pub everyone: BTreeSet<String>,
+    pub chats: std::collections::BTreeMap<String, SessionId>,
 }
+impl From<&super::State> for Policy {
+    fn from(state: &super::State) -> Self {
+        Self {
+            everyone: state.everyone.clone(),
+            chats: state.chats.clone(),
+        }
+    }
+}
+
 pub(super) struct Batch {
     pub change: Change,
     pub committed: oneshot::Sender<Policy>,
@@ -56,10 +72,27 @@ pub(super) struct Input {
     pub sender: String,
     pub sender_name: Option<String>,
     pub owner: bool,
-    pub direct: bool,
+    pub kind: ConversationKind,
     pub reply_to: Option<String>,
     pub respond: Option<String>,
     pub action: Action<Image, Quote>,
+}
+
+/// What a conversation gets when an input finds it without a route.
+pub(super) enum ConversationKind {
+    /// A private conversation on its own, such as a direct chat: it goes to `main`.
+    Main,
+    /// A private conversation in a realm: its own root Session, named after the conversation when
+    /// its name is known.
+    Root { name: Option<String> },
+    /// A conversation that is not private: its own group Session.
+    Group,
+}
+impl ConversationKind {
+    /// Whether the conversation is private to the owner.
+    pub fn private(&self) -> bool {
+        !matches!(self, Self::Group)
+    }
 }
 
 pub(super) struct Reader {
@@ -162,6 +195,14 @@ impl Reader {
             ..
         } = self;
         let enco_kernel::ChannelMessage { key, input, origin } = message;
+        // One-to-one conversations are private; so is every conversation in a realm the owner
+        // declared private.
+        let private = input.direct
+            || input
+                .realm
+                .as_ref()
+                .is_some_and(|realm| settings.private_realms.contains(realm));
+        let addressed = private || input.addressed;
         let identity = adapter.identity();
         let identities = content::Identities {
             owner: &settings.owner,
@@ -172,16 +213,17 @@ impl Reader {
         } else {
             let owner = identities.is_owner(input.sender.as_deref());
             // Members of a group open to everyone may ask, but never command.
-            let member = !input.direct
+            let member = !private
                 && policy.everyone.contains(&input.conversation)
                 && matches!(input.action, Action::Message(_));
             match (input.sender.clone(), input.respond.clone()) {
-                (Some(sender), _) if input.addressed && (owner || member) => {
-                    Disposition::Input(self.prepare_input(input, sender, owner, identities).await?)
-                }
+                (Some(sender), _) if addressed && (owner || member) => Disposition::Input(
+                    self.prepare_input(policy, input, private, sender, owner, identities)
+                        .await?,
+                ),
                 (_, Some(handle)) => Disposition::Refused { handle },
                 _ => match input.action {
-                    Action::Message(body) if !input.direct => Disposition::Earlier {
+                    Action::Message(body) if !private => Disposition::Earlier {
                         conversation: input.conversation,
                         message: EarlierMessage {
                             received_at: clock.now(),
@@ -212,11 +254,14 @@ impl Reader {
 
     async fn prepare_input(
         &self,
+        policy: &Policy,
         input: ChannelInput,
+        private: bool,
         sender: String,
         owner: bool,
         identities: content::Identities<'_>,
     ) -> Result<Input, ChannelError> {
+        let kind = self.conversation_kind(policy, &input, private).await?;
         let action = match input.action {
             ChannelAction::Message(message) => {
                 Action::Message(self.content(message, identities).await?)
@@ -235,11 +280,53 @@ impl Reader {
             sender,
             sender_name: input.sender_name,
             owner,
-            direct: input.direct,
+            kind,
             reply_to: input.reply_to,
             respond: input.respond,
             action,
         })
+    }
+}
+
+impl Reader {
+    /// What `input`'s conversation gets without a route.
+    ///
+    /// A root's name is fetched only when this message may create the Session, that is when the
+    /// conversation has no live route.
+    async fn conversation_kind(
+        &self,
+        policy: &Policy,
+        input: &ChannelInput,
+        private: bool,
+    ) -> Result<ConversationKind, ChannelError> {
+        use enco_kernel::ChannelConversationName;
+        if !private {
+            return Ok(ConversationKind::Group);
+        }
+        if input.realm.is_none() {
+            return Ok(ConversationKind::Main);
+        }
+        let name = match &input.conversation_name {
+            None => None,
+            Some(ChannelConversationName::Name(name)) => Some(name.clone()),
+            Some(ChannelConversationName::Fetch(locator)) => {
+                let creates = matches!(input.action, ChannelAction::Message(_))
+                    && !matches!(
+                        super::Route::of(&self.kernel, &policy.chats, &input.conversation).await?,
+                        super::Route::Live(_)
+                    );
+                if creates {
+                    // An unavailable name leaves the Session named after the conversation's ID.
+                    self.read(|| self.adapter.fetch_conversation_name(locator))
+                        .await?
+                        .content
+                        .ok()
+                } else {
+                    None
+                }
+            }
+        };
+        Ok(ConversationKind::Root { name })
     }
 }
 

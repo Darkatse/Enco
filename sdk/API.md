@@ -124,16 +124,21 @@ are the same everywhere. `export!` gives a channel plugin these same types, so
 name them from here.
 
 - enum `channel::Action` — What an incoming message asks for, whatever the protocol's command syntax.
+- struct `channel::ActivityEpilogue` — How a Run turned out, left in place of its view where the view was only for display.
+- enum `channel::ActivityUpdate` — What to do with a Run's view.
 - struct `channel::ActivityView` — What the Agent is doing while a Run goes on.
 - struct `channel::Attachment` — An image attachment described by its protocol locator.
 - enum `channel::CommandKind` — The commands the host understands.
 - struct `channel::Content` — The text and attachments of a message.
+- enum `channel::ConversationName` — A conversation's name, as far as the protocol carries it.
 - struct `channel::FormPart` — One part of a `multipart/form-data` body.
 - struct `channel::Quote` — Messages shown inside another message.
 - enum `channel::Quoted` — The quoted content, as far as the protocol carries it.
 - struct `channel::QuotedMessage` — A message shown inside another, as the protocol showed it.
+- enum `channel::RunEnd` — same as `types::RunEnd`
 - struct `channel::ToolActivity` — One tool call shown in an activity view.
 - enum `channel::ToolState` — Where a tool call stands.
+- fn `channel::child_title` — A child's full Session name joined with ` › `, shortened to `max_chars` characters with an ellipsis.
 - fn `channel::decode_part` — `value` decoded as a `T`; absent when it is not one, and `unviewable` gains `what` as an `invalid_part` of `protocol`.
 - fn `channel::invalid_part` — A part of a message that breaks `protocol`'s rules, such as `Discord`, kept as `what` and unavailable because of `error`; the rest of the message stays.
 - fn `channel::multipart` — Encode `parts` in order as `multipart/form-data`, returning the `content-type` header value and the body.
@@ -176,6 +181,78 @@ impl Debug for Action
 impl PartialEq for Action
 ```
 
+## struct `channel::ActivityEpilogue`
+
+`src/lib.rs`
+
+```rust
+pub struct ActivityEpilogue {
+    pub elapsed_seconds: u32,
+    pub rounds: u32,
+    pub end: RunEnd,
+    pub unsent: bool,
+    pub excerpt: String,
+}
+```
+
+How a Run turned out, left in place of its view where the view was only for display.
+
+- `elapsed_seconds` — Seconds the Run took.
+- `rounds` — The Rounds it used.
+- `end` — How it ended.
+- `unsent` — Whether it finished without sending its last reply.
+- `excerpt` — The first line of its last reply, sent or not, shortened by the host; empty when it has
+  none.
+
+### `channel::ActivityEpilogue::text`
+
+`src/channel.rs`
+
+```rust
+pub fn text(&self) -> String
+```
+
+The epilogue's line: the outcome's mark, the time and Rounds the Run took, then ` · ` and
+its reply's first line.
+
+A reply that was not sent is marked `not sent:`. The time keeps its units, such as `45s`, `7m 3s` or `2h 5m`: on a line of its own, `7:03`
+would read as a time of day.
+
+Implements:
+
+```rust
+impl Clone for ActivityEpilogue
+impl Debug for ActivityEpilogue
+impl PartialEq for ActivityEpilogue
+```
+
+## enum `channel::ActivityUpdate`
+
+`src/lib.rs`
+
+```rust
+pub enum ActivityUpdate {
+    View(ActivityView),
+    Epilogue(ActivityEpilogue),
+    Remove,
+}
+```
+
+What to do with a Run's view.
+
+- `View` — Show or refresh the live view.
+- `Epilogue` — End the view with the Run's epilogue: rewrite the view, or create one when none is
+  shown.
+- `Remove` — Remove the view.
+
+Implements:
+
+```rust
+impl Clone for ActivityUpdate
+impl Debug for ActivityUpdate
+impl PartialEq for ActivityUpdate
+```
+
 ## struct `channel::ActivityView`
 
 `src/lib.rs`
@@ -202,8 +279,8 @@ pub fn text(&self) -> String
 
 The activity card's text: `Working` and the elapsed `m:ss`, then a line per tool.
 
-Each tool line is a mark, the tool's name and, after ` · `, its argument summary when it
-has one; the marks are `…` running, `✓` ok, `✗` failed and `?` unknown.
+Each tool line is a mark, the tool's name and, after ` · `, its arguments when it has
+any; the marks are `…` running, `✓` ok, `✗` failed and `?` unknown.
 
 Implements:
 
@@ -346,6 +423,30 @@ impl Default for Content
 impl PartialEq for Content
 ```
 
+## enum `channel::ConversationName`
+
+`src/lib.rs`
+
+```rust
+pub enum ConversationName {
+    Name(String),
+    Fetch(String),
+}
+```
+
+A conversation's name, as far as the protocol carries it.
+
+- `Name` — The nonempty name, carried with the message.
+- `Fetch` — Fetch this nonempty locator to obtain it; the fetch ends with `fetch-step.name`.
+
+Implements:
+
+```rust
+impl Clone for ConversationName
+impl Debug for ConversationName
+impl PartialEq for ConversationName
+```
+
 ## struct `channel::FormPart`
 
 `src/channel.rs`
@@ -484,7 +585,7 @@ impl PartialEq for QuotedMessage
 pub struct ToolActivity {
     pub name: String,
     pub state: ToolState,
-    pub summary: String,
+    pub arguments: String,
 }
 ```
 
@@ -492,7 +593,7 @@ One tool call shown in an activity view.
 
 - `name` — The tool's name, as the model calls it.
 - `state` — Where the call stands.
-- `summary` — The values of the call's required arguments in its schema's order, on one line the host
+- `arguments` — The values of the call's required arguments in its schema's order, on one line the host
   shortens; empty when it has none.
 
 Implements:
@@ -534,6 +635,18 @@ impl Ord for ToolState
 impl PartialEq for ToolState
 impl PartialOrd for ToolState
 ```
+
+## fn `channel::child_title`
+
+`src/channel.rs`
+
+```rust
+pub fn child_title(session: &[String], max_chars: usize) -> String
+```
+
+A child's full Session name joined with ` › `, shortened to `max_chars` characters with an ellipsis.
+
+`max_chars` must be positive.
 
 ## fn `channel::decode_part`
 
@@ -1045,6 +1158,7 @@ Canonical data exchanged between the host and plugins.
 - enum `types::Part` — Ordered text, images, tool interactions and opaque extensions within a message.
 - enum `types::QuoteKind` — How a message relates to messages it quotes.
 - enum `types::Role` — Identifies the speaker of a canonical model message.
+- enum `types::RunEnd` — How a Run ended.
 - struct `types::Settings` — Endpoint, model and adapter options supplied by the caller for this call.
 - struct `types::ToolCall` — A proposed tool invocation.
 - struct `types::ToolResult` — A tool settlement.
@@ -1363,6 +1477,40 @@ impl PartialEq for Role
 impl PartialOrd for Role
 ```
 
+## enum `types::RunEnd`
+
+`src/lib.rs`
+
+```rust
+pub enum RunEnd {
+    Completed,
+    BudgetExhausted,
+    Interrupted,
+    Cancelled,
+    Backtracked,
+    Failed(Failure),
+    Halted,
+}
+```
+
+How a Run ended.
+
+- `Completed` — It finished.
+- `BudgetExhausted` — It used every Round it was allowed.
+- `Interrupted` — The process stopped before it finished.
+- `Cancelled` — It was cancelled.
+- `Backtracked` — The owner went back to an earlier message, which stopped it.
+- `Failed` — Execution stopped with this recorded failure.
+- `Halted` — A halt of this Session or an ancestor stopped it.
+
+Implements:
+
+```rust
+impl Clone for RunEnd
+impl Debug for RunEnd
+impl PartialEq for RunEnd
+```
+
 ## struct `types::Settings`
 
 `src/lib.rs`
@@ -1600,6 +1748,8 @@ Translates a messaging protocol as a pure state machine; the host owns connectio
 The host records each external input before handing it over, and carries out what the mapper asks.
 
 - enum `bindings::exports::enco::plugin::channel::Action` — same as `channel::Action`
+- struct `bindings::exports::enco::plugin::channel::ActivityEpilogue` — same as `channel::ActivityEpilogue`
+- enum `bindings::exports::enco::plugin::channel::ActivityUpdate` — same as `channel::ActivityUpdate`
 - struct `bindings::exports::enco::plugin::channel::ActivityView` — same as `channel::ActivityView`
 - enum `bindings::exports::enco::plugin::channel::Arrival` — Something that reached the mapper through the host.
 - struct `bindings::exports::enco::plugin::channel::Attachment` — same as `channel::Attachment`
@@ -1607,6 +1757,7 @@ The host records each external input before handing it over, and carries out wha
 - struct `bindings::exports::enco::plugin::channel::Command` — A command the host understands, as it should appear in the protocol's menus.
 - enum `bindings::exports::enco::plugin::channel::CommandKind` — same as `channel::CommandKind`
 - struct `bindings::exports::enco::plugin::channel::Content` — same as `channel::Content`
+- enum `bindings::exports::enco::plugin::channel::ConversationName` — same as `channel::ConversationName`
 - struct `bindings::exports::enco::plugin::channel::Fault` — What a protocol answer means for the host's settlement and retries.
 - enum `bindings::exports::enco::plugin::channel::FetchStep` — The next step of fetching the content a locator names.
 - struct `bindings::exports::enco::plugin::channel::FileData` — File bytes for one outgoing message.
@@ -1629,6 +1780,7 @@ The host records each external input before handing it over, and carries out wha
 - type `bindings::exports::enco::plugin::channel::Failure` — (no summary)
 - type `bindings::exports::enco::plugin::channel::Json` — (no summary)
 - type `bindings::exports::enco::plugin::channel::QuoteKind` — (no summary)
+- type `bindings::exports::enco::plugin::channel::RunEnd` — (no summary)
 - type `bindings::exports::enco::plugin::channel::Unviewable` — (no summary)
 
 ## enum `bindings::exports::enco::plugin::channel::Arrival`
@@ -1700,8 +1852,9 @@ A command the host understands, as it should appear in the protocol's menus.
 
 - `kind` — Which command.
 - `description` — What it does, for the menu.
-- `direct` — Whether it applies in one-to-one conversations.
-- `group` — Whether it applies in group conversations.
+- `direct` — Whether it applies in private conversations: one-to-one ones, and those in a realm the
+  owner declared private.
+- `group` — Whether it applies in group conversations that are not private.
 
 Implements:
 
@@ -1751,6 +1904,7 @@ pub enum FetchStep {
     Download(String),
     Image(Vec<u8>),
     Messages(Vec<QuotedMessage>),
+    Name(String),
     Unavailable(String),
 }
 ```
@@ -1766,6 +1920,7 @@ The next step of fetching the content a locator names.
   unavailable.
 - `Image` — The attachment's bytes.
 - `Messages` — The messages a quote's locator names, listed as `quoted.messages` is.
+- `Name` — The nonempty name a `conversation-name` locator names.
 - `Unavailable` — The protocol refused it for good; the text says why.
 
 Implements:
@@ -1834,6 +1989,8 @@ impl PartialEq for Identity
 pub struct Inbound {
     pub key: String,
     pub conversation: String,
+    pub realm: ::core::option::Option<String>,
+    pub conversation_name: ::core::option::Option<ConversationName>,
     pub message: String,
     pub sender: ::core::option::Option<String>,
     pub sender_name: ::core::option::Option<String>,
@@ -1849,6 +2006,14 @@ A message that arrived, as the protocol describes it.
 
 - `key` — The protocol's key for accepting this message once, such as an update or event ID.
 - `conversation` — The conversation, where replies go.
+- `realm` — The realm this conversation is in, such as a Discord server or a Telegram chat with
+  topics; absent for a conversation on its own.
+
+  A realm is what a protocol groups several conversations under; a direct chat or a group
+  without topics is in none. Its ID is nonempty. The owner can declare a realm private to
+  them; its conversations are then private.
+- `conversation_name` — The conversation's name, such as a topic's title, when the protocol gives one; the host
+  only uses it to name a Session made for the conversation.
 - `message` — This message's ID, unique within the conversation.
 - `sender` — The sender's ID, when the protocol reports one.
 - `sender_name` — The sender's display name, when the protocol reports one.
@@ -2167,6 +2332,9 @@ fn answered(response: Response) -> ::core::result::Result<::core::option::Option
 What the protocol answered: the ID of the message a request created, if any, or why it
 failed.
 
+A failure with code `channel.conversation_gone` means the conversation no longer exists;
+the host forgets its route.
+
 ### `bindings::exports::enco::plugin::channel::Guest::respond`
 
 ```rust
@@ -2188,29 +2356,68 @@ starts.
 ### `bindings::exports::enco::plugin::channel::Guest::activity`
 
 ```rust
-fn activity(conversation: String, shown: ::core::option::Option<String>, activity: ::core::option::Option<ActivityView>) -> ::core::option::Option<Request>
+fn activity(conversation: String, replies_here: bool, shown: ::core::option::Option<String>, update: ActivityUpdate) -> ::core::option::Option<Request>
 ```
 
-Creates or refreshes the activity view, or removes `shown` when `activity` is absent;
-absent when nothing needs sending.
+Creates, refreshes, rewrites or removes a Run's view; absent when nothing needs sending,
+and for a new view when the protocol shows none.
+
+`replies-here` says whether the Run's replies go to `conversation`; otherwise the view is
+only for display there. Where they go, create no view when `presence` already shows it.
 
 A view is not a message for the reader's attention: where the protocol allows, create it
 without a notification.
 
-The host reads the response to a request made without `shown` with `answered`, and keeps
-the message ID it gives as `shown`; without one, the Run shows no view.
+The host reads each response with `answered`. When it creates a live view (`view` without
+`shown`), it keeps the message ID `answered` gives as `shown`, and without one the Run
+shows no view there; an epilogue ends the view, so its ID is not kept.
 
 ### `bindings::exports::enco::plugin::channel::Guest::presence`
 
 ```rust
-fn presence(conversation: String) -> ::core::option::Option<Request>
+fn presence(conversation: String, view: ActivityView) -> ::core::option::Option<Request>
 ```
 
-A passing sign in `conversation` that the Agent is working, such as typing; absent when
-the protocol has none.
+A passing sign in `conversation` that the Agent is working, such as typing or an expiring
+draft of `view`; absent when the protocol has none.
 
-The host sends it when a Run starts and at each refresh until the Run ends, keeps nothing
-of it, and reads its response with `answered`.
+The host sends it only where the Run's replies go, when the Run starts and at each refresh
+until it ends, keeps nothing of it, and reads its response with `answered`.
+
+### `bindings::exports::enco::plugin::channel::Guest::open_conversation`
+
+```rust
+fn open_conversation(beside: String, session: Vec<String>) -> ::core::option::Option<Request>
+```
+
+The request opening a child Session's own conversation beside `beside`, where its parent
+shows; absent when the mapper knows the protocol cannot open one there.
+
+Where the protocol refuses to open one there, `opened` gives that failure and the child is
+not shown on this connection. `session` is the child's full name, segment by segment; lay
+out the title so that it reads apart from the conversations people open. Opening may leave
+the protocol's one-time notice.
+
+### `bindings::exports::enco::plugin::channel::Guest::opened`
+
+```rust
+fn opened(beside: String, response: Response) -> ::core::result::Result<String, Fault>
+```
+
+The nonempty ID of the conversation that an `open-conversation` request made beside
+`beside` created, or why it failed.
+
+### `bindings::exports::enco::plugin::channel::Guest::close_conversation`
+
+```rust
+fn close_conversation(conversation: String) -> ::core::option::Option<Request>
+```
+
+The request that puts away a conversation opened for a child Session once that Session is
+archived; absent when nothing needs sending.
+
+For instance, this deletes a topic or archives a thread. The host reads its response with
+`answered`.
 
 ## type `bindings::exports::enco::plugin::channel::Datetime`
 
@@ -2242,6 +2449,14 @@ pub type Json = super::super::super::super::enco::plugin::types::Json;
 
 ```rust
 pub type QuoteKind = super::super::super::super::enco::plugin::types::QuoteKind;
+```
+
+## type `bindings::exports::enco::plugin::channel::RunEnd`
+
+`src/lib.rs`
+
+```rust
+pub type RunEnd = super::super::super::super::enco::plugin::types::RunEnd;
 ```
 
 ## type `bindings::exports::enco::plugin::channel::Unviewable`

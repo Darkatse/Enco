@@ -131,11 +131,12 @@ impl Connection {
             sender,
             sender_name,
             owner,
-            direct,
+            kind,
             reply_to,
             respond: _,
             action,
         } = input;
+        let private = kind.private();
         let source = EventSource::Channel {
             protocol: self.identity.protocol.clone(),
             account: self.identity.account.clone(),
@@ -149,13 +150,13 @@ impl Connection {
         let receipt = match action {
             Action::Message(content) => {
                 return self
-                    .message(state, key, source, (&target, direct), content)
+                    .message(state, key, source, (&target, kind), content)
                     .await;
             }
             Action::Backtrack => {
                 return self.backtrack(state, &target, source, key, reply_to).await;
             }
-            Action::SelectSession(_) | Action::Sessions if !direct => GROUP_SESSION.into(),
+            Action::SelectSession(_) | Action::Sessions if !private => GROUP_SESSION.into(),
             Action::SelectSession(name) => match self.kernel.open_session(&name).await {
                 Ok(session) => {
                     state.chats.insert(target.clone(), session.id);
@@ -168,61 +169,44 @@ impl Connection {
             Action::Cancel => return self.cancel_session(state, key, &target).await,
             Action::Halt(name) => {
                 return self
-                    .stop_session(state, key, source, (&target, direct), name, false)
+                    .stop_session(state, key, source, (&target, private), name, false)
                     .await;
             }
             Action::Archive(name) => {
                 return self
-                    .stop_session(state, key, source, (&target, direct), name, true)
+                    .stop_session(state, key, source, (&target, private), name, true)
                     .await;
             }
-            Action::Everyone(open) => everyone(&mut state, &target, direct, open),
+            Action::Everyone(open) => everyone(&mut state, &target, private, open),
         };
         self.receipt(state, key, receipt).await
     }
 
-    /// Route a message to its conversation's Session; a group's first creates the group's own.
+    /// Route a message to its conversation's Session; without a live route, the conversation's
+    /// kind decides: `main`, or a root or group Session of its own created now.
     async fn message(
         &mut self,
         mut state: State,
         key: String,
         source: EventSource,
-        (target, direct): (&str, bool),
+        (target, kind): (&str, transport::ConversationKind),
         content: enco_kernel::ChannelContent<Image, Quote>,
     ) -> Result<Option<String>, ChannelError> {
-        let group_profile = match (direct, &self.settings.group_profile) {
-            (true, _) => None,
-            (false, Some(profile)) => Some(profile.clone()),
-            (false, None) => return self.receipt(state, key, NO_GROUP_PROFILE.into()).await,
+        let (profile, name) = match kind {
+            transport::ConversationKind::Main => (None, None),
+            transport::ConversationKind::Root { name } => (Some(ProfileName::default()), name),
+            transport::ConversationKind::Group => match self.settings.group_profile.clone() {
+                Some(profile) => (Some(profile), None),
+                None => return self.receipt(state, key, NO_GROUP_PROFILE.into()).await,
+            },
         };
-        // A route to an archived Session counts as no route; the owner learns where it goes now.
-        let mut archived = None;
-        if let Some(id) = state.chats.get(target) {
-            let session = self.kernel.session(*id).await?;
-            if session.archived_at.is_some() {
-                state.chats.remove(target);
-                archived = Some(session.name);
-            }
-        }
-        let (session, created) = match (state.chats.get(target), group_profile) {
-            (Some(session), _) => (*session, None),
-            (None, None) => (self.kernel.open_session("main").await?.id, None),
-            (None, Some(profile)) => {
-                let name = transcribe_name_segment(&format!("{}:{target}", self.settings.name))
-                    .ok_or_else(|| {
-                        ChannelError::Config(format!(
-                            "connection name {} cannot name a group Session",
-                            self.settings.name
-                        ))
-                    })?;
-                let created = NewSession {
-                    id: SessionId::new(),
-                    name: SessionName::root(&name)
-                        .map_err(|error| ChannelError::Config(error.to_string()))?,
-                    profile,
-                    origin: NewSessionOrigin::Root,
-                    created_at: self.clock.now(),
-                };
+        let route = Route::of(&self.kernel, &state.chats, target).await?;
+        let (session, created) = match (&route, profile) {
+            (Route::Live(session), _) => (*session, None),
+            (_, None) => (self.kernel.open_session("main").await?.id, None),
+            (_, Some(profile)) => {
+                let name = self.session_name(target, name.as_deref())?;
+                let created = self.root_session(name, profile)?;
                 (created.id, Some(created))
             }
         };
@@ -241,14 +225,40 @@ impl Connection {
         {
             return Ok(Some(refusal));
         }
-        Ok(match archived {
-            Some(archived) => {
+        // The owner learns where a conversation whose Session was archived goes now.
+        Ok(match route {
+            Route::Archived(archived) => {
                 let now = self.kernel.session(session).await?.name;
                 Some(format!(
                     "Session {archived} is archived; this conversation now goes to Session {now}."
                 ))
             }
-            None => None,
+            Route::Unrouted | Route::Live(_) => None,
+        })
+    }
+
+    /// The name of a Session that `target` creates: the conversation's own name as one segment,
+    /// or else the connection's name and the conversation's ID.
+    fn session_name(&self, target: &str, name: Option<&str>) -> Result<String, ChannelError> {
+        if let Some(name) = name.and_then(transcribe_name_segment) {
+            return Ok(name);
+        }
+        transcribe_name_segment(&format!("{}:{target}", self.settings.name)).ok_or_else(|| {
+            ChannelError::Config(format!(
+                "connection name {} cannot name a Session",
+                self.settings.name
+            ))
+        })
+    }
+
+    fn root_session(&self, name: String, profile: ProfileName) -> Result<NewSession, ChannelError> {
+        Ok(NewSession {
+            id: SessionId::new(),
+            name: SessionName::root(&name)
+                .map_err(|error| ChannelError::Config(error.to_string()))?,
+            profile,
+            origin: NewSessionOrigin::Root,
+            created_at: self.clock.now(),
         })
     }
 
@@ -296,8 +306,8 @@ impl Connection {
     }
 }
 
-fn everyone(state: &mut State, target: &str, direct: bool, open: Option<bool>) -> String {
-    if direct {
+fn everyone(state: &mut State, target: &str, private: bool, open: Option<bool>) -> String {
+    if private {
         return "Opening to everyone applies only to group chats.".into();
     }
     match open {

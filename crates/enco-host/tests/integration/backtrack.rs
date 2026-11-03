@@ -124,7 +124,7 @@ async fn a_backtrack_to_a_reply_continues_from_it_and_can_return_to_the_left_par
     )
     .await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     for text in ["one", "two"] {
         send(&kernel, session, text).await;
         finish(&mut rx).await;
@@ -187,7 +187,7 @@ async fn a_backtrack_to_an_input_replies_to_it_again() {
     let provider = ScriptedProvider::new(vec![reply("first"), reply("again")]);
     let (kernel, _) = support::kernel(dir.path(), provider.clone()).await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     send(&kernel, session, "one").await;
     finish(&mut rx).await;
     let log = kernel.log(session, None).await.unwrap();
@@ -213,7 +213,7 @@ async fn a_backtrack_stops_the_running_run_and_supersedes_the_inputs_before_it()
     })
     .await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     send(&kernel, session, "one").await;
     finish(&mut rx).await;
     let first = run_replies(&kernel.log(session, None).await.unwrap())[0];
@@ -254,7 +254,7 @@ async fn a_resent_backtrack_leaves_a_later_run_running() {
     })
     .await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     send(&kernel, session, "one").await;
     finish(&mut rx).await;
     let first = run_replies(&kernel.log(session, None).await.unwrap())[0];
@@ -299,7 +299,7 @@ async fn a_backtrack_before_a_compaction_restores_the_full_history() {
     )
     .await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     send(&kernel, session, "initial request").await;
     let entries = finish(&mut rx).await;
     let before = entries
@@ -311,7 +311,7 @@ async fn a_backtrack_before_a_compaction_restores_the_full_history() {
     drop(kernel);
     let provider = ScriptedProvider::new(vec![reply("continued")]);
     let (kernel, _) = support::kernel(dir.path(), provider.clone()).await;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     kernel
         .backtrack(session, EventId::new(), before)
         .await
@@ -336,7 +336,7 @@ async fn a_backtrack_accepted_before_a_restart_takes_effect_once() {
     let (kernel, store) =
         support::kernel(dir.path(), ScriptedProvider::new(vec![reply("first")])).await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     send(&kernel, session, "one").await;
     finish(&mut rx).await;
     let to = input(&kernel.log(session, None).await.unwrap(), "one");
@@ -358,7 +358,7 @@ async fn a_backtrack_accepted_before_a_restart_takes_effect_once() {
     drop(store);
     let provider = ScriptedProvider::new(vec![reply("again")]);
     let (kernel, _) = support::kernel(dir.path(), provider.clone()).await;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     let runs = |log: &[Entry]| {
         log.iter()
             .filter(|entry| matches!(entry.body, EntryBody::RunStarted { .. }))

@@ -2,7 +2,7 @@
 use super::*;
 
 /// Group chats address only their own Session, as with `/session`.
-const GROUP_LIFECYCLE: &str = "In a group chat, /halt stops only this group's Session; halt other Sessions by name, or archive Sessions, in a private chat.";
+const GROUP_LIFECYCLE: &str = "In a group chat, /halt stops only this group's Session; halt other Sessions by name, or archive Sessions, in a conversation private to you.";
 
 impl Connection {
     pub(super) async fn cancel_session(
@@ -30,11 +30,11 @@ impl Connection {
         state: State,
         key: String,
         source: EventSource,
-        (target, direct): (&str, bool),
+        (target, private): (&str, bool),
         name: Option<String>,
         archive: bool,
     ) -> Result<Option<String>, ChannelError> {
-        if !direct && (archive || name.is_some()) {
+        if !private && (archive || name.is_some()) {
             return self.receipt(state, key, GROUP_LIFECYCLE.into()).await;
         }
         if archive && name.is_none() {

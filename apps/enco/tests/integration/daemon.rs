@@ -565,9 +565,9 @@ async fn telegram_protocol_owns_commands_text_limits_and_delivery_evidence() {
     Mock::given(path("/bot42:test-secret/getUpdates"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true, "result": [
-                {"update_id": 8, "message": {"message_id": 4, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}, "text": "/session work"}},
-                {"update_id": 9, "message": {"message_id": 5, "chat": {"id": 1, "type": "group"}, "from": {"id": 3, "first_name": "Fixture User"}, "text": "ignored by owner"}},
-                {"update_id": 10, "message": {"message_id": 6, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}}}
+                {"update_id": 8, "message": {"message_id": 4, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "is_bot": false, "first_name": "Fixture User"}, "text": "/session work"}},
+                {"update_id": 9, "message": {"message_id": 5, "chat": {"id": 1, "type": "group"}, "from": {"id": 3, "is_bot": false, "first_name": "Fixture User"}, "text": "ignored by owner"}},
+                {"update_id": 10, "message": {"message_id": 6, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "is_bot": false, "first_name": "Fixture User"}}}
             ]
         }))).mount(&server).await;
     let updates = channel::messages(telegram.clone()).await;
@@ -664,10 +664,10 @@ async fn telegram_backtrack_names_the_message_it_replies_to() {
     Mock::given(path("/bot42:test-secret/getUpdates"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true, "result": [
-                {"update_id": 1, "message": {"message_id": 7, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}, "text": "/backtrack", "reply_to_message": {
+                {"update_id": 1, "message": {"message_id": 7, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "is_bot": false, "first_name": "Fixture User"}, "text": "/backtrack", "reply_to_message": {
                     "message_id": 3, "chat": {"id": 1, "type": "private"}, "date": 0, "text": "an earlier reply"
                 }}},
-                {"update_id": 2, "message": {"message_id": 8, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}, "text": "/backtrack"}}
+                {"update_id": 2, "message": {"message_id": 8, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "is_bot": false, "first_name": "Fixture User"}, "text": "/backtrack"}}
             ]
         }))).mount(&server).await;
     let updates = channel::messages(telegram.clone()).await;

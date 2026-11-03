@@ -67,7 +67,7 @@ async fn an_owner_message_cannot_be_skipped_and_its_run_eventually_replies() {
     let provider = ScriptedProvider::new(vec![skip("no"), reply("answer")]);
     let (kernel, _) = kernel(dir.path(), provider.clone()).await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     kernel
         .submit(session, EventId::new(), "question".into(), vec![])
         .await
@@ -91,7 +91,7 @@ async fn a_backtrack_requires_a_reply_even_when_it_returns_to_a_reminder() {
         let provider = ScriptedProvider::new(vec![reply("first"), skip("no"), reply("again")]);
         let (kernel, _) = kernel(dir.path(), provider).await;
         let session = kernel.open_session("main").await.unwrap().id;
-        let mut rx = kernel.subscribe(session).unwrap();
+        let mut rx = kernel.subscribe(session).await.unwrap();
         if interactive {
             kernel
                 .submit(session, EventId::new(), "question".into(), vec![])
@@ -153,7 +153,7 @@ async fn an_owner_input_arriving_mid_round_is_answered_in_the_same_run() {
         });
         let (kernel, _) = kernel(dir.path(), provider.clone()).await;
         let session = kernel.open_session("main").await.unwrap().id;
-        let mut rx = kernel.subscribe(session).unwrap();
+        let mut rx = kernel.subscribe(session).await.unwrap();
         reminder(&kernel, session).await;
         provider.entered.notified().await;
         kernel
@@ -214,7 +214,7 @@ async fn skip_fails_among_other_calls_without_stopping_them_across_batches() {
         let provider = ScriptedProvider::new(vec![calls(proposed), reply("done")]);
         let (kernel, _) = kernel(dir.path(), provider).await;
         let session = kernel.open_session("main").await.unwrap().id;
-        let mut rx = kernel.subscribe(session).unwrap();
+        let mut rx = kernel.subscribe(session).await.unwrap();
         reminder(&kernel, session).await;
         let entries = finish(&mut rx).await;
         assert!(!entries.iter().any(|entry| matches!(&entry.body,
@@ -265,7 +265,7 @@ async fn an_automatic_rollback_notice_can_end_without_a_reply() {
         .await
         .unwrap();
     kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     let entries = finish(&mut rx).await;
     assert!(entries.iter().any(|entry| matches!(
         &entry.body,
@@ -306,7 +306,7 @@ async fn a_reminder_after_the_reply_may_be_skipped_in_the_same_run() {
     });
     let (kernel, _) = kernel(dir.path(), provider.clone()).await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     kernel
         .submit(session, EventId::new(), "question".into(), vec![])
         .await
@@ -352,7 +352,7 @@ async fn a_reminder_after_a_failed_run_may_be_skipped() {
     let provider = ScriptedProvider::new(vec![Err(failure), skip("all quiet after failure")]);
     let (kernel, _) = kernel(dir.path(), provider).await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     kernel
         .submit(session, EventId::new(), "question".into(), vec![])
         .await

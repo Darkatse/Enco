@@ -8,7 +8,7 @@ pub struct SessionName(String);
 
 impl Ord for SessionName {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.split('/').cmp(other.0.split('/'))
+        self.segments().cmp(other.segments())
     }
 }
 
@@ -59,6 +59,11 @@ impl SessionName {
     )]
     pub fn depth(&self) -> u32 {
         self.0.bytes().filter(|b| *b == b'/').count() as u32
+    }
+
+    /// The segments from the root down to this Session.
+    pub fn segments(&self) -> impl Iterator<Item = &str> {
+        self.0.split('/')
     }
 
     /// The validated full name.

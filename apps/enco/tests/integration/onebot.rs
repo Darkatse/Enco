@@ -6,7 +6,7 @@
 //! The factory OneBot mapper uses the selected service for both HTTP and authenticated WebSocket.
 use crate::support::channel;
 use enco_core::{FileData, Outgoing};
-use enco_kernel::{ChannelAction, ChannelAdapter, ChannelReading};
+use enco_kernel::{ChannelAction, ChannelActivity, ChannelAdapter, ChannelReading};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -127,7 +127,16 @@ async fn send_outputs(
             .message
             .is_none()
     );
-    adapter.presence("private:9").await.unwrap();
+    adapter
+        .presence(
+            "private:9",
+            &ChannelActivity {
+                elapsed_seconds: 1,
+                tools: vec![],
+            },
+        )
+        .await
+        .unwrap();
     for route in [
         "/send_private_msg",
         "/upload_private_file",

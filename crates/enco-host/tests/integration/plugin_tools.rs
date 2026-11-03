@@ -116,7 +116,7 @@ async fn tool_kernel(root: &Path, loaded: Loaded) -> Kernel {
 
 async fn send(kernel: &Kernel) -> Vec<Entry> {
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "work".into(), Vec::new())
         .await

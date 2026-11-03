@@ -1,11 +1,13 @@
 #![expect(clippy::unwrap_used, reason = "test coordination fails by panicking")]
 mod activity;
 mod backtrack;
+mod children;
 mod groups;
 mod lifecycle;
 mod outgoing;
 mod silence;
 mod supervisor;
+mod topics;
 use crate::support;
 
 use async_trait::async_trait;
@@ -15,7 +17,7 @@ use enco_host::{
     channel::{Channel, ChannelState, ConnectionSettings},
 };
 use enco_kernel::{
-    ChannelAction as Action, ChannelActivity, ChannelAdapter as Adapter,
+    ChannelAction as Action, ChannelActivity, ChannelActivityUpdate, ChannelAdapter as Adapter,
     ChannelAttachment as Attachment, ChannelCallError, ChannelCommand,
     ChannelContent as MessageContent, ChannelFault as Fault, ChannelIdentity as Identity,
     ChannelInput as Input, ChannelMessage, ChannelQuotedMessage, ChannelReading, ChannelSent,
@@ -42,8 +44,27 @@ struct Update {
 struct Activity {
     target: String,
     shown: Option<String>,
-    view: Option<ChannelActivity>,
+    replies_here: bool,
+    update: ChannelActivityUpdate,
     result: oneshot::Sender<Result<Option<String>, Fault>>,
+}
+
+impl Activity {
+    fn view(&self) -> Option<&ChannelActivity> {
+        match &self.update {
+            ChannelActivityUpdate::View(view) => Some(view),
+            _ => None,
+        }
+    }
+}
+struct OpenConversation {
+    beside: String,
+    session: Vec<String>,
+    result: oneshot::Sender<Result<Option<String>, Fault>>,
+}
+struct CloseConversation {
+    target: String,
+    result: oneshot::Sender<Result<(), Fault>>,
 }
 
 struct Send {
@@ -89,6 +110,11 @@ struct ControlledChannel {
     sends: mpsc::UnboundedSender<Send>,
     fetches: mpsc::UnboundedSender<Fetch<Vec<u8>>>,
     quotes: mpsc::UnboundedSender<Fetch<Vec<ChannelQuotedMessage>>>,
+    names: mpsc::UnboundedSender<Fetch<String>>,
+    conversations_enabled: AtomicBool,
+    conversation_attempts: AtomicU32,
+    opens: mpsc::UnboundedSender<OpenConversation>,
+    closes: mpsc::UnboundedSender<CloseConversation>,
     sent: AtomicU32,
     pacing: std::sync::Mutex<Option<enco_kernel::ChannelPacingGap>>,
     invalid_state: Mutex<Option<Option<Value>>>,
@@ -194,6 +220,41 @@ impl Adapter for ControlledChannel {
     ) -> Result<Fetched<Vec<ChannelQuotedMessage>>, ChannelCallError> {
         Fetch::ask(&self.quotes, locator).await
     }
+    async fn fetch_conversation_name(
+        &self,
+        locator: &str,
+    ) -> Result<Fetched<String>, ChannelCallError> {
+        Fetch::ask(&self.names, locator).await
+    }
+    async fn open_conversation(
+        &self,
+        beside: &str,
+        session: &[String],
+    ) -> Result<Option<String>, ChannelCallError> {
+        self.conversation_attempts.fetch_add(1, Ordering::SeqCst);
+        if !self.conversations_enabled.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let (result, receive) = oneshot::channel();
+        self.opens
+            .send(OpenConversation {
+                beside: beside.into(),
+                session: session.to_vec(),
+                result,
+            })
+            .unwrap();
+        receive.await.unwrap().map_err(Into::into)
+    }
+    async fn close_conversation(&self, target: &str) -> Result<(), ChannelCallError> {
+        let (result, receive) = oneshot::channel();
+        self.closes
+            .send(CloseConversation {
+                target: target.into(),
+                result,
+            })
+            .unwrap();
+        receive.await.unwrap().map_err(Into::into)
+    }
     async fn split(
         &self,
         message: Outgoing<FileData>,
@@ -272,8 +333,9 @@ impl Adapter for ControlledChannel {
     async fn activity(
         &self,
         target: &str,
+        replies_here: bool,
         shown: Option<&str>,
-        view: Option<&ChannelActivity>,
+        update: &ChannelActivityUpdate,
     ) -> Result<Option<ChannelSent>, ChannelCallError> {
         if !self.activity_enabled.load(Ordering::SeqCst) {
             return Ok(None);
@@ -283,7 +345,8 @@ impl Adapter for ControlledChannel {
             .send(Activity {
                 target: target.into(),
                 shown: shown.map(str::to_owned),
-                view: view.cloned(),
+                replies_here,
+                update: update.clone(),
                 result,
             })
             .unwrap();
@@ -297,7 +360,7 @@ impl Adapter for ControlledChannel {
             })
             .map_err(Into::into)
     }
-    async fn presence(&self, target: &str) -> Result<(), ChannelCallError> {
+    async fn presence(&self, target: &str, _: &ChannelActivity) -> Result<(), ChannelCallError> {
         // Tests that do not watch presence drop its receiver.
         let _ = self.presences.send(target.into());
         Ok(())
@@ -314,6 +377,9 @@ struct Harness {
     sending: mpsc::UnboundedReceiver<Send>,
     fetching: mpsc::UnboundedReceiver<Fetch<Vec<u8>>>,
     quoting: mpsc::UnboundedReceiver<Fetch<Vec<ChannelQuotedMessage>>>,
+    naming: mpsc::UnboundedReceiver<Fetch<String>>,
+    opening: mpsc::UnboundedReceiver<OpenConversation>,
+    closing: mpsc::UnboundedReceiver<CloseConversation>,
     activity: mpsc::UnboundedReceiver<Activity>,
     presence: mpsc::UnboundedReceiver<String>,
 }
@@ -330,6 +396,9 @@ struct Traffic {
     sending: mpsc::UnboundedReceiver<Send>,
     fetching: mpsc::UnboundedReceiver<Fetch<Vec<u8>>>,
     quoting: mpsc::UnboundedReceiver<Fetch<Vec<ChannelQuotedMessage>>>,
+    naming: mpsc::UnboundedReceiver<Fetch<String>>,
+    opening: mpsc::UnboundedReceiver<OpenConversation>,
+    closing: mpsc::UnboundedReceiver<CloseConversation>,
     activity: mpsc::UnboundedReceiver<Activity>,
     presence: mpsc::UnboundedReceiver<String>,
 }
@@ -339,6 +408,9 @@ fn traffic() -> Traffic {
     let (sends, sending) = mpsc::unbounded_channel();
     let (fetches, fetching) = mpsc::unbounded_channel();
     let (quotes, quoting) = mpsc::unbounded_channel();
+    let (names, naming) = mpsc::unbounded_channel();
+    let (opens, opening) = mpsc::unbounded_channel();
+    let (closes, closing) = mpsc::unbounded_channel();
     let (activities, activity) = mpsc::unbounded_channel();
     let (presences, presence) = mpsc::unbounded_channel();
     let adapter = Arc::new(ControlledChannel {
@@ -347,6 +419,11 @@ fn traffic() -> Traffic {
         sends,
         fetches,
         quotes,
+        names,
+        opens,
+        closes,
+        conversations_enabled: AtomicBool::new(false),
+        conversation_attempts: AtomicU32::new(0),
         sent: AtomicU32::new(0),
         pacing: std::sync::Mutex::new(None),
         invalid_state: Mutex::new(None),
@@ -371,6 +448,9 @@ fn traffic() -> Traffic {
         sending,
         fetching,
         quoting,
+        naming,
+        opening,
+        closing,
         activity,
         presence,
     }
@@ -384,6 +464,9 @@ fn controlled(kernel: Kernel, store: Arc<SqliteStore>) -> Harness {
         sending,
         fetching,
         quoting,
+        naming,
+        opening,
+        closing,
         activity,
         presence,
     } = traffic();
@@ -396,6 +479,9 @@ fn controlled(kernel: Kernel, store: Arc<SqliteStore>) -> Harness {
         sending,
         fetching,
         quoting,
+        naming,
+        opening,
+        closing,
         activity,
         presence,
     }
@@ -409,6 +495,8 @@ fn settings() -> ConnectionSettings {
         secrets: Default::default(),
         context: 0,
         group_profile: None,
+        private_realms: Default::default(),
+        show_children: true,
         name: "controlled".into(),
     }
 }
@@ -451,6 +539,8 @@ fn update(offset: u32, action: Action) -> Update {
         protocol: json!(offset),
         input: Input {
             conversation: "chat".into(),
+            realm: None,
+            conversation_name: None,
             message: offset.to_string(),
             sender: Some("owner".into()),
             sender_name: Some("Owner".into()),
@@ -467,6 +557,20 @@ fn origin() -> MappingOrigin {
     MappingOrigin {
         call: ContentHash::of(b"controlled response"),
         index: 0,
+    }
+}
+
+fn limited() -> Fault {
+    Fault {
+        failure: Failure {
+            code: "rate_limited".into(),
+            message: "wait".into(),
+            retryable: true,
+        },
+        unknown: false,
+        fatal: false,
+        retry_after: Some(Duration::from_secs(8)),
+        origin: None,
     }
 }
 
@@ -572,7 +676,7 @@ async fn connection_accepts_while_sending_and_preserves_unknown_outcomes_across_
     // Reopening retains the failure while processed replies are not sent again.
     let channel = start(&kernel, &adapter);
     assert_eq!(receive(&mut polling).await, json!(3));
-    let mut entries = kernel.subscribe(session.id).unwrap();
+    let mut entries = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "local".into(), Vec::new())
         .await
@@ -622,7 +726,7 @@ async fn a_delivery_left_unsettled_by_a_crash_is_recorded_as_unknown_on_restart(
         .unwrap();
     channel.shutdown().await.unwrap();
     let session = kernel.open_session("main").await.unwrap();
-    let mut entries = kernel.subscribe(session.id).unwrap();
+    let mut entries = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "local".into(), Vec::new())
         .await

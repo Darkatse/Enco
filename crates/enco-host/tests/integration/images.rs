@@ -13,7 +13,7 @@ const PNG: &[u8] = include_bytes!("../../../enco-kernel/src/image/probe.png");
 
 async fn send(kernel: &Kernel, images: Vec<Image>) -> (SessionId, Vec<Entry>) {
     let session = kernel.open_session("pictures").await.unwrap();
-    let mut events = kernel.subscribe(session.id).unwrap();
+    let mut events = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), String::new(), images)
         .await

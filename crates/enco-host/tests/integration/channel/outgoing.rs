@@ -51,7 +51,7 @@ async fn settled_message_arrives_before_the_same_rounds_shell_finishes() {
             .any(|e| matches!(e.body, EntryBody::RoundEnded { .. }))
     );
     progress.result.send(Ok(())).unwrap();
-    let mut entries = kernel.subscribe(session.id).unwrap();
+    let mut entries = kernel.subscribe(session.id).await.unwrap();
     tokio::time::timeout(
         Duration::from_secs(10),
         tokio::fs::write(workspace.join("gate"), b"done\n"),
@@ -100,7 +100,7 @@ async fn restart_delivers_recorded_files_and_continues_after_missing_blobs() {
     receive(&mut sending).await.result.send(Ok(())).unwrap();
     channel.shutdown().await.unwrap();
     let session = kernel.open_session("main").await.unwrap();
-    let mut entries = kernel.subscribe(session.id).unwrap();
+    let mut entries = kernel.subscribe(session.id).await.unwrap();
     kernel
         .accept(
             &[Event {
@@ -260,5 +260,55 @@ async fn deliveries_and_receipts_share_pacing_and_started_waits_finish_on_stop()
         matches!(&failures[0].settlement.outcome, Settlement::Failed { failure } if failure.code == code::CANCELLED)
     );
     assert_eq!(failures[0].settlement.messages, vec![first.id]);
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn replies_to_a_gone_conversation_fail_without_another_send() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![
+        calls(vec![call("message_send", r#"{"text":"first"}"#)]),
+        reply("second"),
+    ]);
+    let Harness {
+        kernel,
+        adapter,
+        updates,
+        mut polling,
+        mut sending,
+        ..
+    } = harness(dir.path(), provider).await;
+    let channel = start(&kernel, &adapter);
+    receive(&mut polling).await;
+    updates
+        .send(vec![update(1, Action::Message("start".into()))])
+        .await
+        .unwrap();
+    receive(&mut polling).await;
+    let first = receive(&mut sending).await;
+    assert_eq!(first.text, "first");
+    let mut gone = lost_response();
+    gone.unknown = false;
+    gone.failure.retryable = false;
+    gone.failure.code = code::CHANNEL_CONVERSATION_GONE.into();
+    first.result.send(Err(gone)).unwrap();
+    // Both the sent message and the reply after it settle as failed.
+    let failures = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let failures = kernel.delivery_failures("controlled:bot").await.unwrap();
+            if failures.len() == 2 {
+                return failures;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(failures.iter().all(|failure| matches!(
+        &failure.settlement.outcome,
+        Settlement::Failed { failure } if failure.code == code::CHANNEL_CONVERSATION_GONE
+    )));
+    channel.shutdown().await.unwrap();
+    assert!(sending.try_recv().is_err());
     kernel.shutdown().await.unwrap();
 }

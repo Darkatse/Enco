@@ -8,6 +8,13 @@ fn messages_keep_native_text_commands_addressing_threads_and_attachments() -> Re
     let inbound = &plain.messages[0];
     assert_eq!(inbound.key, "MESSAGE_CREATE:10");
     assert_eq!(inbound.conversation, "thread");
+    assert_eq!(inbound.realm.as_deref(), Some("guild"));
+    assert_eq!(
+        inbound.conversation_name,
+        Some(enco_sdk::channel::ConversationName::Fetch(
+            "channel:thread".into()
+        ))
+    );
     assert!(!inbound.addressed);
     assert!(matches!(&inbound.action, Action::Message(content) if content.text == "/cancel"));
     // This bot writes in Components V2: its text is in text displays, and `content` is empty.
@@ -64,7 +71,9 @@ fn messages_keep_native_text_commands_addressing_threads_and_attachments() -> Re
         .as_object_mut()
         .ok_or("message object")?
         .remove("guild_id");
-    assert!(created(3, direct)?.messages[0].direct);
+    let direct = created(3, direct)?;
+    assert!(direct.messages[0].direct);
+    assert!(direct.messages[0].realm.is_none() && direct.messages[0].conversation_name.is_none());
     let mut bot = message();
     bot["author"]["bot"] = json!(true);
     assert!(created(4, bot)?.messages.is_empty());
@@ -153,6 +162,13 @@ fn native_commands_and_buttons_defer_ephemerally_then_answer() -> Result<(), Str
         )?;
         let inbound = &reading.messages[0];
         assert_eq!(inbound.key, "INTERACTION_CREATE:interaction");
+        assert_eq!(inbound.realm.as_deref(), Some("guild"));
+        assert_eq!(
+            inbound.conversation_name,
+            Some(enco_sdk::channel::ConversationName::Fetch(
+                "channel:conversation".into()
+            ))
+        );
         assert_eq!(inbound.reply_to.is_some(), action == Action::Backtrack);
         assert_eq!(inbound.action, action);
         assert_eq!(
@@ -195,7 +211,8 @@ fn command_menus_have_native_contexts_and_name_their_options() -> Result<(), Str
     );
     assert_eq!(menu[0].url, "/applications/app/commands");
     let commands = body(&menu[0])?;
-    assert_eq!(commands[0]["contexts"], json!([1]));
+    assert_eq!(commands[0]["contexts"], json!([0, 1]));
+    assert_eq!(commands[3]["contexts"], json!([0, 1]));
     assert_eq!(commands[1]["type"], 3);
     assert!(commands[1].get("description").is_none());
     for (index, name) in [(0, "session"), (2, "halt"), (3, "archive")] {

@@ -120,7 +120,7 @@ fn send(to: &str, text: &str, profile: Option<&str>) -> ToolCall {
 }
 async fn start(harness: &Harness) -> (SessionId, tokio::sync::broadcast::Receiver<Entry>) {
     let parent = harness.kernel.open_session("main").await.unwrap().id;
-    let rx = harness.kernel.subscribe(parent).unwrap();
+    let rx = harness.kernel.subscribe(parent).await.unwrap();
     harness
         .kernel
         .submit(parent, EventId::new(), "delegate work".into(), vec![])
@@ -175,7 +175,7 @@ async fn background_reports_mid_run_messages_and_followups_share_persistent_hist
     let parent_ready = h.next("fixture").await;
     let worker = h.next("worker").await;
     let child = h.child("main/research").await;
-    let mut child_rx = h.kernel.subscribe(child.id).unwrap();
+    let mut child_rx = h.kernel.subscribe(child.id).await.unwrap();
     assert_eq!(child.parent.as_ref().unwrap().id, parent);
     assert_eq!(child.working_dir, h.child("main").await.working_dir);
     parent_ready.respond(reply("working in the background"));
@@ -274,7 +274,7 @@ async fn owner_takeover_changes_reply_destination_until_the_parent_sends_again()
     assert!(!state.state.awaiting);
     parent_prompt.respond(crate::silence::skip("owner took over"));
     finish(&mut rx).await;
-    let mut child_rx = h.kernel.subscribe(child.id).unwrap();
+    let mut child_rx = h.kernel.subscribe(child.id).await.unwrap();
     worker.respond(reply("answer for owner"));
     finish(&mut child_rx).await;
     // The answer went to the owner in the commit that ended its Round; the parent never had it.
@@ -291,8 +291,10 @@ async fn owner_takeover_changes_reply_destination_until_the_parent_sends_again()
         .await
         .respond(calls(vec![send("research", "back to parent", None)]));
     let worker = h.next("worker").await;
+    // The parent's next request is composed after its send settled.
+    let resumed = h.next("fixture").await;
     assert!(!h.latest("main").children[0].state.replies_to_owner);
-    h.next("fixture").await.respond(reply("resumed"));
+    resumed.respond(reply("resumed"));
     finish(&mut rx).await;
     worker.respond(reply("parent result"));
     h.next("fixture")

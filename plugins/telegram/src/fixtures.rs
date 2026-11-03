@@ -24,6 +24,7 @@ pub(super) const UPDATES: &str = r#"{
         },
         "from": {
           "id": 7,
+          "is_bot": false,
           "first_name": "Ada",
           "last_name": "Lovelace"
         },
@@ -40,6 +41,7 @@ pub(super) const UPDATES: &str = r#"{
         },
         "from": {
           "id": 7,
+          "is_bot": false,
           "first_name": "Ada",
           "last_name": "Lovelace"
         },
@@ -63,6 +65,7 @@ pub(super) const UPDATES: &str = r#"{
         },
         "from": {
           "id": 7,
+          "is_bot": false,
           "first_name": "Ada",
           "last_name": "Lovelace"
         },
@@ -79,6 +82,7 @@ pub(super) const UPDATES: &str = r#"{
         },
         "from": {
           "id": 7,
+          "is_bot": false,
           "first_name": "Ada",
           "last_name": "Lovelace"
         },
@@ -95,6 +99,7 @@ pub(super) const UPDATES: &str = r#"{
         },
         "from": {
           "id": 7,
+          "is_bot": false,
           "first_name": "Ada",
           "last_name": "Lovelace"
         },
@@ -126,6 +131,7 @@ pub(super) const UPDATES: &str = r#"{
         },
         "from": {
           "id": 7,
+          "is_bot": false,
           "first_name": "Ada",
           "last_name": "Lovelace"
         },
@@ -137,6 +143,7 @@ pub(super) const UPDATES: &str = r#"{
             "length": 5,
             "user": {
               "id": 42,
+              "is_bot": true,
               "first_name": "Helper"
             }
           }
@@ -153,6 +160,7 @@ pub(super) const UPDATES: &str = r#"{
         },
         "from": {
           "id": 7,
+          "is_bot": false,
           "first_name": "Ada",
           "last_name": "Lovelace"
         },
@@ -181,6 +189,7 @@ pub(super) const UPDATES: &str = r#"{
         },
         "from": {
           "id": 7,
+          "is_bot": false,
           "first_name": "Ada",
           "last_name": "Lovelace"
         },
@@ -202,6 +211,7 @@ pub(super) const UPDATES: &str = r#"{
         },
         "from": {
           "id": 7,
+          "is_bot": false,
           "first_name": "Ada",
           "last_name": "Lovelace"
         },

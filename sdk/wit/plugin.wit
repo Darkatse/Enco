@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.12.0;
+package enco:plugin@0.13.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -175,6 +175,24 @@ interface types {
         model: string,
         /// Options the adapter merges into its request, as a JSON object.
         options: json,
+    }
+
+    /// How a Run ended.
+    variant run-end {
+        /// It finished.
+        completed,
+        /// It used every Round it was allowed.
+        budget-exhausted,
+        /// The process stopped before it finished.
+        interrupted,
+        /// It was cancelled.
+        cancelled,
+        /// The owner went back to an earlier message, which stopped it.
+        backtracked,
+        /// Execution stopped with this recorded failure.
+        failed(failure),
+        /// A halt of this Session or an ancestor stopped it.
+        halted,
     }
 }
 
@@ -481,7 +499,7 @@ world tool-plugin {
 /// out a capability in `lifeline`; or when a compaction discloses any tool or stops where no Round
 /// ends.
 interface composer {
-    use types.{datetime, failure, image-format, json, quote-kind, role, tool-spec, unviewable};
+    use types.{datetime, failure, image-format, json, quote-kind, role, run-end, tool-spec, unviewable};
 
     /// The position of an entry in this Session's Log.
     record log-pos {
@@ -825,24 +843,6 @@ interface composer {
         interactive: bool,
     }
 
-    /// How a Run ended.
-    variant run-end {
-        /// It finished.
-        completed,
-        /// It used every Round it was allowed.
-        budget-exhausted,
-        /// The process stopped before it finished.
-        interrupted,
-        /// It was cancelled.
-        cancelled,
-        /// The owner went back to an earlier message, which stopped it.
-        backtracked,
-        /// Execution stopped with this recorded failure.
-        failed(failure),
-        /// A halt of this Session or an ancestor stopped it.
-        halted,
-    }
-
     /// A Run's end, and where the Log records it.
     record run-ended {
         /// The entry that records the end.
@@ -1160,7 +1160,7 @@ world composer-plugin {
 ///
 /// The host records each external input before handing it over, and carries out what the mapper asks.
 interface channel {
-    use types.{datetime, failure, json, quote-kind, unviewable};
+    use types.{datetime, failure, json, quote-kind, run-end, unviewable};
 
     /// A request for the host to send.
     record request {
@@ -1283,12 +1283,30 @@ interface channel {
         facts: json,
     }
 
+    /// A conversation's name, as far as the protocol carries it.
+    variant conversation-name {
+        /// The nonempty name, carried with the message.
+        name(string),
+        /// Fetch this nonempty locator to obtain it; the fetch ends with `fetch-step.name`.
+        fetch(string),
+    }
+
     /// A message that arrived, as the protocol describes it.
     record inbound {
         /// The protocol's key for accepting this message once, such as an update or event ID.
         key: string,
         /// The conversation, where replies go.
         conversation: string,
+        /// The realm this conversation is in, such as a Discord server or a Telegram chat with
+        /// topics; absent for a conversation on its own.
+        ///
+        /// A realm is what a protocol groups several conversations under; a direct chat or a group
+        /// without topics is in none. Its ID is nonempty. The owner can declare a realm private to
+        /// them; its conversations are then private.
+        realm: option<string>,
+        /// The conversation's name, such as a topic's title, when the protocol gives one; the host
+        /// only uses it to name a Session made for the conversation.
+        conversation-name: option<conversation-name>,
         /// This message's ID, unique within the conversation.
         message: string,
         /// The sender's ID, when the protocol reports one.
@@ -1410,9 +1428,10 @@ interface channel {
         kind: command-kind,
         /// What it does, for the menu.
         description: string,
-        /// Whether it applies in one-to-one conversations.
+        /// Whether it applies in private conversations: one-to-one ones, and those in a realm the
+        /// owner declared private.
         direct: bool,
-        /// Whether it applies in group conversations.
+        /// Whether it applies in group conversations that are not private.
         group: bool,
     }
 
@@ -1449,8 +1468,36 @@ interface channel {
         image(list<u8>),
         /// The messages a quote's locator names, listed as `quoted.messages` is.
         messages(list<quoted-message>),
+        /// The nonempty name a `conversation-name` locator names.
+        name(string),
         /// The protocol refused it for good; the text says why.
         unavailable(string),
+    }
+
+    /// How a Run turned out, left in place of its view where the view was only for display.
+    record activity-epilogue {
+        /// Seconds the Run took.
+        elapsed-seconds: u32,
+        /// The Rounds it used.
+        rounds: u32,
+        /// How it ended.
+        end: run-end,
+        /// Whether it finished without sending its last reply.
+        unsent: bool,
+        /// The first line of its last reply, sent or not, shortened by the host; empty when it has
+        /// none.
+        excerpt: string,
+    }
+
+    /// What to do with a Run's view.
+    variant activity-update {
+        /// Show or refresh the live view.
+        view(activity-view),
+        /// End the view with the Run's epilogue: rewrite the view, or create one when none is
+        /// shown.
+        epilogue(activity-epilogue),
+        /// Remove the view.
+        remove,
     }
 
     /// What the Agent is doing while a Run goes on.
@@ -1469,7 +1516,7 @@ interface channel {
         state: tool-state,
         /// The values of the call's required arguments in its schema's order, on one line the host
         /// shortens; empty when it has none.
-        summary: string,
+        arguments: string,
     }
 
     /// Where a tool call stands.
@@ -1519,6 +1566,9 @@ interface channel {
     send: func(conversation: string, part: outgoing) -> result<request, fault>;
     /// What the protocol answered: the ID of the message a request created, if any, or why it
     /// failed.
+    ///
+    /// A failure with code `channel.conversation_gone` means the conversation no longer exists;
+    /// the host forgets its route.
     answered: func(response: response) -> result<option<string>, fault>;
     /// The request that answers the accepted message carrying `handle`, showing `text` to its
     /// sender; absent when nothing more needs sending.
@@ -1526,25 +1576,47 @@ interface channel {
     /// Requests that offer the host's commands in the protocol's menus, sent when a connection
     /// starts.
     commands: func(identity: identity, commands: list<command>) -> list<request>;
-    /// Creates or refreshes the activity view, or removes `shown` when `activity` is absent;
-    /// absent when nothing needs sending.
+    /// Creates, refreshes, rewrites or removes a Run's view; absent when nothing needs sending,
+    /// and for a new view when the protocol shows none.
+    ///
+    /// `replies-here` says whether the Run's replies go to `conversation`; otherwise the view is
+    /// only for display there. Where they go, create no view when `presence` already shows it.
     ///
     /// A view is not a message for the reader's attention: where the protocol allows, create it
     /// without a notification.
     ///
-    /// The host reads the response to a request made without `shown` with `answered`, and keeps
-    /// the message ID it gives as `shown`; without one, the Run shows no view.
+    /// The host reads each response with `answered`. When it creates a live view (`view` without
+    /// `shown`), it keeps the message ID `answered` gives as `shown`, and without one the Run
+    /// shows no view there; an epilogue ends the view, so its ID is not kept.
     activity: func(
         conversation: string,
+        replies-here: bool,
         shown: option<string>,
-        activity: option<activity-view>,
+        update: activity-update,
     ) -> option<request>;
-    /// A passing sign in `conversation` that the Agent is working, such as typing; absent when
-    /// the protocol has none.
+    /// A passing sign in `conversation` that the Agent is working, such as typing or an expiring
+    /// draft of `view`; absent when the protocol has none.
     ///
-    /// The host sends it when a Run starts and at each refresh until the Run ends, keeps nothing
-    /// of it, and reads its response with `answered`.
-    presence: func(conversation: string) -> option<request>;
+    /// The host sends it only where the Run's replies go, when the Run starts and at each refresh
+    /// until it ends, keeps nothing of it, and reads its response with `answered`.
+    presence: func(conversation: string, view: activity-view) -> option<request>;
+    /// The request opening a child Session's own conversation beside `beside`, where its parent
+    /// shows; absent when the mapper knows the protocol cannot open one there.
+    ///
+    /// Where the protocol refuses to open one there, `opened` gives that failure and the child is
+    /// not shown on this connection. `session` is the child's full name, segment by segment; lay
+    /// out the title so that it reads apart from the conversations people open. Opening may leave
+    /// the protocol's one-time notice.
+    open-conversation: func(beside: string, session: list<string>) -> option<request>;
+    /// The nonempty ID of the conversation that an `open-conversation` request made beside
+    /// `beside` created, or why it failed.
+    opened: func(beside: string, response: response) -> result<string, fault>;
+    /// The request that puts away a conversation opened for a child Session once that Session is
+    /// archived; absent when nothing needs sending.
+    ///
+    /// For instance, this deletes a topic or archives a thread. The host reads its response with
+    /// `answered`.
+    close-conversation: func(conversation: string) -> option<request>;
 }
 
 /// A messaging protocol's mapper. It imports nothing; the host trusts it with the connection's

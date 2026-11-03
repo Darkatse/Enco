@@ -1,4 +1,5 @@
 //! Telegram Bot API translation, with transport, credentials and commits owned by the host.
+mod activity;
 mod content;
 mod incoming;
 mod limits;
@@ -10,11 +11,11 @@ use channel::{
     Arrival, Command, Fault, FetchStep, Identity, Outgoing, ReadStep, Reading, Request, Response,
 };
 use enco_sdk::{
-    channel::{ActivityView, CANCEL_LABEL},
+    channel::{ActivityUpdate, ActivityView},
     types::Failure,
 };
 use limits::{POLL_SECONDS, POLL_TIMEOUT_MS, READ_TIMEOUT_MS, SEND_TIMEOUT_MS};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wire::{answer, invalid_response, request};
 
@@ -43,10 +44,35 @@ impl lifecycle::Guest for Plugin {
     }
 }
 
+/// The bot's account, as `getMe` reports it.
 #[derive(Deserialize)]
 struct Account {
     id: i64,
+    #[serde(flatten)]
+    facts: Facts,
+}
+
+/// What the mapper needs to know about the bot later, kept as the identity's facts.
+#[derive(Deserialize, Serialize)]
+struct Facts {
     username: String,
+}
+
+impl Facts {
+    /// The facts `identified` put in `identity`; a `plugin.contract` failure when the host passed
+    /// back anything else.
+    fn of(identity: &Identity) -> Result<Self, Fault> {
+        serde_json::from_str(&identity.facts).map_err(|_| Fault {
+            failure: Failure {
+                code: "plugin.contract".into(),
+                message: "identity facts are not the ones `identified` returns".into(),
+                retryable: false,
+            },
+            unknown: false,
+            fatal: true,
+            retry_after: None,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -84,7 +110,7 @@ impl channel::Guest for Plugin {
         Ok(Identity {
             protocol: "telegram".into(),
             account: account.id.to_string(),
-            facts: json!({"username": account.username}).to_string(),
+            facts: json!(account.facts).to_string(),
         })
     }
 
@@ -92,7 +118,7 @@ impl channel::Guest for Plugin {
         let offset = incoming::offset(state.as_deref())?;
         Ok(ReadStep::Request(request(
             "getUpdates",
-            json!({"offset": offset, "timeout": POLL_SECONDS, "allowed_updates": ["message", "callback_query"]}),
+            json!({"offset": offset, "timeout": POLL_SECONDS, "allowed_updates": ["message", "callback_query", "stopped_message_generation"]}),
             POLL_TIMEOUT_MS,
         )))
     }
@@ -173,41 +199,27 @@ impl channel::Guest for Plugin {
 
     fn activity(
         conversation: String,
+        replies_here: bool,
         shown: Option<String>,
-        activity: Option<ActivityView>,
+        update: ActivityUpdate,
     ) -> Option<Request> {
-        match (shown, activity) {
-            (Some(message), None) => Some(request(
-                "deleteMessage",
-                json!({"chat_id": conversation, "message_id": message}),
-                SEND_TIMEOUT_MS,
-            )),
-            (shown, Some(activity)) => {
-                let cancel = json!({"text": CANCEL_LABEL, "callback_data": "cancel"});
-                let mut body = json!({
-                    "chat_id": conversation,
-                    "text": activity.text(),
-                    "reply_markup": {"inline_keyboard": [[cancel]]},
-                });
-                let method = if let Some(message) = shown {
-                    body["message_id"] = json!(message);
-                    "editMessageText"
-                } else {
-                    body["disable_notification"] = json!(true);
-                    "sendMessage"
-                };
-                Some(request(method, body, SEND_TIMEOUT_MS))
-            }
-            (None, None) => None,
-        }
+        activity::activity(conversation, replies_here, shown, update)
     }
 
-    fn presence(conversation: String) -> Option<Request> {
-        Some(request(
-            "sendChatAction",
-            json!({"chat_id": conversation, "action": "typing"}),
-            SEND_TIMEOUT_MS,
-        ))
+    fn presence(conversation: String, view: ActivityView) -> Option<Request> {
+        activity::presence(conversation, view)
+    }
+
+    fn open_conversation(beside: String, session: Vec<String>) -> Option<Request> {
+        activity::open(beside, session)
+    }
+
+    fn opened(beside: String, response: Response) -> Result<String, Fault> {
+        activity::opened(beside, response)
+    }
+
+    fn close_conversation(conversation: String) -> Option<Request> {
+        activity::close(conversation)
     }
 }
 

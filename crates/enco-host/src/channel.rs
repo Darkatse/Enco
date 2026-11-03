@@ -64,7 +64,48 @@ struct State {
     everyone: std::collections::BTreeSet<String>,
     outbound: BTreeMap<SessionId, Cursor>,
     sending: Option<Delivery>,
+    children: BTreeMap<SessionId, Creation>,
     activity: BTreeMap<RunId, connection::activity::Card>,
+}
+
+/// Where a conversation's route leads; a route to an archived Session counts as no route.
+enum Route {
+    /// The conversation has no route.
+    Unrouted,
+    /// It goes to this unarchived Session.
+    Live(SessionId),
+    /// It led to this archived Session, so it has no route.
+    Archived(SessionName),
+}
+
+impl Route {
+    /// The route `conversation` has in `chats`.
+    async fn of(
+        kernel: &Kernel,
+        chats: &BTreeMap<String, SessionId>,
+        conversation: &str,
+    ) -> Result<Self, ChannelError> {
+        let Some(id) = chats.get(conversation) else {
+            return Ok(Self::Unrouted);
+        };
+        let session = kernel.session(*id).await?;
+        Ok(match session.archived_at {
+            Some(_) => Self::Archived(session.name),
+            None => Self::Live(*id),
+        })
+    }
+}
+
+/// What came of creating a Run's card or a child's conversation; nothing is created twice.
+#[derive(Clone, Serialize, Deserialize)]
+enum Creation {
+    /// The protocol's ID for what was created: the card's message, or the conversation.
+    Shown(String),
+    /// The connection goes without it here: nothing is shown and nothing will be created.
+    ///
+    /// Creating it failed or its result is unknown, the protocol has no way to show it here, or
+    /// something else shows it, such as a draft.
+    Forgone,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]

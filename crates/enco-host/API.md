@@ -718,6 +718,8 @@ pub struct ConnectionSettings {
     pub secrets: std::collections::BTreeMap<String, String>,
     pub context: usize,
     pub group_profile: Option<enco_core::ProfileName>,
+    pub private_realms: std::collections::BTreeSet<String>,
+    pub show_children: bool,
     pub name: String,
 }
 ```
@@ -730,8 +732,17 @@ One configured account and its host routing policy.
 - `secrets` — Credential names mapped to environment variable names.
 - `context` — Maximum number of earlier group messages quoted with the next input.
 - `group_profile` — Profile for the Sessions this connection creates for groups; absent, it serves private
-  chats only.
-- `name` — Configuration name used to name new group Sessions.
+  conversations only.
+- `private_realms` — IDs of the realms private to the owner, such as Discord server IDs; each conversation in
+  them is private and gets its own root Session.
+
+  IDs are nonblank and matched exactly; an empty set leaves privacy to the protocol.
+- `show_children` — Whether to open a conversation for a child Session that works for its parent while the
+  parent shows here; defaults to true.
+
+  Disabling this leaves conversations already opened in use until their child is archived.
+- `name` — The connection's name in the `channel` table; a Session it creates without a name of the
+  conversation's own is named after it and the conversation.
 
 Implements:
 

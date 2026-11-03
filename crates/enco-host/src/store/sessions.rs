@@ -168,7 +168,7 @@ pub(super) fn insert_new(
 fn available_root(tx: &Transaction<'_>, name: &SessionName) -> Result<SessionName, StoreError> {
     let occupied = tx
         .prepare(
-        "SELECT name FROM sessions WHERE archived_at IS NULL AND (name=?1 OR substr(name,1,length(?1)+1)=?1||':')"
+        "SELECT name FROM sessions WHERE archived_at IS NULL AND (name=?1 OR substr(name,1,length(?1)+1)=?1||'-')"
         )
         .map_err(backend)?
         .query_map([name.as_str()], |row| row.get::<_, String>(0))
@@ -179,7 +179,7 @@ fn available_root(tx: &Transaction<'_>, name: &SessionName) -> Result<SessionNam
     let mut suffix = 1_u64;
     while occupied.contains(candidate.as_str()) {
         suffix += 1;
-        candidate = SessionName::root(&format!("{name}:{suffix}")).map_err(backend)?;
+        candidate = SessionName::root(&format!("{name}-{suffix}")).map_err(backend)?;
     }
     Ok(candidate)
 }

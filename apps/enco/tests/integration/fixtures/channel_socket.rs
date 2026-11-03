@@ -48,7 +48,7 @@ impl channel::Guest for Fixture {
                 let seq = value["seq"].as_u64().unwrap();
                 result.state = Some(seq.to_string());
                 result.messages.push(channel::Inbound {
-                    key: seq.to_string(), conversation: "one".into(), message: seq.to_string(), sender: Some("owner".into()), sender_name: None,
+                    key: seq.to_string(), conversation: "one".into(), realm: None, conversation_name: None, message: seq.to_string(), sender: Some("owner".into()), sender_name: None,
                     direct: true, addressed: true, reply_to: None, respond: Some(seq.to_string()),
                     action: Action::Message(Content { text: frame, images: Vec::new(), unviewable: Vec::new(), quote: None }),
                 });
@@ -75,6 +75,9 @@ impl channel::Guest for Fixture {
     fn answered(_response: channel::Response) -> Result<Option<String>, channel::Fault> { Ok(None) }
     fn respond(_handle: String, _text: Option<String>) -> Result<Option<channel::Request>, channel::Fault> { Ok(None) }
     fn commands(_identity: channel::Identity, _commands: Vec<channel::Command>) -> Vec<channel::Request> { Vec::new() }
-    fn activity(_conversation: String, _shown: Option<String>, _activity: Option<enco_sdk::channel::ActivityView>) -> Option<channel::Request> { None }
-    fn presence(_conversation: String) -> Option<channel::Request> { None }
+    fn activity(_conversation: String, _replies_here: bool, _shown: Option<String>, _update: enco_sdk::channel::ActivityUpdate) -> Option<channel::Request> { None }
+    fn presence(_conversation: String, _view: enco_sdk::channel::ActivityView) -> Option<channel::Request> { None }
+    fn open_conversation(_beside: String, _session: Vec<String>) -> Option<channel::Request> { None }
+    fn opened(_beside: String, _response: channel::Response) -> Result<String, channel::Fault> { unreachable!() }
+    fn close_conversation(_conversation: String) -> Option<channel::Request> { None }
 }

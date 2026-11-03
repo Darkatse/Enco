@@ -160,6 +160,8 @@ impl Arguments {
 
 /// Stable failure codes shared with WIT plugins.
 pub mod code {
+    /// The target conversation no longer exists in the protocol; the connection forgets its route.
+    pub const CHANNEL_CONVERSATION_GONE: &str = "channel.conversation_gone";
     /// The channel mapper cannot resume this protocol state; the connection may restart from none.
     pub const CHANNEL_INVALID_STATE: &str = "channel.invalid_state";
     /// A channel request failed in transport, before a protocol response was read.

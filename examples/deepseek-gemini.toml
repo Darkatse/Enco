@@ -46,6 +46,7 @@ max_rounds = 24
 # owner = "123456789"
 # secrets = { token = "TELEGRAM_BOT_TOKEN" }
 # context = 0
+# show_children = true  # Open child topics when private-chat topics are enabled.
 # group_profile = "group"  # Omit to serve private chats only.
 
 # A separate Session policy for group chats; only share tools safe for everyone in the group.
@@ -61,8 +62,10 @@ max_rounds = 24
 # plugin = "discord"
 # base_url = "https://discord.com/api/v10"
 # owner = "123456789012345678"
+# private_realms = ["987654321098765432"]  # Server IDs private to the owner.
 # secrets = { token = "DISCORD_BOT_TOKEN" }
 # context = 0
+# show_children = true  # Open conversations for child Sessions.
 # group_profile = "group"
 
 # Optional QQ connection through SnowLuma's HTTP service with enableWebSocket enabled.

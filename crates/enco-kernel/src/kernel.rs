@@ -289,9 +289,27 @@ impl Kernel {
             .await?)
     }
 
-    /// Subscribe to newly committed facts; Log remains the durable source.
-    pub fn subscribe(&self, session: SessionId) -> Result<broadcast::Receiver<Entry>, KernelError> {
-        Ok(self.handle(session)?.entries.subscribe())
+    /// Subscribe to a Session's newly committed facts; the Log remains the durable source.
+    ///
+    /// The subscription ends once the Session is archived and has stopped, so for such a Session
+    /// it ends at once. An unarchived Session's actor starts here if it has none yet, such as a
+    /// child whose parent's commit is still waking it.
+    pub async fn subscribe(
+        &self,
+        session: SessionId,
+    ) -> Result<broadcast::Receiver<Entry>, KernelError> {
+        let handle = match self.handle(session) {
+            Err(KernelError::UnknownSession(_)) => {
+                let record = self.session(session).await?;
+                if record.archived_at.is_some() {
+                    let (_, ended) = broadcast::channel(1);
+                    return Ok(ended);
+                }
+                self.ensure_actor(record)?
+            }
+            handle => handle?,
+        };
+        Ok(handle.entries.subscribe())
     }
 
     /// Signal the current Run; its actor settles work before ending.

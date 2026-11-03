@@ -286,7 +286,7 @@ async fn process(
             let session = kernel.open_session(&name).await?;
             *subscription = Some(Subscription {
                 session: name,
-                entries: kernel.subscribe(session.id)?,
+                entries: kernel.subscribe(session.id).await?,
             });
             json!({ "session_id": session.id })
         }

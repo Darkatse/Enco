@@ -88,7 +88,7 @@ fn reads(count: usize) -> impl Iterator<Item = Result<Completion, Failure>> {
 
 async fn send(kernel: &Kernel, text: &str) -> Vec<Entry> {
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), text.into(), Vec::new())
         .await

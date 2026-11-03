@@ -62,12 +62,12 @@ pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure>
             .iter()
             .map(|(plugin, failure)| wire::UnavailablePlugin {
                 plugin: plugin.clone(),
-                failure: event::failure(failure),
+                failure: convert::failure_record(failure),
             })
             .collect(),
         safe_mode: safe_mode.as_ref().map(|mode| match mode {
             SafeMode::Owner => wire::SafeMode::Owner,
-            SafeMode::Failed(failure) => wire::SafeMode::Failed(event::failure(failure)),
+            SafeMode::Failed(failure) => wire::SafeMode::Failed(convert::failure_record(failure)),
         }),
         reply: reply_target(reply),
         compaction: compaction.map(budget),
@@ -153,7 +153,7 @@ fn reply_target(reply: &ReplyTarget) -> wire::ReplyTarget {
             .map(
                 |EndpointFailure { endpoint, failure }| wire::SkippedEndpoint {
                     endpoint: endpoint.clone(),
-                    failure: event::failure(failure),
+                    failure: convert::failure_record(failure),
                 },
             )
             .collect(),
@@ -178,7 +178,7 @@ fn transcript_record(transcript: &Transcript<LocatedImage>) -> Result<wire::Tran
             .iter()
             .map(|(pos, end)| wire::RunEnded {
                 pos: event::pos(*pos),
-                end: event::run_end(end),
+                end: convert::run_end(end),
             })
             .collect(),
     })

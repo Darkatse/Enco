@@ -23,7 +23,7 @@ async fn a_skipped_reply_keeps_its_note_but_only_deletes_the_activity_card() {
         ..
     } = harness(dir.path(), provider.clone()).await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     let channel = start(&kernel, &adapter);
     receive(&mut polling).await;
     updates
@@ -55,7 +55,7 @@ async fn a_skipped_reply_keeps_its_note_but_only_deletes_the_activity_card() {
     let entries = finish(&mut rx).await;
     let deleted = receive(&mut activity).await;
     assert_eq!(deleted.shown.as_deref(), Some("card"));
-    assert!(deleted.view.is_none());
+    assert!(deleted.view().is_none());
     deleted.result.send(Ok(None)).unwrap();
     channel.shutdown().await.unwrap();
     assert!(sending.try_recv().is_err());

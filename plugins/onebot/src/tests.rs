@@ -360,17 +360,41 @@ fn uploaded_files_and_typing_settle_without_a_message_id() -> Result<(), String>
         assert!(malformed.unknown && !malformed.failure.retryable);
         assert!(malformed.failure.message.contains("data.message_id"));
     }
-    let request = Plugin::presence("private:10002".into()).ok_or("typing")?;
+    let request = Plugin::presence(
+        "private:10002".into(),
+        ActivityView {
+            elapsed_seconds: 0,
+            tools: vec![],
+        },
+    )
+    .ok_or("typing")?;
     assert_eq!(request.url, "/set_input_status");
     let body: Value =
         serde_json::from_slice(&request.body.ok_or("body")?).map_err(|e| e.to_string())?;
     assert_eq!(body, json!({"user_id": 10002, "event_type": 1}));
-    assert!(Plugin::presence("group:20001".into()).is_none());
+    assert!(
+        Plugin::presence(
+            "group:20001".into(),
+            ActivityView {
+                elapsed_seconds: 0,
+                tools: vec![]
+            }
+        )
+        .is_none()
+    );
     let activity = ActivityView {
         elapsed_seconds: 0,
         tools: vec![],
     };
-    assert!(Plugin::activity("private:10002".into(), None, Some(activity)).is_none());
+    assert!(
+        Plugin::activity(
+            "private:10002".into(),
+            true,
+            None,
+            enco_sdk::channel::ActivityUpdate::View(activity)
+        )
+        .is_none()
+    );
     Ok(())
 }
 

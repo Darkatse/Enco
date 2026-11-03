@@ -72,7 +72,7 @@ mod composer {
 }
 
 /// Package version of `sdk/wit/plugin.wit`; change it together with the WIT.
-pub(crate) const CONTRACT_VERSION: &str = "0.12.0";
+pub(crate) const CONTRACT_VERSION: &str = "0.13.0";
 
 pub(crate) use base::BasePre;
 pub(crate) use base::exports::enco::plugin::lifecycle;

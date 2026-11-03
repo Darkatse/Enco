@@ -18,14 +18,14 @@ async fn telegram_photos_documents_and_unsupported_attachments_keep_their_messag
     let (_root, _store, telegram) = channel::telegram(&server).await;
     Mock::given(path("/bot42:test-secret/getUpdates"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true, "result": [
-            {"update_id": 1, "message": {"message_id": 1, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}, "caption": "look", "photo": [
+            {"update_id": 1, "message": {"message_id": 1, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "is_bot": false, "first_name": "Fixture User"}, "caption": "look", "photo": [
                 {"file_id": "large", "width": 200, "height": 200},
                 {"file_id": "small", "width": 10, "height": 10}
             ]}},
-            {"update_id": 2, "message": {"message_id": 2, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}, "document": {
+            {"update_id": 2, "message": {"message_id": 2, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "is_bot": false, "first_name": "Fixture User"}, "document": {
                 "file_id": "document", "file_name": "picture.webp", "mime_type": "image/webp"
             }}},
-            {"update_id": 3, "message": {"message_id": 3, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "first_name": "Fixture User"}, "voice": {"file_id": "voice"}}}
+            {"update_id": 3, "message": {"message_id": 3, "chat": {"id": 1, "type": "private"}, "from": {"id": 2, "is_bot": false, "first_name": "Fixture User"}, "voice": {"file_id": "voice"}}}
         ]}))).expect(1).mount(&server).await;
     let updates = channel::messages(telegram.clone()).await;
     let Action::Message(photo) = &updates[0].input.action else {

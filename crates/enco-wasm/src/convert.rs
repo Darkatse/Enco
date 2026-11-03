@@ -63,6 +63,31 @@ pub(crate) fn failure(failure: wit::Failure) -> Failure {
     }
 }
 
+pub(crate) fn failure_record(failure: &Failure) -> wit::Failure {
+    let Failure {
+        code,
+        message,
+        retryable,
+    } = failure;
+    wit::Failure {
+        code: code.clone(),
+        message: message.clone(),
+        retryable: *retryable,
+    }
+}
+
+pub(crate) fn run_end(end: &RunEnd) -> wit::RunEnd {
+    match end {
+        RunEnd::Completed => wit::RunEnd::Completed,
+        RunEnd::BudgetExhausted => wit::RunEnd::BudgetExhausted,
+        RunEnd::Interrupted => wit::RunEnd::Interrupted,
+        RunEnd::Cancelled => wit::RunEnd::Cancelled,
+        RunEnd::Backtracked => wit::RunEnd::Backtracked,
+        RunEnd::Halted => wit::RunEnd::Halted,
+        RunEnd::Failed { failure } => wit::RunEnd::Failed(failure_record(failure)),
+    }
+}
+
 pub(crate) fn completion(completion: wire::Completion) -> Result<Completion, Failure> {
     if completion.message.role != wit::Role::Assistant {
         return Err(bad("completion role must be assistant"));

@@ -30,7 +30,7 @@ impl Node {
         let kernel = Kernel::start(deps).await.unwrap();
         let memories = open_memories(root, registry).await;
         let session = kernel.open_session("main").await.unwrap().id;
-        let rx = kernel.subscribe(session).unwrap();
+        let rx = kernel.subscribe(session).await.unwrap();
         Self {
             kernel,
             memories,

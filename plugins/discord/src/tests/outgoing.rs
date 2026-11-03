@@ -91,12 +91,17 @@ fn runs_show_typing_and_a_card_created_edited_and_deleted_with_cancel() -> Resul
             .map(|index| ToolActivity {
                 name: format!("tool_{index}"),
                 state: ToolState::Running,
-                summary: format!("*.rs {index}"),
+                arguments: format!("*.rs {index}"),
             })
             .collect(),
     };
-    let created =
-        Plugin::activity("thread".into(), None, Some(activity.clone())).ok_or("create")?;
+    let created = Plugin::activity(
+        "thread".into(),
+        true,
+        None,
+        ActivityUpdate::View(activity.clone()),
+    )
+    .ok_or("create")?;
     let payload = body(&created)?;
     assert_eq!(payload["flags"], 32768 | (1 << 12));
     let content = payload["components"][0]["components"][0]["content"]
@@ -110,14 +115,32 @@ fn runs_show_typing_and_a_card_created_edited_and_deleted_with_cancel() -> Resul
         payload["components"][0]["components"][1]["components"][0]["custom_id"],
         "cancel"
     );
-    let edited =
-        Plugin::activity("thread".into(), Some("card".into()), Some(activity)).ok_or("edit")?;
+    let edited = Plugin::activity(
+        "thread".into(),
+        true,
+        Some("card".into()),
+        ActivityUpdate::View(activity),
+    )
+    .ok_or("edit")?;
     assert_eq!(edited.method, "PATCH");
     assert_eq!(body(&edited)?["flags"], 32768);
-    let deleted = Plugin::activity("thread".into(), Some("card".into()), None).ok_or("delete")?;
+    let deleted = Plugin::activity(
+        "thread".into(),
+        true,
+        Some("card".into()),
+        ActivityUpdate::Remove,
+    )
+    .ok_or("delete")?;
     assert_eq!(deleted.method, "DELETE");
     assert_eq!(deleted.url, "/channels/thread/messages/card");
-    let typing = Plugin::presence("thread".into()).ok_or("typing")?;
+    let typing = Plugin::presence(
+        "thread".into(),
+        ActivityView {
+            elapsed_seconds: 0,
+            tools: vec![],
+        },
+    )
+    .ok_or("typing")?;
     assert_eq!(
         (typing.method.as_str(), typing.url.as_str()),
         ("POST", "/channels/thread/typing")

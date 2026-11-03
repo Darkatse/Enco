@@ -2692,6 +2692,7 @@ impl AsRef<str> for ProfileName
 impl Borrow<str> for ProfileName
 impl Clone for ProfileName
 impl Debug for ProfileName
+impl Default for ProfileName
 impl Deref for ProfileName
 impl<'de> Deserialize<'de> for ProfileName
 impl Display for ProfileName
@@ -3550,6 +3551,14 @@ pub fn depth(&self) -> u32
 
 Number of ancestors expressed by this name; roots have depth zero.
 
+### `SessionName::segments`
+
+```rust
+pub fn segments(&self) -> impl Iterator<Item = &str>
+```
+
+The segments from the root down to this Session.
+
 ### `SessionName::as_str`
 
 ```rust
@@ -4061,6 +4070,7 @@ Reserved marker in suggested calls; it is never an acceptable registration reaso
 Stable failure codes shared with WIT plugins.
 
 - const `code::CANCELLED` — Execution stopped in response to its cancellation token.
+- const `code::CHANNEL_CONVERSATION_GONE` — The target conversation no longer exists in the protocol; the connection forgets its route.
 - const `code::CHANNEL_INVALID_STATE` — The channel mapper cannot resume this protocol state; the connection may restart from none.
 - const `code::CHANNEL_NETWORK` — A channel request failed in transport, before a protocol response was read.
 - const `code::COMPOSE_FAILED` — The composer could not prepare a request.
@@ -4100,6 +4110,16 @@ pub const CANCELLED: &str = "cancelled";
 ```
 
 Execution stopped in response to its cancellation token.
+
+## const `code::CHANNEL_CONVERSATION_GONE`
+
+`src/tool.rs`
+
+```rust
+pub const CHANNEL_CONVERSATION_GONE: &str = "channel.conversation_gone";
+```
+
+The target conversation no longer exists in the protocol; the connection forgets its route.
 
 ## const `code::CHANNEL_INVALID_STATE`
 

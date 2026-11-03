@@ -4,8 +4,8 @@ use super::{
         Arrival, Command, FetchStep, FileData, Guest, Identity, Outgoing, ReadStep, Response,
     },
 };
-use enco_sdk::channel::ActivityView;
 use enco_sdk::channel::{Action, CommandKind};
+use enco_sdk::channel::{ActivityUpdate, ActivityView};
 use serde_json::{Value, json};
 
 fn response(status: u16, body: &[u8]) -> Response {
@@ -144,7 +144,7 @@ fn private_commands_and_group_commands_target_only_this_bot() -> Result<(), Stri
         ("supergroup", "/cancel@OtherBot", false),
     ];
     for (kind, text, addressed) in cases {
-        let body = json!({"ok":true,"result":[{"update_id":5,"message":{"message_id":1,"chat":{"id":9,"type":kind},"from":{"id":7,"first_name":"Ada"},"text":text}}]}).to_string();
+        let body = json!({"ok":true,"result":[{"update_id":5,"message":{"message_id":1,"chat":{"id":9,"type":kind},"from":{"id":7,"is_bot":false,"first_name":"Ada"},"text":text}}]}).to_string();
         let updates = Plugin::received(
             identity()?,
             None,
@@ -168,7 +168,7 @@ fn private_commands_and_group_commands_target_only_this_bot() -> Result<(), Stri
 
 #[test]
 fn a_leading_mention_of_this_bot_can_carry_a_command() -> Result<(), String> {
-    let body = json!({"ok":true,"result":[{"update_id":5,"message":{"message_id":1,"chat":{"id":9,"type":"supergroup"},"from":{"id":7,"first_name":"Ada"},"text":"@helperbot /cancel","entities":[{"type":"mention","offset":0,"length":10}]}}]}).to_string();
+    let body = json!({"ok":true,"result":[{"update_id":5,"message":{"message_id":1,"chat":{"id":9,"type":"supergroup"},"from":{"id":7,"is_bot":false,"first_name":"Ada"},"text":"@helperbot /cancel","entities":[{"type":"mention","offset":0,"length":10}]}}]}).to_string();
     let updates = Plugin::received(
         identity()?,
         None,
@@ -182,7 +182,7 @@ fn a_leading_mention_of_this_bot_can_carry_a_command() -> Result<(), String> {
 
 #[test]
 fn a_caption_is_never_a_command() -> Result<(), String> {
-    let body = json!({"ok":true,"result":[{"update_id":5,"message":{"message_id":1,"chat":{"id":-100,"type":"supergroup"},"from":{"id":7,"first_name":"Ada"},"photo":[{"file_id":"photo","width":1,"height":1}],"caption":"/cancel"}}]}).to_string();
+    let body = json!({"ok":true,"result":[{"update_id":5,"message":{"message_id":1,"chat":{"id":-100,"type":"supergroup"},"from":{"id":7,"is_bot":false,"first_name":"Ada"},"photo":[{"file_id":"photo","width":1,"height":1}],"caption":"/cancel"}}]}).to_string();
     let updates = Plugin::received(
         identity()?,
         None,
@@ -261,8 +261,9 @@ fn menus_use_chat_scopes_and_runs_show_typing_and_a_card_with_cancel() -> Result
     assert_eq!(bodies[1]["commands"][0]["command"], "everyone");
     let card = Plugin::activity(
         "-100".into(),
+        true,
         None,
-        Some(ActivityView {
+        ActivityUpdate::View(ActivityView {
             elapsed_seconds: 61,
             tools: vec![],
         }),
@@ -287,7 +288,14 @@ fn menus_use_chat_scopes_and_runs_show_typing_and_a_card_with_cancel() -> Result
         body["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
         "cancel"
     );
-    let typing = Plugin::presence("-100".into()).ok_or("missing presence request")?;
+    let typing = Plugin::presence(
+        "-100".into(),
+        ActivityView {
+            elapsed_seconds: 0,
+            tools: vec![],
+        },
+    )
+    .ok_or("missing presence request")?;
     assert_eq!(typing.url, "/bot/sendChatAction");
     let body: Value = serde_json::from_slice(&typing.body.ok_or("missing typing body")?)
         .map_err(|error| error.to_string())?;
@@ -297,7 +305,7 @@ fn menus_use_chat_scopes_and_runs_show_typing_and_a_card_with_cancel() -> Result
 
 #[test]
 fn callback_cancel_requests_no_acknowledgment_at_reception() -> Result<(), String> {
-    let body = json!({"ok":true,"result":[{"update_id":10,"callback_query":{"id":"cb-1","from":{"id":7,"first_name":"Ada","last_name":"Lovelace"},"message":{"message_id":4,"chat":{"id":9,"type":"private"}},"data":"cancel"}}]}).to_string();
+    let body = json!({"ok":true,"result":[{"update_id":10,"callback_query":{"id":"cb-1","from":{"id":7,"is_bot":false,"first_name":"Ada","last_name":"Lovelace"},"message":{"message_id":4,"date":1760000000,"chat":{"id":9,"type":"private"}},"data":"cancel"}}]}).to_string();
     let reading = Plugin::received(
         identity()?,
         None,
@@ -323,8 +331,9 @@ fn callback_cancel_requests_no_acknowledgment_at_reception() -> Result<(), Strin
     assert_eq!(body["text"], "Cancellation requested.");
     let edit = Plugin::activity(
         "9".into(),
+        true,
         Some("4".into()),
-        Some(ActivityView {
+        ActivityUpdate::View(ActivityView {
             elapsed_seconds: 0,
             tools: vec![],
         }),
@@ -335,7 +344,7 @@ fn callback_cancel_requests_no_acknowledgment_at_reception() -> Result<(), Strin
         .map_err(|error| error.to_string())?;
     assert!(body.get("disable_notification").is_none());
     assert_eq!(
-        Plugin::activity("9".into(), Some("4".into()), None)
+        Plugin::activity("9".into(), true, Some("4".into()), ActivityUpdate::Remove)
             .ok_or("missing delete")?
             .url,
         "/bot/deleteMessage"
@@ -344,3 +353,6 @@ fn callback_cancel_requests_no_acknowledgment_at_reception() -> Result<(), Strin
 }
 
 mod quotes;
+
+mod activity;
+mod topics;

@@ -5,7 +5,9 @@ mod backtrack;
 mod delivery;
 mod input;
 mod lifecycle;
+mod observation;
 mod receipts;
+mod view_results;
 
 use super::{projection, transport, *};
 use enco_kernel::{ConnectionWrite, NewSession, StoreError};
@@ -35,10 +37,29 @@ struct Connection {
     receipts: Vec<Receipt>,
     in_flight: Option<InFlight>,
     replies: JoinSet<Result<(), ChannelError>>,
-    observations: BTreeMap<SessionId, activity::Observation>,
+    observations: BTreeMap<SessionId, observation::Observation>,
     activities: JoinSet<activity::Completed>,
-    activity_busy: BTreeSet<RunId>,
-    presence_busy: BTreeSet<RunId>,
+    views: activity::Views,
+}
+
+impl State {
+    /// Whether replies and views may still go to `conversation`, that is whether it has a route.
+    ///
+    /// Every conversation that gave input has one; `/session` moves it to another Session. A
+    /// conversation loses it only when the protocol says it is gone (`forget`), or when the
+    /// conversation opened for an archived child is put away.
+    fn reachable(&self, conversation: &str) -> bool {
+        self.chats.contains_key(conversation)
+    }
+
+    /// Forget a conversation the protocol says no longer exists: its route, its cards, and what
+    /// was kept for it as a group.
+    fn forget(&mut self, conversation: &str) {
+        self.chats.remove(conversation);
+        self.activity.retain(|_, card| card.target != conversation);
+        self.everyone.remove(conversation);
+        self.context.remove(conversation);
+    }
 }
 
 /// What the connection says back about an accepted message.
@@ -107,8 +128,7 @@ pub(super) async fn run(
         replies: JoinSet::new(),
         observations: BTreeMap::new(),
         activities: JoinSet::new(),
-        activity_busy: BTreeSet::new(),
-        presence_busy: BTreeSet::new(),
+        views: activity::Views::default(),
     };
     // Run cleanup even if recovery, subscription or acceptance fails.
     let result = connection.serve(wakes).await;
@@ -127,6 +147,7 @@ async fn restore(kernel: &Kernel, adapter: &dyn Adapter) -> Result<State, Channe
             outbound: BTreeMap::new(),
             sending: None,
             activity: BTreeMap::new(),
+            children: BTreeMap::new(),
         },
     })
 }
@@ -152,6 +173,7 @@ impl Connection {
                 return Ok(());
             }
             self.next_delivery().await?;
+            self.retire().await?;
             self.refresh_activity(false).await?;
             tokio::select! {
                 biased;
@@ -169,6 +191,7 @@ impl Connection {
                     match result.map_err(|error| ChannelError::Task(error.to_string()))?? {
                         Some(session) => {
                             self.watched.remove(&session);
+                            self.observations.entry(session).or_default().archived = true;
                             self.observe(session).await?;
                             // Drain the final facts through the usual projection, then forget the wake.
                             self.dirty.insert(session);
@@ -195,13 +218,19 @@ impl Connection {
                             self.commit(state, None).await?;
                         }
                     }
-                    let _ = batch.committed.send(transport::Policy { everyone: self.state.everyone.clone() });
+                    let _ = batch.committed.send(transport::Policy::from(&self.state));
                 }
                 Some(result) = self.activities.join_next() => {
                     let completed = result.map_err(|error| ChannelError::Task(error.to_string()))?;
                     self.activity_completed(completed).await?;
                 }
                 _ = ticks.tick() => self.refresh_activity(true).await?,
+                _ = async {
+                    match self.views.retry_at {
+                        Some(at) => tokio::time::sleep_until(at).await,
+                        None => std::future::pending().await,
+                    }
+                } => self.views.retry_at = None,
                 Some(result) = self.replies.join_next() => {
                     result.map_err(|error| ChannelError::Task(error.to_string()))??;
                 }
@@ -249,9 +278,7 @@ impl Connection {
             clock: self.clock.clone(),
         }
         .prepare(
-            transport::Policy {
-                everyone: self.state.everyone.clone(),
-            },
+            transport::Policy::from(&self.state),
             received,
             batches,
             self.stop.clone(),
@@ -367,14 +394,13 @@ impl Connection {
             return Ok(());
         }
         // Subscribe before marking dirty; every commit is covered by Log or a later wake.
-        let mut entries = match self.kernel.subscribe(session) {
+        let mut entries = match self.kernel.subscribe(session).await {
             Ok(entries) => entries,
-            Err(error @ KernelError::UnknownSession(_)) => {
-                if self.kernel.session(session).await?.archived_at.is_some() {
-                    self.dirty.insert(session);
-                    return Ok(());
-                }
-                return Err(error.into());
+            // One stopped Session goes unshown and undelivered until it runs again; the
+            // connection keeps serving the others.
+            Err(KernelError::SessionStopped(_, reason)) => {
+                tracing::warn!(%session, %reason, "channel does not follow a stopped Session");
+                return Ok(());
             }
             Err(error) => return Err(error.into()),
         };

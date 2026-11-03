@@ -29,7 +29,7 @@ async fn working_directory_changes_are_pinned_per_round_and_survive_restart() {
     assert_eq!(session.working_dir.node, store.node().await.unwrap().id);
     assert_eq!(session.working_dir.path(), root.path().join("workspace"));
     std::fs::write(session.working_dir.path().join("marker"), "old-directory").unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     provider.pause.store(true, Ordering::SeqCst);
     kernel
         .submit(

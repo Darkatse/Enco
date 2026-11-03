@@ -90,6 +90,9 @@ pub(super) fn message(frame: &str, account: &str) -> Result<Option<Inbound>, Fau
     Ok(Some(Inbound {
         key: format!("{conversation}/{}", message.message_id),
         conversation: conversation.to_string(),
+        // A QQ group holds no conversations of its own, so no conversation is in a realm.
+        realm: None,
+        conversation_name: None,
         message: message.message_id.to_string(),
         sender: Some(sender),
         sender_name: message.sender.name(),

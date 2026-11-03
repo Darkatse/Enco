@@ -31,6 +31,22 @@ impl Connection {
             let outgoing = projection::project(&mut cursor, &self.identity, session, entries);
             if let Some((delivery, mut message)) = outgoing {
                 let target = delivery.target.clone();
+                if !self.state.reachable(&target) {
+                    self.settle(
+                        delivery,
+                        Settlement::Failed {
+                            failure: Failure {
+                                code: code::CHANNEL_CONVERSATION_GONE.into(),
+                                message: "the conversation no longer exists, or was closed when its child Session was archived".into(),
+                                retryable: false,
+                            },
+                        },
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                    .await?;
+                    continue;
+                }
                 if self.state.chats.get(&target) != Some(&session) {
                     let name = self.kernel.session(session).await?.name;
                     message.text = format!("[{name}]\n\n{}", message.text);
@@ -116,6 +132,12 @@ impl Connection {
         origins: Vec<MappingOrigin>,
     ) -> Result<(), ChannelError> {
         let mut state = self.state.clone();
+        if matches!(
+            &outcome,
+            Settlement::Failed { failure } if failure.code == code::CHANNEL_CONVERSATION_GONE
+        ) {
+            state.forget(&delivery.target);
+        }
         state.sending = None;
         state.outbound.insert(
             delivery.session,

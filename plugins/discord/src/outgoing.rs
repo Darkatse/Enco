@@ -3,7 +3,7 @@ use crate::{
     channel::{Outgoing, Request},
     wire,
 };
-use enco_sdk::channel::{ActivityView, CANCEL_LABEL, FormPart, multipart};
+use enco_sdk::channel::{ActivityUpdate, CANCEL_LABEL, FormPart, multipart};
 use serde_json::{Value, json};
 
 const TEXT_LIMIT: usize = 4000;
@@ -221,36 +221,37 @@ pub(super) fn send(conversation: String, message: Outgoing) -> Request {
 pub(super) fn activity(
     conversation: String,
     shown: Option<String>,
-    activity: Option<ActivityView>,
+    update: ActivityUpdate,
 ) -> Option<Request> {
     let url = format!("/channels/{}/messages", wire::path(&conversation));
-    match (shown, activity) {
-        (Some(shown), None) => Some(wire::request(
-            "DELETE",
-            format!("{url}/{}", wire::path(&shown)),
-            None,
-        )),
-        (shown, Some(activity)) => {
-            let cancel = json!({
-                "type": 2,
-                "style": 4,
-                "label": CANCEL_LABEL,
-                "custom_id": "cancel",
-            });
-            // A new view asks for no attention; edits never notify.
-            let (method, url, flags) = match shown {
-                Some(shown) => ("PATCH", format!("{url}/{}", wire::path(&shown)), 0),
-                None => ("POST", url, SUPPRESS_NOTIFICATIONS),
-            };
-            let body = components_v2(
-                vec![
-                    json!({"type": 10, "content": literal(&activity.text())}),
-                    json!({"type": 1, "components": [cancel]}),
-                ],
-                flags,
-            );
-            Some(wire::request(method, url, Some(body)))
+    let components = match update {
+        ActivityUpdate::Remove => {
+            return Some(wire::request(
+                "DELETE",
+                format!("{url}/{}", wire::path(&shown?)),
+                None,
+            ));
         }
-        (None, None) => None,
-    }
+        ActivityUpdate::View(view) => {
+            let cancel =
+                json!({"type": 2, "style": 4, "label": CANCEL_LABEL, "custom_id": "cancel"});
+            vec![
+                json!({"type": 10, "content": literal(&view.text())}),
+                json!({"type": 1, "components": [cancel]}),
+            ]
+        }
+        ActivityUpdate::Epilogue(epilogue) => {
+            vec![json!({"type": 10, "content": literal(&epilogue.text())})]
+        }
+    };
+    // A new view asks for no attention; edits never notify.
+    let (method, url, flags) = match shown {
+        Some(shown) => ("PATCH", format!("{url}/{}", wire::path(&shown)), 0),
+        None => ("POST", url, SUPPRESS_NOTIFICATIONS),
+    };
+    Some(wire::request(
+        method,
+        url,
+        Some(components_v2(components, flags)),
+    ))
 }

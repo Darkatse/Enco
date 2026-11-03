@@ -84,7 +84,7 @@ async fn parent_halt_and_archive_tools_wait_for_quiescence_and_archive_releases_
         h.next("fixture").await.respond(reply("delegated"));
         finish(&mut rx).await;
         let child = h.child("main/research").await;
-        let mut child_rx = h.kernel.subscribe(child.id).unwrap();
+        let mut child_rx = h.kernel.subscribe(child.id).await.unwrap();
         h.kernel
             .submit(parent, EventId::new(), "stop the child".into(), vec![])
             .await
@@ -109,9 +109,10 @@ async fn parent_halt_and_archive_tools_wait_for_quiescence_and_archive_releases_
         );
         if archive {
             assert!(h.latest("main").children.is_empty());
+            // The archived child has stopped: a subscription to it ends at once.
             assert!(matches!(
-                h.kernel.subscribe(child.id),
-                Err(KernelError::UnknownSession(_))
+                h.kernel.subscribe(child.id).await.unwrap().try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed)
             ));
             let log = h.kernel.log(child.id, None).await.unwrap();
             assert!(log.iter().any(|entry| matches!(
@@ -313,7 +314,7 @@ async fn an_owner_backtrack_in_a_child_tells_its_parent_and_keeps_the_answer_for
         }
     )));
     // The child answers the task again, now for the owner.
-    let mut child_rx = h.kernel.subscribe(child.id).unwrap();
+    let mut child_rx = h.kernel.subscribe(child.id).await.unwrap();
     h.next("worker").await.respond(reply("for the owner"));
     finish(&mut child_rx).await;
     assert!(

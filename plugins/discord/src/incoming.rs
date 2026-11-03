@@ -3,7 +3,7 @@ use crate::{
     channel::{Command, Fault, Inbound, Request},
     wire,
 };
-use enco_sdk::channel::{Action, CommandKind};
+use enco_sdk::channel::{Action, CommandKind, ConversationName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -11,6 +11,9 @@ use serde_json::{Value, json};
 const EPHEMERAL: u32 = 1 << 6;
 /// The message menu entry that backtracks; it acts on the message it is invoked on.
 const BACKTRACK_HERE: &str = "Backtrack here";
+/// The prefix of a locator that `fetch` resolves to the name of the channel or thread whose ID
+/// follows it.
+pub(super) const CHANNEL_NAME: &str = "channel:";
 
 #[derive(Deserialize)]
 pub(super) struct User {
@@ -55,6 +58,8 @@ pub(super) fn message(value: Value, account: &str) -> Result<Option<Inbound>, Fa
     }
     Ok(Some(Inbound {
         key: format!("MESSAGE_CREATE:{}", message.id),
+        conversation_name: conversation_name(&message.channel_id, message.guild_id.as_deref()),
+        realm: message.guild_id,
         conversation: message.channel_id,
         message: message.id,
         sender_name: Some(message.author.name()),
@@ -65,6 +70,12 @@ pub(super) fn message(value: Value, account: &str) -> Result<Option<Inbound>, Fa
         respond: None,
         action: Action::Message(decoded.content),
     }))
+}
+
+/// The name of `channel`, by a locator for fetching it, when it is in `guild`: a server's
+/// channels and threads have names, direct messages do not.
+fn conversation_name(channel: &str, guild: Option<&str>) -> Option<ConversationName> {
+    guild.map(|_| ConversationName::Fetch(format!("{CHANNEL_NAME}{channel}")))
 }
 
 #[derive(Deserialize)]
@@ -153,11 +164,16 @@ pub(super) fn interaction(value: Value) -> Result<Option<(Inbound, Request)>, Fa
     Ok(Some((
         Inbound {
             key: format!("INTERACTION_CREATE:{}", interaction.id),
+            conversation_name: conversation_name(
+                &interaction.channel_id,
+                interaction.guild_id.as_deref(),
+            ),
             conversation: interaction.channel_id,
             message: interaction.id,
             sender_name: Some(user.name()),
             sender: Some(user.id),
             direct: interaction.guild_id.is_none(),
+            realm: interaction.guild_id,
             addressed: true,
             reply_to: interaction.data.target_id,
             respond: Some(json!(handle).to_string()),
@@ -203,7 +219,8 @@ fn option(kind: CommandKind) -> Option<(&'static str, &'static str, &'static [&'
 
 fn command(command: Command) -> Value {
     let mut contexts = vec![];
-    if command.group {
+    // A server can be a realm the owner declared private, so private commands apply there too.
+    if command.group || command.direct {
         contexts.push(0);
     }
     if command.direct {

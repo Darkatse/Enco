@@ -6,7 +6,7 @@ use enco_kernel::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One configured account and its host routing policy.
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -25,11 +25,28 @@ pub struct ConnectionSettings {
     #[serde(default)]
     pub context: usize,
     /// Profile for the Sessions this connection creates for groups; absent, it serves private
-    /// chats only.
+    /// conversations only.
     pub group_profile: Option<enco_core::ProfileName>,
-    /// Configuration name used to name new group Sessions.
+    /// IDs of the realms private to the owner, such as Discord server IDs; each conversation in
+    /// them is private and gets its own root Session.
+    ///
+    /// IDs are nonblank and matched exactly; an empty set leaves privacy to the protocol.
+    #[serde(default)]
+    pub private_realms: BTreeSet<String>,
+    /// Whether to open a conversation for a child Session that works for its parent while the
+    /// parent shows here; defaults to true.
+    ///
+    /// Disabling this leaves conversations already opened in use until their child is archived.
+    #[serde(default = "default_show_children")]
+    pub show_children: bool,
+    /// The connection's name in the `channel` table; a Session it creates without a name of the
+    /// conversation's own is named after it and the conversation.
     #[serde(skip)]
     pub name: String,
+}
+
+fn default_show_children() -> bool {
+    true
 }
 
 impl ConnectionSettings {
@@ -81,6 +98,16 @@ fn declare(document: &Value, kernel: &KernelSettings) -> Result<Vec<Use>, Settin
             return Err(SettingsError::new(
                 &table,
                 "owner and secret environment names must not be empty",
+            ));
+        }
+        if settings
+            .private_realms
+            .iter()
+            .any(|realm| realm.trim().is_empty())
+        {
+            return Err(SettingsError::new(
+                &table,
+                "private_realms IDs must not be empty",
             ));
         }
         if let Some(name) = &settings.group_profile {

@@ -5,7 +5,7 @@ use crate::{
         MESSAGE_CHARS, PHOTO_MAX_ASPECT_RATIO, PHOTO_MAX_BYTES, PHOTO_MAX_DIMENSION_SUM,
         SEND_TIMEOUT_MS, UPLOAD_TIMEOUT_MS,
     },
-    wire::request,
+    wire::{self, request},
 };
 use enco_sdk::channel::{FormPart, multipart};
 use serde_json::json;
@@ -76,12 +76,11 @@ pub(super) fn split(message: Outgoing) -> Vec<Outgoing> {
 }
 
 pub(super) fn send(conversation: String, message: Outgoing) -> Request {
+    let (chat, thread) = wire::conversation(&conversation);
     let Some(file) = message.file else {
-        return request(
-            "sendRichMessage",
-            json!({"chat_id": conversation, "rich_message": {"markdown": message.text}}),
-            SEND_TIMEOUT_MS,
-        );
+        let mut body = wire::destination(chat, thread);
+        body["rich_message"] = json!({"markdown": message.text});
+        return request("sendRichMessage", body, SEND_TIMEOUT_MS);
     };
     let kind = media_kind(&file);
     let link = media_link(kind);
@@ -92,12 +91,12 @@ pub(super) fn send(conversation: String, message: Outgoing) -> Request {
     };
     let media = json!({"id": "file", "media": {"type": kind, "media": "attach://file"}});
     let rich_message = json!({"markdown": markdown, "media": [media]}).to_string();
-    let (content_type, body) = multipart(&[
+    let mut parts = vec![
         FormPart {
             name: "chat_id",
             filename: None,
             content_type: None,
-            data: conversation.as_bytes(),
+            data: chat.as_bytes(),
         },
         FormPart {
             name: "rich_message",
@@ -111,7 +110,17 @@ pub(super) fn send(conversation: String, message: Outgoing) -> Request {
             content_type: Some("application/octet-stream"),
             data: &file.data,
         },
-    ]);
+    ];
+    let thread = thread.map(|thread| thread.to_string());
+    if let Some(thread) = &thread {
+        parts.push(FormPart {
+            name: "message_thread_id",
+            filename: None,
+            content_type: None,
+            data: thread.as_bytes(),
+        });
+    }
+    let (content_type, body) = multipart(&parts);
     Request {
         method: "POST".into(),
         url: "/bot/sendRichMessage".into(),

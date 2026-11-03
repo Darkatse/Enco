@@ -5,9 +5,10 @@
 //! are the same everywhere. [`export!`](crate::export) gives a channel plugin these same types, so
 //! name them from here.
 pub use crate::bindings::exports::enco::plugin::channel::{
-    Action, ActivityView, Attachment, CommandKind, Content, Quote, Quoted, QuotedMessage,
-    ToolActivity, ToolState,
+    Action, ActivityEpilogue, ActivityUpdate, ActivityView, Attachment, CommandKind, Content,
+    ConversationName, Quote, Quoted, QuotedMessage, ToolActivity, ToolState,
 };
+pub use crate::types::RunEnd;
 use crate::types::{Unviewable, UnviewableReason};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -154,11 +155,70 @@ pub fn typed_command(text: &str) -> Option<(&str, &str)> {
 /// The label of the activity card's button that cancels the Run.
 pub const CANCEL_LABEL: &str = "Cancel";
 
+impl ActivityEpilogue {
+    /// The epilogue's line: the outcome's mark, the time and Rounds the Run took, then ` · ` and
+    /// its reply's first line.
+    ///
+    /// A reply that was not sent is marked `not sent:`. The time keeps its units, such as `45s`, `7m 3s` or `2h 5m`: on a line of its own, `7:03`
+    /// would read as a time of day.
+    pub fn text(&self) -> String {
+        let mark = match self.end {
+            RunEnd::Completed => "✓",
+            RunEnd::BudgetExhausted => "✗ max rounds",
+            RunEnd::Interrupted => "? interrupted",
+            RunEnd::Cancelled => "✗ cancelled",
+            RunEnd::Backtracked => "✗ backtracked",
+            RunEnd::Failed(_) => "✗ failed",
+            RunEnd::Halted => "✗ halted",
+        };
+        let rounds = if self.rounds == 1 {
+            "1 round".into()
+        } else {
+            format!("{} rounds", self.rounds)
+        };
+        let mut text = format!("{mark} {}, {rounds}", duration(self.elapsed_seconds));
+        match (self.unsent, self.excerpt.is_empty()) {
+            (true, true) => text.push_str(" · not sent"),
+            (true, false) => text.push_str(&format!(" · not sent: {}", self.excerpt)),
+            (false, false) => text.push_str(&format!(" · {}", self.excerpt)),
+            (false, true) => {}
+        }
+        text
+    }
+}
+
+/// `seconds` in its two largest units, leaving out a zero second unit: `45s`, `7m`, `7m 3s`,
+/// `2h 5m`.
+fn duration(seconds: u32) -> String {
+    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    let (major, minor) = match (hours, minutes) {
+        (0, 0) => return format!("{seconds}s"),
+        (0, _) => ((minutes, 'm'), (seconds, 's')),
+        _ => ((hours, 'h'), (minutes, 'm')),
+    };
+    match minor {
+        (0, _) => format!("{}{}", major.0, major.1),
+        _ => format!("{}{} {}{}", major.0, major.1, minor.0, minor.1),
+    }
+}
+
+/// A child's full Session name joined with ` › `, shortened to `max_chars` characters with an ellipsis.
+///
+/// `max_chars` must be positive.
+pub fn child_title(session: &[String], max_chars: usize) -> String {
+    let title = session.join(" › ");
+    if title.chars().nth(max_chars).is_some() {
+        title.chars().take(max_chars - 1).chain(['…']).collect()
+    } else {
+        title
+    }
+}
+
 impl ActivityView {
     /// The activity card's text: `Working` and the elapsed `m:ss`, then a line per tool.
     ///
-    /// Each tool line is a mark, the tool's name and, after ` · `, its argument summary when it
-    /// has one; the marks are `…` running, `✓` ok, `✗` failed and `?` unknown.
+    /// Each tool line is a mark, the tool's name and, after ` · `, its arguments when it has
+    /// any; the marks are `…` running, `✓` ok, `✗` failed and `?` unknown.
     pub fn text(&self) -> String {
         let mut text = format!(
             "Working {}:{:02}",
@@ -173,8 +233,8 @@ impl ActivityView {
                 ToolState::Unknown => "?",
             };
             text.push_str(&format!("\n{mark} {}", tool.name));
-            if !tool.summary.is_empty() {
-                text.push_str(&format!(" · {}", tool.summary));
+            if !tool.arguments.is_empty() {
+                text.push_str(&format!(" · {}", tool.arguments));
             }
         }
         text
@@ -273,5 +333,64 @@ mod tests {
         // One before the second part and one closing the body: the file bytes add none.
         assert_eq!(delimiters, 2);
         assert!(body.windows(file.len()).any(|window| window == file));
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+
+    #[test]
+    fn epilogues_tell_outcomes_apart_and_mark_an_unsent_reply() {
+        let epilogue = |end, unsent, excerpt: &str| ActivityEpilogue {
+            elapsed_seconds: 45,
+            rounds: 1,
+            end,
+            unsent,
+            excerpt: excerpt.into(),
+        };
+        let ends = [
+            RunEnd::Completed,
+            RunEnd::BudgetExhausted,
+            RunEnd::Interrupted,
+            RunEnd::Cancelled,
+            RunEnd::Backtracked,
+            RunEnd::Failed(crate::protocol::failure("test", "failure", false)),
+            RunEnd::Halted,
+        ];
+        let lines: std::collections::BTreeSet<_> = ends
+            .into_iter()
+            .map(|end| epilogue(end, false, "").text())
+            .collect();
+        assert_eq!(lines.len(), 7);
+        let sent = epilogue(RunEnd::Completed, false, "找到三篇相关论文").text();
+        assert!(sent.ends_with("找到三篇相关论文") && !sent.contains("not sent"));
+        let unsent = epilogue(RunEnd::Completed, true, "暂时没有新消息").text();
+        assert!(unsent.contains("not sent") && unsent.ends_with("暂时没有新消息"));
+        assert!(
+            epilogue(RunEnd::Completed, true, "")
+                .text()
+                .contains("not sent")
+        );
+    }
+
+    #[test]
+    fn long_runs_count_hours_instead_of_minutes_past_sixty() {
+        assert_eq!(duration(45), "45s");
+        assert_eq!(duration(7 * 60 + 3), "7m 3s");
+        assert_eq!(duration(2 * 3600 + 5 * 60 + 3), "2h 5m");
+        assert_eq!(duration(3600), "1h");
+    }
+
+    #[test]
+    fn child_titles_keep_the_full_path_and_truncate_unicode_on_character_boundaries() {
+        let names = vec!["main".into(), "研究".into(), "papers".into()];
+        assert_eq!(child_title(&names, 100), "main › 研究 › papers");
+        assert_eq!(child_title(&names, 10), "main › 研究…");
+        assert_eq!(child_title(&["😀".repeat(100)], 100), "😀".repeat(100));
+        assert_eq!(
+            child_title(&["😀".repeat(101)], 100),
+            format!("{}…", "😀".repeat(99))
+        );
     }
 }

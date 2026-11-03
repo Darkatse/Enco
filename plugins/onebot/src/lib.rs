@@ -10,7 +10,10 @@ use bindings::exports::enco::plugin::{channel, lifecycle};
 use channel::{
     Arrival, Command, Fault, FetchStep, Identity, Outgoing, ReadStep, Reading, Request, Response,
 };
-use enco_sdk::{channel::ActivityView, types::Failure};
+use enco_sdk::{
+    channel::{ActivityUpdate, ActivityView},
+    types::Failure,
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -172,14 +175,15 @@ impl channel::Guest for Plugin {
     // QQ cannot edit a sent message, so a Run has no view to keep current.
     fn activity(
         _conversation: String,
+        _replies_here: bool,
         _shown: Option<String>,
-        _activity: Option<ActivityView>,
+        _update: ActivityUpdate,
     ) -> Option<Request> {
         None
     }
 
     // Only private chats have an input status.
-    fn presence(conversation: String) -> Option<Request> {
+    fn presence(conversation: String, _view: ActivityView) -> Option<Request> {
         let wire::Conversation::Private(user) = wire::Conversation::parse(&conversation).ok()?
         else {
             return None;
@@ -189,6 +193,20 @@ impl channel::Guest for Plugin {
             json!({"user_id": user, "event_type": 1}),
             wire::ACTION_TIMEOUT_MS,
         ))
+    }
+    fn open_conversation(_beside: String, _session: Vec<String>) -> Option<Request> {
+        None
+    }
+
+    fn opened(_beside: String, _response: Response) -> Result<String, Fault> {
+        Err(wire::fault(
+            "plugin.contract",
+            "OneBot cannot open child conversations".into(),
+        ))
+    }
+
+    fn close_conversation(_conversation: String) -> Option<Request> {
+        None
     }
 }
 

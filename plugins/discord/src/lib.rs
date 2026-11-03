@@ -9,7 +9,10 @@ use bindings::exports::enco::plugin::{channel, lifecycle};
 use channel::{
     Arrival, Command, Fault, FetchStep, Identity, Outgoing, ReadStep, Reading, Request, Response,
 };
-use enco_sdk::{channel::ActivityView, types::Failure};
+use enco_sdk::{
+    channel::{ActivityUpdate, ActivityView},
+    types::Failure,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -46,6 +49,9 @@ impl lifecycle::Guest for Plugin {
         Ok(())
     }
 }
+
+/// The most characters Discord allows in a thread's name.
+const THREAD_NAME_CHARS: usize = 100;
 
 #[derive(Deserialize)]
 struct Application {
@@ -98,7 +104,29 @@ impl channel::Guest for Plugin {
     }
 
     fn fetch(locator: String, responses: Vec<Response>, _limit: u32) -> Result<FetchStep, Fault> {
-        let Some(response) = responses.into_iter().next() else {
+        let mut responses = responses.into_iter();
+        if let Some(channel) = locator.strip_prefix(incoming::CHANNEL_NAME) {
+            let Some(response) = responses.next() else {
+                return Ok(FetchStep::Request(wire::request(
+                    "GET",
+                    format!("/channels/{}", wire::path(channel)),
+                    None,
+                )));
+            };
+            // Only a server's channels and threads are named this way, and each has a name.
+            #[derive(Deserialize)]
+            struct Channel {
+                name: String,
+            }
+            return match wire::answer::<Channel>(response) {
+                Ok(channel) => Ok(FetchStep::Name(channel.name)),
+                Err(error) if !error.fatal && !error.unknown && !error.failure.retryable => {
+                    Ok(FetchStep::Unavailable(error.failure.message))
+                }
+                Err(error) => Err(error),
+            };
+        }
+        let Some(response) = responses.next() else {
             return Ok(FetchStep::Download(locator));
         };
         match wire::checked(&response) {
@@ -159,17 +187,47 @@ impl channel::Guest for Plugin {
 
     fn activity(
         conversation: String,
+        _replies_here: bool,
         shown: Option<String>,
-        activity: Option<ActivityView>,
+        update: ActivityUpdate,
     ) -> Option<Request> {
-        outgoing::activity(conversation, shown, activity)
+        outgoing::activity(conversation, shown, update)
     }
 
-    fn presence(conversation: String) -> Option<Request> {
+    fn presence(conversation: String, _view: ActivityView) -> Option<Request> {
         Some(wire::request(
             "POST",
             format!("/channels/{}/typing", wire::path(&conversation)),
             None,
+        ))
+    }
+
+    fn open_conversation(beside: String, session: Vec<String>) -> Option<Request> {
+        // The conversation ID cannot tell a direct message, thread or forum post from a channel
+        // that takes threads; Discord refuses the first three, and `opened` gives that failure.
+        Some(wire::request(
+            "POST",
+            format!("/channels/{}/threads", wire::path(&beside)),
+            Some(json!({
+                "name": enco_sdk::channel::child_title(&session, THREAD_NAME_CHARS), "type": 11,
+            })),
+        ))
+    }
+
+    fn opened(_beside: String, response: Response) -> Result<String, Fault> {
+        #[derive(Deserialize)]
+        struct Thread {
+            id: String,
+        }
+        let thread: Thread = wire::answer(response)?;
+        Ok(thread.id)
+    }
+
+    fn close_conversation(conversation: String) -> Option<Request> {
+        Some(wire::request(
+            "PATCH",
+            format!("/channels/{}", wire::path(&conversation)),
+            Some(json!({"archived": true, "locked": true})),
         ))
     }
 }

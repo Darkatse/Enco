@@ -23,9 +23,10 @@ use std::{
 
 /// The store's format version, written as `PRAGMA user_version` and required when opening.
 ///
-/// It covers the SQLite schema, plan records included. Until P4, persistent format changes
-/// require a new database; opening never migrates or deletes the old one.
-const SCHEMA_VERSION: u32 = 18;
+/// It covers the SQLite schema and the JSON kept in it, such as plan records and connection
+/// state. Until P4, persistent format changes require a new database; opening never migrates or
+/// deletes the old one, and nothing reads an older format.
+const SCHEMA_VERSION: u32 = 19;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {

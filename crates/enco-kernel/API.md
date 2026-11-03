@@ -19,12 +19,15 @@ Session execution through explicit ports.
 - enum `Cause` — A failure attributed to the part of the intent it concerns.
 - enum `ChannelAction` — The meaning of an incoming message, independent of protocol command syntax.
 - struct `ChannelActivity` — A Run's current progress, containing only public tool names and outcomes.
+- struct `ChannelActivityEpilogue` — How a Run turned out, left in place of its view where the view was only for display.
+- enum `ChannelActivityUpdate` — How a Run's view in a conversation should be updated.
 - struct `ChannelAttachment` — An image still held by the protocol.
 - struct `ChannelBackoff` — Doubling waits between attempts of one channel operation, from one second up to `CHANNEL_MAX_BACKOFF`.
 - enum `ChannelCallError` — A mapper or protocol failure, distinct from failing to record its evidence.
 - struct `ChannelCommand` — A command offered by the host in protocol menus.
 - enum `ChannelCommandKind` — The commands understood by the connection owner.
 - struct `ChannelContent` — Text and attachments before or after fetching.
+- enum `ChannelConversationName` — A conversation's name carried by the protocol, or the locator to fetch it.
 - struct `ChannelFault` — A protocol failure and the facts that determine retry and settlement.
 - struct `ChannelIdentity` — Stable account identity declared by a mapper.
 - struct `ChannelInput` — An incoming message, before host authorization or attachment fetching.
@@ -612,6 +615,58 @@ Implements:
 impl Clone for ChannelActivity
 ```
 
+## struct `ChannelActivityEpilogue`
+
+`src/ports/channel.rs`
+
+```rust
+pub struct ChannelActivityEpilogue {
+    pub elapsed_seconds: u32,
+    pub rounds: u32,
+    pub end: enco_core::RunEnd,
+    pub unsent: bool,
+    pub excerpt: String,
+}
+```
+
+How a Run turned out, left in place of its view where the view was only for display.
+
+- `elapsed_seconds` — Whole seconds the Run took.
+- `rounds` — Number of Rounds the Run used.
+- `end` — How the Run ended.
+- `unsent` — Whether it finished without sending its last reply.
+- `excerpt` — Shortened first line of its last reply, sent or not; empty when it has none.
+
+Implements:
+
+```rust
+impl Clone for ChannelActivityEpilogue
+```
+
+## enum `ChannelActivityUpdate`
+
+`src/ports/channel.rs`
+
+```rust
+pub enum ChannelActivityUpdate {
+    View(ChannelActivity),
+    Epilogue(ChannelActivityEpilogue),
+    Remove,
+}
+```
+
+How a Run's view in a conversation should be updated.
+
+- `View` — Show or refresh the live progress view.
+- `Epilogue` — End the view with the Run's epilogue: rewrite the view, or create one when none is shown.
+- `Remove` — Remove the view.
+
+Implements:
+
+```rust
+impl Clone for ChannelActivityUpdate
+```
+
 ## struct `ChannelAttachment`
 
 `src/ports/channel.rs`
@@ -703,8 +758,9 @@ A command offered by the host in protocol menus.
 
 - `kind` — Which host command this is.
 - `description` — Menu explanation supplied by the host.
-- `direct` — Applies in one-to-one conversations.
-- `group` — Applies in group conversations.
+- `direct` — Applies in private conversations: one-to-one ones, and those in a realm the owner declared
+  private.
+- `group` — Applies in group conversations that are not private.
 
 ## enum `ChannelCommandKind`
 
@@ -755,6 +811,31 @@ Implements:
 ```rust
 impl<T, Q> From<&str> for ChannelContent<T, Q>
 impl<T, Q> From<String> for ChannelContent<T, Q>
+```
+
+## enum `ChannelConversationName`
+
+`src/ports/channel.rs`
+
+```rust
+pub enum ChannelConversationName {
+    Name(String),
+    Fetch(String),
+}
+```
+
+A conversation's name carried by the protocol, or the locator to fetch it.
+
+- `Name` — Carried with the incoming message.
+- `Fetch` — An opaque locator passed to the mapper's fetch function.
+
+Implements:
+
+```rust
+impl Clone for ChannelConversationName
+impl Debug for ChannelConversationName
+impl Eq for ChannelConversationName
+impl PartialEq for ChannelConversationName
 ```
 
 ## struct `ChannelFault`
@@ -827,6 +908,8 @@ impl Clone for ChannelIdentity
 ```rust
 pub struct ChannelInput {
     pub conversation: String,
+    pub realm: Option<String>,
+    pub conversation_name: Option<ChannelConversationName>,
     pub message: String,
     pub sender: Option<String>,
     pub sender_name: Option<String>,
@@ -841,6 +924,12 @@ pub struct ChannelInput {
 An incoming message, before host authorization or attachment fetching.
 
 - `conversation` — The conversation where replies go.
+- `realm` — The realm this conversation is in, such as a Discord server or a Telegram chat with topics;
+  `None` for a conversation on its own.
+
+  The owner can declare a realm private.
+- `conversation_name` — The conversation's name, such as a topic's title, when the protocol gives one; it only
+  names a Session made for the conversation.
 - `message` — This message's ID within its conversation.
 - `sender` — The sender's protocol ID, when reported.
 - `sender_name` — The sender's display name, when reported.
@@ -1047,7 +1136,7 @@ impl Clone for ChannelSettings
 pub struct ChannelToolActivity {
     pub name: String,
     pub state: ChannelToolState,
-    pub summary: String,
+    pub arguments: String,
 }
 ```
 
@@ -1055,7 +1144,7 @@ One tool call visible in a Run's progress view.
 
 - `name` — The tool's model-visible name, without its arguments.
 - `state` — The call's current outcome.
-- `summary` — The values of the call's required arguments in its schema's order, on one line the host
+- `arguments` — The values of the call's required arguments in its schema's order, on one line the host
   shortens; empty when it has none.
 
 Implements:
@@ -2367,10 +2456,14 @@ Find the connection's delivery to `target` that sent the protocol message `messa
 ### `Kernel::subscribe`
 
 ```rust
-pub fn subscribe(&self, session: SessionId) -> Result<broadcast::Receiver<Entry>, KernelError>
+pub async fn subscribe(&self, session: SessionId) -> Result<broadcast::Receiver<Entry>, KernelError>
 ```
 
-Subscribe to newly committed facts; Log remains the durable source.
+Subscribe to a Session's newly committed facts; the Log remains the durable source.
+
+The subscription ends once the Session is archived and has stopped, so for such a Session
+it ends at once. An unarchived Session's actor starts here if it has none yet, such as a
+child whose parent's commit is still waking it.
 
 ### `Kernel::cancel`
 
@@ -4893,6 +4986,14 @@ async fn fetch_quote(&self, locator: &str) -> Result<Fetched<Vec<ChannelQuotedMe
 
 Fetch the messages at a quote's locator, in protocol order. Reads have no external effects.
 
+### `ChannelAdapter::fetch_conversation_name`
+
+```rust
+async fn fetch_conversation_name(&self, locator: &str) -> Result<Fetched<String>, ChannelCallError>
+```
+
+Fetch the conversation name at a locator. Reads have no external effects.
+
 ### `ChannelAdapter::split`
 
 ```rust
@@ -4928,18 +5029,38 @@ Answer an accepted message after its receipt acknowledgment completes.
 ### `ChannelAdapter::activity`
 
 ```rust
-async fn activity(&self, target: &str, shown: Option<&str>, activity: Option<&ChannelActivity>) -> Result<Option<ChannelSent>, ChannelCallError>
+async fn activity(&self, target: &str, replies_here: bool, shown: Option<&str>, update: &ChannelActivityUpdate) -> Result<Option<ChannelSent>, ChannelCallError>
 ```
 
-Create, refresh or remove an activity view; creation returns its recorded response, if any.
+Create, refresh, rewrite or remove a Run's view; returns the recorded response, if any.
 
 ### `ChannelAdapter::presence`
 
 ```rust
-async fn presence(&self, target: &str) -> Result<(), ChannelCallError>
+async fn presence(&self, target: &str, view: &ChannelActivity) -> Result<(), ChannelCallError>
 ```
 
-Show in `target` that the Agent is working, when the protocol can; nothing is kept.
+Show in `target` that the Agent is working on `view`, when the protocol can; nothing is
+kept.
+
+### `ChannelAdapter::open_conversation`
+
+```rust
+async fn open_conversation(&self, beside: &str, session: &[String]) -> Result<Option<String>, ChannelCallError>
+```
+
+Open a child Session's own conversation beside `beside`, returning its ID.
+
+`None` when the mapper knows the protocol cannot open one there; a protocol's refusal is an
+error.
+
+### `ChannelAdapter::close_conversation`
+
+```rust
+async fn close_conversation(&self, target: &str) -> Result<(), ChannelCallError>
+```
+
+Put away a conversation opened for a child Session once that Session is archived.
 
 ## trait `Clock`
 

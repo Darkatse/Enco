@@ -13,9 +13,9 @@ use enco_core::{
     ContentHash, Failure, FileData, GenerationId, MappingOrigin, MappingRecord, Outgoing, code,
 };
 use enco_kernel::{
-    Channel, ChannelAdapter, ChannelCallError, ChannelCommand, ChannelFault, ChannelIdentity,
-    ChannelPacingGap, ChannelQuotedMessage, ChannelReading, ChannelSent, ChannelSettings, Fetched,
-    Store, StoreError,
+    Channel, ChannelActivity, ChannelActivityUpdate, ChannelAdapter, ChannelCallError,
+    ChannelCommand, ChannelFault, ChannelIdentity, ChannelPacingGap, ChannelQuotedMessage,
+    ChannelReading, ChannelSent, ChannelSettings, Fetched, Store, StoreError,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -242,6 +242,13 @@ impl ChannelAdapter for Connection {
         self.quote(locator).await
     }
 
+    async fn fetch_conversation_name(
+        &self,
+        locator: &str,
+    ) -> Result<Fetched<String>, ChannelCallError> {
+        self.conversation_name(locator).await
+    }
+
     async fn split(
         &self,
         message: Outgoing<FileData>,
@@ -308,16 +315,17 @@ impl ChannelAdapter for Connection {
     async fn activity(
         &self,
         target: &str,
+        replies_here: bool,
         shown: Option<&str>,
-        activity: Option<&enco_kernel::ChannelActivity>,
+        update: &ChannelActivityUpdate,
     ) -> Result<Option<ChannelSent>, ChannelCallError> {
-        let activity = activity.map(convert::activity);
+        let update = convert::activity_update(update);
         let request = self
             .transport
             .mapper
             .call(async |guest, store| {
                 guest
-                    .call_activity(store, target, shown, activity.as_ref())
+                    .call_activity(store, target, replies_here, shown, &update)
                     .await
             })
             .await
@@ -325,22 +333,74 @@ impl ChannelAdapter for Connection {
         let Some(request) = request else {
             return Ok(None);
         };
-        if shown.is_none() && activity.is_some() {
-            return self
-                .transport
-                .answered(self.transport.http(request).await?)
-                .await
-                .map(Some);
-        }
-        self.transport.notice(request).await?;
-        Ok(None)
+        let response = self.transport.http(request).await?;
+        self.transport.answered(response).await.map(Some)
     }
 
-    async fn presence(&self, target: &str) -> Result<(), ChannelCallError> {
+    async fn presence(&self, target: &str, view: &ChannelActivity) -> Result<(), ChannelCallError> {
+        let view = convert::activity(view);
         let request = self
             .transport
             .mapper
-            .call(async |guest, store| guest.call_presence(store, target).await)
+            .call(async |guest, store| guest.call_presence(store, target, &view).await)
+            .await
+            .map_err(|failure| convert::failure(failure, false, None))?;
+        if let Some(request) = request {
+            self.transport
+                .answered(self.transport.http(request).await?)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn open_conversation(
+        &self,
+        beside: &str,
+        session: &[String],
+    ) -> Result<Option<String>, ChannelCallError> {
+        let request = self
+            .transport
+            .mapper
+            .call(async |guest, store| guest.call_open_conversation(store, beside, session).await)
+            .await
+            .map_err(|failure| convert::failure(failure, false, None))?;
+        let Some(request) = request else {
+            return Ok(None);
+        };
+        let response = self.transport.http(request).await?;
+        let origin = self
+            .transport
+            .record(
+                "opened",
+                json!({
+                    "beside": beside,
+                    "response": self.transport.response_record(&response).await?,
+                }),
+            )
+            .await?;
+        let conversation = self
+            .transport
+            .mapper
+            .call(async |guest, store| guest.call_opened(store, beside, &response).await)
+            .await
+            .map_err(|failure| convert::failure(failure, true, Some(origin)))?
+            .map_err(|fault| convert::fault(fault, Some(origin)))?;
+        if conversation.is_empty() {
+            return Err(convert::failure(
+                crate::convert::bad("opened conversation ID is empty"),
+                true,
+                Some(origin),
+            )
+            .into());
+        }
+        Ok(Some(conversation))
+    }
+
+    async fn close_conversation(&self, target: &str) -> Result<(), ChannelCallError> {
+        let request = self
+            .transport
+            .mapper
+            .call(async |guest, store| guest.call_close_conversation(store, target).await)
             .await
             .map_err(|failure| convert::failure(failure, false, None))?;
         if let Some(request) = request {

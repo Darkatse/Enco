@@ -34,7 +34,7 @@ async fn change_profile_during_compaction(
     main: SessionId,
     update_definition: bool,
 ) -> RoundId {
-    let mut rx = kernel.subscribe(main).unwrap();
+    let mut rx = kernel.subscribe(main).await.unwrap();
     let conversation = async {
         for n in 0..2 {
             kernel
@@ -145,7 +145,7 @@ async fn profile_changes_bind_at_round_boundaries() {
             scripted.settings.lock().unwrap().last().unwrap().model,
             "new-reply"
         );
-        let mut other_rx = kernel.subscribe(other.id).unwrap();
+        let mut other_rx = kernel.subscribe(other.id).await.unwrap();
         kernel
             .submit(
                 other.id,
@@ -201,14 +201,14 @@ async fn a_session_whose_profile_was_rolled_back_away_remains_recoverable() {
 
     // Mechanical rollback can remove an in-use name; restarting still restores that generation.
     let (kernel, _) = support::kernel(dir.path(), scripted.clone()).await;
-    let mut rx = kernel.subscribe(main.id).unwrap();
+    let mut rx = kernel.subscribe(main.id).await.unwrap();
     kernel
         .submit(main.id, EventId::new(), "continue".into(), Vec::new())
         .await
         .unwrap();
     assert!(matches!(&finish(&mut rx).await.last().unwrap().body,
     EntryBody::RunEnded { end: RunEnd::Failed { failure }, .. } if failure.code == code::PROFILE_UNKNOWN));
-    let mut other_rx = kernel.subscribe(other.id).unwrap();
+    let mut other_rx = kernel.subscribe(other.id).await.unwrap();
     kernel
         .submit(other.id, EventId::new(), "still works".into(), Vec::new())
         .await
@@ -435,7 +435,7 @@ async fn restricted_profiles_filter_requests_and_dispatch_in_both_modes() {
             .set_profile(session.id, &"group".parse().unwrap())
             .await
             .unwrap();
-        let mut rx = kernel.subscribe(session.id).unwrap();
+        let mut rx = kernel.subscribe(session.id).await.unwrap();
         kernel
             .submit(
                 session.id,

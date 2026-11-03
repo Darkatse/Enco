@@ -9,6 +9,7 @@ use serde_json::json;
 enum End {
     Image(Vec<u8>),
     Messages(Vec<wire::QuotedMessage>),
+    Name(String),
     Unavailable(String),
 }
 
@@ -18,7 +19,7 @@ impl Connection {
         let content = match end {
             End::Image(bytes) => Ok(bytes),
             End::Unavailable(reason) => Err(reason),
-            End::Messages(_) => return Err(wrong_kind("an image", origin)),
+            End::Messages(_) | End::Name(_) => return Err(wrong_kind("an image", origin)),
         };
         Ok(Fetched {
             content,
@@ -35,7 +36,31 @@ impl Connection {
             End::Messages(messages) => Ok(convert::quoted_messages(messages)
                 .map_err(|failure| convert::failure(failure, false, Some(origin)))?),
             End::Unavailable(reason) => Err(reason),
-            End::Image(_) => return Err(wrong_kind("messages", origin)),
+            End::Image(_) | End::Name(_) => return Err(wrong_kind("messages", origin)),
+        };
+        Ok(Fetched {
+            content,
+            origin: Some(origin),
+        })
+    }
+
+    pub(super) async fn conversation_name(
+        &self,
+        locator: &str,
+    ) -> Result<Fetched<String>, ChannelCallError> {
+        let (end, origin) = self.fetch(locator).await?;
+        let content = match end {
+            End::Name(name) => {
+                if name.is_empty() {
+                    let failure = crate::convert::bad("fetched conversation name is empty");
+                    return Err(convert::failure(failure, false, Some(origin)).into());
+                }
+                Ok(name)
+            }
+            End::Unavailable(reason) => Err(reason),
+            End::Image(_) | End::Messages(_) => {
+                return Err(wrong_kind("a conversation name", origin));
+            }
         };
         Ok(Fetched {
             content,
@@ -97,6 +122,7 @@ impl Connection {
                 wire::FetchStep::Messages(messages) => {
                     return Ok((End::Messages(messages), origin));
                 }
+                wire::FetchStep::Name(name) => return Ok((End::Name(name), origin)),
                 wire::FetchStep::Unavailable(reason) => {
                     return Ok((End::Unavailable(reason), origin));
                 }

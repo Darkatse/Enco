@@ -152,7 +152,7 @@ impl Reader {
     /// unavailable.
     ///
     /// Fatal and storage failures stop the connection.
-    async fn read<T, F>(&self, fetch: impl Fn() -> F) -> Result<Fetched<T>, ChannelError>
+    pub(super) async fn read<T, F>(&self, fetch: impl Fn() -> F) -> Result<Fetched<T>, ChannelError>
     where
         F: Future<Output = Result<Fetched<T>, ChannelCallError>>,
     {

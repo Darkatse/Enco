@@ -6,6 +6,14 @@ use serde_json::Value;
 
 /// The time limit of every request but an upload.
 const REQUEST_TIMEOUT_MS: u32 = 30_000;
+/// Discord's JSON error code for a channel or thread that does not exist.
+const UNKNOWN_CHANNEL: u64 = 10003;
+
+/// The JSON body of a Discord API error.
+#[derive(serde::Deserialize)]
+struct ErrorBody {
+    code: u64,
+}
 
 pub(super) fn fault(code: &str, message: impl Into<String>, fatal: bool) -> Fault {
     Fault {
@@ -44,6 +52,17 @@ pub(super) fn request(method: &str, url: String, body: Option<Value>) -> Request
 pub(super) fn checked(response: &Response) -> Result<(), Fault> {
     if (200..300).contains(&response.status) {
         return Ok(());
+    }
+    // Other 404s, such as an expired attachment link, need not carry Discord's JSON error.
+    if response.status == 404
+        && serde_json::from_slice::<ErrorBody>(&response.body)
+            .is_ok_and(|error| error.code == UNKNOWN_CHANNEL)
+    {
+        return Err(fault(
+            "channel.conversation_gone",
+            "Discord channel no longer exists",
+            false,
+        ));
     }
     let retry_after = if response.status == 429 {
         #[derive(serde::Deserialize)]

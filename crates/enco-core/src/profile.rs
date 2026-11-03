@@ -41,6 +41,12 @@ impl ProfileName {
     }
 }
 
+impl Default for ProfileName {
+    fn default() -> Self {
+        Self(crate::DEFAULT_PROFILE.into())
+    }
+}
+
 impl Deref for ProfileName {
     type Target = str;
     fn deref(&self) -> &Self::Target {

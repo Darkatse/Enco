@@ -2,13 +2,15 @@
 use crate::channel::{Fault, Request, Response};
 use enco_sdk::types::Failure;
 use serde::{Deserialize, de::DeserializeOwned};
-use serde_json::Value;
+use serde_json::{Value, json};
+use std::fmt::Display;
 
 #[derive(Deserialize)]
 struct Envelope<T> {
     ok: bool,
     result: Option<T>,
     error_code: Option<u16>,
+    description: Option<String>,
     parameters: Option<Parameters>,
 }
 
@@ -34,6 +36,31 @@ pub(super) fn answer<T: DeserializeOwned>(method: &str, response: Response) -> R
         } else {
             response.status
         };
+        if status == 400
+            && let Some(description) = envelope.description
+        {
+            let lower = description.to_ascii_lowercase();
+            if [
+                "message thread not found",
+                "chat not found",
+                "topic_deleted",
+                "topic_id_invalid",
+            ]
+            .iter()
+            .any(|phrase| lower.contains(phrase))
+            {
+                return Err(Fault {
+                    failure: Failure {
+                        code: "channel.conversation_gone".into(),
+                        message: description,
+                        retryable: false,
+                    },
+                    unknown: false,
+                    fatal: false,
+                    retry_after: None,
+                });
+            }
+        }
         return Err(http_error(
             method,
             status,
@@ -93,4 +120,34 @@ pub(super) fn path(path: &str) -> String {
         }
     }
     result
+}
+
+/// The ID of the conversation that is `topic` in `chat`, or `chat` itself without a topic;
+/// [`conversation`] splits it back.
+pub(super) fn conversation_id(chat: impl Display, topic: Option<i64>) -> String {
+    match topic {
+        Some(topic) => format!("{chat}:{topic}"),
+        None => chat.to_string(),
+    }
+}
+
+/// Splits the conversation IDs produced by this mapper into their chat and optional topic.
+#[expect(
+    clippy::expect_used,
+    reason = "topic IDs were formatted from Telegram integer fields"
+)]
+pub(super) fn conversation(id: &str) -> (&str, Option<i64>) {
+    match id.split_once(':') {
+        Some((chat, thread)) => (chat, Some(thread.parse().expect("Telegram topic ID"))),
+        None => (id, None),
+    }
+}
+
+/// The chat and optional topic fields for requests that create content in a conversation.
+pub(super) fn destination(chat: &str, thread: Option<i64>) -> Value {
+    let mut body = json!({"chat_id": chat});
+    if let Some(thread) = thread {
+        body["message_thread_id"] = json!(thread);
+    }
+    body
 }

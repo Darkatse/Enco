@@ -63,7 +63,7 @@ async fn restart_reports_interrupted_children_and_finishes_committed_halts() {
         if killed == Killed::Running {
             let parent_prompt = h.next("fixture").await;
             assert!(!h.latest("main").children[0].state.awaiting);
-            let mut rx = h.kernel.subscribe(parent).unwrap();
+            let mut rx = h.kernel.subscribe(parent).await.unwrap();
             parent_prompt.respond(crate::silence::skip("restart noted"));
             finish(&mut rx).await;
             let entries = h.kernel.log(parent, None).await.unwrap();
@@ -145,8 +145,8 @@ async fn halted_after_restart(h: &Harness, parent: SessionId, child: SessionId, 
         loop {
             let stopped = !archived
                 || matches!(
-                    h.kernel.subscribe(child),
-                    Err(KernelError::UnknownSession(_))
+                    h.kernel.subscribe(child).await.unwrap().try_recv(),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed)
                 );
             if h.store.pending(child).await.unwrap().is_empty() && stopped {
                 break;

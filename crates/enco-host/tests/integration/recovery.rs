@@ -97,7 +97,7 @@ impl ContextSource for GatedContext {
 }
 
 async fn recovered(kernel: &Kernel, session: SessionId) -> Vec<Entry> {
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     let log = kernel.log(session, None).await.unwrap();
     if !log.iter().any(|e| {
         matches!(
@@ -157,7 +157,7 @@ async fn aborted_provider_request_is_settled_without_automatic_resumption() {
             .any(|entry| matches!(entry.body, EntryBody::ToolCallStarted { .. }))
     );
     assert!(next.requests.lock().unwrap().is_empty());
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "continue".into(), Vec::new())
         .await
@@ -253,7 +253,7 @@ async fn cancellation_reaches_context_and_shutdown_waits_for_tool_settlement() {
     })
     .await;
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "hello".into(), Vec::new())
         .await
@@ -346,7 +346,7 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
     );
     std::fs::write(dir.path().join("AGENTS.md"), [0xff]).unwrap();
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     let mut document = configuration();
     document["run"] = serde_json::json!({"max_rounds": 30});
     std::fs::write(
@@ -469,7 +469,7 @@ async fn normal_mode_resumes_with_the_repaired_context() {
     .await;
     std::fs::write(dir.path().join("AGENTS.md"), [0xff]).unwrap();
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     kernel.set_safe_mode(true).await.unwrap();
     kernel
         .submit(session.id, EventId::new(), "repair".into(), Vec::new())

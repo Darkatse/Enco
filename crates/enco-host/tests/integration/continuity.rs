@@ -64,7 +64,7 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
     })
     .await;
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     let first = kernel
         .schedules()
         .create(
@@ -131,7 +131,7 @@ async fn reminders_fire_once_and_overdue_reminders_resume_after_restart() {
         deps.clock = clock.clone()
     })
     .await;
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     let log = kernel.log(session.id, None).await.unwrap();
     if !log
         .iter()
@@ -168,7 +168,7 @@ async fn compacted_requests_are_recorded_and_the_summary_survives_restart() {
     )
     .await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     kernel
         .submit(session, EventId::new(), "initial request".into(), vec![])
         .await
@@ -196,7 +196,7 @@ async fn compacted_requests_are_recorded_and_the_summary_survives_restart() {
     drop(kernel);
     let provider = ScriptedProvider::new(vec![reply("continued")]);
     let (kernel, _) = support::kernel(dir.path(), provider.clone()).await;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     kernel
         .submit(session, EventId::new(), "continue".into(), vec![])
         .await
@@ -240,7 +240,7 @@ async fn deliver_first_briefing(
 ) -> (Kernel, SessionId, Scheduled) {
     let kernel = new_york(root, provider, clock).await;
     let session = kernel.open_session("main").await.unwrap().id;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     let briefing = kernel
         .schedules()
         .create(
@@ -272,7 +272,7 @@ async fn restart_after_missed_mornings(
     drop(kernel);
     *clock.0.lock().unwrap() = utc("2026-03-10T12:01:00Z");
     let kernel = new_york(root, provider, clock).await;
-    let mut rx = kernel.subscribe(session).unwrap();
+    let mut rx = kernel.subscribe(session).await.unwrap();
     finish(&mut rx).await;
     (kernel, rx)
 }
@@ -375,7 +375,7 @@ async fn invalid_schedule_arguments_leave_no_records_and_allow_correction() {
     )
     .await;
     let session = kernel.open_session("main").await.unwrap();
-    let mut rx = kernel.subscribe(session.id).unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
     let cases = [
         json!({ "cron": "invalid" }),
         json!({ "cron": "0 8 * * *", "timezone": "Unknown/Zone" }),
