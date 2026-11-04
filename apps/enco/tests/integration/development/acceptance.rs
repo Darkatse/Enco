@@ -333,62 +333,17 @@ async fn delete_and_recreate(
 }
 
 #[tokio::test]
-async fn a_tool_schema_outside_the_subset_is_rejected_with_its_location() {
+async fn an_open_tool_schema_and_a_failed_probe_are_rejected_before_registration() {
     let server = MockServer::start().await;
     let mut daemon = Daemon::start(&server, "openai-compatible").await;
     let home = daemon.root.path().to_path_buf();
-    support::build_target(&home, "schema-rejection");
+    support::build_target(&home, "rejection");
     support::copy_directory(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/test-fixture"),
         &home.join("plugins/fixture"),
     );
     let source = home.join("plugins/fixture/src/lib.rs");
-    // Forgetting `deny_unknown_fields` leaves the object open, which the subset rejects.
-    let text = std::fs::read_to_string(&source).unwrap().replace(
-        "#[serde(deny_unknown_fields)]\nstruct Spin {}",
-        "struct Spin {}",
-    );
-    std::fs::write(source, text).unwrap();
-    let rejected = daemon
-        .connect()
-        .await
-        .request(Command::Apply {
-            output: protocol::Output::Json,
-            reason: None,
-        })
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(
-        rejected.contains(
-            "tool fixture_spin schema: schema root: an object must set `additionalProperties` to false"
-        ),
-        "{rejected}"
-    );
-    daemon.stop().await;
-}
-
-const PROBE_ACCEPTED: &str = "        Ok(())";
-const PROBE_REJECTED: &str = concat!(
-    "        Err(types::Failure { code: \"plugin.contract\".into(), ",
-    "message: \"fixture probe rejected\".into(), retryable: false })"
-);
-
-#[tokio::test]
-async fn a_failed_probe_is_rejected_before_source_registration() {
-    let server = MockServer::start().await;
-    let mut daemon = Daemon::start(&server, "openai-compatible").await;
-    let home = daemon.root.path().to_path_buf();
-    support::build_target(&home, "probe-rejection");
-    support::copy_directory(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/test-fixture"),
-        &home.join("plugins/fixture"),
-    );
-    let source = home.join("plugins/fixture/src/lib.rs");
-    let text = std::fs::read_to_string(&source)
-        .unwrap()
-        .replace(PROBE_ACCEPTED, PROBE_REJECTED);
-    std::fs::write(source, text).unwrap();
+    let accepted = std::fs::read_to_string(&source).unwrap();
     let before = daemon
         .connect()
         .await
@@ -397,16 +352,21 @@ async fn a_failed_probe_is_rejected_before_source_registration() {
         })
         .await
         .unwrap();
-    let rejected = daemon
-        .connect()
-        .await
-        .request(Command::Apply {
-            output: protocol::Output::Json,
-            reason: None,
-        })
-        .await
-        .unwrap_err()
-        .to_string();
+    // Forgetting `deny_unknown_fields` leaves the object open, which the subset rejects.
+    let open = accepted.replace(
+        "#[serde(deny_unknown_fields)]\nstruct Spin {}",
+        "struct Spin {}",
+    );
+    std::fs::write(&source, open).unwrap();
+    let rejected = rejected_apply(&daemon).await;
+    assert!(
+        rejected.contains(
+            "tool fixture_spin schema: schema root: an object must set `additionalProperties` to false"
+        ),
+        "{rejected}"
+    );
+    std::fs::write(&source, accepted.replace(PROBE_ACCEPTED, PROBE_REJECTED)).unwrap();
+    let rejected = rejected_apply(&daemon).await;
     assert!(rejected.contains("fixture probe rejected"), "{rejected}");
     let after = daemon
         .connect()
@@ -425,4 +385,23 @@ async fn a_failed_probe_is_rejected_before_source_registration() {
         assert_eq!(after["plugins"][name]["registered"], unit["registered"]);
     }
     daemon.stop().await;
+}
+
+const PROBE_ACCEPTED: &str = "        Ok(())";
+const PROBE_REJECTED: &str = concat!(
+    "        Err(types::Failure { code: \"plugin.contract\".into(), ",
+    "message: \"fixture probe rejected\".into(), retryable: false })"
+);
+
+async fn rejected_apply(daemon: &Daemon) -> String {
+    daemon
+        .connect()
+        .await
+        .request(Command::Apply {
+            output: protocol::Output::Json,
+            reason: None,
+        })
+        .await
+        .unwrap_err()
+        .to_string()
 }

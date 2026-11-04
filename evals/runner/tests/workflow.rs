@@ -461,22 +461,26 @@ async fn source_fixture_is_registered_offline_before_serving() {
         &evaluation.root.join("evals/tasks/mail/home/bin/mail"),
         "#!/bin/sh\nset -eu\ncurl -fsS -H \"Authorization: Bearer $MAIL_TOKEN\" '{{mock:mail}}/v1/inbox'\n",
     );
-    // Reuse this scenario's Cargo cache without locking other source builds.
+    // Reuse this scenario's Cargo cache without locking other source builds. Cargo fingerprints
+    // dependencies by their source path, and each trial extracts crates under its own fresh home,
+    // so the build reaches the trial's lent cargo home through one fixed alias.
     let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/plugin-tests/evaluation");
     std::fs::create_dir_all(&target).unwrap();
     let target = target.canonicalize().unwrap();
+    let cargo = target.with_file_name("evaluation-cargo");
     let docs =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/plugin-tests/evaluation-doc");
     std::fs::create_dir_all(&docs).unwrap();
     let docs = docs.canonicalize().unwrap();
     let binary = evaluation.enco.to_str().unwrap().replace('\'', "'\\''");
     let target = target.to_str().unwrap().replace('\'', "'\\''");
+    let cargo = cargo.to_str().unwrap().replace('\'', "'\\''");
     let docs = docs.to_str().unwrap().replace('\'', "'\\''");
     let wrapper = evaluation.root.join("source-enco");
     write(
         &wrapper,
         &format!(
-            "#!/bin/sh\nif [ \"$1\" = init ]; then\n  '{binary}' \"$@\" || exit\n  ln -s '{target}' \"$ENCO_HOME/.data/target\"\n  ln -s '{docs}' \"$ENCO_HOME/.data/target-doc\"\nelse\n  exec '{binary}' \"$@\"\nfi\n"
+            "#!/bin/sh\nif [ \"$1\" = init ]; then\n  '{binary}' \"$@\" || exit\n  ln -s '{target}' \"$ENCO_HOME/.data/target\"\n  ln -s '{docs}' \"$ENCO_HOME/.data/target-doc\"\nelse\n  ln -sfn \"$HOME/.cargo\" '{cargo}'\n  CARGO_HOME='{cargo}' exec '{binary}' \"$@\"\nfi\n"
         ),
     );
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();

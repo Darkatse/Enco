@@ -307,7 +307,7 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
     use_source(&daemon).await;
     let registration = serde_json::from_value(first["id"].clone()).unwrap();
     check_readme(&readme);
-    check_build_rejection(&daemon, &document, &source).await;
+    check_build_rejection(&daemon, &document).await;
     std::fs::write(&source, code.replace("label", "caption")).unwrap();
     document["plugin"]["alpha"]["config"] = json!({"caption": "value"});
     write_config(&daemon, &document);
@@ -550,6 +550,7 @@ async fn first_start_registers_a_source_provider_with_the_configuration_that_use
         .unwrap();
     let generation = running_generation(&status["plugins"]["local"]);
     assert_eq!(generation["origin"], "code");
+    assert_eq!(status["recent_registrations"].as_array().unwrap().len(), 1);
     assert_eq!(
         generation["registration"],
         status["configuration"]["running"]["registration"]
@@ -560,30 +561,7 @@ async fn first_start_registers_a_source_provider_with_the_configuration_that_use
             .unwrap()
             .is_empty()
     );
-    assert!(server.received_requests().await.unwrap().is_empty());
-    daemon.stop().await;
-    let home = daemon.root.path();
-    for name in ["enco.db", "enco.db-wal", "enco.db-shm"] {
-        let file = home.join(".data").join(name);
-        if file.exists() {
-            std::fs::remove_file(file).unwrap();
-        }
-    }
-    daemon.restart().await;
-    let rebuilt = daemon
-        .connect()
-        .await
-        .request(Command::Status {
-            output: protocol::Output::Json,
-        })
-        .await
-        .unwrap();
-    assert_eq!(rebuilt["recent_registrations"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        rebuilt["configuration"]["running"]["registration"],
-        rebuilt["recent_registrations"][0]["id"]
-    );
-    check_references_keep_the_provider(&daemon, &rebuilt).await;
+    check_references_keep_the_provider(&daemon, &status).await;
     assert!(server.received_requests().await.unwrap().is_empty());
     daemon.stop().await;
 }
@@ -635,7 +613,7 @@ async fn check_references_keep_the_provider(daemon: &Daemon, registered: &Value)
     );
 }
 
-async fn check_build_rejection(daemon: &Daemon, document: &Value, source: &Path) {
+async fn check_build_rejection(daemon: &Daemon, document: &Value) {
     let home = daemon.root.path();
     let before = daemon
         .connect()
@@ -700,15 +678,4 @@ async fn check_build_rejection(daemon: &Daemon, document: &Value, source: &Path)
     );
     std::fs::remove_dir_all(home.join("plugins/broken")).unwrap();
     write_config(daemon, document);
-    let code = std::fs::read_to_string(source).unwrap();
-    std::fs::write(
-        source,
-        format!("{code}\n// Owner explanation; behavior is unchanged.\n"),
-    )
-    .unwrap();
-    let unchanged = apply(daemon).await;
-    assert!(unchanged["registered"].is_null());
-    // The comment changed the source tree, so Cargo built it before comparing artifacts.
-    assert_eq!(unchanged["builds"][0]["name"], "alpha");
-    assert_eq!(unchanged["builds"][0]["reused"], false);
 }

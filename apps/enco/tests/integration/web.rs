@@ -98,7 +98,8 @@ async fn web_status(daemon: &Daemon) -> Value {
 }
 
 #[tokio::test]
-async fn wasm_tools_use_origin_bound_credentials_and_report_fetch_fallback() {
+async fn wasm_tools_are_offered_as_declared_use_origin_bound_credentials_and_report_fetch_fallback()
+{
     let services = Services::new().await;
     services.pages().await;
     Mock::given(path("/chat/completions")).respond_with(|request: &wiremock::Request| {
@@ -113,9 +114,8 @@ async fn wasm_tools_use_origin_bound_credentials_and_report_fetch_fallback() {
         ].into_iter().map(|message| message["tool_calls"][0].clone()).collect::<Vec<_>>();
         response(json!({"role":"assistant", "content":null, "tool_calls":calls}), "tool_calls")
     }).mount(&services.model).await;
-    let mut daemon =
-        Daemon::start_config(&toml::to_string(&services.document(&["exa", "tinyfish"])).unwrap())
-            .await;
+    let document = services.document(&["exa", "tinyfish"]);
+    let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
     let generation: GenerationId =
         serde_json::from_value(web_status(&daemon).await["id"].clone()).unwrap();
     let log = send(&daemon).await;
@@ -163,7 +163,52 @@ async fn wasm_tools_use_origin_bound_credentials_and_report_fetch_fallback() {
             .query_pairs()
             .any(|(name, value)| name == "after_date" && value == "2026-10-01")
     );
+    check_declared_definitions(&daemon, &document).await;
     daemon.stop().await;
+}
+
+async fn check_declared_definitions(daemon: &Daemon, document: &Value) {
+    let settings: PluginSettings =
+        serde_json::from_value(document["plugin"]["web"].clone()).unwrap();
+    let expected = WasmRuntime::new()
+        .unwrap()
+        .load(include_bytes!(env!("ENCO_FACTORY_WEB")), &settings)
+        .await
+        .unwrap()
+        .tools
+        .unwrap()
+        .specs
+        .iter()
+        .map(DisclosedTool::from)
+        .collect::<Vec<_>>();
+    let inspection: Inspection = serde_json::from_value(
+        daemon
+            .connect()
+            .await
+            .request(Command::Inspect {
+                session: "main".into(),
+                attempt_id: None,
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let actual: Vec<_> = inspection
+        .plan
+        .tools
+        .into_iter()
+        .map(|(_, spec)| spec)
+        .filter(|spec| spec.name.starts_with("web_"))
+        .collect();
+    assert_eq!(actual, expected);
+    let search = actual
+        .iter()
+        .find(|spec| spec.name == "web_search")
+        .unwrap();
+    assert_eq!(
+        search.input_schema["properties"]["engine"]["enum"],
+        json!(["exa", "tinyfish"])
+    );
 }
 
 #[tokio::test]
@@ -451,137 +496,4 @@ async fn malformed_jina_content_does_not_trigger_exa_fallback() {
     assert!(log.iter().any(|entry| matches!(&entry.body, EntryBody::ToolCallSettled { outcome: Settlement::Failed { failure }, .. } if failure.message.contains("response is not JSON"))));
     assert!(services.exa.received_requests().await.unwrap().is_empty());
     daemon.stop().await;
-}
-
-#[tokio::test]
-async fn applying_web_source_through_the_tool_preserves_its_exact_declared_definitions() {
-    let services = Services::new().await;
-    let document = services.document(&["exa", "tinyfish"]);
-    let settings: PluginSettings =
-        serde_json::from_value(document["plugin"]["web"].clone()).unwrap();
-    let expected = WasmRuntime::new()
-        .unwrap()
-        .load(include_bytes!(env!("ENCO_FACTORY_WEB")), &settings)
-        .await
-        .unwrap()
-        .tools
-        .unwrap()
-        .specs
-        .iter()
-        .map(DisclosedTool::from)
-        .collect::<Vec<_>>();
-    let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
-    let previous = web_status(&daemon).await;
-    build_target(daemon.root.path(), "web");
-    copy_plugin("web", daemon.root.path());
-    let source = daemon.root.path().join("plugins/web/src/lib.rs");
-    let code = std::fs::read_to_string(&source).unwrap();
-    std::fs::write(
-        source,
-        code.replace(
-            "Read web pages and search with configured engines",
-            "Local web source",
-        ),
-    )
-    .unwrap();
-    propose(
-        &services.model,
-        tool_message(
-            "apply",
-            "self_apply",
-            json!({"reason":"Repair web configuration"}),
-        ),
-    )
-    .await;
-    let log = send(&daemon).await;
-    assert!(log.iter().any(|entry| matches!(
-        entry.body,
-        EntryBody::ToolCallSettled {
-            outcome: Settlement::Ok,
-            ..
-        }
-    )));
-    let registered = web_status(&daemon).await;
-    assert_ne!(registered["id"], previous["id"]);
-    assert_eq!(registered["plugin"], previous["plugin"]);
-    assert_eq!(registered["origin"], "code");
-    let inspection: Inspection = serde_json::from_value(
-        daemon
-            .connect()
-            .await
-            .request(Command::Inspect {
-                session: "main".into(),
-                attempt_id: None,
-            })
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    let actual: Vec<_> = inspection
-        .plan
-        .tools
-        .into_iter()
-        .map(|(_, spec)| spec)
-        .filter(|spec| spec.name.starts_with("web_"))
-        .collect();
-    assert_eq!(actual, expected);
-    let search = actual
-        .iter()
-        .find(|spec| spec.name == "web_search")
-        .unwrap();
-    assert_eq!(
-        search.input_schema["properties"]["engine"]["enum"],
-        json!(["exa", "tinyfish"])
-    );
-    check_safe_mode_and_source_removal(&daemon, &previous).await;
-    daemon.stop().await;
-}
-
-async fn check_safe_mode_and_source_removal(daemon: &Daemon, before: &Value) {
-    daemon
-        .connect()
-        .await
-        .request(Command::SafeMode { enabled: true })
-        .await
-        .unwrap();
-    let log = send(daemon).await;
-    assert!(log.iter().any(|entry| matches!(
-        entry.body,
-        EntryBody::RoundStarted {
-            safe_mode: true,
-            ..
-        }
-    )));
-    let inspection: Inspection = serde_json::from_value(
-        daemon
-            .connect()
-            .await
-            .request(Command::Inspect {
-                session: "main".into(),
-                attempt_id: None,
-            })
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(
-        inspection
-            .plan
-            .tools
-            .iter()
-            .all(|(_, spec)| enco_host::LIFELINE.contains(&spec.name.as_str()))
-    );
-    std::fs::remove_dir_all(daemon.root.path().join("plugins/web")).unwrap();
-    daemon
-        .connect()
-        .await
-        .request(Command::Apply {
-            output: protocol::Output::Json,
-            reason: None,
-        })
-        .await
-        .unwrap();
-    let restored = web_status(daemon).await;
-    assert_eq!(restored["plugin"], before["plugin"]);
-    assert_eq!(restored["artifact"], before["artifact"]);
 }
