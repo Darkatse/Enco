@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ProviderRequest, Question, QuestionKind, limits::*};
+use crate::{CompleteError, ProviderRequest, Question, QuestionKind, limits::*};
 
 /// A new use is checked against its candidate code, before that code receives a generation ID.
 pub(super) async fn call(
@@ -34,7 +34,8 @@ pub(super) async fn call(
                         max_output_tokens: Some(max_output_tokens.get()),
                     },
                 )
-                .await;
+                .await
+                .map_err(CompleteError::into_failure);
             Ok(checked(result, |_| Ok(())))
         }
         Need::Embedding { dimensions } => {

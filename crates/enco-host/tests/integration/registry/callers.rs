@@ -142,18 +142,8 @@ impl Callers {
 async fn attempts_use_the_factory_in_safe_mode_and_the_trial_otherwise_with_profile_settings() {
     let dir = tempfile::tempdir().unwrap();
     let mut callers = Callers::start(dir.path()).await;
-    callers
-        .factory
-        .steps
-        .lock()
-        .unwrap()
-        .push_back(reply("safe mode"));
-    callers
-        .provider
-        .steps
-        .lock()
-        .unwrap()
-        .push_back(reply("active"));
+    callers.factory.script([reply("safe mode")]);
+    callers.provider.script([reply("active")]);
     for (safe, expected) in [(true, callers.factory_id), (false, callers.trial)] {
         callers.node.kernel.set_safe_mode(safe).await.unwrap();
         let entries = callers.node.run("reply").await;
@@ -187,12 +177,7 @@ async fn attempts_use_the_factory_in_safe_mode_and_the_trial_otherwise_with_prof
 async fn kernel_attempts_and_memory_calls_count_toward_one_trial() {
     let dir = tempfile::tempdir().unwrap();
     let mut callers = Callers::start(dir.path()).await;
-    callers
-        .provider
-        .steps
-        .lock()
-        .unwrap()
-        .extend([reply("active"), reply("healthy")]);
+    callers.provider.script([reply("active"), reply("healthy")]);
     callers.node.run("reply").await;
     // An index configuration mismatch follows a valid plugin result and still counts.
     callers
@@ -281,21 +266,13 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
     let dir = tempfile::tempdir().unwrap();
     let mut callers = Callers::start(dir.path()).await;
     promote(&callers.registry, callers.trial).await;
-    callers
-        .broken
-        .steps
-        .lock()
-        .unwrap()
-        .push_back(Err(fault(code::PLUGIN_TRAP)));
+    callers.broken.script([Err(fault(code::PLUGIN_TRAP))]);
     let broken_id = register_source(&callers.registry, "fixture", b"broken")
         .await
         .id;
     callers
         .provider
-        .steps
-        .lock()
-        .unwrap()
-        .extend([reply("retried"), reply("notice received")]);
+        .script([reply("retried"), reply("notice received")]);
     let entries = callers.node.run("recover").await;
     let starts: Vec<_> = entries
         .iter()

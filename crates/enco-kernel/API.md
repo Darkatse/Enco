@@ -47,6 +47,8 @@ Session execution through explicit ports.
 - struct `Commit` — An atomic append of Log facts, Inbox consumption and cross-Session inputs.
 - enum `CommitOutcome` — Result of checking and committing a Session owner's transaction.
 - enum `CommitRejection` — A normal tool precondition failure, distinct from a storage failure.
+- struct `CompactionTarget` — The summarizing model the kernel selected.
+- enum `CompleteError` — Why a completion did not happen.
 - struct `Completion` — Provider output with host-assigned call identities.
 - struct `CompletionEndpoint` — A profile's endpoint with the context limits required by completion.
 - struct `ComposeInput` — Fixed Round inputs, with the selected budgets and recorded recovery facts for this composition.
@@ -95,6 +97,7 @@ Session execution through explicit ports.
 - enum `NewSessionOrigin` — Origin fixed when a Session is created.
 - struct `NodeRecord` — Persistent node identity and recovery policy.
 - struct `OfferedMemories` — The memories offered for one Round, and what could not be offered.
+- struct `Overflowed` — A plan its target turned away as too large, and what the service said about it.
 - struct `Placement` — One credential recipient and the location populated for that recipient.
 - struct `PlanWrite` — An immutable request plan whose complete content address is computed once before committing.
 - enum `PluginChange` — One plugin's contribution to an atomic registration.
@@ -1358,6 +1361,61 @@ impl Display for CommitRejection
 impl Error for CommitRejection
 ```
 
+## struct `CompactionTarget`
+
+`src/ports/composer.rs`
+
+```rust
+pub struct CompactionTarget {
+    pub budget: Budget,
+    pub overflowed: Option<Overflowed>,
+}
+```
+
+The summarizing model the kernel selected.
+
+- `budget` — Limits of the selected model.
+- `overflowed` — As on `ReplyTarget::overflowed`, for the combination behind this target.
+
+Implements:
+
+```rust
+impl Clone for CompactionTarget
+```
+
+## enum `CompleteError`
+
+`src/ports/provider.rs`
+
+```rust
+pub enum CompleteError {
+    Failed(Failure),
+    Overflow(Overflow),
+}
+```
+
+Why a completion did not happen.
+
+- `Failed` — The request failed.
+- `Overflow` — The service turned the request away as too large; a smaller request may succeed.
+
+### `CompleteError::into_failure`
+
+```rust
+pub fn into_failure(self) -> Failure
+```
+
+The failure a caller that cannot shrink its request reports.
+
+Implements:
+
+```rust
+impl Clone for CompleteError
+impl Debug for CompleteError
+impl From<Failure> for CompleteError
+impl PartialEq for CompleteError
+```
+
 ## struct `Completion`
 
 `src/ports/provider.rs`
@@ -1423,7 +1481,6 @@ pub struct ComposeInput {
     pub transcript: Transcript,
     pub blob_paths: std::collections::HashMap<ContentHash, std::path::PathBuf>,
     pub previous_plan: Option<ContextPlan>,
-    pub previous_usage: Option<Usage>,
     pub compaction_requested: bool,
     pub owner_context: bool,
     pub owner_instructions: Option<String>,
@@ -1435,8 +1492,7 @@ pub struct ComposeInput {
     pub lifeline: Vec<CapabilityId>,
     pub safe_mode: Option<SafeMode>,
     pub reply: ReplyTarget,
-    pub compaction: Option<Budget>,
-    pub compactions_left: u32,
+    pub compaction: Option<CompactionTarget>,
 }
 ```
 
@@ -1452,8 +1508,7 @@ Fixed Round inputs, with the selected budgets and recorded recovery facts for th
 - `transcript` — Canonical history after the latest compaction.
 - `blob_paths` — Where the blobs the transcript refers to are stored, by content hash: its images, and the
   attachments and files of its inputs.
-- `previous_plan` — Most recent reply plan; the composer decides whether to reuse it.
-- `previous_usage` — Token usage reported for the completed Attempt that sent `previous_plan`.
+- `previous_plan` — Plan of the latest completed reply request; the composer decides whether to reuse it.
 - `compaction_requested` — Whether the owner asked to compact the conversation before this Round's reply.
 - `owner_context` — Whether this Session and all its ancestors permit owner instructions and memories.
 - `owner_instructions` — The owner instructions; absent when missing, in safe mode or without the owner's context.
@@ -1466,8 +1521,7 @@ Fixed Round inputs, with the selected budgets and recorded recovery facts for th
 - `lifeline` — Capabilities that every reply plan of this Session must disclose.
 - `safe_mode` — Why this Round uses factory instructions and lifeline tools, if applicable.
 - `reply` — The reply model this composition is for.
-- `compaction` — The summarizing model's limits; absent when no compaction candidate is usable.
-- `compactions_left` — Compactions this Round still allows; at zero the composer must return a plan or fail.
+- `compaction` — The summarizing model; absent when no compaction candidate is usable.
 
 Implements:
 
@@ -1518,7 +1572,8 @@ A ready reply request or a request to summarize earlier complete Rounds first.
 
 - `Plan` — Ready for a reply attempt.
 - `Compact` — Summarize an inclusive prefix ending at a complete Round.
-  - `upto` — Inclusive compaction boundary.
+  - `upto` — Inclusive compaction boundary: a Round end before the latest transcript item, so the
+    reply after the summary has history to answer.
   - `plan` — Tool-free request to generate the summary.
 
 ## enum `CompositionItem`
@@ -1743,6 +1798,7 @@ pub struct ContextUsage {
     pub last_request: Option<LastRequest>,
     pub compactions: usize,
     pub compaction_requested: bool,
+    pub service_limit: Option<u64>,
 }
 ```
 
@@ -1751,6 +1807,12 @@ How much context a Session's current conversation uses, as recorded.
 - `last_request` — The latest completed reply request in the conversation, if any.
 - `compactions` — How many compactions the conversation records.
 - `compaction_requested` — Whether a compaction request waits for the next Run.
+- `service_limit` — The input limit the first reply model's service gave when it last turned a request away, a
+  reply or a summary.
+
+  Present only when that limit and the output budget fall short of the configured window, so
+  the conversation is turned away each time it grows past the limit, and no later answered
+  request carried more input than the limit allows.
 
 Implements:
 
@@ -3095,6 +3157,28 @@ impl Debug for OfferedMemories
 impl Default for OfferedMemories
 ```
 
+## struct `Overflowed`
+
+`src/ports/composer.rs`
+
+```rust
+pub struct Overflowed {
+    pub plan: ContextPlan,
+    pub overflow: Overflow,
+}
+```
+
+A plan its target turned away as too large, and what the service said about it.
+
+- `plan` — The plan as recorded with the turned-away Attempt.
+- `overflow` — The service's refusal.
+
+Implements:
+
+```rust
+impl Clone for Overflowed
+```
+
 ## struct `Placement`
 
 `src/ports/runtime.rs`
@@ -4029,6 +4113,7 @@ Plugin and configuration facts sampled under the same committer.
 
 ```rust
 pub struct ReplyModel {
+    pub endpoint: String,
     pub model: String,
     pub window: std::num::NonZeroU32,
 }
@@ -4036,6 +4121,7 @@ pub struct ReplyModel {
 
 A profile's first reply model, where its next request goes unless that model fails.
 
+- `endpoint` — The endpoint's configured name.
 - `model` — The model the endpoint runs.
 - `window` — The endpoint's context window in tokens.
 
@@ -4055,6 +4141,8 @@ pub struct ReplyTarget {
     pub budget: Budget,
     pub accepts: std::collections::BTreeSet<Modality>,
     pub skipped: Vec<EndpointFailure>,
+    pub previous_usage: Option<Usage>,
+    pub overflowed: Option<Overflowed>,
 }
 ```
 
@@ -4063,6 +4151,10 @@ The reply model the kernel selected, and why earlier candidates were passed over
 - `budget` — Limits of the selected model.
 - `accepts` — Non-text inputs accepted by the selected reply endpoint.
 - `skipped` — Candidates before it that are unavailable or exhausted in this Run, in configured order.
+- `previous_usage` — Token usage reported for `previous_plan`, present only when this target's combination
+  served it: another model counts tokens differently.
+- `overflowed` — The latest plan this target's combination turned away as too large in this Round that the
+  transcript still holds every Log item of, a reply or a summary.
 
 Implements:
 
@@ -5320,7 +5412,7 @@ Completion boundary. Implementations own timeouts and per-invocation state.
 ### `Provider::complete`
 
 ```rust
-async fn complete(&self, settings: &ProviderSettings, request: ProviderRequest) -> Result<Completion, Failure>
+async fn complete(&self, settings: &ProviderSettings, request: ProviderRequest) -> Result<Completion, CompleteError>
 ```
 
 Complete a frozen request; the transport resolves credentials from the settings.

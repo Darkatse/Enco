@@ -780,7 +780,10 @@ OpenAI-compatible Chat Completions and embeddings.
 
 - module `protocol::host` — same as `host`
 - module `protocol::types` — same as `types`
+- enum `protocol::CompleteError` — Why `complete` returned no completion.
 - struct `protocol::Completion` — A completed model attempt.
+- struct `protocol::Overflow` — same as `types::Overflow`
+- struct `protocol::PostError` — Why `post` returned no JSON reply, with what the service answered, if anything.
 - struct `protocol::Request` — The frozen messages, disclosed tools and output budget for one completion.
 - struct `protocol::Settings` — same as `types::Settings`
 - enum `protocol::StopReason` — The service-reported reason that generation stopped.
@@ -789,10 +792,38 @@ OpenAI-compatible Chat Completions and embeddings.
 - fn `protocol::bad` — A non-retryable `provider.bad_response` failure: the reply is malformed or not what the protocol promises.
 - fn `protocol::bad_request` — A non-retryable `provider.bad_request` failure: the request cannot succeed as written.
 - fn `protocol::complete` — Send `request` as one non-streaming Chat Completions call and return the reply as a `Completion`.
+- fn `protocol::complete_error` — Classify a refused completion request.
 - fn `protocol::embed` — Embed each input through the `embeddings` endpoint, returning one vector per input, in input order.
 - fn `protocol::empty_config` — Accept only `{}` as the plugin's configuration; anything else fails with `config.invalid`.
 - fn `protocol::failure` — A failure with the given code; `retryable` means the same request may succeed later.
+- fn `protocol::number_after` — The whole number that follows `marker` in a service's message, such as a token limit it states in prose.
 - fn `protocol::post` — POST `body` as JSON to `path` under `settings.base_url` and return the JSON reply.
+
+## enum `protocol::CompleteError`
+
+`src/lib.rs`
+
+```rust
+pub enum CompleteError {
+    Failed(Failure),
+    Overflow(Overflow),
+}
+```
+
+Why `complete` returned no completion.
+
+- `Failed` — The request failed.
+- `Overflow` — The service turned the request away as too large; a smaller request may succeed.
+
+Implements:
+
+```rust
+impl Clone for CompleteError
+impl Debug for CompleteError
+impl Display for CompleteError
+impl Error for CompleteError
+impl PartialEq for CompleteError
+```
 
 ## struct `protocol::Completion`
 
@@ -820,6 +851,31 @@ Implements:
 impl Clone for Completion
 impl Debug for Completion
 impl PartialEq for Completion
+```
+
+## struct `protocol::PostError`
+
+`src/http.rs`
+
+```rust
+pub struct PostError {
+    pub status: Option<u16>,
+    pub body: String,
+    pub failure: crate::protocol::types::Failure,
+}
+```
+
+Why `post` returned no JSON reply, with what the service answered, if anything.
+
+- `status` — The HTTP status the service answered with; absent when the exchange itself failed.
+- `body` — The answer's body as text, decoded lossily; empty when there is none.
+- `failure` — The failure this classifies as for a caller that reads no more of it.
+
+Implements:
+
+```rust
+impl Debug for PostError
+impl From<PostError> for crate::protocol::types::Failure
 ```
 
 ## struct `protocol::Request`
@@ -916,15 +972,31 @@ A non-retryable `provider.bad_request` failure: the request cannot succeed as wr
 `src/protocol.rs`
 
 ```rust
-pub async fn complete(settings: Settings, request: Request) -> Result<Completion, types::Failure>
+pub async fn complete(settings: Settings, request: Request) -> Result<Completion, CompleteError>
 ```
 
 Send `request` as one non-streaming Chat Completions call and return the reply as a
 `Completion`.
 
 `settings.options` may add fields to the request, but not replace one this function writes or
-reserves, such as `model`, `messages` or `stream`. Reply fields the contract has no place for
-are kept in an extension part and sent back with that message later.
+reserves, such as `model`, `messages` or `stream`. A reply with fields the contract has no
+place for is kept whole in an extension part and sent back as it came. A refusal that states
+the model's maximum context length, as DeepSeek's does, is an overflow.
+
+## fn `protocol::complete_error`
+
+`src/protocol.rs`
+
+```rust
+pub fn complete_error(error: PostError, read: impl FnOnce(&serde_json::Value) -> Option<Overflow>) -> CompleteError
+```
+
+Classify a refused completion request.
+
+`read` is the protocol's reading of the service's JSON answer: an overflow it recognizes, with
+the numbers the service gave. An HTTP 413 is an overflow even when `read` recognizes nothing,
+since the status itself says the request is too large. Anything else stays the failure
+`post` classified.
 
 ## fn `protocol::embed`
 
@@ -963,19 +1035,32 @@ pub fn failure(code: &str, message: impl Into<String>, retryable: bool) -> types
 
 A failure with the given code; `retryable` means the same request may succeed later.
 
+## fn `protocol::number_after`
+
+`src/protocol.rs`
+
+```rust
+pub fn number_after(message: &str, marker: &str) -> Option<u64>
+```
+
+The whole number that follows `marker` in a service's message, such as a token limit it
+states in prose.
+
 ## fn `protocol::post`
 
 `src/http.rs`
 
 ```rust
-pub async fn post(settings: &crate::protocol::Settings, path: &str, body: serde_json::Value, timeout_ms: Option<u32>) -> Result<serde_json::Value, crate::protocol::types::Failure>
+pub async fn post(settings: &crate::protocol::Settings, path: &str, body: serde_json::Value, timeout_ms: Option<u32>) -> Result<serde_json::Value, PostError>
 ```
 
 POST `body` as JSON to `path` under `settings.base_url` and return the JSON reply.
 
 `None` for `timeout_ms` means the host's default. Retryable: a failed `http` call, 408, 429 and
 5xx. Not retryable: 401 and 403 (`provider.auth`), any other status outside 2xx
-(`provider.bad_request`), and a reply that is not JSON (`provider.bad_response`).
+(`provider.bad_request`), and a reply that is not JSON (`provider.bad_response`). The error
+keeps the status and body, so a protocol can read more from them, as
+`complete_error` does.
 
 # module `enco_sdk::host`
 
@@ -1186,12 +1271,13 @@ Canonical data exchanged between the host and plugins.
 
 - struct `types::Datetime` — A UTC instant, shaped like `wasi:clocks/wall-clock.datetime`.
 - enum `types::Effect` — Mutation semantics used to order calls and settle interrupted work.
-- struct `types::Extension` — Opaque adapter fields. The host replays them only to their originating plugin identity.
+- struct `types::Extension` — Opaque adapter fields: the whole message as the adapter that wrote it replays it.
 - struct `types::Failure` — An operation failure.
 - struct `types::Image` — An image in a message.
 - enum `types::ImageFormat` — Image encodings that every supported service accepts.
 - struct `types::Message` — A canonical message sent to or returned by the model.
 - enum `types::Outcome` — A known result, a known failure, or an external effect that cannot be confirmed.
+- struct `types::Overflow` — The service turned a request away as larger than the model accepts.
 - enum `types::Part` — Ordered text, images, tool interactions and opaque extensions within a message.
 - enum `types::QuoteKind` — How a message relates to messages it quotes.
 - enum `types::Role` — Identifies the speaker of a canonical model message.
@@ -1273,7 +1359,11 @@ pub struct Extension {
 }
 ```
 
-Opaque adapter fields. The host replays them only to their originating plugin identity.
+Opaque adapter fields: the whole message as the adapter that wrote it replays it.
+
+The message's other parts are derived from them, so a message has at most one, and its
+JSON text is no shorter than their text plus each tool call's name and arguments. The host
+replays them only to their originating plugin identity.
 
 - `data` — The fields, as the adapter that wrote them expects them back.
 
@@ -1310,6 +1400,7 @@ impl Clone for Failure
 impl Debug for Failure
 impl Display for Failure
 impl Error for Failure
+impl From<PostError> for crate::protocol::types::Failure
 impl PartialEq for Failure
 ```
 
@@ -1428,6 +1519,34 @@ Implements:
 impl Clone for Outcome
 impl Debug for Outcome
 impl PartialEq for Outcome
+```
+
+## struct `types::Overflow`
+
+`src/lib.rs`
+
+```rust
+pub struct Overflow {
+    pub counted: ::core::option::Option<u64>,
+    pub accepted: ::core::option::Option<u64>,
+    pub message: String,
+}
+```
+
+The service turned a request away as larger than the model accepts.
+
+- `counted` — The request's input as the service counted it, when it says; above `accepted` when
+  both are present.
+- `accepted` — The most input the service accepts for this request, when it says, after any output
+  it counts against the same window.
+- `message` — What the service said, for the Agent and the owner to read.
+
+Implements:
+
+```rust
+impl Clone for Overflow
+impl Debug for Overflow
+impl PartialEq for Overflow
 ```
 
 ## enum `types::Part`
@@ -2538,12 +2657,14 @@ pub type Unviewable = super::super::super::super::enco::plugin::types::Unviewabl
 
 Adapts canonical requests to a model service protocol.
 
+- enum `bindings::exports::enco::plugin::completion::CompleteError` — same as `protocol::CompleteError`
 - struct `bindings::exports::enco::plugin::completion::Completion` — same as `protocol::Completion`
 - struct `bindings::exports::enco::plugin::completion::Request` — same as `protocol::Request`
 - enum `bindings::exports::enco::plugin::completion::StopReason` — same as `protocol::StopReason`
 - trait `bindings::exports::enco::plugin::completion::Guest` — (no summary)
 - type `bindings::exports::enco::plugin::completion::Failure` — (no summary)
 - type `bindings::exports::enco::plugin::completion::Message` — (no summary)
+- type `bindings::exports::enco::plugin::completion::Overflow` — (no summary)
 - type `bindings::exports::enco::plugin::completion::Settings` — (no summary)
 - type `bindings::exports::enco::plugin::completion::ToolSpec` — (no summary)
 - type `bindings::exports::enco::plugin::completion::Usage` — (no summary)
@@ -2559,14 +2680,16 @@ pub trait Guest
 ### `bindings::exports::enco::plugin::completion::Guest::complete`
 
 ```rust
-async fn complete(settings: Settings, request: Request) -> ::core::result::Result<Completion, Failure>
+async fn complete(settings: Settings, request: Request) -> ::core::result::Result<Completion, CompleteError>
 ```
 
 Perform one non-streaming completion.
 
 #### Errors
-Failure codes are `provider.network`, `provider.auth`, `provider.rate_limited`,
-`provider.server`, `provider.bad_request`, `provider.bad_response`, and `timeout`.
+`overflow` when the service turns the request away as larger than the model accepts, as
+an HTTP 413 always does. Otherwise `failed`, with the codes `provider.network`,
+`provider.auth`, `provider.rate_limited`, `provider.server`, `provider.bad_request`,
+`provider.bad_response`, and `timeout`.
 
 ## type `bindings::exports::enco::plugin::completion::Failure`
 
@@ -2582,6 +2705,14 @@ pub type Failure = super::super::super::super::enco::plugin::types::Failure;
 
 ```rust
 pub type Message = super::super::super::super::enco::plugin::types::Message;
+```
+
+## type `bindings::exports::enco::plugin::completion::Overflow`
+
+`src/lib.rs`
+
+```rust
+pub type Overflow = super::super::super::super::enco::plugin::types::Overflow;
 ```
 
 ## type `bindings::exports::enco::plugin::completion::Settings`

@@ -59,12 +59,17 @@ pub(crate) fn started(attempt: AttemptId, purpose: AttemptPurpose, model: &str) 
         plan: ContentHash::of(b"plan"),
         composer: GenerationId(1),
         provider: GenerationId(1),
-        settings: ProviderSettings {
-            base_url: "https://example.test".into(),
-            model: model.into(),
-            api_key_env: None,
-            options: serde_json::json!({}),
-        },
+        settings: settings(model),
+    }
+}
+
+/// The call parameters `started` records for `model`.
+pub(crate) fn settings(model: &str) -> ProviderSettings {
+    ProviderSettings {
+        base_url: "https://example.test".into(),
+        model: model.into(),
+        api_key_env: None,
+        options: serde_json::json!({}),
     }
 }
 

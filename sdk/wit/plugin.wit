@@ -1,5 +1,5 @@
 /// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.14.0;
+package enco:plugin@0.15.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -55,7 +55,11 @@ interface types {
         is-error: bool,
     }
 
-    /// Opaque adapter fields. The host replays them only to their originating plugin identity.
+    /// Opaque adapter fields: the whole message as the adapter that wrote it replays it.
+    ///
+    /// The message's other parts are derived from them, so a message has at most one, and its
+    /// JSON text is no shorter than their text plus each tool call's name and arguments. The host
+    /// replays them only to their originating plugin identity.
     record extension {
         /// The fields, as the adapter that wrote them expects them back.
         data: json,
@@ -187,6 +191,18 @@ interface types {
         cached-input-tokens: option<u64>,
     }
 
+    /// The service turned a request away as larger than the model accepts.
+    record overflow {
+        /// The request's input as the service counted it, when it says; above `accepted` when
+        /// both are present.
+        counted: option<u64>,
+        /// The most input the service accepts for this request, when it says, after any output
+        /// it counts against the same window.
+        accepted: option<u64>,
+        /// What the service said, for the Agent and the owner to read.
+        message: string,
+    }
+
     /// How a Run ended.
     variant run-end {
         /// It finished.
@@ -284,7 +300,7 @@ interface tools {
 
 /// Adapts canonical requests to a model service protocol.
 interface completion {
-    use types.{failure, message, tool-spec, settings, usage};
+    use types.{failure, message, overflow, tool-spec, settings, usage};
 
     /// The frozen messages, disclosed tools and output budget for one completion.
     ///
@@ -313,12 +329,22 @@ interface completion {
         stop-reason: stop-reason,
     }
 
+    /// Why `complete` returned no completion.
+    variant complete-error {
+        /// The request failed.
+        failed(failure),
+        /// The service turned the request away as too large; a smaller request may succeed.
+        overflow(overflow),
+    }
+
     /// Perform one non-streaming completion.
     ///
     /// # Errors
-    /// Failure codes are `provider.network`, `provider.auth`, `provider.rate_limited`,
-    /// `provider.server`, `provider.bad_request`, `provider.bad_response`, and `timeout`.
-    complete: async func(settings: settings, request: request) -> result<completion, failure>;
+    /// `overflow` when the service turns the request away as larger than the model accepts, as
+    /// an HTTP 413 always does. Otherwise `failed`, with the codes `provider.network`,
+    /// `provider.auth`, `provider.rate_limited`, `provider.server`, `provider.bad_request`,
+    /// `provider.bad_response`, and `timeout`.
+    complete: async func(settings: settings, request: request) -> result<completion, complete-error>;
 }
 
 /// Embeds texts for retrieval independently of model completion.
@@ -496,10 +522,10 @@ world tool-plugin {
 /// The host records each plan before sending it and resolves its Log references. A plan breaks
 /// this contract when it discloses a capability outside this Round, refers to a position outside
 /// the transcript, or sends images to a model that does not accept them; when a reply plan leaves
-/// out a capability in `lifeline`; or when a compaction discloses any tool or stops where no Round
-/// ends.
+/// out a capability in `lifeline`; or when a compaction discloses any tool, stops where no Round
+/// ends, or leaves no transcript item after it for the reply to answer.
 interface composer {
-    use types.{datetime, failure, image-format, json, quote-kind, role, run-end, tool-spec, unviewable, usage};
+    use types.{datetime, failure, image-format, json, overflow, quote-kind, role, run-end, tool-spec, unviewable, usage};
 
     /// The position of an entry in this Session's Log.
     record log-pos {
@@ -704,7 +730,7 @@ interface composer {
         /// The result of a call.
         tool-result(call-result),
         /// The size in bytes of adapter fields, which the host gives only to the plugin that wrote
-        /// them.
+        /// them; they hold the whole message as that plugin replays it.
         extension(u64),
         /// A recorded picture the plan may include when the target accepts images.
         image(image-ref),
@@ -960,6 +986,14 @@ interface composer {
         failure: failure,
     }
 
+    /// A plan its target turned away as too large.
+    record overflowed {
+        /// The plan, as the host recorded it.
+        plan: plan,
+        /// What the service said about it.
+        overflow: overflow,
+    }
+
     /// The model a reply plan is for.
     record reply-target {
         /// Its limits.
@@ -968,6 +1002,26 @@ interface composer {
         accepts: list<modality>,
         /// Earlier candidates that are unavailable or exhausted in this Run, in configured order.
         skipped: list<skipped-endpoint>,
+        /// What the service reported for the request made from `previous`, when this target's
+        /// endpoint settings and Provider generation served it.
+        ///
+        /// Absent otherwise, since another model counts tokens differently.
+        previous-usage: option<usage>,
+        /// The latest plan the endpoint settings and Provider generation behind this target turned
+        /// away as too large in this Round, a reply or a summary.
+        ///
+        /// Only a plan whose Log items the transcript still holds counts, so after a compaction it
+        /// is an earlier refusal, often a summary's, or absent.
+        overflowed: option<overflowed>,
+    }
+
+    /// The model that summarizes history.
+    record compaction-target {
+        /// Its limits.
+        budget: budget,
+        /// As on `reply-target`, for the endpoint settings and Provider generation behind this
+        /// target.
+        overflowed: option<overflowed>,
     }
 
     /// A child of this Session, by the facts that change only at moments its parent sees.
@@ -1031,12 +1085,9 @@ interface composer {
         /// After a backtrack it is the Log up to the backtrack's target, then everything from the
         /// backtrack on, so positions can skip.
         transcript: transcript,
-        /// The latest recorded reply plan in that conversation; absent at the start, or when it
-        /// could not be read, which `omitted` then says.
+        /// The plan of the latest completed reply request in that conversation; absent at the
+        /// start, or when it could not be read, which `omitted` then says.
         previous: option<plan>,
-        /// What the service reported for the request made from `previous`; absent when that
-        /// attempt did not complete.
-        previous-usage: option<usage>,
         /// Whether the owner asked for the conversation to be compacted before this Round's reply.
         ///
         /// Once this Round records a compaction, it is false for the Round's later compositions.
@@ -1071,10 +1122,8 @@ interface composer {
         safe-mode: option<safe-mode>,
         /// The model a reply plan is for.
         reply: reply-target,
-        /// The summarizing model's limits; absent when no summarizing model is usable.
-        compaction: option<budget>,
-        /// How many more compactions this Round allows.
-        compactions-left: u32,
+        /// The summarizing model; absent when no summarizing model is usable.
+        compaction: option<compaction-target>,
         /// This Session's children that are not archived, in creation order.
         children: list<child>,
         /// The profiles a new child may use; empty when this Session cannot delegate.
@@ -1129,7 +1178,8 @@ interface composer {
 
     /// A request to summarize history before replying.
     record compaction {
-        /// The last Round end to summarize, one of `transcript.round-ends`.
+        /// The last Round end to summarize: one of `transcript.round-ends`, before the latest
+        /// transcript item, so the reply after the summary has history to answer.
         upto: log-pos,
         /// The summarizing request; it discloses no tools.
         plan: plan,
@@ -1156,8 +1206,11 @@ interface composer {
     /// Write the next request.
     ///
     /// `options` fit the running generation's `options-schema` and are normalized as tool arguments
-    /// are. Return `compact` only while `compaction` is present and `compactions-left` is above
-    /// zero.
+    /// are. Return `compact` only while `compaction` is present. Each compaction ends at a Round
+    /// end the transcript shows and hides it, so a Round's compactions end with its visible
+    /// history. When the target a composition is for carries `overflowed`, return a composition
+    /// other than that plan: the service behind the target turned it away, and returning it again
+    /// breaks the contract.
     ///
     /// # Errors
     /// `context.overflow` when no valid request fits the window; when only a compaction would make

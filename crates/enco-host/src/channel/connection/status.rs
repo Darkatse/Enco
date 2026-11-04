@@ -141,6 +141,14 @@ fn context_line(overview: &SessionOverview) -> String {
     if context.compaction_requested {
         text.push_str("; compaction requested for the next Run");
     }
+    if let (Some(limit), Some(reply)) = (context.service_limit, &overview.reply) {
+        text.push_str(&format!(
+            "\nThe service behind `{endpoint}` turned a request away: it accepts at most {} input tokens, fewer than its configured {}-token window leaves for input. Lower `window_tokens` for `{endpoint}`.",
+            tokens(limit),
+            tokens(u64::from(reply.window.get())),
+            endpoint = reply.endpoint,
+        ));
+    }
     text
 }
 

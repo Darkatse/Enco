@@ -1,12 +1,22 @@
-use super::run_entries;
+use super::{context::Measured, run_entries};
 use crate::{run::RoundError, session::SessionActor, *};
 use enco_core::*;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 /// The endpoint a purpose uses now, and the code currently behind it.
 pub(super) struct Choice<'p> {
     pub endpoint: &'p CompletionEndpoint,
     pub export: Export<dyn Provider>,
+}
+
+impl Choice<'_> {
+    /// The combination this choice sends its requests to.
+    pub fn combination(&self) -> Combination {
+        Combination {
+            settings: self.endpoint.endpoint.settings.clone(),
+            provider: self.export.generation,
+        }
+    }
 }
 
 /// One purpose's first usable candidate, or why none is usable, with the candidates passed over.
@@ -23,25 +33,6 @@ pub(super) struct Selection<'p> {
 }
 
 impl<'p> Selection<'p> {
-    /// What the composer needs about the reply model; the Round fails when none is usable.
-    pub fn reply_target(&self) -> Result<ReplyTarget, RoundError> {
-        let choice = self
-            .reply
-            .chosen
-            .as_ref()
-            .map_err(|failure| RoundError::Failed(failure.clone()))?;
-        Ok(ReplyTarget {
-            budget: choice.endpoint.budget,
-            accepts: choice.endpoint.accepts.clone(),
-            skipped: self.reply.skipped.clone(),
-        })
-    }
-
-    pub fn compaction_budget(&self) -> Option<Budget> {
-        let choice = self.compaction.chosen.as_ref().ok()?;
-        Some(choice.endpoint.budget)
-    }
-
     pub fn choose(&self, purpose: AttemptPurpose) -> Result<&Choice<'p>, RoundError> {
         let pick = match purpose {
             AttemptPurpose::Reply => &self.reply,
@@ -69,6 +60,71 @@ impl SessionActor {
             view,
         }
     }
+
+    /// Each purpose's target, built from the facts of the combination serving it; the Round fails
+    /// when no reply candidate is usable.
+    ///
+    /// The reply target carries the measurement only when its combination took it, and every
+    /// target carries the latest plan its combination turned away in this Round that `transcript`
+    /// still holds, whichever purpose that plan was for.
+    pub(super) async fn targets(
+        &self,
+        selection: &Selection<'_>,
+        measured: Option<&Measured>,
+        transcript: &Transcript,
+    ) -> Result<(ReplyTarget, Option<CompactionTarget>), RoundError> {
+        let choice = selection.choose(AttemptPurpose::Reply)?;
+        let combination = choice.combination();
+        let reply = ReplyTarget {
+            budget: choice.endpoint.budget,
+            accepts: choice.endpoint.accepts.clone(),
+            skipped: selection.reply.skipped.clone(),
+            previous_usage: measured
+                .filter(|measured| measured.combination == combination)
+                .map(|measured| measured.usage.clone()),
+            overflowed: self.overflowed(&combination, transcript).await?,
+        };
+        let compaction = match selection.choose(AttemptPurpose::Compaction) {
+            Ok(choice) => Some(CompactionTarget {
+                budget: choice.endpoint.budget,
+                overflowed: self.overflowed(&choice.combination(), transcript).await?,
+            }),
+            Err(_) => None,
+        };
+        Ok((reply, compaction))
+    }
+
+    /// The latest plan `combination` turned away in this Round that `transcript` still holds.
+    ///
+    /// A plan whose Log items a compaction has since summarized can no longer be measured against
+    /// the conversation, so an earlier refusal stands in for it. The plans are read back from the
+    /// store; one that cannot be read stops the Session, as any store failure does.
+    async fn overflowed(
+        &self,
+        combination: &Combination,
+        transcript: &Transcript,
+    ) -> Result<Option<Overflowed>, RoundError> {
+        for (plan, overflow) in combination.overflowed(this_round(&self.entries)) {
+            let plan = self.deps.store.plan(plan).await?;
+            if crate::plan::held(&plan, transcript) {
+                return Ok(Some(Overflowed {
+                    plan,
+                    overflow: overflow.clone(),
+                }));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// The current Round's entries, from its start; a new Round composes for the configured window
+/// again.
+fn this_round(entries: &[Entry]) -> &[Entry] {
+    let start = entries
+        .iter()
+        .rposition(|entry| matches!(entry.body, EntryBody::RoundStarted { .. }))
+        .map_or(0, |index| index + 1);
+    &entries[start..]
 }
 
 /// The first candidate in configured order whose code resolves and whose combination is not
@@ -132,47 +188,51 @@ fn assess<'p>(
     let export = exports
         .completion(&endpoint.endpoint, safe_mode)
         .map_err(|failure| (None, failure))?;
-    let combination = Combination {
-        purpose,
-        settings: &endpoint.endpoint.settings,
-        provider: export.generation,
-    };
-    match combination.exhausted(entries) {
+    let choice = Choice { endpoint, export };
+    match choice.combination().exhausted(purpose, entries) {
         Some((pos, failure)) => Err((Some(pos), failure)),
-        None => Ok(Choice { endpoint, export }),
+        None => Ok(choice),
     }
 }
 
-/// A purpose, call parameters and exact Provider generation share one attempt allowance.
-struct Combination<'a> {
-    purpose: AttemptPurpose,
-    settings: &'a ProviderSettings,
-    provider: GenerationId,
+/// The call parameters and exact Provider generation a model request goes to.
+///
+/// Requests to one combination count tokens the same way and meet the same service limits, and
+/// each purpose has one attempt allowance on it.
+#[derive(Clone, PartialEq)]
+pub(super) struct Combination {
+    pub settings: ProviderSettings,
+    pub provider: GenerationId,
 }
 
-impl Combination<'_> {
-    /// Exhausted when, in any Round of the Run, its last Attempt failed or was unusable.
-    fn exhausted(&self, run: &[Entry]) -> Option<(LogPos, Failure)> {
-        let mut started = std::collections::HashMap::new();
-        let mut rounds = std::collections::HashMap::new();
+impl Combination {
+    /// Whether `body` starts an Attempt on this combination.
+    fn took(&self, body: &EntryBody) -> bool {
+        matches!(
+            body,
+            EntryBody::AttemptStarted { settings, provider, .. }
+                if *settings == self.settings && *provider == self.provider
+        )
+    }
+
+    /// Exhausted for `purpose` when, in any Round of the Run, its last Attempt for that purpose
+    /// failed or was unusable.
+    fn exhausted(&self, purpose: AttemptPurpose, run: &[Entry]) -> Option<(LogPos, Failure)> {
+        let mut started = HashMap::new();
+        let mut rounds = HashMap::new();
         for entry in run {
             match &entry.body {
                 EntryBody::AttemptStarted {
                     attempt,
                     round,
-                    purpose,
-                    settings,
-                    provider,
+                    purpose: started_for,
                     ..
-                } if *purpose == self.purpose
-                    && settings == self.settings
-                    && *provider == self.provider =>
-                {
+                } if *started_for == purpose && self.took(&entry.body) => {
                     started.insert(*attempt, *round);
                 }
                 EntryBody::AttemptSettled { attempt, result } => {
                     if let Some(round) = started.remove(attempt) {
-                        rounds.insert(round, (entry.pos, result.failure(self.purpose)));
+                        rounds.insert(round, (entry.pos, result.failure(purpose)));
                     }
                 }
                 _ => {}
@@ -183,4 +243,32 @@ impl Combination<'_> {
             .filter_map(|(pos, failure)| Some((pos, failure?)))
             .max_by_key(|(pos, _)| *pos)
     }
+
+    /// The plans of the Attempts in `entries` that this combination turned away as too large,
+    /// for either purpose, latest first, with what the service said.
+    fn overflowed<'e>(&self, entries: &'e [Entry]) -> Vec<(&'e ContentHash, &'e Overflow)> {
+        let mut plans = HashMap::new();
+        let mut refused = Vec::new();
+        for entry in entries {
+            match &entry.body {
+                EntryBody::AttemptStarted { attempt, plan, .. } if self.took(&entry.body) => {
+                    plans.insert(*attempt, plan);
+                }
+                EntryBody::AttemptSettled {
+                    attempt,
+                    result: AttemptResult::Overflow { overflow },
+                } => {
+                    if let Some(plan) = plans.get(attempt) {
+                        refused.push((*plan, overflow));
+                    }
+                }
+                _ => {}
+            }
+        }
+        refused.reverse();
+        refused
+    }
 }
+
+#[cfg(test)]
+mod tests;

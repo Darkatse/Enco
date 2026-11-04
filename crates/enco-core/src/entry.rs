@@ -160,6 +160,41 @@ pub enum AttemptResult {
         /// Classification and details of the failure.
         failure: Failure,
     },
+    /// The service turned the request away as larger than the model accepts.
+    Overflow {
+        /// What the service said about the request.
+        overflow: Overflow,
+    },
+}
+
+/// A service's refusal of a request larger than its model accepts, with the numbers it gave.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Overflow {
+    /// The request's input as the service counted it, when it says; above `accepted` when both
+    /// are present.
+    pub counted: Option<u64>,
+    /// The most input the service accepts for this request, when it says, after any output it
+    /// counts against the same window.
+    pub accepted: Option<u64>,
+    /// What the service said.
+    pub message: String,
+}
+
+impl Overflow {
+    /// This refusal as a failure, for a caller that cannot send a smaller request.
+    ///
+    /// It ends a Round that has shrunk its request as often as it may, and reports a configuration
+    /// probe the service turned away.
+    pub fn failure(&self) -> Failure {
+        Failure {
+            code: crate::code::CONTEXT_OVERFLOW.into(),
+            message: format!(
+                "the service turned the request away as too large: {}",
+                self.message
+            ),
+            retryable: false,
+        }
+    }
 }
 
 /// Token counts reported by the provider.
@@ -278,10 +313,15 @@ impl EntryBody {
 }
 
 impl AttemptResult {
-    /// The failure of this invocation for its purpose, retaining successful wire results as facts.
+    /// Why this result uses up its combination's allowance for `purpose`.
+    ///
+    /// That is its failure, or why a completion cannot be used, which stays recorded as the
+    /// service answered it. Absent for a usable completion, and for an overflow: a request turned away as too large
+    /// asks for a smaller request on the same combination, not another candidate.
     pub fn failure(&self, purpose: AttemptPurpose) -> Option<Failure> {
         match self {
             Self::Failed { failure } => Some(failure.clone()),
+            Self::Overflow { .. } => None,
             Self::Completed { message, stop, .. } => {
                 let empty = message.joined_text().trim().is_empty();
                 let problem = match purpose {

@@ -105,11 +105,12 @@ async fn profile_changes_bind_at_round_boundaries() {
     for update_definition in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let scripted = ScriptedProvider::new((0..30).map(|_| reply("summary or reply")).collect());
-        scripted
-            .steps
-            .lock()
-            .unwrap()
-            .push_front(calls(vec![call("fs_list", r#"{"path":"."}"#)]));
+        // Two Rounds of calls, so the summary can leave the second to answer.
+        for _ in 0..2 {
+            scripted.steps.lock().unwrap().push_front(
+                calls(vec![call("fs_list", r#"{"path":"."}"#)]).map_err(CompleteError::from),
+            );
+        }
         let provider = Arc::new(PausedProvider::new(
             scripted.clone(),
             Some("old-compaction"),

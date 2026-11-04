@@ -3,6 +3,7 @@ mod channel;
 mod delegation;
 mod instructions;
 mod measurement;
+mod overflow;
 mod silence;
 use crate::composer::*;
 use enco_sdk::types::{Datetime, ImageFormat, QuoteKind, Role, Unviewable, UnviewableReason};
@@ -52,7 +53,6 @@ fn input() -> ComposeInput {
             run_ends: vec![],
         },
         previous: None,
-        previous_usage: None,
         compaction_requested: false,
         owner_context: true,
         owner_instructions: None,
@@ -70,14 +70,22 @@ fn input() -> ComposeInput {
             },
             accepts: vec![Modality::Image],
             skipped: vec![],
+            previous_usage: None,
+            overflowed: None,
         },
-        compaction: Some(Budget {
-            context_tokens: 30_000,
-            max_output_tokens: 512,
-        }),
-        compactions_left: 2,
+        compaction: Some(summarizer(30_000, 512)),
         children: vec![],
         profiles: vec![],
+    }
+}
+
+fn summarizer(context_tokens: u32, max_output_tokens: u32) -> CompactionTarget {
+    CompactionTarget {
+        budget: Budget {
+            context_tokens,
+            max_output_tokens,
+        },
+        overflowed: None,
     }
 }
 
@@ -255,32 +263,6 @@ fn instructions_and_memories_exceeding_their_share_are_omitted_with_sources() {
 }
 
 #[test]
-fn compaction_only_round_after_a_summary_cannot_produce_an_empty_summary_request() {
-    let mut input = input();
-    input.reply.budget.context_tokens = 5000;
-    input.transcript.summary = Some("Earlier conversation".into());
-    input.transcript.items.push(TranscriptItem {
-        pos: pos(10),
-        message: Message {
-            role: Role::User,
-            parts: vec![Part::Text("x".repeat(20_000))],
-        },
-        event: None,
-    });
-    input.transcript.round_ends = vec![pos(5)];
-    assert_eq!(
-        Plugin::compose("{}".into(), input.clone())
-            .unwrap_err()
-            .code,
-        "context.overflow"
-    );
-    input.transcript.round_ends.push(pos(20));
-    assert!(
-        matches!(Plugin::compose("{}".into(), input.clone()).unwrap(), Composition::Compact(compaction) if compaction.upto == pos(20))
-    );
-}
-
-#[test]
 fn compaction_carries_circumstances_and_attachments_without_pinned_memory_or_tools() {
     let mut input = input();
     input.reply.budget.context_tokens = 5000;
@@ -338,6 +320,10 @@ fn compaction_carries_circumstances_and_attachments_without_pinned_memory_or_too
         .parts
         .push(Part::Image(image(12)));
     input.transcript.round_ends.push(pos(4));
+    input
+        .transcript
+        .items
+        .push(incoming(5, "2026-10-02T14:05:00Z", "Continue"));
     let Composition::Compact(compaction) = Plugin::compose("{}".into(), input).unwrap() else {
         panic!("expected compaction")
     };
@@ -446,10 +432,7 @@ fn a_small_compaction_window_allows_replies_until_the_reply_itself_overflows() {
     let mut input = input();
     input.reply.budget.context_tokens = 6000;
     input.reply.budget.max_output_tokens = 256;
-    input.compaction = Some(Budget {
-        context_tokens: 100,
-        max_output_tokens: 10,
-    });
+    input.compaction = Some(summarizer(100, 10));
     let mut replies = 0;
     let mut overflow = None;
     for seq in 1..=10 {

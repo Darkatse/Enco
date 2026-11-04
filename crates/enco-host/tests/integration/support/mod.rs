@@ -36,13 +36,32 @@ impl Lifecycle for ScriptedLifecycle {
 pub struct ScriptedProvider {
     pub embedding_failure: Mutex<Option<Failure>>,
     pub embedding_dimensions: std::sync::atomic::AtomicUsize,
-    pub steps: Mutex<VecDeque<Result<Completion, Failure>>>,
+    pub steps: Mutex<VecDeque<Result<Completion, CompleteError>>>,
     pub requests: Mutex<Vec<ProviderRequest>>,
     pub settings: Mutex<Vec<ProviderSettings>>,
 }
 
 impl ScriptedProvider {
     pub fn new(steps: Vec<Result<Completion, Failure>>) -> Arc<Self> {
+        Self::answering(
+            steps
+                .into_iter()
+                .map(|step| step.map_err(CompleteError::from))
+                .collect(),
+        )
+    }
+
+    /// Append answers to the script.
+    pub fn script(&self, steps: impl IntoIterator<Item = Result<Completion, Failure>>) {
+        self.steps.lock().unwrap().extend(
+            steps
+                .into_iter()
+                .map(|step| step.map_err(CompleteError::from)),
+        );
+    }
+
+    /// Scripts answers that may also turn a request away as too large.
+    pub fn answering(steps: Vec<Result<Completion, CompleteError>>) -> Arc<Self> {
         Arc::new(Self {
             embedding_failure: Mutex::new(None),
             embedding_dimensions: std::sync::atomic::AtomicUsize::new(64),
@@ -59,7 +78,7 @@ impl Provider for ScriptedProvider {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, Failure> {
+    ) -> Result<Completion, CompleteError> {
         self.requests.lock().unwrap().push(request);
         self.settings.lock().unwrap().push(settings.clone());
         self.steps
@@ -574,6 +593,39 @@ impl Tool for TestStatus {
     }
 }
 
+/// Routes each request to the provider scripted for its model.
+pub struct Models(pub std::collections::BTreeMap<&'static str, Arc<dyn Provider>>);
+
+#[async_trait]
+impl Provider for Models {
+    async fn complete(
+        &self,
+        settings: &ProviderSettings,
+        request: ProviderRequest,
+    ) -> Result<Completion, CompleteError> {
+        self.0[settings.model.as_str()]
+            .complete(settings, request)
+            .await
+    }
+}
+
+/// Reply candidates: the primary model under two names, which share one combination, then a
+/// backup model.
+pub fn candidates() -> serde_json::Value {
+    let mut document = configuration();
+    let endpoints = document["endpoint"].as_object_mut().unwrap();
+    let mut primary = endpoints.remove("reply").unwrap();
+    primary["model"] = "primary".into();
+    let mut backup = primary.clone();
+    backup["model"] = "backup".into();
+    endpoints.insert("primary-chat".into(), primary.clone());
+    endpoints.insert("primary-alias".into(), primary);
+    endpoints.insert("backup-chat".into(), backup);
+    document["profile"]["default"]["reply"] =
+        serde_json::json!(["primary-chat", "primary-alias", "backup-chat"]);
+    document
+}
+
 /// A provider that, while armed, holds one request until resumed, so a test can act mid-Round.
 pub struct PausedProvider {
     pub provider: Arc<ScriptedProvider>,
@@ -602,7 +654,7 @@ impl Provider for PausedProvider {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, Failure> {
+    ) -> Result<Completion, CompleteError> {
         if self.model.is_none_or(|model| settings.model == model)
             && self.pause.swap(false, Ordering::SeqCst)
         {
@@ -641,13 +693,13 @@ impl Provider for ProviderQueues {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, Failure> {
+    ) -> Result<Completion, CompleteError> {
         let (answer, receive) = tokio::sync::oneshot::channel();
         assert!(
             self.0[&settings.model]
                 .send(Prompt { request, answer })
                 .is_ok()
         );
-        receive.await.unwrap()
+        receive.await.unwrap().map_err(CompleteError::from)
     }
 }

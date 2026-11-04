@@ -88,13 +88,17 @@ impl SessionActor {
             },
         ) = self.permissions(settings, &snapshot, ancestors)?;
         let safe_mode = mode.is_some();
-        let mut selection = self.select(profile, safe_mode);
-        let reply = selection.reply_target()?;
+        let selection = self.select(profile, safe_mode);
+        // Fail before gathering context when no reply model is usable.
+        selection.choose(AttemptPurpose::Reply)?;
         let now = self.deps.clock.now();
         let gathered = self
             .gather(&snapshot, safe_mode, owner_context, token)
             .await?;
-        let mut input = ComposeInput {
+        let (reply, compaction) = self
+            .targets(&selection, gathered.measured.as_ref(), &gathered.transcript)
+            .await?;
+        let input = ComposeInput {
             round,
             now,
             home: self.deps.home.clone(),
@@ -109,7 +113,6 @@ impl SessionActor {
             transcript: gathered.transcript,
             blob_paths: gathered.blob_paths,
             previous_plan: gathered.previous_plan,
-            previous_usage: gathered.previous_usage,
             compaction_requested: gathered.compaction_requested,
             owner_context,
             owner_instructions: gathered.owner_instructions,
@@ -136,56 +139,101 @@ impl SessionActor {
             unavailable: snapshot.unavailable.clone(),
             safe_mode: mode,
             reply,
-            compaction: selection.compaction_budget(),
-            compactions_left: limits::MAX_COMPACTIONS_PER_ROUND,
+            compaction,
         };
+        let targeting = Targeting {
+            profile,
+            safe_mode,
+            measured: gathered.measured,
+        };
+        self.answer(round, &snapshot, &targeting, input, selection, token)
+            .await
+    }
+
+    /// Compose, attempt and settle until the Round answers.
+    ///
+    /// A failed combination moves on to the next candidate, a compaction recomposes over the new
+    /// transcript, and a refusal as too large recomposes for the same combination, whose targets
+    /// now carry the refused plan.
+    ///
+    /// The loop ends: a compaction ends at a Round end the transcript shows and hides it, and no
+    /// Round ends are recorded within a Round; a failure exhausts its combination for the Run; and
+    /// refusals, which need not make a request smaller, are bounded.
+    async fn answer<'p>(
+        &mut self,
+        round: RoundId,
+        snapshot: &Snapshot,
+        targeting: &Targeting<'p>,
+        mut input: ComposeInput,
+        mut selection: Selection<'p>,
+        token: &CancellationToken,
+    ) -> Result<RoundEnd, RoundError> {
+        let mut overflows = 0;
         loop {
-            let (plan, kind, composer) = self.compose(profile, &input, &selection, token).await?;
+            let (plan, kind, composer) = self
+                .compose(targeting.profile, &input, &selection, token)
+                .await?;
             let choice = selection.choose(kind.purpose())?;
             let planned = self
                 .freeze(plan, kind, composer, &input.transcript, &selection, choice)
                 .await?;
             let endpoint = &choice.endpoint.endpoint;
             let completion = match self
-                .attempt(round, endpoint, &choice.export, safe_mode, &planned, token)
+                .attempt(
+                    round,
+                    endpoint,
+                    &choice.export,
+                    targeting.safe_mode,
+                    &planned,
+                    token,
+                )
                 .await
             {
-                Ok(completion) => completion,
+                Ok(Ok(completion)) => completion,
+                // The refusal is in the Log now, so the targets its combination serves carry it.
+                Ok(Err(overflow)) => {
+                    overflows += 1;
+                    if overflows > limits::MAX_OVERFLOW_RESENDS {
+                        return Err(RoundError::Failed(overflow.failure()));
+                    }
+                    selection = self.retarget(targeting, &mut input).await?;
+                    continue;
+                }
                 // The failed combination is exhausted in the Log now, so selecting again moves on.
                 Err(RoundError::Failed(_)) => {
-                    selection = self.retarget(profile, safe_mode, &mut input)?;
+                    selection = self.retarget(targeting, &mut input).await?;
                     continue;
                 }
                 Err(error) => return Err(error),
             };
             if let AttemptKind::Compaction(_) = planned.kind {
-                input.compactions_left -= 1;
                 (
                     input.transcript,
                     input.blob_paths,
                     input.compaction_requested,
                 ) = self.transcript();
-                selection = self.retarget(profile, safe_mode, &mut input)?;
+                selection = self.retarget(targeting, &mut input).await?;
                 continue;
             }
             let calls: Vec<_> = completion.message.tool_calls().collect();
-            self.dispatch(round, &snapshot, planned.plan.plan(), &calls, token)
+            self.dispatch(round, snapshot, planned.plan.plan(), &calls, token)
                 .await?;
             cancelled(token)?;
-            return Ok(self.round_end(&snapshot, planned.plan.plan(), &calls));
+            return Ok(self.round_end(snapshot, planned.plan.plan(), &calls));
         }
     }
 
-    /// Select against the latest view and Log; the Round fails once no reply candidate is usable.
-    fn retarget<'p>(
+    /// Select against the latest view and Log and build the targets afresh; the Round fails once
+    /// no reply candidate is usable.
+    async fn retarget<'p>(
         &self,
-        profile: &'p Profile,
-        safe_mode: bool,
+        targeting: &Targeting<'p>,
         input: &mut ComposeInput,
     ) -> Result<Selection<'p>, RoundError> {
-        let selection = self.select(profile, safe_mode);
-        input.reply = selection.reply_target()?;
-        input.compaction = selection.compaction_budget();
+        let selection = self.select(targeting.profile, targeting.safe_mode);
+        (input.reply, input.compaction) = self
+            .targets(&selection, targeting.measured.as_ref(), &input.transcript)
+            .await?;
         Ok(selection)
     }
 
@@ -259,6 +307,16 @@ impl SessionActor {
     }
 }
 
+/// What choosing a Round's targets again needs.
+struct Targeting<'p> {
+    /// The profile whose candidates are chosen from.
+    profile: &'p Profile,
+    /// Whether the Round runs in safe mode.
+    safe_mode: bool,
+    /// What the service measured for the previous plan.
+    measured: Option<context::Measured>,
+}
+
 fn bind_composition(
     composition: Composition,
     input: &ComposeInput,
@@ -271,7 +329,7 @@ fn bind_composition(
     let (plan, kind) = match composition {
         Composition::Plan(plan) => (plan, AttemptKind::Reply),
         Composition::Compact { upto, plan } => {
-            if input.compactions_left == 0 || input.compaction.is_none() {
+            if input.compaction.is_none() {
                 return Err(invalid(
                     "compaction is not available for this composition".into(),
                 ));
@@ -279,11 +337,35 @@ fn bind_composition(
             if !input.transcript.round_ends.contains(&upto) {
                 return Err(invalid("compaction must end at a complete Round".into()));
             }
+            // A reply request needs history after the summary to answer.
+            if !input
+                .transcript
+                .items
+                .last()
+                .is_some_and(|last| last.pos > upto)
+            {
+                return Err(invalid(
+                    "compaction must leave history after it to reply to".into(),
+                ));
+            }
             (plan, AttemptKind::Compaction(upto))
         }
     };
     let plan = crate::plan::bind(plan, input, kind.purpose())
         .map_err(|error| invalid(error.to_string()))?;
+    let overflowed = match kind {
+        AttemptKind::Reply => input.reply.overflowed.as_ref(),
+        AttemptKind::Compaction(_) => input
+            .compaction
+            .as_ref()
+            .and_then(|compaction| compaction.overflowed.as_ref()),
+    };
+    // A pure composition sent again would be turned away again.
+    if overflowed.is_some_and(|overflowed| overflowed.plan == plan) {
+        return Err(invalid(
+            "composition repeats the plan its target turned away as too large".into(),
+        ));
+    }
     Ok((plan, kind))
 }
 

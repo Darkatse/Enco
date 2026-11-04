@@ -46,6 +46,58 @@ pub(crate) fn input(entry: &Entry) -> Option<&Event> {
     }
 }
 
+/// The latest completed reply request in a conversation, as its Attempt recorded it.
+pub(crate) struct LastReply<'a> {
+    /// Where the service's answer settled.
+    pub settled: LogPos,
+    /// The plan the request was resolved from.
+    pub plan: &'a ContentHash,
+    /// What the service reported for it.
+    pub usage: &'a Usage,
+    /// The call parameters that served it.
+    pub settings: &'a ProviderSettings,
+    /// The Provider generation that served it.
+    pub provider: GenerationId,
+}
+
+/// The latest reply request the service answered, usable or not.
+///
+/// An answer measures the request; a failed or turned-away one measures nothing, and nothing in
+/// the Log depends on it.
+pub(crate) fn last_reply<'a>(conversation: &[&'a Entry]) -> Option<LastReply<'a>> {
+    let mut answered = HashMap::new();
+    for entry in conversation.iter().rev() {
+        match &entry.body {
+            EntryBody::AttemptSettled {
+                attempt,
+                result: AttemptResult::Completed { usage, .. },
+            } => {
+                answered.insert(*attempt, (entry.pos, usage));
+            }
+            EntryBody::AttemptStarted {
+                attempt,
+                purpose: AttemptPurpose::Reply,
+                plan,
+                provider,
+                settings,
+                ..
+            } => {
+                if let Some((settled, usage)) = answered.remove(attempt) {
+                    return Some(LastReply {
+                        settled,
+                        plan,
+                        usage,
+                        settings,
+                        provider: *provider,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Whether the owner asked to compact the conversation and the request still holds.
 ///
 /// Newest first, over the inputs not yet consumed and then the conversation: a request holds

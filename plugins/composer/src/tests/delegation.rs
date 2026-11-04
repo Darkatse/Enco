@@ -24,7 +24,7 @@ pub(super) fn child_source() -> EventSource {
     })
 }
 
-fn child() -> Child {
+pub(super) fn child() -> Child {
     Child {
         name: "research".into(),
         profile: "researcher".into(),
@@ -72,7 +72,7 @@ fn own(seq: u64, role: Role, part: Part) -> TranscriptItem {
     }
 }
 
-fn call(seq: u64) -> [TranscriptItem; 2] {
+pub(super) fn call(seq: u64) -> [TranscriptItem; 2] {
     [
         own(
             seq,
@@ -109,7 +109,7 @@ fn note_before(plan: &Plan, seq: u64) -> &str {
 }
 
 /// The source IDs of each status item from `from` on, with the item's index.
-fn statuses(plan: &Plan, from: usize) -> Vec<(usize, Vec<&str>)> {
+pub(super) fn statuses(plan: &Plan, from: usize) -> Vec<(usize, Vec<&str>)> {
     plan.items
         .iter()
         .enumerate()
@@ -173,6 +173,10 @@ fn delegated_messages_name_their_sessions_as_notes_and_summaries_do() {
     input.reply.budget.context_tokens = 5000;
     input.transcript.items[1].message.parts = vec![Part::Text("x".repeat(20_000))];
     input.transcript.round_ends.push(pos(3));
+    input
+        .transcript
+        .items
+        .push(incoming(4, "2026-10-02T15:00:00Z", "Continue"));
     let Composition::Compact(compaction) = Plugin::compose("{}".into(), input).unwrap() else {
         panic!("expected compaction")
     };

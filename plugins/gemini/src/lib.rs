@@ -2,7 +2,11 @@
 mod request;
 mod response;
 use bindings::exports::enco::plugin::{completion, embedding, lifecycle};
-use enco_sdk::protocol::{Completion, Request, Settings, types::Failure};
+use enco_sdk::protocol::{
+    CompleteError, Completion, Overflow, Request, Settings, complete_error, number_after,
+    types::Failure,
+};
+use serde_json::Value;
 
 enco_sdk::export!(provider, Plugin);
 
@@ -34,11 +38,30 @@ impl lifecycle::Guest for Plugin {
 }
 
 impl completion::Guest for Plugin {
-    async fn complete(settings: Settings, request: Request) -> Result<Completion, Failure> {
-        let body = request::completion(&settings, request)?;
+    async fn complete(settings: Settings, request: Request) -> Result<Completion, CompleteError> {
+        let body = request::completion(&settings, request).map_err(CompleteError::Failed)?;
         let path = format!("models/{}:generateContent", settings.model);
-        response::completion(enco_sdk::protocol::post(&settings, &path, body, None).await?)
+        let response = enco_sdk::protocol::post(&settings, &path, body, None)
+            .await
+            .map_err(|error| complete_error(error, overflow))?;
+        response::completion(response).map_err(CompleteError::Failed)
     }
+}
+
+/// Gemini's refusal of an over-long request states only its limit: "The input token count
+/// exceeds the maximum number of tokens allowed N." A proxy may wrap the answer in its own
+/// envelope but keeps the sentence, so the sentence is what identifies it.
+fn overflow(answer: &Value) -> Option<Overflow> {
+    let message = answer.pointer("/error/message")?.as_str()?;
+    let accepted = number_after(
+        message,
+        "The input token count exceeds the maximum number of tokens allowed ",
+    )?;
+    Some(Overflow {
+        counted: None,
+        accepted: Some(accepted),
+        message: message.into(),
+    })
 }
 
 impl embedding::Guest for Plugin {

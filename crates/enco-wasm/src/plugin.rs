@@ -17,7 +17,8 @@ use crate::{
 use async_trait::async_trait;
 use enco_core::*;
 use enco_kernel::{
-    Answer, Completion, Decision, Embedding, Lifecycle, Provider, ProviderRequest, Question,
+    Answer, CompleteError, Completion, Decision, Embedding, Lifecycle, Provider, ProviderRequest,
+    Question,
 };
 use std::sync::Arc;
 use wasmtime::{Store, StoreLimitsBuilder, component::ResourceTable};
@@ -136,7 +137,7 @@ impl Provider for WasmPlugin {
         &self,
         params: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, Failure> {
+    ) -> Result<Completion, CompleteError> {
         let pre = self
             .completion
             .as_ref()
@@ -144,6 +145,7 @@ impl Provider for WasmPlugin {
         let request = convert::request(request);
         let settings = settings(params);
         let credentials = credentials::resolve(&self.credentials, &self.settings, Some(params))?;
+        // The guest's own error is an answer to convert, not a failure of the invocation.
         let result = self
             .invoke(
                 CallWorld::Regular(credentials),
@@ -156,12 +158,16 @@ impl Provider for WasmPlugin {
                                 .enco_plugin_completion()
                                 .call_complete(accessor, settings, request)
                                 .await
+                                .map(Ok)
                         })
                         .await?
                 },
             )
             .await?;
-        convert::completion(result)
+        match result {
+            Ok(completion) => Ok(convert::completion(completion)?),
+            Err(error) => Err(convert::complete_error(error)?),
+        }
     }
 }
 

@@ -7,7 +7,9 @@ use crate::{
     limits::DECISION_SUM_TOLERANCE,
 };
 use enco_core::*;
-use enco_kernel::{Answer, Completion, Label, ProviderRequest, Question, QuestionKind};
+use enco_kernel::{
+    Answer, CompleteError, Completion, Label, ProviderRequest, Question, QuestionKind,
+};
 
 pub(crate) fn request(request: ProviderRequest) -> wire::Request {
     let ProviderRequest {
@@ -172,7 +174,8 @@ pub(crate) fn completion(completion: wire::Completion) -> Result<Completion, Fai
                 }
             })
         })
-        .collect::<Result<_, Failure>>()?;
+        .collect::<Result<Vec<_>, Failure>>()?;
+    whole_extension(&parts)?;
     Ok(Completion {
         message: Message {
             role: Role::Assistant,
@@ -190,6 +193,75 @@ pub(crate) fn completion(completion: wire::Completion) -> Result<Completion, Fai
             wire::StopReason::Other => StopReason::Other,
         },
     })
+}
+
+/// The composer counts an extension in place of the message's other parts, so it must hold them.
+fn whole_extension(parts: &[Part]) -> Result<(), Failure> {
+    let mut extensions = parts.iter().filter_map(|part| match part {
+        Part::Extension(extension) => Some(extension),
+        _ => None,
+    });
+    let Some(extension) = extensions.next() else {
+        return Ok(());
+    };
+    if extensions.next().is_some() {
+        return Err(bad("a completion carries at most one extension"));
+    }
+    let others: usize = parts
+        .iter()
+        .map(|part| match part {
+            Part::Text { text } => text.len(),
+            Part::ToolCall(call) => call.name.len() + call.arguments.len(),
+            _ => 0,
+        })
+        .sum();
+    if extension.data.to_string().len() < others {
+        return Err(bad(
+            "an extension holds the whole message, so it cannot be shorter than its text and tool calls",
+        ));
+    }
+    Ok(())
+}
+
+/// A guest's reason for returning no completion.
+pub(crate) fn complete_error(error: wire::CompleteError) -> Result<CompleteError, Failure> {
+    Ok(match error {
+        wire::CompleteError::Failed(value) => CompleteError::Failed(failure(value)),
+        wire::CompleteError::Overflow(value) => CompleteError::Overflow(overflow(value)?),
+    })
+}
+
+fn overflow(value: wit::Overflow) -> Result<Overflow, Failure> {
+    let wit::Overflow {
+        counted,
+        accepted,
+        message,
+    } = value;
+    if let (Some(counted), Some(accepted)) = (counted, accepted)
+        && counted <= accepted
+    {
+        return Err(bad(format!(
+            "an overflow of {counted} input tokens is within the {accepted} the service accepts"
+        )));
+    }
+    Ok(Overflow {
+        counted,
+        accepted,
+        message,
+    })
+}
+
+pub(crate) fn overflow_record(value: &Overflow) -> wit::Overflow {
+    let Overflow {
+        counted,
+        accepted,
+        message,
+    } = value;
+    wit::Overflow {
+        counted: *counted,
+        accepted: *accepted,
+        message: message.clone(),
+    }
 }
 
 pub(crate) fn bad(message: impl Into<String>) -> Failure {
@@ -346,3 +418,7 @@ impl From<wit::Effect> for Effect {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "convert_tests.rs"]
+mod tests;

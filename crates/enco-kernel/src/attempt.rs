@@ -32,7 +32,8 @@ impl SessionActor {
     /// Retry one combination within its own allowance, backing off between retryable failures.
     ///
     /// A failure that exhausts it, or other code taking its place, returns to the Round, which
-    /// selects again from the Log; composition is pure, so the recorded plan is the same.
+    /// selects again from the Log; composition is pure, so the recorded plan is the same. An
+    /// overflow returns at once, since only a smaller request can succeed.
     pub(crate) async fn attempt(
         &mut self,
         round: RoundId,
@@ -41,13 +42,13 @@ impl SessionActor {
         safe_mode: bool,
         planned: &PlannedAttempt,
         token: &CancellationToken,
-    ) -> Result<Completion, RoundError> {
+    ) -> Result<Result<Completion, Overflow>, RoundError> {
         let mut attempts = 0;
         loop {
             cancelled(token)?;
             attempts += 1;
             let failure = match self.invoke(round, endpoint, planned, export, token).await {
-                Ok(completion) => return Ok(completion),
+                Ok(answer) => return Ok(answer),
                 Err(RoundError::Failed(failure)) => failure,
                 Err(error) => return Err(error),
             };
@@ -78,7 +79,7 @@ impl SessionActor {
         planned: &PlannedAttempt,
         export: &Export<dyn Provider>,
         token: &CancellationToken,
-    ) -> Result<Completion, RoundError> {
+    ) -> Result<Result<Completion, Overflow>, RoundError> {
         let attempt = AttemptId::new();
         self.commit(
             vec![EntryBody::AttemptStarted {
@@ -95,9 +96,9 @@ impl SessionActor {
         .await?;
         let result = tokio::select! {
             biased;
-            _ = token.cancelled() => Err(Failure {
+            _ = token.cancelled() => Err(CompleteError::Failed(Failure {
                 code: code::CANCELLED.into(), message: "model request cancelled".into(), retryable: false,
-            }),
+            })),
             result = export.adapter.complete(&endpoint.settings, planned.request.clone()) => result,
         };
         let result = match result {
@@ -106,9 +107,14 @@ impl SessionActor {
                 .await?
             {
                 Some(failure) => Err(failure),
-                None => Ok(completion),
+                None => Ok(Ok(completion)),
             },
-            Err(failure) => {
+            Err(CompleteError::Overflow(overflow)) => {
+                self.settle_overflow(attempt, export.generation, &overflow)
+                    .await?;
+                Ok(Err(overflow))
+            }
+            Err(CompleteError::Failed(failure)) => {
                 self.settle_failure(attempt, export.generation, &failure)
                     .await?;
                 Err(failure)
@@ -149,6 +155,30 @@ impl SessionActor {
             .report(generation, Verdict::Ok, Some(self.session.id))
             .await?;
         Ok(unusable)
+    }
+
+    /// Record a refusal of the request as too large; the Provider answered within its contract.
+    async fn settle_overflow(
+        &mut self,
+        attempt: AttemptId,
+        generation: GenerationId,
+        overflow: &Overflow,
+    ) -> Result<(), RoundError> {
+        self.commit(
+            vec![EntryBody::AttemptSettled {
+                attempt,
+                result: AttemptResult::Overflow {
+                    overflow: overflow.clone(),
+                },
+            }],
+            None,
+        )
+        .await?;
+        self.deps
+            .registry
+            .report(generation, Verdict::Ok, Some(self.session.id))
+            .await?;
+        Ok(())
     }
 
     /// Record a failed call and report it to health gating.

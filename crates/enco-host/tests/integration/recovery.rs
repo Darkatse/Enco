@@ -30,7 +30,7 @@ impl Provider for PendingProvider {
         &self,
         _: &ProviderSettings,
         _: ProviderRequest,
-    ) -> Result<Completion, Failure> {
+    ) -> Result<Completion, CompleteError> {
         let _dropped = Dropped(&self.dropped);
         self.entered.notify_one();
         std::future::pending().await
@@ -342,7 +342,8 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
         calls(vec![call(
             "self_rewind",
             &serde_json::json!({"registration": baseline}).to_string(),
-        )]),
+        )])
+        .map_err(CompleteError::from),
     );
     std::fs::write(dir.path().join("AGENTS.md"), [0xff]).unwrap();
     let session = kernel.open_session("main").await.unwrap();

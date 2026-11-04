@@ -2,7 +2,8 @@ use std::time::Duration;
 pub(crate) const MAX_ATTEMPTS: u32 = 3;
 pub(crate) const BACKOFF: [Duration; MAX_ATTEMPTS as usize - 1] =
     [Duration::from_secs(1), Duration::from_secs(4)];
-pub(crate) const MAX_COMPACTIONS_PER_ROUND: u32 = 2;
+/// Shrunk requests a Round sends after its service turned requests away as too large.
+pub(crate) const MAX_OVERFLOW_RESENDS: u32 = 3;
 pub(crate) const TOOL_RESULT_INLINE_BYTES: usize = 16 * 1024;
 pub(crate) const TOOL_RESULT_PREVIEW_BYTES: usize = 4 * 1024;
 pub(crate) const SESSION_BROADCAST_CAPACITY: usize = 256;

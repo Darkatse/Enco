@@ -158,6 +158,7 @@ pub(crate) enum EventBody {
 pub(crate) enum AttemptResult {
     Completed { message: Message, usage: Usage },
     Failed,
+    Overflow,
 }
 
 #[derive(Deserialize)]

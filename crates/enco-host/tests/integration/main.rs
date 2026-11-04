@@ -8,6 +8,7 @@ mod history;
 mod images;
 mod kernel;
 mod memory;
+mod overflow;
 mod plugin_tools;
 mod profiles;
 mod recovery;

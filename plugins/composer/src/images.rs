@@ -87,11 +87,19 @@ pub(super) fn unviewable(attachment: &Unviewable) -> String {
 }
 
 /// A recorded message's text bytes and envelope, plus a fixed cost for each image it sends.
+///
+/// An extension is the whole message as the Provider that wrote it replays it, so it stands in
+/// for the text and tool calls derived from it.
 pub(super) fn message_tokens(message: &Message, include: bool) -> u32 {
+    let whole = message
+        .parts
+        .iter()
+        .any(|part| matches!(part, Part::Extension(_)));
     let mut bytes = MESSAGE_OVERHEAD_BYTES;
     let mut images = 0u32;
     for part in &message.parts {
         bytes += match part {
+            Part::Text(_) | Part::ToolCall(_) if whole => continue,
             Part::Text(text) => text.len(),
             Part::ToolCall(call) => call.id.len() + call.name.len() + call.arguments.len(),
             Part::ToolResult(result) => result.call_id.len() + result.content.len(),

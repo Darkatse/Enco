@@ -35,10 +35,8 @@ pub struct ComposeInput {
     /// Where the blobs the transcript refers to are stored, by content hash: its images, and the
     /// attachments and files of its inputs.
     pub blob_paths: HashMap<ContentHash, PathBuf>,
-    /// Most recent reply plan; the composer decides whether to reuse it.
+    /// Plan of the latest completed reply request; the composer decides whether to reuse it.
     pub previous_plan: Option<ContextPlan>,
-    /// Token usage reported for the completed Attempt that sent `previous_plan`.
-    pub previous_usage: Option<Usage>,
     /// Whether the owner asked to compact the conversation before this Round's reply.
     pub compaction_requested: bool,
     /// Whether this Session and all its ancestors permit owner instructions and memories.
@@ -62,10 +60,8 @@ pub struct ComposeInput {
     pub safe_mode: Option<SafeMode>,
     /// The reply model this composition is for.
     pub reply: ReplyTarget,
-    /// The summarizing model's limits; absent when no compaction candidate is usable.
-    pub compaction: Option<Budget>,
-    /// Compactions this Round still allows; at zero the composer must return a plan or fail.
-    pub compactions_left: u32,
+    /// The summarizing model; absent when no compaction candidate is usable.
+    pub compaction: Option<CompactionTarget>,
 }
 
 /// The reason for the Round's fixed recovery mode.
@@ -86,6 +82,30 @@ pub struct ReplyTarget {
     pub accepts: std::collections::BTreeSet<Modality>,
     /// Candidates before it that are unavailable or exhausted in this Run, in configured order.
     pub skipped: Vec<EndpointFailure>,
+    /// Token usage reported for `previous_plan`, present only when this target's combination
+    /// served it: another model counts tokens differently.
+    pub previous_usage: Option<Usage>,
+    /// The latest plan this target's combination turned away as too large in this Round that the
+    /// transcript still holds every Log item of, a reply or a summary.
+    pub overflowed: Option<Overflowed>,
+}
+
+/// The summarizing model the kernel selected.
+#[derive(Clone)]
+pub struct CompactionTarget {
+    /// Limits of the selected model.
+    pub budget: Budget,
+    /// As on [`ReplyTarget::overflowed`], for the combination behind this target.
+    pub overflowed: Option<Overflowed>,
+}
+
+/// A plan its target turned away as too large, and what the service said about it.
+#[derive(Clone)]
+pub struct Overflowed {
+    /// The plan as recorded with the turned-away Attempt.
+    pub plan: ContextPlan,
+    /// The service's refusal.
+    pub overflow: Overflow,
 }
 
 /// A candidate and the reason the kernel passed it over.
@@ -172,7 +192,8 @@ pub enum Composition {
     Plan(CompositionPlan),
     /// Summarize an inclusive prefix ending at a complete Round.
     Compact {
-        /// Inclusive compaction boundary.
+        /// Inclusive compaction boundary: a Round end before the latest transcript item, so the
+        /// reply after the summary has history to answer.
         upto: LogPos,
         /// Tool-free request to generate the summary.
         plan: CompositionPlan,

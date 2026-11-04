@@ -85,7 +85,8 @@ impl Compaction {
     ///
     /// It is the earliest Round end that leaves at most `keep` tokens of history, or, when
     /// summarizing that far would not fit the compaction window, the latest Round end that does.
-    /// Each summary carries the previous one forward, so a partial compaction is progress.
+    /// It always leaves the latest item, so the reply after it has history to answer. Each summary
+    /// carries the previous one forward, so a partial compaction is progress.
     pub(super) fn boundary(
         &self,
         input: &ComposeInput,
@@ -94,30 +95,22 @@ impl Compaction {
         keep: u64,
     ) -> Option<LogPos> {
         let first = key(&self.chunks.first()?.0);
-        let window = self.window;
-        let mut tail = history_tokens;
+        let last = input.transcript.items.last()?.pos;
         let mut needed = self.overhead;
-        let mut sizes = sizes.iter().peekable();
         let mut chunks = self.chunks.iter().peekable();
         let mut fitting = None;
-        // All three sequences follow Log order, so each item is counted once.
+        // Both sequences follow Log order, so each item is counted once.
         // A compaction-only Round has no visible content to summarize again.
-        for end in input
-            .transcript
-            .round_ends
-            .iter()
-            .filter(|end| key(end) >= first)
+        for (end, tail) in crate::cut::cuts(&input.transcript, sizes, history_tokens, last)
+            .filter(|(end, _)| key(end) >= first)
         {
-            while let Some((_, size)) = sizes.next_if(|(pos, _)| key(pos) <= key(end)) {
-                tail -= size;
-            }
-            while let Some((_, chunk)) = chunks.next_if(|(pos, _)| key(pos) <= key(end)) {
+            while let Some((_, chunk)) = chunks.next_if(|(pos, _)| key(pos) <= key(&end)) {
                 needed = needed.saturating_add(estimate_tokens(chunk));
             }
-            if needed > window {
+            if needed > self.window {
                 break;
             }
-            fitting = Some(*end);
+            fitting = Some(end);
             if u64::from(tail) <= keep {
                 break;
             }

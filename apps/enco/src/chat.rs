@@ -99,6 +99,10 @@ fn render(
                     "! model request failed: {}: {}",
                     failure.code, failure.message
                 ),
+                AttemptResult::Overflow { overflow } => eprintln!(
+                    "! the service turned the request away as too large: {}",
+                    overflow.message
+                ),
                 _ => {}
             }
         }

@@ -155,6 +155,7 @@ async fn compacted_requests_are_recorded_and_the_summary_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![
         calls(vec![call("fs_list", r#"{"path":"."}"#)]),
+        calls(vec![call("fs_list", r#"{"path":"."}"#)]),
         reply("scripted summary"),
         reply("finished"),
     ]);
@@ -182,7 +183,7 @@ async fn compacted_requests_are_recorded_and_the_summary_survives_restart() {
             _ => None,
         })
         .collect();
-    assert_eq!(attempts.len(), 3);
+    assert_eq!(attempts.len(), 4);
     for (attempt, request) in attempts.into_iter().zip(requests) {
         let inspected = kernel.inspect(session, Some(attempt)).await.unwrap();
         assert_eq!(
@@ -387,7 +388,7 @@ async fn invalid_schedule_arguments_leave_no_records_and_allow_correction() {
     ];
     for mut args in cases {
         args["message"] = json!("briefing");
-        provider.steps.lock().unwrap().extend([
+        provider.script([
             calls(vec![call("schedule_create", &args.to_string())]),
             reply("please correct the rule"),
         ]);
@@ -411,7 +412,7 @@ async fn invalid_schedule_arguments_leave_no_records_and_allow_correction() {
         );
         assert!(store.schedules(None).await.unwrap().is_empty(), "{args}");
     }
-    provider.steps.lock().unwrap().extend([
+    provider.script([
         calls(vec![call(
             "schedule_create",
             r#"{"cron":"0 8 * * *","message":"briefing"}"#,

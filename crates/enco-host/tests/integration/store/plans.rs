@@ -227,7 +227,7 @@ async fn fresh_databases_enable_incremental_vacuum_and_old_versions_stay_untouch
         .pragma_query_value(None, "auto_vacuum", |row| row.get(0))
         .unwrap();
     assert_eq!(mode, 2);
-    db.pragma_update(None, "user_version", 19).unwrap();
+    db.pragma_update(None, "user_version", 20).unwrap();
     drop(store);
     assert!(matches!(
         SqliteStore::open(
@@ -236,8 +236,8 @@ async fn fresh_databases_enable_incremental_vacuum_and_old_versions_stay_untouch
         )
         .await,
         Err(StoreError::SchemaVersion {
-            found: 19,
-            expected: 20
+            found: 20,
+            expected: 21
         })
     ));
     let sessions: i64 = db
@@ -247,5 +247,5 @@ async fn fresh_databases_enable_incremental_vacuum_and_old_versions_stay_untouch
     let version: i64 = db
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 19);
+    assert_eq!(version, 20);
 }

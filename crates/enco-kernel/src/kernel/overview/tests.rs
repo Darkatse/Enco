@@ -169,7 +169,7 @@ fn context_uses_completed_reply_measurements_and_follows_the_current_branch() {
         entry.pos.seq.0 += 8;
     }
     history.extend(tail);
-    let context = context_usage(&crate::transcript::conversation(&history), &[]);
+    let context = context_usage(&crate::transcript::conversation(&history), &[], None);
     let last = context.last_request.unwrap();
     assert_eq!(last.model, "measured-model");
     assert_eq!(last.usage.input_tokens, 1234);
@@ -187,7 +187,7 @@ fn context_uses_completed_reply_measurements_and_follows_the_current_branch() {
             to: Some(history[2].pos),
         }),
     });
-    let context = context_usage(&crate::transcript::conversation(&history), &[]);
+    let context = context_usage(&crate::transcript::conversation(&history), &[], None);
     assert!(!context.last_request.unwrap().compacted_since);
     assert_eq!(context.compactions, 0);
     history.push(Entry {
@@ -198,7 +198,95 @@ fn context_uses_completed_reply_measurements_and_follows_the_current_branch() {
         at: Utc::now(),
         body: consumed(EventBody::Backtrack { to: None }),
     });
-    let context = context_usage(&crate::transcript::conversation(&history), &[]);
+    let context = context_usage(&crate::transcript::conversation(&history), &[], None);
     assert!(context.last_request.is_none());
     assert_eq!(context.compactions, 0);
+}
+
+fn endpoint(model: &str, window: u32, max_output: u32) -> CompletionEndpoint {
+    CompletionEndpoint {
+        endpoint: crate::settings::Endpoint {
+            name: "chat".into(),
+            plugin: "fixture".parse().unwrap(),
+            settings: settings(model),
+        },
+        budget: crate::Budget {
+            context_tokens: window.try_into().unwrap(),
+            max_output_tokens: max_output.try_into().unwrap(),
+        },
+        accepts: Default::default(),
+    }
+}
+
+fn overflowed(attempt: AttemptId, accepted: Option<u64>) -> EntryBody {
+    EntryBody::AttemptSettled {
+        attempt,
+        result: AttemptResult::Overflow {
+            overflow: Overflow {
+                counted: None,
+                accepted,
+                message: "too long".into(),
+            },
+        },
+    }
+}
+
+#[test]
+fn service_limit_appears_only_when_the_reply_service_accepts_less_than_its_window() {
+    let older = AttemptId::new();
+    let latest = AttemptId::new();
+    let bodies = vec![
+        message(),
+        started(older, AttemptPurpose::Reply, "chat-model"),
+        overflowed(older, Some(128_000)),
+        started(latest, AttemptPurpose::Reply, "chat-model"),
+        // A refusal without a limit says nothing about the window; the older one still does.
+        overflowed(latest, None),
+    ];
+    let limit = |bodies: &[EntryBody], reply: &CompletionEndpoint| {
+        let history = entries(bodies.to_vec());
+        let conversation = crate::transcript::conversation(&history);
+        context_usage(&conversation, &[], Some(reply)).service_limit
+    };
+    let reply = endpoint("chat-model", 1_000_000, 65_536);
+    assert_eq!(limit(&bodies, &reply), Some(128_000));
+    // 128,000 accepted plus 8,192 of output covers a 136,192-token window.
+    assert_eq!(
+        limit(&bodies, &endpoint("chat-model", 136_192, 8_192)),
+        None
+    );
+    assert_eq!(
+        limit(&bodies, &endpoint("chat-model", 136_193, 8_192)),
+        Some(128_000)
+    );
+    // A refusal by other call parameters does not describe this endpoint.
+    assert_eq!(
+        limit(&bodies, &endpoint("other-model", 1_000_000, 65_536)),
+        None
+    );
+    let history = entries(bodies.clone());
+    let conversation = crate::transcript::conversation(&history);
+    assert_eq!(context_usage(&conversation, &[], None).service_limit, None);
+
+    // A later answer that carried more input than the limit allows disproves it.
+    let answered = |input_tokens| {
+        let attempt = AttemptId::new();
+        let mut later = bodies.clone();
+        later.extend([
+            started(attempt, AttemptPurpose::Reply, "chat-model"),
+            completed(attempt, input_tokens),
+        ]);
+        later
+    };
+    assert_eq!(limit(&answered(128_000), &reply), Some(128_000));
+    assert_eq!(limit(&answered(128_001), &reply), None);
+
+    // The limit is the service's: a summary it turned away with the same call parameters counts.
+    let summary = AttemptId::new();
+    let refused_summary = [
+        message(),
+        started(summary, AttemptPurpose::Compaction, "chat-model"),
+        overflowed(summary, Some(128_000)),
+    ];
+    assert_eq!(limit(&refused_summary, &reply), Some(128_000));
 }

@@ -109,6 +109,18 @@ pub(crate) fn resolve(
     })
 }
 
+/// Whether `transcript` still holds every Log item `plan` carries, so the plan can be read
+/// against the conversation as it now stands.
+pub(crate) fn held(plan: &ContextPlan, transcript: &Transcript) -> bool {
+    plan.items.iter().all(|item| match item {
+        PlanItem::Message { .. } => true,
+        PlanItem::Log { pos, .. } => transcript
+            .items
+            .binary_search_by_key(pos, |item| item.pos)
+            .is_ok(),
+    })
+}
+
 /// An entry with nothing left once its images stay behind, such as a photo alone, sends no
 /// message; the composer's note before it describes the entry.
 fn messages(

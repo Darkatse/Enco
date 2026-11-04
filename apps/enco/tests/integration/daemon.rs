@@ -766,7 +766,7 @@ async fn a_pure_channel_built_against_the_previous_contract_requests_a_rebuild()
     let runtime = WasmRuntime::new().unwrap();
     let error = runtime
         .load(
-            br#"(component (instance $old) (export "enco:plugin/channel@0.13.0" (instance $old)))"#,
+            br#"(component (instance $old) (export "enco:plugin/channel@0.14.0" (instance $old)))"#,
             &PluginSettings::default(),
         )
         .await
@@ -774,7 +774,7 @@ async fn a_pure_channel_built_against_the_previous_contract_requests_a_rebuild()
         .unwrap();
     let reason = error.to_string();
     assert!(
-        reason.contains("0.13.0") && reason.contains("rebuild"),
+        reason.contains("0.14.0") && reason.contains("rebuild"),
         "{reason}"
     );
 }

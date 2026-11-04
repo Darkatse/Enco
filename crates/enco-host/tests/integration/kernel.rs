@@ -99,7 +99,7 @@ async fn file_pages_preserve_complete_lines_and_oversized_lines_use_the_shared_f
     let mut offset = 1;
     let mut read_lines = vec![];
     loop {
-        provider.steps.lock().unwrap().extend([
+        provider.script([
             calls(vec![call(
                 "fs_read",
                 &serde_json::json!({"path": "pages.txt", "offset": offset}).to_string(),
@@ -144,7 +144,7 @@ async fn file_pages_preserve_complete_lines_and_oversized_lines_use_the_shared_f
         format!("{long_line}\ntail"),
     )
     .unwrap();
-    provider.steps.lock().unwrap().extend([
+    provider.script([
         calls(vec![call("fs_read", r#"{"path":"long.txt"}"#)]),
         reply("long line read"),
     ]);

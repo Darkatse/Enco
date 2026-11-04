@@ -11,17 +11,18 @@ pub(super) const LOCAL_TIME: &str = "%Y-%m-%d %H:%M, %A";
 /// The kernel's tool that ends a reply unsent.
 const REPLY_SKIP: &str = "reply_skip";
 
-/// Keep the recorded presentation while its head and visible history still apply, appending only
-/// what is new, so the request shares its cached prefix with the previous one.
+/// Keep the recorded presentation of `previous` while its head and visible history still apply,
+/// appending only what is new, so the request shares its cached prefix with the previous one.
 pub(super) fn reply_items(
     input: &ComposeInput,
+    previous: Option<&Plan>,
     head: PlanItem,
     history: &[(&TranscriptItem, String)],
     selected_images: &BTreeSet<(u64, u64)>,
     memory_budget: &mut u32,
     omitted: &mut Vec<Omission>,
 ) -> (Vec<PlanItem>, Option<usize>) {
-    let previous = input.previous.as_ref().filter(|plan| {
+    let previous = previous.filter(|plan| {
         plan.items.first() == Some(&head)
             && plan.items.iter().all(|item| match item {
                 PlanItem::Log(reference) => {
@@ -159,8 +160,9 @@ pub(super) fn sizes(
     Ok((sizes, pending))
 }
 
-/// Estimate only newly appended items; a measured prefix already includes its own envelopes.
-pub(super) fn appended_tokens(items: &[PlanItem], transcript: &Transcript) -> Result<u32, Failure> {
+/// The estimated size of `items`, such as those appended after a measured prefix, which already
+/// includes its own envelopes.
+pub(super) fn items_tokens(items: &[PlanItem], transcript: &Transcript) -> Result<u32, Failure> {
     items.iter().try_fold(0u32, |total, item| {
         Ok(total.saturating_add(item_tokens(item, transcript)?))
     })

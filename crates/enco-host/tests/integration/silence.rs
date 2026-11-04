@@ -128,7 +128,7 @@ impl Provider for HeldProvider {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, Failure> {
+    ) -> Result<Completion, CompleteError> {
         let release = self.release.lock().unwrap().take();
         if let Some(release) = release {
             self.entered.notify_one();

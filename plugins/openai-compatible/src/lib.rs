@@ -1,6 +1,6 @@
 //! OpenAI-compatible completions and embeddings through the shared WIT protocol.
 use bindings::exports::enco::plugin::{completion, embedding, lifecycle};
-use enco_sdk::protocol::{Completion, Request, Settings, types::Failure};
+use enco_sdk::protocol::{CompleteError, Completion, Request, Settings, types::Failure};
 
 enco_sdk::export!(provider, Plugin);
 
@@ -32,7 +32,7 @@ impl lifecycle::Guest for Plugin {
 }
 
 impl completion::Guest for Plugin {
-    async fn complete(settings: Settings, request: Request) -> Result<Completion, Failure> {
+    async fn complete(settings: Settings, request: Request) -> Result<Completion, CompleteError> {
         enco_sdk::protocol::complete(settings, request).await
     }
 }

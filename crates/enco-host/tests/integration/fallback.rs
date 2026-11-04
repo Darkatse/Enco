@@ -13,21 +13,6 @@ use std::{
 };
 use support::*;
 
-struct Models(BTreeMap<&'static str, Arc<dyn Provider>>);
-
-#[async_trait]
-impl Provider for Models {
-    async fn complete(
-        &self,
-        settings: &ProviderSettings,
-        request: ProviderRequest,
-    ) -> Result<Completion, Failure> {
-        self.0[settings.model.as_str()]
-            .complete(settings, request)
-            .await
-    }
-}
-
 /// Notes, on Tokio's clock, when each call reaches the provider it wraps.
 struct Clocked {
     provider: Arc<ScriptedProvider>,
@@ -40,7 +25,7 @@ impl Provider for Clocked {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, Failure> {
+    ) -> Result<Completion, CompleteError> {
         self.calls.lock().unwrap().push(tokio::time::Instant::now());
         self.provider.complete(settings, request).await
     }
@@ -52,23 +37,6 @@ fn unavailable(retryable: bool) -> Failure {
         message: "account returned 402".into(),
         retryable,
     }
-}
-
-/// Reply candidates: the primary model under two names, which share one combination, then a
-/// backup model.
-fn candidates() -> Value {
-    let mut document = configuration();
-    let endpoints = document["endpoint"].as_object_mut().unwrap();
-    let mut primary = endpoints.remove("reply").unwrap();
-    primary["model"] = "primary".into();
-    let mut backup = primary.clone();
-    backup["model"] = "backup".into();
-    endpoints.insert("primary-chat".into(), primary.clone());
-    endpoints.insert("primary-alias".into(), primary);
-    endpoints.insert("backup-chat".into(), backup);
-    document["profile"]["default"]["reply"] =
-        json!(["primary-chat", "primary-alias", "backup-chat"]);
-    document
 }
 
 /// Give the selected endpoint a distinct output budget.
@@ -179,7 +147,7 @@ async fn exhausted_combinations_survive_unrelated_registration_and_reset_with_th
             toml::to_string(&changed).unwrap(),
         )
         .unwrap();
-        backup.steps.lock().unwrap().extend([
+        backup.script([
             calls(vec![call(
                 "self_apply",
                 r#"{"reason":"Apply test intent"}"#,
@@ -258,7 +226,7 @@ async fn automatic_safe_mode_tracks_repair_and_starts_each_run_afresh() {
         } else {
             call("fs_list", r#"{"path":"."}"#)
         };
-        factory.steps.lock().unwrap().extend([
+        factory.script([
             calls(vec![repair_call]),
             reply("finished"),
             reply("next run"),
@@ -397,13 +365,13 @@ impl Provider for PurposeProvider {
         &self,
         _: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, Failure> {
+    ) -> Result<Completion, CompleteError> {
         let summary = request.tools.is_empty();
         self.requests.lock().unwrap().push(request);
         if summary {
-            reply("a concise summary")
+            Ok(reply("a concise summary")?)
         } else {
-            Err(unavailable(false))
+            Err(unavailable(false).into())
         }
     }
 }
@@ -667,13 +635,13 @@ async fn exhausted_compaction_keeps_its_failure_when_the_composer_needs_space() 
     .await;
     write_history(dir.path());
     let log = send(&kernel, "read the history twice").await;
-    // Neither the third Round nor its safe-mode successor makes a request.
+    // The third Round's summary fails, so neither it nor its safe-mode successor asks for a reply.
     assert_eq!(
         rounds(&log),
         [
             vec![AttemptPurpose::Reply],
-            vec![AttemptPurpose::Compaction, AttemptPurpose::Reply],
-            vec![],
+            vec![AttemptPurpose::Reply],
+            vec![AttemptPurpose::Compaction],
             vec![],
         ]
     );

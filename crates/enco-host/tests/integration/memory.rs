@@ -54,7 +54,7 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
         .await
         .unwrap();
     let session = kernel.open_session("main").await.unwrap();
-    provider.steps.lock().unwrap().extend([
+    provider.script([
         calls(vec![call(
             "memory_update",
             &serde_json::json!({ "id": saved.id, "text": "Owner likes tea" }).to_string(),
@@ -69,11 +69,7 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
     kernel.shutdown().await.unwrap();
     drop(kernel);
     drop(memories);
-    provider
-        .steps
-        .lock()
-        .unwrap()
-        .push_back(reply("after restart"));
+    provider.script([reply("after restart")]);
     let (kernel, memories) =
         kernel_with_memory(dir.path(), provider.clone(), configuration(), |_| {}).await;
     send(&kernel, session.id, "unrelated topic").await;
@@ -81,7 +77,7 @@ async fn memory_tools_correction_forgetting_and_restart_share_the_authority() {
         memories.list().await.unwrap().memories[0].text,
         "Owner likes tea"
     );
-    provider.steps.lock().unwrap().extend([
+    provider.script([
         calls(vec![call(
             "memory_forget",
             &serde_json::json!({ "id": saved.id }).to_string(),

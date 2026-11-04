@@ -206,7 +206,8 @@ pub mod code {
     pub const COMPOSE_FAILED: &str = "compose.failed";
     /// A context source could not read its authoritative content.
     pub const CONTEXT_FAILED: &str = "context.failed";
-    /// The smallest valid request exceeds the configured window.
+    /// No valid request fits: the smallest one exceeds the configured window, or the service
+    /// keeps turning shrunk requests away as too large.
     pub const CONTEXT_OVERFLOW: &str = "context.overflow";
     /// The Session refers to a profile absent from the current node configuration.
     pub const PROFILE_UNKNOWN: &str = "profile.unknown";

@@ -23,6 +23,8 @@ pub struct SessionOverview {
 /// A profile's first reply model, where its next request goes unless that model fails.
 #[derive(Debug, Clone)]
 pub struct ReplyModel {
+    /// The endpoint's configured name.
+    pub endpoint: String,
     /// The model the endpoint runs.
     pub model: String,
     /// The endpoint's context window in tokens.
@@ -67,6 +69,13 @@ pub struct ContextUsage {
     pub compactions: usize,
     /// Whether a compaction request waits for the next Run.
     pub compaction_requested: bool,
+    /// The input limit the first reply model's service gave when it last turned a request away, a
+    /// reply or a summary.
+    ///
+    /// Present only when that limit and the output budget fall short of the configured window, so
+    /// the conversation is turned away each time it grows past the limit, and no later answered
+    /// request carried more input than the limit allows.
+    pub service_limit: Option<u64>,
 }
 
 /// The latest completed reply request in a conversation, as the service reported it.
@@ -93,13 +102,7 @@ impl Kernel {
             .kernel
             .profiles
             .get(&session.profile)
-            .map(|profile| {
-                let first = profile.reply.first();
-                ReplyModel {
-                    model: first.endpoint.settings.model.clone(),
-                    window: first.budget.context_tokens,
-                }
-            });
+            .map(|profile| profile.reply.first().clone());
         let children = self.deps.store.children(id).await?;
         let entries = self.deps.store.log(id, None).await?;
         let pending = self.deps.store.pending(id).await?;
@@ -114,9 +117,13 @@ impl Kernel {
         let conversation = crate::transcript::conversation(&entries);
         Ok(SessionOverview {
             run: run_state(&entries, &pending, &status),
-            context: context_usage(&conversation, &pending),
+            context: context_usage(&conversation, &pending, reply.as_ref()),
             session: status.session,
-            reply,
+            reply: reply.map(|first| ReplyModel {
+                endpoint: first.endpoint.name.clone(),
+                model: first.endpoint.settings.model.clone(),
+                window: first.budget.context_tokens,
+            }),
             children: children.len(),
             running_children,
         })
@@ -172,43 +179,62 @@ fn run_state(entries: &[Entry], pending: &[Event], status: &SessionStatus) -> Ru
     }
 }
 
-fn context_usage(conversation: &[&Entry], pending: &[Event]) -> ContextUsage {
+fn context_usage(
+    conversation: &[&Entry],
+    pending: &[Event],
+    reply: Option<&CompletionEndpoint>,
+) -> ContextUsage {
     ContextUsage {
-        last_request: last_request(conversation),
+        last_request: crate::transcript::last_reply(conversation).map(|last| LastRequest {
+            model: last.settings.model.clone(),
+            usage: last.usage.clone(),
+            compacted_since: conversation.iter().any(|entry| {
+                entry.pos > last.settled && matches!(entry.body, EntryBody::Compacted { .. })
+            }),
+        }),
         compactions: conversation
             .iter()
             .filter(|entry| matches!(entry.body, EntryBody::Compacted { .. }))
             .count(),
         compaction_requested: crate::transcript::compaction_requested(conversation, pending),
+        service_limit: reply.and_then(|reply| service_limit(conversation, reply)),
     }
 }
 
-fn last_request(conversation: &[&Entry]) -> Option<LastRequest> {
-    let mut completed = HashMap::new();
-    let mut compacted_since = false;
+/// The input limit the reply endpoint's service gave when it last turned a request away.
+///
+/// A limit is the service's, so a summary refused or answered with the same call parameters
+/// counts as a reply does. Only a limit that, with the output budget, falls short of the
+/// configured window counts, and only until an answered request carries more input than it.
+fn service_limit(conversation: &[&Entry], reply: &CompletionEndpoint) -> Option<u64> {
+    let mut settled = HashMap::new();
+    // The most input a later answered request carried, as the service counted it.
+    let mut answered = 0;
     for entry in conversation.iter().rev() {
         match &entry.body {
-            EntryBody::Compacted { .. } => compacted_since = true,
-            EntryBody::AttemptSettled {
-                attempt,
-                result: AttemptResult::Completed { usage, .. },
-            } => {
-                completed.insert(attempt, (usage, compacted_since));
+            EntryBody::AttemptSettled { attempt, result } => {
+                settled.insert(*attempt, result);
             }
             EntryBody::AttemptStarted {
-                attempt,
-                purpose: AttemptPurpose::Reply,
-                settings,
-                ..
-            } => {
-                if let Some((usage, compacted_since)) = completed.remove(attempt) {
-                    return Some(LastRequest {
-                        model: settings.model.clone(),
-                        usage: usage.clone(),
-                        compacted_since,
-                    });
+                attempt, settings, ..
+            } if *settings == reply.endpoint.settings => match settled.remove(attempt) {
+                Some(AttemptResult::Completed { usage, .. }) => {
+                    answered = answered.max(usage.input_tokens);
                 }
-            }
+                Some(AttemptResult::Overflow {
+                    overflow:
+                        Overflow {
+                            accepted: Some(accepted),
+                            ..
+                        },
+                }) => {
+                    let room = accepted.saturating_add(reply.budget.max_output_tokens.get().into());
+                    return (answered <= *accepted
+                        && room < reply.budget.context_tokens.get().into())
+                    .then_some(*accepted);
+                }
+                _ => {}
+            },
             _ => {}
         }
     }

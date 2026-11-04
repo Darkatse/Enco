@@ -1,7 +1,6 @@
 use super::{bad_request, wire_call};
-use crate::http::merge;
 use crate::types::{Failure, Image, Message, Part, Role};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 pub(super) fn encode(messages: &[Message]) -> Result<Vec<Value>, Failure> {
     let mut encoded = vec![];
@@ -67,6 +66,15 @@ fn message(message: &Message) -> Result<Value, Failure> {
             json!({ "role": "tool", "tool_call_id": result.call_id, "content": result.content })
         }
         Role::Assistant => {
+            // A reply kept whole goes back exactly as the service wrote it.
+            if let Some(Part::Extension(extension)) = message
+                .parts
+                .iter()
+                .find(|part| matches!(part, Part::Extension(_)))
+            {
+                return serde_json::from_str(&extension.data)
+                    .map_err(|e| bad_request(e.to_string()));
+            }
             let text = joined_text(&message.parts);
             let calls: Vec<_> = message
                 .parts
@@ -85,15 +93,6 @@ fn message(message: &Message) -> Result<Value, Failure> {
             let mut wire = json!({ "role": "assistant", "content": content });
             if !calls.is_empty() {
                 wire["tool_calls"] = json!(calls);
-            }
-            for part in &message.parts {
-                if let Part::Extension(extension) = part {
-                    let rest: Map<String, Value> = serde_json::from_str(&extension.data)
-                        .map_err(|e| bad_request(e.to_string()))?;
-                    merge(&mut wire, Value::Object(rest)).map_err(|path| {
-                        bad_request(format!("extension conflicts with canonical field {path}"))
-                    })?;
-                }
             }
             wire
         }
@@ -151,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn a_call_residue_returns_to_its_own_call() -> Result<(), Failure> {
+    fn a_reply_with_service_fields_goes_back_as_it_came() -> Result<(), Failure> {
         let call = |id: &str| {
             let function = json!({"name": "read", "arguments": "{}"});
             json!({"id": id, "type": "function", "function": function})
@@ -162,7 +161,29 @@ mod tests {
         let reply =
             json!({"role": "assistant", "content": null, "tool_calls": [signed, call("b")]});
         let parsed = crate::protocol::parse_message(Some(&reply))?;
-        assert_eq!(message(&parsed)?["tool_calls"], json!([signed, call("b")]));
+        assert_eq!(message(&parsed)?, reply);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_service_fields_keep_a_reply_canonical() -> Result<(), Failure> {
+        let reply = json!({
+            "role": "assistant",
+            "content": "hello",
+            "refusal": null,
+            "annotations": [],
+        });
+        let parsed = crate::protocol::parse_message(Some(&reply))?;
+        assert!(
+            !parsed
+                .parts
+                .iter()
+                .any(|part| matches!(part, Part::Extension(_)))
+        );
+        assert_eq!(
+            message(&parsed)?,
+            json!({"role": "assistant", "content": "hello"})
+        );
         Ok(())
     }
 }

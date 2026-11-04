@@ -45,7 +45,8 @@ impl Composer for TestComposer {
     }
 }
 
-/// Summarizes after each tool result; a second unsummarized result exhausts the scripted window.
+/// Summarizes all but the latest Round once two tool results are unsummarized, since a summary
+/// must leave history to answer; without a compaction, two results exhaust the scripted window.
 pub struct HistoryComposer;
 
 #[async_trait]
@@ -55,18 +56,24 @@ impl Composer for HistoryComposer {
         _: &ComposerOptions,
         input: &ComposeInput,
     ) -> Result<Composition, Failure> {
-        let results = input
-            .transcript
+        let transcript = &input.transcript;
+        let results = transcript
             .items
             .iter()
             .flat_map(|item| &item.message.parts)
             .filter(|part| matches!(part, Part::ToolResult(_)))
             .count();
-        if results > 0
-            && input.compactions_left > 0
-            && let (Some(budget), Some(upto)) =
-                (input.compaction, input.transcript.round_ends.last())
-        {
+        if results < 2 {
+            return Ok(Composition::Plan(reply_plan(input)));
+        }
+        let upto = transcript.items.last().and_then(|last| {
+            transcript
+                .round_ends
+                .iter()
+                .rev()
+                .find(|end| **end < last.pos)
+        });
+        if let (Some(compaction), Some(upto)) = (&input.compaction, upto) {
             return Ok(Composition::Compact {
                 upto: *upto,
                 plan: CompositionPlan {
@@ -76,19 +83,16 @@ impl Composer for HistoryComposer {
                         sources: vec![],
                     }],
                     tools: vec![],
-                    max_output_tokens: Some(budget.max_output_tokens.get()),
+                    max_output_tokens: Some(compaction.budget.max_output_tokens.get()),
                     omitted: vec![],
                 },
             });
         }
-        if results > 1 {
-            return Err(Failure {
-                code: code::CONTEXT_OVERFLOW.into(),
-                message: "scripted window exhausted".into(),
-                retryable: false,
-            });
-        }
-        Ok(Composition::Plan(reply_plan(input)))
+        Err(Failure {
+            code: code::CONTEXT_OVERFLOW.into(),
+            message: "scripted window exhausted".into(),
+            retryable: false,
+        })
     }
 }
 

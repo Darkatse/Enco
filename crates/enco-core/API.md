@@ -73,6 +73,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - enum `Origin` — Source of a registered generation.
 - enum `Outcome` — Known success, known failure, or an effect whose outcome is uncertain.
 - struct `Outgoing` — Content addressed to a reply destination: Markdown text and at most one file.
+- struct `Overflow` — A service's refusal of a request larger than its model accepts, with the numbers it gave.
 - enum `Part` — Typed content of a canonical message.
 - enum `PlanItem` — Inline content or a reference to an immutable canonical message.
 - struct `PluginActivation` — A current or retained code reference, distinct from the generation's creation provenance.
@@ -309,6 +310,9 @@ pub enum AttemptResult {
     Failed {
         failure: crate::Failure,
     },
+    Overflow {
+        overflow: Overflow,
+    },
 }
 ```
 
@@ -320,6 +324,8 @@ The durable settlement of a provider attempt.
   - `stop` — Provider-reported stop condition.
 - `Failed` — The operation stopped with a known failure.
   - `failure` — Classification and details of the failure.
+- `Overflow` — The service turned the request away as larger than the model accepts.
+  - `overflow` — What the service said about the request.
 
 ### `AttemptResult::failure`
 
@@ -327,7 +333,11 @@ The durable settlement of a provider attempt.
 pub fn failure(&self, purpose: AttemptPurpose) -> Option<Failure>
 ```
 
-The failure of this invocation for its purpose, retaining successful wire results as facts.
+Why this result uses up its combination's allowance for `purpose`.
+
+That is its failure, or why a completion cannot be used, which stays recorded as the
+service answered it. Absent for a usable completion, and for an overflow: a request turned away as too large
+asks for a smaller request on the same combination, not another candidate.
 
 Implements:
 
@@ -2493,6 +2503,48 @@ impl<F: PartialEq> PartialEq for Outgoing<F>
 impl<F> Serialize for Outgoing<F> where F: Serialize
 ```
 
+## struct `Overflow`
+
+`src/entry.rs`
+
+```rust
+pub struct Overflow {
+    pub counted: Option<u64>,
+    pub accepted: Option<u64>,
+    pub message: String,
+}
+```
+
+A service's refusal of a request larger than its model accepts, with the numbers it gave.
+
+- `counted` — The request's input as the service counted it, when it says; above `accepted` when both
+  are present.
+- `accepted` — The most input the service accepts for this request, when it says, after any output it
+  counts against the same window.
+- `message` — What the service said.
+
+### `Overflow::failure`
+
+```rust
+pub fn failure(&self) -> Failure
+```
+
+This refusal as a failure, for a caller that cannot send a smaller request.
+
+It ends a Round that has shrunk its request as often as it may, and reports a configuration
+probe the service turned away.
+
+Implements:
+
+```rust
+impl Clone for Overflow
+impl Debug for Overflow
+impl<'de> Deserialize<'de> for Overflow
+impl Eq for Overflow
+impl PartialEq for Overflow
+impl Serialize for Overflow
+```
+
 ## enum `Part`
 
 `src/message.rs`
@@ -4160,7 +4212,7 @@ Stable failure codes shared with WIT plugins.
 - const `code::CONFIG_INVALID` — A registered configuration table is invalid for the current host.
 - const `code::CONFIG_REJECTED` — An intentional configuration registration failed validation or lost a commit race.
 - const `code::CONTEXT_FAILED` — A context source could not read its authoritative content.
-- const `code::CONTEXT_OVERFLOW` — The smallest valid request exceeds the configured window.
+- const `code::CONTEXT_OVERFLOW` — No valid request fits: the smallest one exceeds the configured window, or the service keeps turning shrunk requests away as too large.
 - const `code::CREDENTIAL_UNAVAILABLE` — The endpoint's credential variable is unset or empty, so the plugin was not called.
 - const `code::INTERRUPTED` — The previous process stopped before settlement.
 - const `code::NOT_DISPATCHED` — A proposed invocation never reached its tool.
@@ -4272,7 +4324,8 @@ A context source could not read its authoritative content.
 pub const CONTEXT_OVERFLOW: &str = "context.overflow";
 ```
 
-The smallest valid request exceeds the configured window.
+No valid request fits: the smallest one exceeds the configured window, or the service
+keeps turning shrunk requests away as too large.
 
 ## const `code::CREDENTIAL_UNAVAILABLE`
 

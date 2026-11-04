@@ -34,8 +34,8 @@ impl Composer for RequestedComposer {
     ) -> Result<Composition, Failure> {
         self.0.lock().unwrap().push(input.clone());
         if input.compaction_requested
-            && let (Some(budget), Some(upto)) =
-                (input.compaction, input.transcript.round_ends.last())
+            && let (Some(compaction), Some(upto)) =
+                (&input.compaction, input.transcript.round_ends.last())
         {
             return Ok(Composition::Compact {
                 upto: *upto,
@@ -46,7 +46,7 @@ impl Composer for RequestedComposer {
                         sources: vec![],
                     }],
                     tools: vec![],
-                    max_output_tokens: Some(budget.max_output_tokens.get()),
+                    max_output_tokens: Some(compaction.budget.max_output_tokens.get()),
                     omitted: vec![],
                 },
             });

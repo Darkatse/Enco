@@ -10,7 +10,32 @@ pub trait Provider: Send + Sync {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, Failure>;
+    ) -> Result<Completion, CompleteError>;
+}
+
+/// Why a completion did not happen.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompleteError {
+    /// The request failed.
+    Failed(Failure),
+    /// The service turned the request away as too large; a smaller request may succeed.
+    Overflow(Overflow),
+}
+
+impl From<Failure> for CompleteError {
+    fn from(failure: Failure) -> Self {
+        Self::Failed(failure)
+    }
+}
+
+impl CompleteError {
+    /// The failure a caller that cannot shrink its request reports.
+    pub fn into_failure(self) -> Failure {
+        match self {
+            Self::Failed(failure) => failure,
+            Self::Overflow(overflow) => overflow.failure(),
+        }
+    }
 }
 
 /// A canonical model request. Session requests resolve a frozen, recorded plan;

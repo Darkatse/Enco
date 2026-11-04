@@ -8,8 +8,8 @@ use crate::{
 };
 use enco_core::*;
 use enco_kernel::{
-    Budget, ComposeInput, Composition, CompositionItem, CompositionPlan, EndpointFailure,
-    ReplyTarget, SafeMode, Transcript, TranscriptItem,
+    Budget, CompactionTarget, ComposeInput, Composition, CompositionItem, CompositionPlan,
+    EndpointFailure, Overflowed, ReplyTarget, SafeMode, Transcript, TranscriptItem,
 };
 use std::{collections::HashMap, path::PathBuf};
 
@@ -26,7 +26,6 @@ pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure>
         transcript,
         blob_paths,
         previous_plan,
-        previous_usage,
         compaction_requested,
         owner_context,
         owner_instructions,
@@ -39,7 +38,6 @@ pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure>
         safe_mode,
         reply,
         compaction,
-        compactions_left,
     } = input;
     Ok(wire::ComposeInput {
         session: session_record(session)?,
@@ -48,8 +46,7 @@ pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure>
         timezone: timezone.to_string(),
         home: home.to_string_lossy().into_owned(),
         transcript: transcript_record(transcript, blob_paths)?,
-        previous: previous_plan.as_ref().map(previous),
-        previous_usage: previous_usage.as_ref().map(convert::usage_record),
+        previous: previous_plan.as_ref().map(recorded_plan),
         compaction_requested: *compaction_requested,
         owner_context: *owner_context,
         owner_instructions: owner_instructions.clone(),
@@ -76,8 +73,7 @@ pub(super) fn input(input: &ComposeInput) -> Result<wire::ComposeInput, Failure>
             SafeMode::Failed(failure) => wire::SafeMode::Failed(convert::failure_record(failure)),
         }),
         reply: reply_target(reply),
-        compaction: compaction.map(budget),
-        compactions_left: *compactions_left,
+        compaction: compaction.as_ref().map(compaction_target),
     })
 }
 
@@ -145,6 +141,8 @@ fn reply_target(reply: &ReplyTarget) -> wire::ReplyTarget {
         budget: limits,
         accepts,
         skipped,
+        previous_usage,
+        overflowed,
     } = reply;
     wire::ReplyTarget {
         budget: budget(*limits),
@@ -163,6 +161,27 @@ fn reply_target(reply: &ReplyTarget) -> wire::ReplyTarget {
                 },
             )
             .collect(),
+        previous_usage: previous_usage.as_ref().map(convert::usage_record),
+        overflowed: overflowed.as_ref().map(overflowed_record),
+    }
+}
+
+fn compaction_target(target: &CompactionTarget) -> wire::CompactionTarget {
+    let CompactionTarget {
+        budget: limits,
+        overflowed,
+    } = target;
+    wire::CompactionTarget {
+        budget: budget(*limits),
+        overflowed: overflowed.as_ref().map(overflowed_record),
+    }
+}
+
+fn overflowed_record(value: &Overflowed) -> wire::Overflowed {
+    let Overflowed { plan, overflow } = value;
+    wire::Overflowed {
+        plan: recorded_plan(plan),
+        overflow: convert::overflow_record(overflow),
     }
 }
 
@@ -285,7 +304,7 @@ fn budget(value: Budget) -> wire::Budget {
     }
 }
 
-fn previous(plan: &ContextPlan) -> wire::Plan {
+fn recorded_plan(plan: &ContextPlan) -> wire::Plan {
     let ContextPlan {
         items,
         tools,

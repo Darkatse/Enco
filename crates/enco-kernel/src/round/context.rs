@@ -1,5 +1,12 @@
-use super::*;
+use super::{selection::Combination, *};
 use std::{collections::HashMap, path::PathBuf};
+
+/// What the service reported for the previous plan, and the combination whose tokenizer counted
+/// it; another model counts the same request differently.
+pub(super) struct Measured {
+    pub usage: Usage,
+    pub combination: Combination,
+}
 
 /// Facts gathered once per Round; a later composition changes only its targets and Transcript.
 pub(super) struct Gathered {
@@ -8,7 +15,7 @@ pub(super) struct Gathered {
     pub memories: Vec<Memory>,
     pub omitted: Vec<Omission>,
     pub previous_plan: Option<ContextPlan>,
-    pub previous_usage: Option<Usage>,
+    pub measured: Option<Measured>,
     pub compaction_requested: bool,
     pub transcript: Transcript,
     pub blob_paths: HashMap<ContentHash, PathBuf>,
@@ -53,8 +60,7 @@ impl SessionActor {
             )
         };
         let mut omitted = offered.omitted;
-        let (previous_plan, previous_usage) =
-            self.previous_plan(&conversation, &mut omitted).await?;
+        let (previous_plan, measured) = self.previous_plan(&conversation, &mut omitted).await?;
         let (transcript, blob_paths, compaction_requested) = self.transcript();
         Ok(Gathered {
             owner_instructions,
@@ -62,7 +68,7 @@ impl SessionActor {
             memories: offered.memories,
             omitted,
             previous_plan,
-            previous_usage,
+            measured,
             compaction_requested,
             transcript,
             blob_paths,
@@ -94,36 +100,24 @@ impl SessionActor {
         &self,
         conversation: &[&Entry],
         omitted: &mut Vec<Omission>,
-    ) -> Result<(Option<ContextPlan>, Option<Usage>), RoundError> {
-        let Some((attempt, hash)) = conversation
-            .iter()
-            .rev()
-            .find_map(|entry| match &entry.body {
-                EntryBody::AttemptStarted {
-                    purpose: AttemptPurpose::Reply,
-                    plan,
-                    attempt,
-                    ..
-                } => Some((attempt, plan)),
-                _ => None,
-            })
-        else {
+    ) -> Result<(Option<ContextPlan>, Option<Measured>), RoundError> {
+        let Some(last) = crate::transcript::last_reply(conversation) else {
             return Ok((None, None));
         };
-        match self.deps.store.plan(hash).await {
-            Ok(plan) => {
-                let usage = conversation.iter().find_map(|entry| match &entry.body {
-                    EntryBody::AttemptSettled {
-                        attempt: settled,
-                        result: AttemptResult::Completed { usage, .. },
-                    } if settled == attempt => Some(usage.clone()),
-                    _ => None,
-                });
-                Ok((Some(plan), usage))
-            }
+        match self.deps.store.plan(last.plan).await {
+            Ok(plan) => Ok((
+                Some(plan),
+                Some(Measured {
+                    usage: last.usage.clone(),
+                    combination: Combination {
+                        settings: last.settings.clone(),
+                        provider: last.provider,
+                    },
+                }),
+            )),
             Err(StoreError::Plan { .. }) => {
                 omitted.push(Omission {
-                    source: format!("previous-plan:{hash}"),
+                    source: format!("previous-plan:{}", last.plan),
                     reason: "previous plan is missing or corrupt".into(),
                 });
                 Ok((None, None))
