@@ -1,6 +1,7 @@
 mod docs;
 mod faces;
 mod manual;
+mod prune;
 mod testing;
 
 #[path = "../../plugins/factory.rs"]
@@ -63,21 +64,34 @@ fn main() -> Result<()> {
             build_factory()?;
             testing::run(&metadata)
         }
+        Some("prune") => prune::run(&metadata()?, std::env::args().any(|a| a == "--dry-run")),
         _ => bail!(
-            "usage: cargo xtask <check|boundaries|docs [--check]|build-factory|faces <catalog>>"
+            "usage: cargo xtask <check|boundaries|docs [--check]|build-factory|prune [--dry-run]|faces <catalog>>"
         ),
     }
 }
 
 fn run(program: &str, args: &[&str]) -> Result<()> {
-    let status = command(program)
-        .args(args)
+    execute(command(program).args(args))
+}
+
+fn execute(command: &mut Command) -> Result<()> {
+    let line = command_line(command);
+    let status = command
         .status()
-        .with_context(|| format!("running {program}"))?;
+        .with_context(|| format!("running {line}"))?;
     if !status.success() {
-        bail!("{program} {} failed ({status})", args.join(" "));
+        bail!("{line} failed ({status})");
     }
     Ok(())
+}
+
+fn command_line(command: &Command) -> String {
+    std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(OsStr::to_string_lossy)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Compiler commands and tests which invoke Cargo share the gate's offline policy.
@@ -275,19 +289,7 @@ fn rust_files(dir: &Path) -> Result<Vec<PathBuf>> {
 fn build_factory() -> Result<()> {
     std::fs::create_dir_all("target/factory")?;
     for (name, _) in factory::PLUGINS {
-        run(
-            "cargo",
-            &[
-                "build",
-                "--manifest-path",
-                &format!("plugins/{name}/Cargo.toml"),
-                "--target",
-                "wasm32-wasip2",
-                "--release",
-                "--target-dir",
-                "target/plugin-build",
-            ],
-        )?;
+        execute(&mut factory_build(name))?;
         let source = format!(
             "target/plugin-build/wasm32-wasip2/release/{}.wasm",
             name.replace('-', "_")
@@ -308,50 +310,51 @@ fn build_factory() -> Result<()> {
     Ok(())
 }
 
+fn factory_build(name: &str) -> Command {
+    let mut command = command("cargo");
+    command.args([
+        "build",
+        "--manifest-path",
+        &format!("plugins/{name}/Cargo.toml"),
+        "--target",
+        "wasm32-wasip2",
+        "--release",
+        "--target-dir",
+        "target/plugin-build",
+    ]);
+    command
+}
+
 fn clippy() -> Result<()> {
-    run(
-        "cargo",
-        &[
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--",
-            "-D",
-            "warnings",
-        ],
-    )?;
-    for manifest in workspaces()
-        .into_iter()
-        .filter(|path| path.starts_with("sdk/") || path.starts_with("plugins/"))
-    {
-        run(
-            "cargo",
-            &[
-                "clippy",
-                "--manifest-path",
-                &manifest,
-                "--target",
-                "wasm32-wasip2",
-                "--target-dir",
-                "target/plugin-build",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ],
-        )?;
-    }
-    run(
-        "cargo",
-        &[
-            "clippy",
-            "--manifest-path",
-            "evals/runner/Cargo.toml",
-            "--all-targets",
-            "--",
-            "-D",
-            "warnings",
-        ],
-    )?;
-    Ok(())
+    clippy_builds().iter_mut().try_for_each(execute)
+}
+
+/// The host workspace, each Wasm workspace in the plugin target directory, then the evaluator.
+fn clippy_builds() -> Vec<Command> {
+    let lint = |args: &[&str]| {
+        let mut command = command("cargo");
+        command
+            .arg("clippy")
+            .args(args)
+            .args(["--all-targets", "--", "-D", "warnings"]);
+        command
+    };
+    let mut builds = vec![lint(&["--workspace"])];
+    builds.extend(
+        workspaces()
+            .iter()
+            .filter(|path| path.starts_with("sdk/") || path.starts_with("plugins/"))
+            .map(|manifest| {
+                lint(&[
+                    "--manifest-path",
+                    manifest,
+                    "--target",
+                    "wasm32-wasip2",
+                    "--target-dir",
+                    "target/plugin-build",
+                ])
+            }),
+    );
+    builds.push(lint(&["--manifest-path", "evals/runner/Cargo.toml"]));
+    builds
 }

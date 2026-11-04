@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use cargo_metadata::{Metadata, Package};
 use enco_manual::Rule;
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, process::Command};
 
 /// rustdoc JSON is unstable, so `RUSTC_BOOTSTRAP` unlocks it on the pinned toolchain. Builds with
 /// and without that variable recompile each other's dependencies, so they keep their own directory.
@@ -10,28 +10,10 @@ const TARGET_DIR: &str = "target/rustdoc";
 /// Write, or with `check` compare, `API.md` beside each library crate and the SDK, and hold their
 /// docs to the rules a machine can check.
 pub fn generate(metadata: &[Metadata], check: bool) -> Result<()> {
+    builds(metadata)?.iter_mut().try_for_each(super::execute)?;
     let host = &metadata[0];
-    let libraries: Vec<&Package> = host
-        .workspace_packages()
-        .into_iter()
-        .filter(|package| {
-            package
-                .manifest_path
-                .strip_prefix(&host.workspace_root)
-                .is_ok_and(|path| path.starts_with("crates"))
-        })
-        .collect();
-    rustdoc(
-        "Cargo.toml",
-        None,
-        libraries.iter().map(|package| package.name.as_str()),
-    )?;
-    let sdk = metadata[1]
-        .workspace_packages()
-        .into_iter()
-        .next()
-        .context("SDK package in Cargo metadata")?;
-    rustdoc("sdk/Cargo.toml", Some("wasm32-wasip2"), [sdk.name.as_str()])?;
+    let libraries = libraries(host);
+    let sdk = sdk(metadata)?;
     let mut stale = Vec::new();
     let mut broken = Vec::new();
     for (package, metadata, doc) in libraries
@@ -91,11 +73,48 @@ pub fn generate(metadata: &[Metadata], check: bool) -> Result<()> {
     Ok(())
 }
 
+/// The rustdoc JSON builds the manual reads: the host's library crates, then the SDK.
+pub fn builds(metadata: &[Metadata]) -> Result<Vec<Command>> {
+    let libraries = libraries(&metadata[0]);
+    Ok(vec![
+        rustdoc(
+            "Cargo.toml",
+            None,
+            libraries.iter().map(|package| package.name.as_str()),
+        ),
+        rustdoc(
+            "sdk/Cargo.toml",
+            Some("wasm32-wasip2"),
+            [sdk(metadata)?.name.as_str()],
+        ),
+    ])
+}
+
+fn libraries(host: &Metadata) -> Vec<&Package> {
+    host.workspace_packages()
+        .into_iter()
+        .filter(|package| {
+            package
+                .manifest_path
+                .strip_prefix(&host.workspace_root)
+                .is_ok_and(|path| path.starts_with("crates"))
+        })
+        .collect()
+}
+
+fn sdk(metadata: &[Metadata]) -> Result<&Package> {
+    metadata[1]
+        .workspace_packages()
+        .into_iter()
+        .next()
+        .context("SDK package in Cargo metadata")
+}
+
 fn rustdoc<'a>(
     manifest: &str,
     target: Option<&str>,
     packages: impl IntoIterator<Item = &'a str>,
-) -> Result<()> {
+) -> Command {
     let mut command = super::command("cargo");
     command
         .args(["doc", "--no-deps", "--lib", "--manifest-path", manifest])
@@ -108,11 +127,5 @@ fn rustdoc<'a>(
     for package in packages {
         command.args(["-p", package]);
     }
-    let status = command
-        .status()
-        .with_context(|| format!("documenting {manifest}"))?;
-    if !status.success() {
-        bail!("rustdoc for {manifest} failed ({status})");
-    }
-    Ok(())
+    command
 }

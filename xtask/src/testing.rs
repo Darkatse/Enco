@@ -10,20 +10,10 @@ type TestOutput = (String, std::io::Result<(ExitStatus, Vec<u8>)>);
 
 pub fn run(metadata: &[Metadata]) -> Result<()> {
     let mut groups = Vec::new();
-    let mut documentation = Vec::new();
     for (manifest, workspace) in super::workspaces().iter().zip(metadata) {
         groups.push(build(manifest, workspace)?.into_iter());
-        if workspace
-            .packages
-            .iter()
-            .flat_map(|p| &p.targets)
-            .any(|t| t.doctest)
-        {
-            let mut command = cargo(manifest);
-            command.arg("--doc");
-            documentation.push(command);
-        }
     }
+    let documentation = doc_tests(metadata);
     let enco = metadata[0].target_directory.join("debug/enco");
     // Each test build writes `enco` anew, and macOS spends about two seconds on the first run
     // of a new executable; paying it here keeps it out of every test's deadline.
@@ -91,10 +81,46 @@ fn cargo(manifest: &str) -> Command {
     command
 }
 
+/// Every workspace's test harnesses built without running them, then its documentation tests,
+/// which Cargo cannot build without running.
+pub fn builds(metadata: &[Metadata]) -> Vec<Command> {
+    let mut builds: Vec<Command> = super::workspaces()
+        .iter()
+        .map(|manifest| no_run(manifest))
+        .collect();
+    builds.extend(doc_tests(metadata));
+    builds
+}
+
+fn doc_tests(metadata: &[Metadata]) -> Vec<Command> {
+    super::workspaces()
+        .iter()
+        .zip(metadata)
+        .filter(|(_, workspace)| {
+            workspace
+                .packages
+                .iter()
+                .flat_map(|p| &p.targets)
+                .any(|t| t.doctest)
+        })
+        .map(|(manifest, _)| {
+            let mut command = cargo(manifest);
+            command.arg("--doc");
+            command
+        })
+        .collect()
+}
+
+fn no_run(manifest: &str) -> Command {
+    let mut command = cargo(manifest);
+    command.arg("--no-run");
+    command
+}
+
 /// Cargo selects the harnesses; finish building host binaries before any test starts.
 fn build(manifest: &str, metadata: &Metadata) -> Result<Vec<(String, Command)>> {
-    let output = cargo(manifest)
-        .args(["--no-run", "--message-format=json"])
+    let output = no_run(manifest)
+        .arg("--message-format=json")
         .output()
         .with_context(|| format!("building tests for {manifest}"))?;
     std::io::stderr().write_all(&output.stderr)?;

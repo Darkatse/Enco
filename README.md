@@ -146,6 +146,8 @@ Before sending repository changes, run the offline gate:
 cargo xtask check
 ```
 
+To reclaim disk space, `cargo xtask prune` deletes compiled outputs the gate no longer uses and keeps the rest warm; `--dry-run` only reports their size.
+
 ## Documentation
 
 - [docs/Usage.md](docs/Usage.md): CLI commands, multimodal messages, plugin management, and Telegram / Discord / QQ setup (Chinese)

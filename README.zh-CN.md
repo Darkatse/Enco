@@ -146,6 +146,8 @@ cargo run -p enco -- send --image photo.png "Describe this image"
 cargo xtask check
 ```
 
+需要腾出磁盘时运行 `cargo xtask prune`：它删除门禁不再用到的编译产物，用到的部分原样保留，下次门禁不必重编；加 `--dry-run` 只统计大小。
+
 ## 文档
 
 - [docs/Usage.md](docs/Usage.md)：日常命令、多模态、插件管理与 Telegram / Discord / QQ 渠道接入指南
