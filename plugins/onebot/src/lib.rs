@@ -9,7 +9,8 @@ mod wire;
 
 use bindings::exports::enco::plugin::{channel, lifecycle};
 use channel::{
-    Arrival, Command, Fault, FetchStep, Identity, Outgoing, ReadStep, Reading, Request, Response,
+    Arrival, Command, Fault, FetchStep, HttpRequest, HttpResponse, Identity, Outgoing, ReadStep,
+    Reading,
 };
 use enco_sdk::{
     channel::{ActivityUpdate, ActivityView},
@@ -72,11 +73,11 @@ impl channel::Guest for Plugin {
         })
     }
 
-    fn identify() -> Request {
+    fn identify() -> HttpRequest {
         wire::request("get_login_info", json!({}), wire::ACTION_TIMEOUT_MS)
     }
 
-    fn identified(response: Response) -> Result<Identity, Fault> {
+    fn identified(response: HttpResponse) -> Result<Identity, Fault> {
         let account: Account = serde_json::from_value(wire::answer(response)?)
             .map_err(|_| wire::invalid("get_login_info data.user_id"))?;
         Ok(Identity {
@@ -117,7 +118,11 @@ impl channel::Guest for Plugin {
         })
     }
 
-    fn fetch(locator: String, responses: Vec<Response>, limit: u32) -> Result<FetchStep, Fault> {
+    fn fetch(
+        locator: String,
+        responses: Vec<HttpResponse>,
+        limit: u32,
+    ) -> Result<FetchStep, Fault> {
         match wire::Locator::parse(&locator)? {
             wire::Locator::Quote(target) => quote::fetch(target, responses, limit),
             wire::Locator::Download(url) => files::download(url, responses),
@@ -138,11 +143,11 @@ impl channel::Guest for Plugin {
         outgoing::split(message)
     }
 
-    fn send(conversation: String, part: Outgoing) -> Result<Request, Fault> {
+    fn send(conversation: String, part: Outgoing) -> Result<HttpRequest, Fault> {
         outgoing::send(&conversation, part)
     }
 
-    fn answered(response: Response) -> Result<Option<String>, Fault> {
+    fn answered(response: HttpResponse) -> Result<Option<String>, Fault> {
         let sent: Option<Sent> =
             serde_json::from_value(wire::answer(response)?).map_err(|_| Fault {
                 unknown: true,
@@ -154,11 +159,11 @@ impl channel::Guest for Plugin {
             .map(|id| id.to_string()))
     }
 
-    fn commands(_identity: Identity, _commands: Vec<Command>) -> Vec<Request> {
+    fn commands(_identity: Identity, _commands: Vec<Command>) -> Vec<HttpRequest> {
         vec![]
     }
 
-    fn respond(_handle: String, _text: Option<String>) -> Result<Option<Request>, Fault> {
+    fn respond(_handle: String, _text: Option<String>) -> Result<Option<HttpRequest>, Fault> {
         Ok(None)
     }
 
@@ -168,12 +173,12 @@ impl channel::Guest for Plugin {
         _replies_here: bool,
         _shown: Option<String>,
         _update: ActivityUpdate,
-    ) -> Option<Request> {
+    ) -> Option<HttpRequest> {
         None
     }
 
     // Only private chats have an input status.
-    fn presence(conversation: String, _view: ActivityView) -> Option<Request> {
+    fn presence(conversation: String, _view: ActivityView) -> Option<HttpRequest> {
         let wire::Conversation::Private(user) = wire::Conversation::parse(&conversation).ok()?
         else {
             return None;
@@ -184,18 +189,18 @@ impl channel::Guest for Plugin {
             wire::ACTION_TIMEOUT_MS,
         ))
     }
-    fn open_conversation(_beside: String, _session: Vec<String>) -> Option<Request> {
+    fn open_conversation(_beside: String, _session: Vec<String>) -> Option<HttpRequest> {
         None
     }
 
-    fn opened(_beside: String, _response: Response) -> Result<String, Fault> {
+    fn opened(_beside: String, _response: HttpResponse) -> Result<String, Fault> {
         Err(wire::fault(
             "plugin.contract",
             "OneBot cannot open child conversations".into(),
         ))
     }
 
-    fn close_conversation(_conversation: String) -> Option<Request> {
+    fn close_conversation(_conversation: String) -> Option<HttpRequest> {
         None
     }
 }

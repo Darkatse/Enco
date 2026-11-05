@@ -340,6 +340,102 @@ async fn capabilities_outside_the_round_are_rejected_before_any_provider_request
     kernel.shutdown().await.unwrap();
 }
 
+/// Replies within `reply` output tokens, and summarizes the history within `compaction` once a
+/// Round has ended.
+struct Limited {
+    reply: u32,
+    compaction: u32,
+}
+
+#[async_trait::async_trait]
+impl enco_kernel::Composer for Limited {
+    async fn compose(
+        &self,
+        _: &enco_kernel::ComposerOptions,
+        input: &enco_kernel::ComposeInput,
+    ) -> Result<enco_kernel::Composition, Failure> {
+        if let (Some(_), Some(upto)) = (&input.compaction, input.transcript.round_ends.last()) {
+            let mut plan = reply_plan(input);
+            plan.tools.clear();
+            plan.max_output_tokens = self.compaction;
+            return Ok(enco_kernel::Composition::Compact { upto: *upto, plan });
+        }
+        let mut plan = reply_plan(input);
+        plan.max_output_tokens = self.reply;
+        Ok(enco_kernel::Composition::Plan(plan))
+    }
+}
+
+/// The Log of each message's Run, in order, under `composer` with the compaction endpoint's
+/// output limited to 256 tokens.
+#[expect(clippy::unwrap_used, reason = "fixtures fail the test with context")]
+async fn limited(
+    composer: Limited,
+    messages: &[&str],
+    provider: Arc<ScriptedProvider>,
+) -> Vec<Vec<Entry>> {
+    let dir = tempfile::tempdir().unwrap();
+    let mut document = configuration();
+    document["endpoint"]["compaction"]["max_output_tokens"] = 256.into();
+    let (kernel, _) = kernel_configured_composer(
+        dir.path(),
+        provider,
+        document,
+        vec![],
+        Arc::new(composer),
+        |_| {},
+    )
+    .await;
+    let session = kernel.open_session("main").await.unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
+    let mut logs = vec![];
+    for message in messages {
+        kernel
+            .submit(session.id, EventId::new(), (*message).into(), Vec::new())
+            .await
+            .unwrap();
+        logs.push(finish(&mut rx).await);
+    }
+    kernel.shutdown().await.unwrap();
+    logs
+}
+
+#[expect(clippy::unwrap_used, reason = "fixtures fail the test with context")]
+fn failed_by_contract(log: &[Entry]) -> bool {
+    matches!(
+        &log.last().unwrap().body,
+        EntryBody::RunEnded { end: RunEnd::Failed { failure }, .. } if failure.code == code::PLUGIN_CONTRACT
+    )
+}
+
+#[tokio::test]
+async fn output_limits_stay_within_the_budget_of_the_target_they_are_for() {
+    for reply in [0, 8193] {
+        let provider = ScriptedProvider::new(vec![]);
+        let logs = limited(
+            Limited {
+                reply,
+                compaction: 256,
+            },
+            &["hello"],
+            provider.clone(),
+        )
+        .await;
+        assert!(failed_by_contract(&logs[0]), "a reply limited to {reply}");
+        assert!(provider.requests.lock().unwrap().is_empty());
+    }
+    // 8192 fits the reply endpoint's budget, but not the compaction endpoint's 256.
+    let provider = ScriptedProvider::new(vec![reply("done")]);
+    let limits = Limited {
+        reply: 8192,
+        compaction: 8192,
+    };
+    let logs = limited(limits, &["hello", "again"], provider.clone()).await;
+    assert!(!failed_by_contract(&logs[0]));
+    assert!(failed_by_contract(&logs[1]));
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn startup_requires_host_tool_declarations_to_match_handlers() {
     for missing in [true, false] {

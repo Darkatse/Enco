@@ -180,8 +180,8 @@ pub struct CompositionPlan {
     pub items: Vec<CompositionItem>,
     /// Capabilities selected from this Round.
     pub tools: Vec<CapabilityId>,
-    /// Requested output budget; absent means provider default.
-    pub max_output_tokens: Option<u32>,
+    /// The most tokens the reply may use; the kernel checks it against the target's budget.
+    pub max_output_tokens: u32,
     /// Content this policy left out, with its reasons.
     pub omitted: Vec<Omission>,
 }

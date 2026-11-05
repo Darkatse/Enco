@@ -1,6 +1,6 @@
 //! Rich messages, lossless splitting and deterministic multipart uploads.
 use crate::{
-    channel::{FileData, Outgoing, Request},
+    channel::{FileData, HttpRequest, Outgoing},
     limits::{
         MESSAGE_CHARS, PHOTO_MAX_ASPECT_RATIO, PHOTO_MAX_BYTES, PHOTO_MAX_DIMENSION_SUM,
         SEND_TIMEOUT_MS, UPLOAD_TIMEOUT_MS,
@@ -75,7 +75,7 @@ pub(super) fn split(message: Outgoing) -> Vec<Outgoing> {
     parts
 }
 
-pub(super) fn send(conversation: String, message: Outgoing) -> Request {
+pub(super) fn send(conversation: String, message: Outgoing) -> HttpRequest {
     let (chat, thread) = wire::conversation(&conversation);
     let Some(file) = message.file else {
         let mut body = wire::destination(chat, thread);
@@ -121,7 +121,7 @@ pub(super) fn send(conversation: String, message: Outgoing) -> Request {
         });
     }
     let (content_type, body) = multipart(&parts);
-    Request {
+    HttpRequest {
         method: "POST".into(),
         url: "/bot/sendRichMessage".into(),
         headers: vec![("content-type".into(), content_type)],

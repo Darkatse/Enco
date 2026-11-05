@@ -1,7 +1,7 @@
 //! Fetching the messages OneBot reply and merged-forward segments name, replayed from the
 //! responses so far so that the same responses always give the same step.
 use crate::{
-    channel::{Fault, FetchStep, Request, Response},
+    channel::{Fault, FetchStep, HttpRequest, HttpResponse},
     content,
     incoming::Sender,
     wire::{self, Target},
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 /// outermost forward makes the quote unavailable; for a nested forward, only that forward.
 pub(super) fn fetch(
     target: Target,
-    responses: Vec<Response>,
+    responses: Vec<HttpResponse>,
     limit: u32,
 ) -> Result<FetchStep, Fault> {
     let mut responses = Responses {
@@ -52,7 +52,7 @@ pub(super) fn fetch(
 
 /// The responses to one fetch's requests so far, in the order the requests were sent.
 struct Responses {
-    rest: std::vec::IntoIter<Response>,
+    rest: std::vec::IntoIter<HttpResponse>,
     sent: u32,
     limit: u32,
 }
@@ -62,14 +62,14 @@ enum Answer {
     /// OneBot answered with this data.
     Data(Value),
     /// It has no response yet, so the host sends it next.
-    Pending(Request),
+    Pending(HttpRequest),
     /// It has no answer, for this reason: OneBot refused it, or the fetch used up its requests.
     Unavailable(String),
 }
 
 impl Responses {
     /// What became of `request`, the next one this fetch sends.
-    fn answer(&mut self, request: Request) -> Result<Answer, Fault> {
+    fn answer(&mut self, request: HttpRequest) -> Result<Answer, Fault> {
         if self.sent == self.limit {
             let reason = format!("the {}-request limit of one fetch was reached", self.limit);
             return Ok(Answer::Unavailable(reason));

@@ -41,13 +41,17 @@ async fn native_gemini_preserves_tool_parts_and_embeds_in_input_order() {
                     }],
                 }],
                 tools: vec![],
-                max_output_tokens: Some(100),
+                max_output_tokens: 100.try_into().unwrap(),
             },
+            None,
         )
         .await
+        .unwrap()
+        .result
         .unwrap();
     assert_eq!(first.usage.output_tokens, 7);
-    let messages = tool_history(first.message).unwrap();
+    let question = vec![Message::text(Role::User, "read both")];
+    let messages = [question, tool_history(first.message).unwrap()].concat();
     server.reset().await;
     mock_completion(
         &server,
@@ -61,21 +65,24 @@ async fn native_gemini_preserves_tool_parts_and_embeds_in_input_order() {
             ProviderRequest {
                 messages,
                 tools: vec![],
-                max_output_tokens: Some(100),
+                max_output_tokens: 100.try_into().unwrap(),
             },
+            None,
         )
         .await
+        .unwrap()
+        .result
         .unwrap();
     assert_eq!(answer.message.joined_text(), "done");
     let requests = server.received_requests().await.unwrap();
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-    assert_eq!(body["contents"][0], content);
+    assert_eq!(body["contents"][1], content);
     assert_eq!(
-        body["contents"][1]["parts"][1]["functionResponse"]["id"],
+        body["contents"][2]["parts"][1]["functionResponse"]["id"],
         "two"
     );
     assert_eq!(
-        body["contents"][1]["parts"][0]["functionResponse"]["parts"][0]["inlineData"],
+        body["contents"][2]["parts"][0]["functionResponse"]["parts"][0]["inlineData"],
         json!({"mimeType": "image/png", "data": "AQID"})
     );
     assert_eq!(body["generationConfig"]["maxOutputTokens"], 100);

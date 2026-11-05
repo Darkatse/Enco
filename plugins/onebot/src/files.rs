@@ -1,7 +1,7 @@
 //! Attachment downloads and SnowLuma's file URL and chunked-byte responses; content supplies
 //! only file IDs, never an address to download through the authenticated service.
 use crate::{
-    channel::{Fault, FetchStep, Response},
+    channel::{Fault, FetchStep, HttpResponse},
     outgoing::FILE_TIMEOUT_MS,
     wire::{self, Envelope},
 };
@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 pub(super) const NO_ADDRESS: &str = "SnowLuma gave no download address for it";
 
 /// Downloads a media URL without credentials; a permanent HTTP failure affects only this file.
-pub(super) fn download(url: String, responses: Vec<Response>) -> Result<FetchStep, Fault> {
+pub(super) fn download(url: String, responses: Vec<HttpResponse>) -> Result<FetchStep, Fault> {
     let Some(response) = responses.into_iter().next() else {
         return Ok(FetchStep::Download(url));
     };
@@ -53,7 +53,7 @@ struct FileUrl {
 pub(super) fn fetch(
     action: &str,
     params: Value,
-    responses: Vec<Response>,
+    responses: Vec<HttpResponse>,
 ) -> Result<FetchStep, Fault> {
     let mut responses = responses.into_iter();
     let Some(response) = responses.next() else {
@@ -100,7 +100,7 @@ enum Frame {
 }
 
 /// Accepts bytes only after the completion frame accounts for every ordered chunk and byte.
-fn stream(response: Response) -> Result<FetchStep, Fault> {
+fn stream(response: HttpResponse) -> Result<FetchStep, Fault> {
     if let Err(fault) = wire::checked(&response) {
         return if !fault.fatal && !fault.failure.retryable {
             Ok(FetchStep::Unavailable(fault.failure.message))

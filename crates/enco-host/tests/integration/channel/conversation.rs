@@ -46,7 +46,7 @@ impl Composer for RequestedComposer {
                         sources: vec![],
                     }],
                     tools: vec![],
-                    max_output_tokens: Some(compaction.budget.max_output_tokens.get()),
+                    max_output_tokens: compaction.budget.max_output_tokens.get(),
                     omitted: vec![],
                 },
             });

@@ -11,7 +11,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
 
 const SOURCE: &str = r##"//! A composer fixture exercising registered policy and its restricted runtime.
 use bindings::exports::enco::plugin::{composer, lifecycle};
-use enco_sdk::{host, types::{Failure, Role}};
+use enco_sdk::types::{Failure, Role};
 use serde::Deserialize;
 
 enco_sdk::export!(composer, Plugin);
@@ -41,17 +41,7 @@ impl lifecycle::Guest for Plugin {
     }
 
     async fn probe() -> Result<(), Failure> {
-        if host::config() != "{}" {
-            return Err(failure("probe received the registered configuration"));
-        }
-        let result = host::http(host::HttpRequest {
-            method: "GET".into(), url: "__PROBE_URL__".into(),
-            headers: vec![], body: None, timeout_ms: Some(1000),
-        }).await;
-        match result {
-            Err(error) if matches!(error.kind, host::HttpErrorKind::InvalidRequest) && !error.request_sent => Ok(()),
-            _ => Err(failure("probe reached the network")),
-        }
+        Ok(())
     }
 }
 
@@ -68,10 +58,9 @@ impl composer::Guest for Plugin {
             return Err(failure("composer read the host environment"));
         }
         let options = enco_sdk::parse_options::<Settings>(&options)?;
-        let config: Settings = serde_json::from_str(&host::config()).map_err(|error| failure(error.to_string()))?;
         let mut items = vec![composer::PlanItem::Message(composer::Inline {
             role: Role::System,
-            text: format!("custom-composer {} {}", options.label, config.label),
+            text: format!("custom-composer {}", options.label),
             sources: vec![],
         })];
         items.extend(input.transcript.items.into_iter().map(|item| composer::PlanItem::Log(composer::LogRef {
@@ -80,7 +69,7 @@ impl composer::Guest for Plugin {
         Ok(composer::Composition::Reply(composer::Plan {
             items,
             tools: if DISCLOSE { input.capabilities.into_iter().map(|capability| capability.id).collect() } else { vec![] },
-            max_output_tokens: Some(input.reply.budget.max_output_tokens),
+            max_output_tokens: input.reply.budget.max_output_tokens,
             omitted: vec![],
         }))
     }
@@ -135,7 +124,7 @@ fn service(request: &wiremock::Request) -> ResponseTemplate {
     let messages = body["messages"].as_array().unwrap();
     let custom = messages
         .iter()
-        .any(|message| message["content"] == "custom-composer profile-label configured-label");
+        .any(|message| message["content"] == "custom-composer profile-label");
     let recovering = messages
         .iter()
         .any(|message| message["content"] == "recover through factory");
@@ -157,11 +146,6 @@ fn service(request: &wiremock::Request) -> ResponseTemplate {
 async fn source_composer_runs_with_profile_options_and_factory_recovers_a_bad_trial() {
     let server = MockServer::start().await;
     embeddings(&server).await;
-    Mock::given(path("/probe"))
-        .respond_with(ResponseTemplate::new(200))
-        .expect(0)
-        .mount(&server)
-        .await;
     Mock::given(path("/chat/completions"))
         .respond_with(service)
         .mount(&server)
@@ -185,12 +169,10 @@ async fn source_composer_runs_with_profile_options_and_factory_recovers_a_bad_tr
         })
         .await
         .unwrap();
-    let source = SOURCE.replace("__PROBE_URL__", &format!("{}/probe", server.uri()));
     let file = home.join("plugins/custom/src/lib.rs");
-    std::fs::write(&file, &source).unwrap();
+    std::fs::write(&file, SOURCE).unwrap();
     let mut document: Value =
         toml::from_str(&Daemon::config(&server, "openai-compatible")).unwrap();
-    document["plugin"]["custom"]["config"] = json!({"label":"configured-label"});
     document["profile"]["default"]["composer"] =
         json!({"plugin":"custom", "options":{"label":"profile-label"}});
     std::fs::write(
@@ -211,7 +193,7 @@ async fn source_composer_runs_with_profile_options_and_factory_recovers_a_bad_tr
     assert_profile_composer(&daemon, &server, good).await;
     std::fs::write(
         &file,
-        source.replace(
+        SOURCE.replace(
             "const DISCLOSE: bool = true;",
             "const DISCLOSE: bool = false;",
         ),
@@ -251,9 +233,9 @@ async fn assert_profile_composer(daemon: &Daemon, server: &MockServer, good: Gen
     assert!(requests.iter().any(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         body["messages"].as_array().is_some_and(|messages| {
-            messages.iter().any(|message| {
-                message["content"] == "custom-composer profile-label configured-label"
-            })
+            messages
+                .iter()
+                .any(|message| message["content"] == "custom-composer profile-label")
         })
     }));
 }

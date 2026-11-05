@@ -1,6 +1,8 @@
-//! DeepSeek completions through the shared Chat Completions wire protocol.
+//! DeepSeek completions through the SDK's shared Chat Completions mapping.
 use bindings::exports::enco::plugin::{completion, lifecycle};
-use enco_sdk::protocol::{CompleteError, Completion, Request, Settings, types::Failure};
+use enco_sdk::protocol::{
+    CompleteError, Completion, HttpRequest, HttpResponse, Request, Settings, chat, types::Failure,
+};
 
 enco_sdk::export!(completion, Plugin);
 
@@ -32,7 +34,11 @@ impl lifecycle::Guest for Plugin {
 }
 
 impl completion::Guest for Plugin {
-    async fn complete(settings: Settings, request: Request) -> Result<Completion, CompleteError> {
-        enco_sdk::protocol::complete(settings, request).await
+    fn encode(settings: Settings, request: Request) -> Result<HttpRequest, Failure> {
+        chat::encode(&settings, request)
+    }
+
+    fn decode(response: HttpResponse) -> Result<Completion, CompleteError> {
+        chat::decode(&response)
     }
 }

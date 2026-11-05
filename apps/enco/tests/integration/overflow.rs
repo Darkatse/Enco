@@ -1,5 +1,6 @@
-//! Provider plugins turn their services' real refusals of over-long requests into overflows, as
-//! the host's conversion reads them; the bodies are the services' own, from the M40 samples.
+//! Provider plugins turn their services' real refusals of over-long requests into overflows,
+//! as the host's conversion reads them; the bodies are the services' own, from the M40 and M41
+//! samples.
 #![expect(clippy::unwrap_used, reason = "fixtures fail the test with context")]
 use enco_core::*;
 use enco_kernel::{CompleteError, ProviderRequest, Runtime};
@@ -30,9 +31,14 @@ async fn refusal(plugin: &[u8], answer: ResponseTemplate) -> CompleteError {
     let request = ProviderRequest {
         messages: vec![Message::text(Role::User, "a long conversation")],
         tools: vec![],
-        max_output_tokens: Some(8192),
+        max_output_tokens: 8192.try_into().unwrap(),
     };
-    provider.complete(&settings, request).await.unwrap_err()
+    provider
+        .complete(&settings, request, None)
+        .await
+        .unwrap()
+        .result
+        .unwrap_err()
 }
 
 #[tokio::test]
@@ -114,4 +120,50 @@ async fn chat_completions_reads_deepseek_counts_and_leaves_other_refusals_failed
         panic!("an unrelated 400 stays a failure")
     };
     assert_eq!(failure.code, code::PROVIDER_BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn anthropic_reads_both_counts_from_its_refusal() {
+    let anthropic = include_bytes!(env!("ENCO_FACTORY_ANTHROPIC"));
+    let message = "prompt is too long: 224032 tokens > 200000 maximum";
+    let refused = refusal(
+        anthropic,
+        ResponseTemplate::new(400).set_body_json(json!({
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": message},
+            "request_id": "req_011CgiZ1eFaHSvko7AhQdyvD",
+        })),
+    )
+    .await;
+    // The output does not count against this limit, so the limit is the input it accepts.
+    assert_eq!(
+        refused,
+        CompleteError::Overflow(Overflow {
+            counted: Some(224_032),
+            accepted: Some(200_000),
+            message: message.into(),
+        })
+    );
+}
+
+#[tokio::test]
+async fn responses_turns_away_an_overlong_input_without_numbers() {
+    let responses = include_bytes!(env!("ENCO_FACTORY_OPENAI_RESPONSES"));
+    let message = "Your input exceeds the context window of this model. Please adjust your input and try again.";
+    let refused = refusal(
+        responses,
+        ResponseTemplate::new(400).set_body_json(json!({"error": {
+            "message": message, "type": "invalid_request_error",
+            "param": "input", "code": "context_length_exceeded"
+        }})),
+    )
+    .await;
+    assert_eq!(
+        refused,
+        CompleteError::Overflow(Overflow {
+            counted: None,
+            accepted: None,
+            message: message.into(),
+        })
+    );
 }

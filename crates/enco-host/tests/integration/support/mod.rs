@@ -78,14 +78,20 @@ impl Provider for ScriptedProvider {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, CompleteError> {
+        _record: Option<Recording>,
+    ) -> Result<Answered, StoreError> {
         self.requests.lock().unwrap().push(request);
         self.settings.lock().unwrap().push(settings.clone());
-        self.steps
+        let result = self
+            .steps
             .lock()
             .unwrap()
             .pop_front()
-            .expect("unexpected extra provider request")
+            .expect("unexpected extra provider request");
+        Ok(Answered {
+            result,
+            origin: None,
+        })
     }
 }
 
@@ -602,9 +608,10 @@ impl Provider for Models {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, CompleteError> {
+        record: Option<Recording>,
+    ) -> Result<Answered, StoreError> {
         self.0[settings.model.as_str()]
-            .complete(settings, request)
+            .complete(settings, request, record)
             .await
     }
 }
@@ -654,14 +661,15 @@ impl Provider for PausedProvider {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, CompleteError> {
+        record: Option<Recording>,
+    ) -> Result<Answered, StoreError> {
         if self.model.is_none_or(|model| settings.model == model)
             && self.pause.swap(false, Ordering::SeqCst)
         {
             self.entered.notify_one();
             self.resume.notified().await;
         }
-        self.provider.complete(settings, request).await
+        self.provider.complete(settings, request, record).await
     }
 }
 
@@ -693,13 +701,17 @@ impl Provider for ProviderQueues {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, CompleteError> {
+        _record: Option<Recording>,
+    ) -> Result<Answered, StoreError> {
         let (answer, receive) = tokio::sync::oneshot::channel();
         assert!(
             self.0[&settings.model]
                 .send(Prompt { request, answer })
                 .is_ok()
         );
-        receive.await.unwrap().map_err(CompleteError::from)
+        Ok(Answered {
+            result: receive.await.unwrap().map_err(CompleteError::from),
+            origin: None,
+        })
     }
 }

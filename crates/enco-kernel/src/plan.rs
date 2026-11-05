@@ -1,4 +1,6 @@
-use crate::{ComposeInput, CompositionItem, CompositionPlan, Exports, ProviderRequest, Transcript};
+use crate::{
+    Budget, ComposeInput, CompositionItem, CompositionPlan, Exports, ProviderRequest, Transcript,
+};
 use enco_core::*;
 use std::collections::HashSet;
 
@@ -6,11 +8,22 @@ use std::collections::HashSet;
 #[error("invalid context plan: {0}")]
 pub(crate) struct PlanError(pub String);
 
+/// Check a composer's plan against the Round and the budget of the target it is for, and freeze
+/// the Round's tool definitions with it.
 pub(crate) fn bind(
     draft: CompositionPlan,
     input: &ComposeInput,
     purpose: AttemptPurpose,
+    budget: &Budget,
 ) -> Result<ContextPlan, PlanError> {
+    let max_output_tokens = std::num::NonZeroU32::new(draft.max_output_tokens)
+        .filter(|limit| *limit <= budget.max_output_tokens)
+        .ok_or_else(|| {
+            PlanError(format!(
+                "output limit {} is not between 1 and the target's {}",
+                draft.max_output_tokens, budget.max_output_tokens
+            ))
+        })?;
     let mut names = HashSet::new();
     let tools = draft
         .tools
@@ -44,7 +57,7 @@ pub(crate) fn bind(
             })
             .collect(),
         tools,
-        max_output_tokens: draft.max_output_tokens,
+        max_output_tokens,
         omitted: draft
             .omitted
             .into_iter()

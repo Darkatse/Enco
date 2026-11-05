@@ -1,8 +1,8 @@
-//! TypeSafe decisions through the shared WIT contract.
+//! Maps decisions to TypeSafe's `/systemone` and its answers back.
 mod protocol;
 
 use bindings::exports::enco::plugin::{decision, lifecycle};
-use enco_sdk::protocol::{Settings, types::Failure};
+use enco_sdk::protocol::{HttpRequest, HttpResponse, Settings, types::Failure};
 
 enco_sdk::export!(decision, Plugin);
 
@@ -34,11 +34,18 @@ impl lifecycle::Guest for Plugin {
 }
 
 impl decision::Guest for Plugin {
-    async fn decide(
+    fn encode(
         settings: Settings,
         state: String,
         questions: Vec<decision::Question>,
+    ) -> Result<HttpRequest, Failure> {
+        protocol::encode(&settings, &state, &questions)
+    }
+
+    fn decode(
+        questions: Vec<decision::Question>,
+        response: HttpResponse,
     ) -> Result<Vec<decision::Answer>, Failure> {
-        protocol::decide(settings, state, questions).await
+        protocol::decode(&questions, &response)
     }
 }

@@ -7,7 +7,6 @@ use serde_json::{Value, json};
 
 fn settings(options: Value) -> Settings {
     Settings {
-        base_url: "https://example.test/v1beta".into(),
         model: "configured-model".into(),
         options: options.to_string(),
     }
@@ -17,8 +16,17 @@ fn request(messages: Vec<Message>) -> Request {
     Request {
         messages,
         tools: vec![],
-        max_output_tokens: None,
+        max_output_tokens: 1024,
     }
+}
+
+/// `history` after the user message that asked for it.
+fn asked(history: Vec<Message>) -> Vec<Message> {
+    let question = Message {
+        role: Role::User,
+        parts: vec![Part::Text("Read both.".into())],
+    };
+    std::iter::once(question).chain(history).collect()
 }
 
 fn reply(content: Value, finish: &str) -> Value {
@@ -48,14 +56,14 @@ fn results_return_in_call_order_as_one_user_content() -> Result<(), Failure> {
     ))?;
     let body = request::completion(
         &settings(json!({})),
-        request(vec![
+        request(asked(vec![
             assistant.message,
             result("b", true),
             result("a", false),
-        ]),
+        ])),
     )?;
-    assert_eq!(body["contents"].as_array().map(Vec::len), Some(2));
-    let responses = &body["contents"][1]["parts"];
+    assert_eq!(body["contents"].as_array().map(Vec::len), Some(3));
+    let responses = &body["contents"][2]["parts"];
     assert_eq!(responses[0]["functionResponse"]["id"], "a");
     assert_eq!(responses[1]["functionResponse"]["id"], "b");
     assert_eq!(
@@ -75,9 +83,13 @@ fn calls_without_ids_take_their_results_in_order() -> Result<(), Failure> {
     assert_eq!(assistant.stop_reason, StopReason::ToolCalls);
     let body = request::completion(
         &settings(json!({})),
-        request(vec![assistant.message, result("", false), result("", true)]),
+        request(asked(vec![
+            assistant.message,
+            result("", false),
+            result("", true),
+        ])),
     )?;
-    let responses = &body["contents"][1]["parts"];
+    let responses = &body["contents"][2]["parts"];
     assert_eq!(responses[0]["functionResponse"]["name"], "first");
     assert_eq!(responses[1]["functionResponse"]["name"], "second");
     assert_eq!(
@@ -120,13 +132,46 @@ fn only_calls_from_other_services_carry_the_placeholder_signature() -> Result<()
     };
     let body = request::completion(
         &settings(json!({})),
-        request(vec![own, result("a", false), other, result("a", false)]),
+        request(asked(vec![
+            own,
+            result("a", false),
+            other,
+            result("a", false),
+        ])),
     )?;
-    assert!(body["contents"][0]["parts"][0]["thoughtSignature"].is_null());
+    assert!(body["contents"][1]["parts"][0]["thoughtSignature"].is_null());
     assert_eq!(
-        body["contents"][2]["parts"][0]["thoughtSignature"],
+        body["contents"][3]["parts"][0]["thoughtSignature"],
         "skip_thought_signature_validator"
     );
+    Ok(())
+}
+
+#[test]
+fn a_history_that_starts_with_a_call_gets_a_user_turn_before_it() -> Result<(), Failure> {
+    let calling = response::completion(reply(
+        json!({"role": "model", "parts": [call("a")]}),
+        "STOP",
+    ))?
+    .message;
+    let body = request::completion(
+        &settings(json!({})),
+        request(vec![calling, result("a", false)]),
+    )?;
+    let contents = &body["contents"];
+    assert_eq!(contents[0]["role"], "user");
+    assert!(contents[0]["parts"][0]["text"].is_string());
+    assert!(contents[1]["parts"][0]["functionCall"].is_object());
+
+    let speaking = Message {
+        role: Role::Assistant,
+        parts: vec![Part::Text("Earlier I read it.".into())],
+    };
+    let body = request::completion(
+        &settings(json!({})),
+        request(vec![speaking, asked(vec![]).remove(0)]),
+    )?;
+    assert_eq!(body["contents"][0]["role"], "model");
     Ok(())
 }
 

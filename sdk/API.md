@@ -10,8 +10,8 @@ it by path.
 
 - module `bindings` — Types and host functions generated from the WIT.
 - module `channel` — What every channel mapper shares: commands, decoded content, what attachments are called, the activity card's wording and `multipart/form-data` uploads.
-- module `host` — Host-owned logging and transport available to plugins.
-- module `protocol` — Helpers for plugins that call model services through the host's `http` import, including OpenAI-compatible Chat Completions and embeddings.
+- module `host` — Host-owned configuration, logging and transport, which only tool plugins import.
+- module `protocol` — Pure helpers for Provider and decision mappers: the request a service needs, what its response means, and the owner's options merged into the request.
 - module `types` — Canonical data exchanged between the host and plugins.
 - macro `export` — Export `$implementation` as the plugin for one world: `completion`, `provider` (completion and embedding), `decision`, `tools`, `composer` or `channel`.
 - fn `input_schema` — The canonical schema of `T`, used by tool arguments and composer options.
@@ -34,7 +34,6 @@ macro_rules! export {
     (composer, $implementation:ident) => { ... };
     (channel, $implementation:ident) => { ... };
     (@provider $world:literal, $implementation:ident) => { ... };
-    (@world $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => { ... };
     (@bindings $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => { ... };
 }
 ```
@@ -775,29 +774,66 @@ The label of the activity card's button that cancels the Run.
 
 `src/protocol.rs`
 
-Helpers for plugins that call model services through the host's `http` import, including
-OpenAI-compatible Chat Completions and embeddings.
+Pure helpers for Provider and decision mappers: the request a service needs, what its response
+means, and the owner's options merged into the request.
 
-- module `protocol::host` — same as `host`
+OpenAI-compatible Chat Completions and embeddings are in `chat`. A mapper imports nothing: it
+returns the request, and the host sends it to the endpoint and hands the response back, whatever
+its status.
+
+- module `protocol::chat` — OpenAI-compatible Chat Completions and embeddings, as the pure encode and decode a Provider exports.
 - module `protocol::types` — same as `types`
-- enum `protocol::CompleteError` — Why `complete` returned no completion.
+- struct `protocol::Call` — A call, the ID it goes out under, and the tool message that answers it.
+- enum `protocol::CompleteError` — Why `decode` returned no completion.
 - struct `protocol::Completion` — A completed model attempt.
+- struct `protocol::HttpRequest` — same as `types::HttpRequest`
+- struct `protocol::HttpResponse` — same as `types::HttpResponse`
 - struct `protocol::Overflow` — same as `types::Overflow`
-- struct `protocol::PostError` — Why `post` returned no JSON reply, with what the service answered, if anything.
 - struct `protocol::Request` — The frozen messages, disclosed tools and output budget for one completion.
 - struct `protocol::Settings` — same as `types::Settings`
 - enum `protocol::StopReason` — The service-reported reason that generation stopped.
+- enum `protocol::Turn` — A request's messages grouped as a protocol sends them.
 - struct `protocol::Usage` — same as `types::Usage`
+- fn `protocol::answer` — What a completion response means: its JSON, an overflow, or the failure its status means.
 - fn `protocol::apply_options` — Merge `raw`, a JSON object of caller options, into `body`; options may only add fields, and never one named in `reserved`.
 - fn `protocol::bad` — A non-retryable `provider.bad_response` failure: the reply is malformed or not what the protocol promises.
 - fn `protocol::bad_request` — A non-retryable `provider.bad_request` failure: the request cannot succeed as written.
-- fn `protocol::complete` — Send `request` as one non-streaming Chat Completions call and return the reply as a `Completion`.
-- fn `protocol::complete_error` — Classify a refused completion request.
-- fn `protocol::embed` — Embed each input through the `embeddings` endpoint, returning one vector per input, in input order.
+- fn `protocol::call_id` — The ID of the `index`th call of the assistant message at `position` when rebuilt from parts.
+- fn `protocol::carries` — Whether service fields carry anything: in JSON, `null` and an empty list or object mean the same as an absent field.
+- fn `protocol::embeddings` — `vectors` as the embeddings of `count` inputs, checked against the protocol's promise.
 - fn `protocol::empty_config` — Accept only `{}` as the plugin's configuration; anything else fails with `config.invalid`.
+- fn `protocol::extras` — What `wire` carries beyond `canonical`, in the shape of `wire`: the fields `canonical` lacks, and below the fields both have, what differs there.
 - fn `protocol::failure` — A failure with the given code; `retryable` means the same request may succeed later.
+- fn `protocol::json` — The JSON of a successful response, or the failure its status means.
+- fn `protocol::merge` — Add `overlay` to `base`, failing wherever both set a value.
 - fn `protocol::number_after` — The whole number that follows `marker` in a service's message, such as a token limit it states in prose.
-- fn `protocol::post` — POST `body` as JSON to `path` under `settings.base_url` and return the JSON reply.
+- fn `protocol::post_json` — A POST of `body` as JSON to `url`.
+- fn `protocol::turns` — The turns of `messages`.
+- const `protocol::COMPLETION_TIMEOUT_MS` — How long a completion request may take, in milliseconds.
+- const `protocol::EMBEDDING_TIMEOUT_MS` — How long an embedding request may take, in milliseconds.
+
+## struct `protocol::Call`
+
+`src/protocol.rs`
+
+```rust
+pub struct Call<'a> {
+    pub id: String,
+    pub call: &'a types::ToolCall,
+    pub message: &'a types::Message,
+    pub result: &'a types::ToolResult,
+}
+```
+
+A call, the ID it goes out under, and the tool message that answers it.
+
+- `id` — The ID the call and its result share.
+
+  A message with an extension goes out whole, as its plugin stored it, so its calls keep the
+  service's IDs, even empty ones; a call rebuilt from canonical parts takes `call_id`.
+- `call` — The call as the assistant message holds it, whose own `id` may be empty.
+- `message` — The tool message that answers it: its result, then any images.
+- `result` — The result that message starts with.
 
 ## enum `protocol::CompleteError`
 
@@ -810,7 +846,7 @@ pub enum CompleteError {
 }
 ```
 
-Why `complete` returned no completion.
+Why `decode` returned no completion.
 
 - `Failed` — The request failed.
 - `Overflow` — The service turned the request away as too large; a smaller request may succeed.
@@ -853,31 +889,6 @@ impl Debug for Completion
 impl PartialEq for Completion
 ```
 
-## struct `protocol::PostError`
-
-`src/http.rs`
-
-```rust
-pub struct PostError {
-    pub status: Option<u16>,
-    pub body: String,
-    pub failure: crate::protocol::types::Failure,
-}
-```
-
-Why `post` returned no JSON reply, with what the service answered, if anything.
-
-- `status` — The HTTP status the service answered with; absent when the exchange itself failed.
-- `body` — The answer's body as text, decoded lossily; empty when there is none.
-- `failure` — The failure this classifies as for a caller that reads no more of it.
-
-Implements:
-
-```rust
-impl Debug for PostError
-impl From<PostError> for crate::protocol::types::Failure
-```
-
 ## struct `protocol::Request`
 
 `src/lib.rs`
@@ -886,17 +897,19 @@ impl From<PostError> for crate::protocol::types::Failure
 pub struct Request {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolSpec>,
-    pub max_output_tokens: ::core::option::Option<u32>,
+    pub max_output_tokens: u32,
 }
 ```
 
 The frozen messages, disclosed tools and output budget for one completion.
 
 User messages may include images; tool messages contain one result followed by any images.
+The calls of each assistant message are answered right after it, one tool message per call,
+whose result carries the call's `id`.
 
 - `messages` — The messages, in order.
 - `tools` — The tools the model may call.
-- `max_output_tokens` — The most tokens the reply may use; the service's default when absent.
+- `max_output_tokens` — The most tokens the reply may use.
 
 Implements:
 
@@ -933,12 +946,53 @@ impl PartialEq for StopReason
 impl PartialOrd for StopReason
 ```
 
-## fn `protocol::apply_options`
+## enum `protocol::Turn`
 
-`src/http.rs`
+`src/protocol.rs`
 
 ```rust
-pub fn apply_options(body: &mut serde_json::Value, raw: &str, reserved: &[&str]) -> Result<(), crate::protocol::types::Failure>
+pub enum Turn<'a> {
+    Message(&'a types::Message),
+    Assistant {
+        message: &'a types::Message,
+        position: usize,
+        calls: Vec<Call<'a>>,
+    },
+}
+```
+
+A request's messages grouped as a protocol sends them.
+
+System and user messages stand alone, and each assistant message comes with the tool messages
+after it, which answer its calls.
+
+- `Message` — A system or user message.
+- `Assistant` — An assistant message at `position` in the request, and each of its calls in order.
+  - `message` — The assistant message.
+  - `position` — Its index among the request's messages, from which `call_id` names its calls.
+  - `calls` — Its calls in order, each with the result that answers it.
+
+## fn `protocol::answer`
+
+`src/protocol.rs`
+
+```rust
+pub fn answer(response: &HttpResponse, read: impl FnOnce(&serde_json::Value) -> Option<Overflow>) -> Result<serde_json::Value, CompleteError>
+```
+
+What a completion response means: its JSON, an overflow, or the failure its status means.
+
+A successful response gives its JSON, and a refusal the failure `json` describes, unless the
+service turned the request away as too large. `read` is the protocol's reading of a refusal's
+JSON: an overflow it recognizes, with the numbers the service gave. An HTTP 413 is an overflow
+even when `read` recognizes nothing, since the status itself says the request is too large.
+
+## fn `protocol::apply_options`
+
+`src/protocol.rs`
+
+```rust
+pub fn apply_options(body: &mut serde_json::Value, raw: &str, reserved: &[&str]) -> Result<(), types::Failure>
 ```
 
 Merge `raw`, a JSON object of caller options, into `body`; options may only add fields, and
@@ -967,51 +1021,41 @@ pub fn bad_request(message: impl Into<String>) -> types::Failure
 
 A non-retryable `provider.bad_request` failure: the request cannot succeed as written.
 
-## fn `protocol::complete`
+## fn `protocol::call_id`
 
 `src/protocol.rs`
 
 ```rust
-pub async fn complete(settings: Settings, request: Request) -> Result<Completion, CompleteError>
+pub fn call_id(call: &types::ToolCall, position: usize, index: usize) -> String
 ```
 
-Send `request` as one non-streaming Chat Completions call and return the reply as a
-`Completion`.
+The ID of the `index`th call of the assistant message at `position` when rebuilt from parts.
 
-`settings.options` may add fields to the request, but not replace one this function writes or
-reserves, such as `model`, `messages` or `stream`. A reply with fields the contract has no
-place for is kept whole in an extension part and sent back as it came. A refusal that states
-the model's maximum context length, as DeepSeek's does, is an overflow.
+It is the service's own, or `call_{position}_{index}` when it gave none.
 
-## fn `protocol::complete_error`
+## fn `protocol::carries`
 
 `src/protocol.rs`
 
 ```rust
-pub fn complete_error(error: PostError, read: impl FnOnce(&serde_json::Value) -> Option<Overflow>) -> CompleteError
+pub fn carries(value: &serde_json::Value) -> bool
 ```
 
-Classify a refused completion request.
+Whether service fields carry anything: in JSON, `null` and an empty list or object mean the
+same as an absent field.
 
-`read` is the protocol's reading of the service's JSON answer: an overflow it recognizes, with
-the numbers the service gave. An HTTP 413 is an overflow even when `read` recognizes nothing,
-since the status itself says the request is too large. Anything else stays the failure
-`post` classified.
-
-## fn `protocol::embed`
+## fn `protocol::embeddings`
 
 `src/protocol.rs`
 
 ```rust
-pub async fn embed(settings: Settings, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, types::Failure>
+pub fn embeddings(count: u32, vectors: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>, types::Failure>
 ```
 
-Embed each input through the `embeddings` endpoint, returning one vector per input, in input
-order.
+`vectors` as the embeddings of `count` inputs, checked against the protocol's promise.
 
-The request times out after 30 seconds. The reply must hold exactly one non-empty vector of
-finite numbers for each input, all of the same length; otherwise the call fails as
-`provider.bad_response`.
+They are one nonempty vector of finite numbers per input, all of one width; otherwise the
+service's reply is `provider.bad_response`.
 
 ## fn `protocol::empty_config`
 
@@ -1025,6 +1069,17 @@ Accept only `{}` as the plugin's configuration; anything else fails with `config
 
 Use it in plugins whose endpoint, model and options all arrive with each call's `Settings`.
 
+## fn `protocol::extras`
+
+`src/protocol.rs`
+
+```rust
+pub fn extras(wire: serde_json::Value, canonical: &serde_json::Value) -> serde_json::Map<String, serde_json::Value>
+```
+
+What `wire` carries beyond `canonical`, in the shape of `wire`: the fields `canonical` lacks,
+and below the fields both have, what differs there.
+
 ## fn `protocol::failure`
 
 `src/protocol.rs`
@@ -1034,6 +1089,34 @@ pub fn failure(code: &str, message: impl Into<String>, retryable: bool) -> types
 ```
 
 A failure with the given code; `retryable` means the same request may succeed later.
+
+## fn `protocol::json`
+
+`src/protocol.rs`
+
+```rust
+pub fn json(response: &HttpResponse) -> Result<serde_json::Value, types::Failure>
+```
+
+The JSON of a successful response, or the failure its status means.
+
+Retryable: 408 (`timeout`), 429 (`provider.rate_limited`) and 5xx (`provider.server`). Not
+retryable: 401 and 403 (`provider.auth`), any other status outside 2xx
+(`provider.bad_request`), and a successful body that is not JSON (`provider.bad_response`).
+
+## fn `protocol::merge`
+
+`src/protocol.rs`
+
+```rust
+pub fn merge(base: &mut serde_json::Value, overlay: serde_json::Value) -> Result<(), String>
+```
+
+Add `overlay` to `base`, failing wherever both set a value.
+
+This is the one rule for adding JSON a plugin did not write to JSON it did: objects merge key
+by key and take the keys `base` lacks, equal-length arrays merge by position, and anything
+else, `null` included, is a conflict reported by its dotted path.
 
 ## fn `protocol::number_after`
 
@@ -1046,36 +1129,70 @@ pub fn number_after(message: &str, marker: &str) -> Option<u64>
 The whole number that follows `marker` in a service's message, such as a token limit it
 states in prose.
 
-## fn `protocol::post`
+## fn `protocol::post_json`
 
-`src/http.rs`
+`src/protocol.rs`
 
 ```rust
-pub async fn post(settings: &crate::protocol::Settings, path: &str, body: serde_json::Value, timeout_ms: Option<u32>) -> Result<serde_json::Value, PostError>
+pub fn post_json(url: impl Into<String>, body: &serde_json::Value, timeout_ms: Option<u32>) -> HttpRequest
 ```
 
-POST `body` as JSON to `path` under `settings.base_url` and return the JSON reply.
+A POST of `body` as JSON to `url`.
 
-`None` for `timeout_ms` means the host's default. Retryable: a failed `http` call, 408, 429 and
-5xx. Not retryable: 401 and 403 (`provider.auth`), any other status outside 2xx
-(`provider.bad_request`), and a reply that is not JSON (`provider.bad_response`). The error
-keeps the status and body, so a protocol can read more from them, as
-`complete_error` does.
+A mapper gives a path starting with `/`, which the host joins to the endpoint. `None` for
+`timeout_ms` means the host's default.
+
+## fn `protocol::turns`
+
+`src/protocol.rs`
+
+```rust
+pub fn turns(messages: &[types::Message]) -> Result<Vec<Turn<'_>>, types::Failure>
+```
+
+The turns of `messages`.
+
+A call and its result pair by the service's ID, or in order among the calls it gave none. The
+host sends a tool message only right after the assistant message whose call it answers, with
+a result for every call; a request that breaks this is `provider.bad_request`.
+
+## const `protocol::COMPLETION_TIMEOUT_MS`
+
+`src/protocol.rs`
+
+```rust
+pub const COMPLETION_TIMEOUT_MS: u32 = 600_000;
+```
+
+How long a completion request may take, in milliseconds.
+
+Ten minutes is the default of Anthropic's and OpenAI's own clients: a reply arrives only once
+it is complete, and a long one takes minutes.
+
+## const `protocol::EMBEDDING_TIMEOUT_MS`
+
+`src/protocol.rs`
+
+```rust
+pub const EMBEDDING_TIMEOUT_MS: u32 = 30_000;
+```
+
+How long an embedding request may take, in milliseconds.
 
 # module `enco_sdk::host`
 
 `src/lib.rs`
 
-Host-owned logging and transport available to plugins.
+Host-owned configuration, logging and transport, which only tool plugins import.
 
 - enum `host::HttpErrorKind` — Classifies failures while constructing, sending or reading an HTTP request.
 - struct `host::HttpFailure` — Transport failure.
-- struct `host::HttpRequest` — An HTTP request for the host to send.
-- struct `host::HttpResponse` — An HTTP status, headers and fully collected response body.
 - enum `host::LogLevel` — Severity attached to a plugin diagnostic.
 - fn `host::config` — The configuration of this invocation's generation, excluding credential mappings.
 - fn `host::http` — Send a request and collect its response; non-2xx statuses are returned as responses.
 - fn `host::log` — Write a diagnostic to the host log.
+- type `host::HttpRequest` — (no summary)
+- type `host::HttpResponse` — (no summary)
 - type `host::Json` — (no summary)
 
 ## enum `host::HttpErrorKind`
@@ -1133,62 +1250,6 @@ impl Debug for HttpFailure
 impl Display for HttpFailure
 impl Error for HttpFailure
 impl PartialEq for HttpFailure
-```
-
-## struct `host::HttpRequest`
-
-`src/lib.rs`
-
-```rust
-pub struct HttpRequest {
-    pub method: String,
-    pub url: String,
-    pub headers: Vec<(String, String)>,
-    pub body: ::core::option::Option<Vec<u8>>,
-    pub timeout_ms: ::core::option::Option<u32>,
-}
-```
-
-An HTTP request for the host to send.
-
-- `method` — The method, such as `GET` or `POST`.
-- `url` — The absolute URL.
-- `headers` — Header names and values, in order.
-- `body` — The bytes to send, if any.
-- `timeout_ms` — The time limit in milliseconds; the host's default when absent.
-
-Implements:
-
-```rust
-impl Clone for HttpRequest
-impl Debug for HttpRequest
-impl PartialEq for HttpRequest
-```
-
-## struct `host::HttpResponse`
-
-`src/lib.rs`
-
-```rust
-pub struct HttpResponse {
-    pub status: u16,
-    pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
-}
-```
-
-An HTTP status, headers and fully collected response body.
-
-- `status` — The status code, such as 200.
-- `headers` — Header names and values, in order.
-- `body` — The whole body, already collected.
-
-Implements:
-
-```rust
-impl Clone for HttpResponse
-impl Debug for HttpResponse
-impl PartialEq for HttpResponse
 ```
 
 ## enum `host::LogLevel`
@@ -1255,6 +1316,22 @@ pub fn log(level: LogLevel, message: &str)
 
 Write a diagnostic to the host log.
 
+## type `host::HttpRequest`
+
+`src/lib.rs`
+
+```rust
+pub type HttpRequest = super::super::super::enco::plugin::types::HttpRequest;
+```
+
+## type `host::HttpResponse`
+
+`src/lib.rs`
+
+```rust
+pub type HttpResponse = super::super::super::enco::plugin::types::HttpResponse;
+```
+
 ## type `host::Json`
 
 `src/lib.rs`
@@ -1273,6 +1350,8 @@ Canonical data exchanged between the host and plugins.
 - enum `types::Effect` — Mutation semantics used to order calls and settle interrupted work.
 - struct `types::Extension` — Opaque adapter fields: the whole message as the adapter that wrote it replays it.
 - struct `types::Failure` — An operation failure.
+- struct `types::HttpRequest` — What the host sends over HTTP: the method, destination, headers, body and time limit.
+- struct `types::HttpResponse` — An HTTP response, whatever its status, with its whole body.
 - struct `types::Image` — An image in a message.
 - enum `types::ImageFormat` — Image encodings that every supported service accepts.
 - struct `types::Message` — A canonical message sent to or returned by the model.
@@ -1282,7 +1361,7 @@ Canonical data exchanged between the host and plugins.
 - enum `types::QuoteKind` — How a message relates to messages it quotes.
 - enum `types::Role` — Identifies the speaker of a canonical model message.
 - enum `types::RunEnd` — How a Run ended.
-- struct `types::Settings` — Endpoint, model and adapter options supplied by the caller for this call.
+- struct `types::Settings` — The model and adapter options of the endpoint this call is for.
 - struct `types::ToolCall` — A proposed tool invocation.
 - struct `types::ToolResult` — A tool settlement.
 - struct `types::ToolSpec` — A tool disclosed to the model.
@@ -1400,8 +1479,67 @@ impl Clone for Failure
 impl Debug for Failure
 impl Display for Failure
 impl Error for Failure
-impl From<PostError> for crate::protocol::types::Failure
 impl PartialEq for Failure
+```
+
+## struct `types::HttpRequest`
+
+`src/lib.rs`
+
+```rust
+pub struct HttpRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: ::core::option::Option<Vec<u8>>,
+    pub timeout_ms: ::core::option::Option<u32>,
+}
+```
+
+What the host sends over HTTP: the method, destination, headers, body and time limit.
+
+For `host.http`, `url` is an absolute URL. A mapper's request goes to the service it maps:
+`url` is a path starting with `/`, which the host joins to that service's base URL. A
+channel's may also be an absolute URL on the base URL's origin or on one of its `origins`.
+
+- `method` — The method, such as `GET` or `POST`.
+- `url` — Where to send it, as stated above.
+- `headers` — Header names and values, in order.
+- `body` — The bytes to send, if any.
+- `timeout_ms` — The time limit in milliseconds; the host's default when absent.
+
+Implements:
+
+```rust
+impl Clone for HttpRequest
+impl Debug for HttpRequest
+impl PartialEq for HttpRequest
+```
+
+## struct `types::HttpResponse`
+
+`src/lib.rs`
+
+```rust
+pub struct HttpResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+```
+
+An HTTP response, whatever its status, with its whole body.
+
+- `status` — The status code, such as 200.
+- `headers` — Header names and values, in order.
+- `body` — The whole body.
+
+Implements:
+
+```rust
+impl Clone for HttpResponse
+impl Debug for HttpResponse
+impl PartialEq for HttpResponse
 ```
 
 ## struct `types::Image`
@@ -1674,15 +1812,15 @@ impl PartialEq for RunEnd
 
 ```rust
 pub struct Settings {
-    pub base_url: String,
     pub model: String,
     pub options: Json,
 }
 ```
 
-Endpoint, model and adapter options supplied by the caller for this call.
+The model and adapter options of the endpoint this call is for.
 
-- `base_url` — The service's base URL; request paths are appended to it.
+The endpoint's base URL stays with the host, which joins a mapper's request path to it.
+
 - `model` — The model the service runs.
 - `options` — Options the adapter merges into its request, as a JSON object.
 
@@ -1902,6 +2040,71 @@ A JSON document encoded as UTF-8 text.
 
 - module `bindings::exports::enco` — (no summary)
 
+# module `enco_sdk::protocol::chat`
+
+`src/protocol/chat.rs`
+
+OpenAI-compatible Chat Completions and embeddings, as the pure encode and decode a Provider
+exports.
+
+- fn `protocol::chat::decode` — What a Chat Completions response means.
+- fn `protocol::chat::decode_embedding` — One vector per input, in input order, from an `embeddings` response to `count` inputs.
+- fn `protocol::chat::encode` — The request for one non-streaming Chat Completions call.
+- fn `protocol::chat::encode_embedding` — The request that embeds each input through the `embeddings` endpoint.
+
+## fn `protocol::chat::decode`
+
+`src/protocol/chat.rs`
+
+```rust
+pub fn decode(response: &super::HttpResponse) -> Result<super::Completion, super::CompleteError>
+```
+
+What a Chat Completions response means.
+
+A reply with fields the contract has no place for is kept whole in an extension part and sent
+back as it came. A refusal that states the model's maximum context length, as DeepSeek's does,
+is an overflow.
+
+## fn `protocol::chat::decode_embedding`
+
+`src/protocol/chat.rs`
+
+```rust
+pub fn decode_embedding(count: u32, response: &super::HttpResponse) -> Result<Vec<Vec<f32>>, crate::types::Failure>
+```
+
+One vector per input, in input order, from an `embeddings` response to `count` inputs.
+
+The indexes must cover the vectors once, and the vectors must be the embeddings
+`embeddings` accepts; otherwise the response is `provider.bad_response`.
+
+## fn `protocol::chat::encode`
+
+`src/protocol/chat.rs`
+
+```rust
+pub fn encode(settings: &super::Settings, request: super::Request) -> Result<super::HttpRequest, crate::types::Failure>
+```
+
+The request for one non-streaming Chat Completions call.
+
+`settings.options` may add fields to the request, but not replace one this function writes or
+reserves, such as `model`, `messages` or `stream`.
+
+## fn `protocol::chat::encode_embedding`
+
+`src/protocol/chat.rs`
+
+```rust
+pub fn encode_embedding(settings: &super::Settings, inputs: &[String]) -> Result<super::HttpRequest, crate::types::Failure>
+```
+
+The request that embeds each input through the `embeddings` endpoint.
+
+It times out after 30 seconds. `settings.options` may add fields, but not replace `model`,
+`input` or `encoding_format`.
+
 # module `enco_sdk::bindings::enco::plugin`
 
 `src/lib.rs`
@@ -1920,7 +2123,7 @@ A JSON document encoded as UTF-8 text.
 `src/lib.rs`
 
 - module `bindings::exports::enco::plugin::channel` — Translates a messaging protocol as a pure state machine; the host owns connections, timers and credentials.
-- module `bindings::exports::enco::plugin::completion` — Adapts canonical requests to a model service protocol.
+- module `bindings::exports::enco::plugin::completion` — Adapts canonical requests to a model service protocol, as a pure mapper.
 - module `bindings::exports::enco::plugin::lifecycle` — Describes and checks the component without assigning its registry identity.
 
 # module `enco_sdk::bindings::exports::enco::plugin::channel`
@@ -1954,14 +2157,14 @@ The host records each external input before handing it over, and carries out wha
 - struct `bindings::exports::enco::plugin::channel::QuotedMessage` — same as `channel::QuotedMessage`
 - enum `bindings::exports::enco::plugin::channel::ReadStep` — How the host reads the protocol next.
 - struct `bindings::exports::enco::plugin::channel::Reading` — What the mapper asks of the host after one arrival.
-- struct `bindings::exports::enco::plugin::channel::Request` — A request for the host to send.
-- struct `bindings::exports::enco::plugin::channel::Response` — A response the protocol returned, whatever its status.
 - struct `bindings::exports::enco::plugin::channel::Socket` — A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection stops.
 - struct `bindings::exports::enco::plugin::channel::ToolActivity` — same as `channel::ToolActivity`
 - enum `bindings::exports::enco::plugin::channel::ToolState` — same as `channel::ToolState`
 - trait `bindings::exports::enco::plugin::channel::Guest` — (no summary)
 - type `bindings::exports::enco::plugin::channel::Datetime` — (no summary)
 - type `bindings::exports::enco::plugin::channel::Failure` — (no summary)
+- type `bindings::exports::enco::plugin::channel::HttpRequest` — (no summary)
+- type `bindings::exports::enco::plugin::channel::HttpResponse` — (no summary)
 - type `bindings::exports::enco::plugin::channel::Json` — (no summary)
 - type `bindings::exports::enco::plugin::channel::QuoteKind` — (no summary)
 - type `bindings::exports::enco::plugin::channel::RunEnd` — (no summary)
@@ -1973,7 +2176,7 @@ The host records each external input before handing it over, and carries out wha
 
 ```rust
 pub enum Arrival {
-    Response(Response),
+    Response(HttpResponse),
     Frame(String),
     Closed(Closure),
     Timer,
@@ -2084,7 +2287,7 @@ impl PartialEq for Fault
 
 ```rust
 pub enum FetchStep {
-    Request(Request),
+    Request(HttpRequest),
     Download(String),
     File(Vec<u8>),
     Messages(Vec<QuotedMessage>),
@@ -2274,7 +2477,7 @@ impl PartialEq for PacingGap
 
 ```rust
 pub enum ReadStep {
-    Request(Request),
+    Request(HttpRequest),
     Socket(Socket),
 }
 ```
@@ -2301,7 +2504,7 @@ pub struct Reading {
     pub messages: Vec<Inbound>,
     pub state: ::core::option::Option<Json>,
     pub frames: Vec<String>,
-    pub acknowledgments: Vec<Request>,
+    pub acknowledgments: Vec<HttpRequest>,
     pub timer: ::core::option::Option<u32>,
     pub reconnect: bool,
 }
@@ -2327,63 +2530,6 @@ Implements:
 impl Clone for Reading
 impl Debug for Reading
 impl PartialEq for Reading
-```
-
-## struct `bindings::exports::enco::plugin::channel::Request`
-
-`src/lib.rs`
-
-```rust
-pub struct Request {
-    pub method: String,
-    pub url: String,
-    pub headers: Vec<(String, String)>,
-    pub body: ::core::option::Option<Vec<u8>>,
-    pub timeout_ms: ::core::option::Option<u32>,
-}
-```
-
-A request for the host to send.
-
-- `method` — The method, such as `GET` or `POST`.
-- `url` — A path starting with `/`, joined to the connection's base URL, or an absolute URL at
-  one of the mapper's `origins`.
-- `headers` — Header names and values, in order.
-- `body` — The bytes to send, if any.
-- `timeout_ms` — The time limit in milliseconds; the host's default when absent.
-
-Implements:
-
-```rust
-impl Clone for Request
-impl Debug for Request
-impl PartialEq for Request
-```
-
-## struct `bindings::exports::enco::plugin::channel::Response`
-
-`src/lib.rs`
-
-```rust
-pub struct Response {
-    pub status: u16,
-    pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
-}
-```
-
-A response the protocol returned, whatever its status.
-
-- `status` — The status code, such as 200.
-- `headers` — Header names and values, in order.
-- `body` — The whole body.
-
-Implements:
-
-```rust
-impl Clone for Response
-impl Debug for Response
-impl PartialEq for Response
 ```
 
 ## struct `bindings::exports::enco::plugin::channel::Socket`
@@ -2445,7 +2591,7 @@ when the generation loads.
 ### `bindings::exports::enco::plugin::channel::Guest::identify`
 
 ```rust
-fn identify() -> Request
+fn identify() -> HttpRequest
 ```
 
 The request that reads which account the connection reaches.
@@ -2453,7 +2599,7 @@ The request that reads which account the connection reaches.
 ### `bindings::exports::enco::plugin::channel::Guest::identified`
 
 ```rust
-fn identified(response: Response) -> ::core::result::Result<Identity, Fault>
+fn identified(response: HttpResponse) -> ::core::result::Result<Identity, Fault>
 ```
 
 The account in that request's response.
@@ -2482,7 +2628,7 @@ What an arrival means, given the latest protocol state.
 ### `bindings::exports::enco::plugin::channel::Guest::fetch`
 
 ```rust
-fn fetch(locator: String, responses: Vec<Response>, limit: u32) -> ::core::result::Result<FetchStep, Fault>
+fn fetch(locator: String, responses: Vec<HttpResponse>, limit: u32) -> ::core::result::Result<FetchStep, Fault>
 ```
 
 The next step of fetching the content at `locator`, given the responses so far.
@@ -2502,7 +2648,7 @@ of the message's text and its file, laid out as the protocol needs.
 ### `bindings::exports::enco::plugin::channel::Guest::send`
 
 ```rust
-fn send(conversation: String, part: Outgoing) -> ::core::result::Result<Request, Fault>
+fn send(conversation: String, part: Outgoing) -> ::core::result::Result<HttpRequest, Fault>
 ```
 
 The request that sends one part to a conversation.
@@ -2510,7 +2656,7 @@ The request that sends one part to a conversation.
 ### `bindings::exports::enco::plugin::channel::Guest::answered`
 
 ```rust
-fn answered(response: Response) -> ::core::result::Result<::core::option::Option<String>, Fault>
+fn answered(response: HttpResponse) -> ::core::result::Result<::core::option::Option<String>, Fault>
 ```
 
 What the protocol answered: the ID of the message a request created, if any, or why it
@@ -2522,7 +2668,7 @@ the host forgets its route.
 ### `bindings::exports::enco::plugin::channel::Guest::respond`
 
 ```rust
-fn respond(handle: String, text: ::core::option::Option<String>) -> ::core::result::Result<::core::option::Option<Request>, Fault>
+fn respond(handle: String, text: ::core::option::Option<String>) -> ::core::result::Result<::core::option::Option<HttpRequest>, Fault>
 ```
 
 The request that answers the accepted message carrying `handle`, showing `text` to its
@@ -2531,7 +2677,7 @@ sender; absent when nothing more needs sending.
 ### `bindings::exports::enco::plugin::channel::Guest::commands`
 
 ```rust
-fn commands(identity: Identity, commands: Vec<Command>) -> Vec<Request>
+fn commands(identity: Identity, commands: Vec<Command>) -> Vec<HttpRequest>
 ```
 
 Requests that offer the host's commands in the protocol's menus, sent when a connection
@@ -2540,7 +2686,7 @@ starts.
 ### `bindings::exports::enco::plugin::channel::Guest::activity`
 
 ```rust
-fn activity(conversation: String, replies_here: bool, shown: ::core::option::Option<String>, update: ActivityUpdate) -> ::core::option::Option<Request>
+fn activity(conversation: String, replies_here: bool, shown: ::core::option::Option<String>, update: ActivityUpdate) -> ::core::option::Option<HttpRequest>
 ```
 
 Creates, refreshes, rewrites or removes a Run's view; absent when nothing needs sending,
@@ -2559,7 +2705,7 @@ shows no view there; an epilogue ends the view, so its ID is not kept.
 ### `bindings::exports::enco::plugin::channel::Guest::presence`
 
 ```rust
-fn presence(conversation: String, view: ActivityView) -> ::core::option::Option<Request>
+fn presence(conversation: String, view: ActivityView) -> ::core::option::Option<HttpRequest>
 ```
 
 A passing sign in `conversation` that the Agent is working, such as typing or an expiring
@@ -2571,7 +2717,7 @@ until it ends, keeps nothing of it, and reads its response with `answered`.
 ### `bindings::exports::enco::plugin::channel::Guest::open_conversation`
 
 ```rust
-fn open_conversation(beside: String, session: Vec<String>) -> ::core::option::Option<Request>
+fn open_conversation(beside: String, session: Vec<String>) -> ::core::option::Option<HttpRequest>
 ```
 
 The request opening a child Session's own conversation beside `beside`, where its parent
@@ -2585,7 +2731,7 @@ the protocol's one-time notice.
 ### `bindings::exports::enco::plugin::channel::Guest::opened`
 
 ```rust
-fn opened(beside: String, response: Response) -> ::core::result::Result<String, Fault>
+fn opened(beside: String, response: HttpResponse) -> ::core::result::Result<String, Fault>
 ```
 
 The nonempty ID of the conversation that an `open-conversation` request made beside
@@ -2594,7 +2740,7 @@ The nonempty ID of the conversation that an `open-conversation` request made bes
 ### `bindings::exports::enco::plugin::channel::Guest::close_conversation`
 
 ```rust
-fn close_conversation(conversation: String) -> ::core::option::Option<Request>
+fn close_conversation(conversation: String) -> ::core::option::Option<HttpRequest>
 ```
 
 The request that puts away a conversation opened for a child Session once that Session is
@@ -2617,6 +2763,22 @@ pub type Datetime = super::super::super::super::enco::plugin::types::Datetime;
 
 ```rust
 pub type Failure = super::super::super::super::enco::plugin::types::Failure;
+```
+
+## type `bindings::exports::enco::plugin::channel::HttpRequest`
+
+`src/lib.rs`
+
+```rust
+pub type HttpRequest = super::super::super::super::enco::plugin::types::HttpRequest;
+```
+
+## type `bindings::exports::enco::plugin::channel::HttpResponse`
+
+`src/lib.rs`
+
+```rust
+pub type HttpResponse = super::super::super::super::enco::plugin::types::HttpResponse;
 ```
 
 ## type `bindings::exports::enco::plugin::channel::Json`
@@ -2655,7 +2817,10 @@ pub type Unviewable = super::super::super::super::enco::plugin::types::Unviewabl
 
 `src/lib.rs`
 
-Adapts canonical requests to a model service protocol.
+Adapts canonical requests to a model service protocol, as a pure mapper.
+
+The host sends what `encode` returns to the endpoint and records the response before `decode`
+reads it, so each settlement can be traced to what the service said.
 
 - enum `bindings::exports::enco::plugin::completion::CompleteError` — same as `protocol::CompleteError`
 - struct `bindings::exports::enco::plugin::completion::Completion` — same as `protocol::Completion`
@@ -2663,6 +2828,8 @@ Adapts canonical requests to a model service protocol.
 - enum `bindings::exports::enco::plugin::completion::StopReason` — same as `protocol::StopReason`
 - trait `bindings::exports::enco::plugin::completion::Guest` — (no summary)
 - type `bindings::exports::enco::plugin::completion::Failure` — (no summary)
+- type `bindings::exports::enco::plugin::completion::HttpRequest` — (no summary)
+- type `bindings::exports::enco::plugin::completion::HttpResponse` — (no summary)
 - type `bindings::exports::enco::plugin::completion::Message` — (no summary)
 - type `bindings::exports::enco::plugin::completion::Overflow` — (no summary)
 - type `bindings::exports::enco::plugin::completion::Settings` — (no summary)
@@ -2677,19 +2844,36 @@ Adapts canonical requests to a model service protocol.
 pub trait Guest
 ```
 
-### `bindings::exports::enco::plugin::completion::Guest::complete`
+### `bindings::exports::enco::plugin::completion::Guest::encode`
 
 ```rust
-async fn complete(settings: Settings, request: Request) -> ::core::result::Result<Completion, CompleteError>
+fn encode(settings: Settings, request: Request) -> ::core::result::Result<HttpRequest, Failure>
 ```
 
-Perform one non-streaming completion.
+The request that asks the service for this completion.
+
+The host sends it to the endpoint only, with the endpoint's credentials, and records the
+response before `decode` reads it.
 
 #### Errors
-`overflow` when the service turns the request away as larger than the model accepts, as
-an HTTP 413 always does. Otherwise `failed`, with the codes `provider.network`,
-`provider.auth`, `provider.rate_limited`, `provider.server`, `provider.bad_request`,
-`provider.bad_response`, and `timeout`.
+`provider.bad_request` when the protocol cannot express `request` or `settings.options`.
+
+### `bindings::exports::enco::plugin::completion::Guest::decode`
+
+```rust
+fn decode(response: HttpResponse) -> ::core::result::Result<Completion, CompleteError>
+```
+
+What the service's response to `encode`'s request means, whatever its status.
+
+A request that got no response never reaches this function: the host reports it as
+`provider.network` or `timeout`.
+
+#### Errors
+`overflow` when the service turns the request away as larger than the model accepts, as an
+HTTP 413 always does. Otherwise `failed`, with the codes `provider.auth`,
+`provider.rate_limited`, `provider.server`, `provider.bad_request`, `provider.bad_response`
+and `timeout`.
 
 ## type `bindings::exports::enco::plugin::completion::Failure`
 
@@ -2697,6 +2881,22 @@ an HTTP 413 always does. Otherwise `failed`, with the codes `provider.network`,
 
 ```rust
 pub type Failure = super::super::super::super::enco::plugin::types::Failure;
+```
+
+## type `bindings::exports::enco::plugin::completion::HttpRequest`
+
+`src/lib.rs`
+
+```rust
+pub type HttpRequest = super::super::super::super::enco::plugin::types::HttpRequest;
+```
+
+## type `bindings::exports::enco::plugin::completion::HttpResponse`
+
+`src/lib.rs`
+
+```rust
+pub type HttpResponse = super::super::super::super::enco::plugin::types::HttpResponse;
 ```
 
 ## type `bindings::exports::enco::plugin::completion::Message`

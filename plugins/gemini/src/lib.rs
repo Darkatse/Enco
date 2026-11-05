@@ -1,9 +1,10 @@
-//! Gemini Generate Content and batch embeddings through the shared transport.
+//! Gemini Generate Content and batch embeddings, as pure encode and decode.
 mod request;
 mod response;
 use bindings::exports::enco::plugin::{completion, embedding, lifecycle};
 use enco_sdk::protocol::{
-    CompleteError, Completion, Overflow, Request, Settings, complete_error, number_after,
+    COMPLETION_TIMEOUT_MS, CompleteError, Completion, EMBEDDING_TIMEOUT_MS, HttpRequest,
+    HttpResponse, Overflow, Request, Settings, answer, embeddings, json, number_after, post_json,
     types::Failure,
 };
 use serde_json::Value;
@@ -38,12 +39,14 @@ impl lifecycle::Guest for Plugin {
 }
 
 impl completion::Guest for Plugin {
-    async fn complete(settings: Settings, request: Request) -> Result<Completion, CompleteError> {
-        let body = request::completion(&settings, request).map_err(CompleteError::Failed)?;
-        let path = format!("models/{}:generateContent", settings.model);
-        let response = enco_sdk::protocol::post(&settings, &path, body, None)
-            .await
-            .map_err(|error| complete_error(error, overflow))?;
+    fn encode(settings: Settings, request: Request) -> Result<HttpRequest, Failure> {
+        let body = request::completion(&settings, request)?;
+        let path = format!("/models/{}:generateContent", settings.model);
+        Ok(post_json(path, &body, Some(COMPLETION_TIMEOUT_MS)))
+    }
+
+    fn decode(response: HttpResponse) -> Result<Completion, CompleteError> {
+        let response = answer(&response, overflow)?;
         response::completion(response).map_err(CompleteError::Failed)
     }
 }
@@ -65,14 +68,14 @@ fn overflow(answer: &Value) -> Option<Overflow> {
 }
 
 impl embedding::Guest for Plugin {
-    async fn embed(settings: Settings, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure> {
-        let count = inputs.len();
+    fn encode(settings: Settings, inputs: Vec<String>) -> Result<HttpRequest, Failure> {
         let body = request::embedding(&settings, inputs)?;
-        let path = format!("models/{}:batchEmbedContents", settings.model);
-        response::embeddings(
-            enco_sdk::protocol::post(&settings, &path, body, Some(30000)).await?,
-            count,
-        )
+        let path = format!("/models/{}:batchEmbedContents", settings.model);
+        Ok(post_json(path, &body, Some(EMBEDDING_TIMEOUT_MS)))
+    }
+
+    fn decode(count: u32, response: HttpResponse) -> Result<Vec<Vec<f32>>, Failure> {
+        embeddings(count, response::embeddings(json(&response)?)?)
     }
 }
 

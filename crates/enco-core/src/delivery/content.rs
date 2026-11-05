@@ -76,6 +76,7 @@ impl DeliveryProjection {
             EntryBody::AttemptSettled {
                 attempt,
                 result: AttemptResult::Completed { message, .. },
+                ..
             } if Some(*attempt) == self.reply_attempt => {
                 self.reply = message.joined_text();
                 return None;

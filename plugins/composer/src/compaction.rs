@@ -134,7 +134,7 @@ impl Compaction {
                 crate::inline(Role::User, text),
             ],
             tools: vec![],
-            max_output_tokens: Some(self.max_output_tokens),
+            max_output_tokens: self.max_output_tokens,
             omitted: vec![],
         }
     }

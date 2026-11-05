@@ -90,7 +90,7 @@ impl Tools for WasmTools {
         let result = self
             .plugin
             .invoke(
-                CallWorld::Regular(credentials),
+                CallWorld::Tool(credentials),
                 ctx.cancel,
                 async |mut store| {
                     let instance = self.pre.instantiate_async(&mut store).await?;

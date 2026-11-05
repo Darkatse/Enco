@@ -1,5 +1,5 @@
 //! Discord HTTP requests and response evidence at the protocol boundary.
-use crate::channel::{Fault, Request, Response};
+use crate::channel::{Fault, HttpRequest, HttpResponse};
 use enco_sdk::types::Failure;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -36,8 +36,8 @@ pub(super) fn invalid(context: &str) -> Fault {
     )
 }
 
-pub(super) fn request(method: &str, url: String, body: Option<Value>) -> Request {
-    Request {
+pub(super) fn request(method: &str, url: String, body: Option<Value>) -> HttpRequest {
+    HttpRequest {
         method: method.into(),
         url,
         headers: body
@@ -49,7 +49,7 @@ pub(super) fn request(method: &str, url: String, body: Option<Value>) -> Request
     }
 }
 
-pub(super) fn checked(response: &Response) -> Result<(), Fault> {
+pub(super) fn checked(response: &HttpResponse) -> Result<(), Fault> {
     if (200..300).contains(&response.status) {
         return Ok(());
     }
@@ -90,7 +90,7 @@ pub(super) fn checked(response: &Response) -> Result<(), Fault> {
     })
 }
 
-pub(super) fn answer<T: DeserializeOwned>(response: Response) -> Result<T, Fault> {
+pub(super) fn answer<T: DeserializeOwned>(response: HttpResponse) -> Result<T, Fault> {
     checked(&response)?;
     serde_json::from_slice(&response.body).map_err(|_| {
         let mut error = invalid("HTTP response");

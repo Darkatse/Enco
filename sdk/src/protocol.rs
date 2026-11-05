@@ -1,15 +1,27 @@
-//! Helpers for plugins that call model services through the host's `http` import, including
-//! OpenAI-compatible Chat Completions and embeddings.
+//! Pure helpers for Provider and decision mappers: the request a service needs, what its response
+//! means, and the owner's options merged into the request.
+//!
+//! OpenAI-compatible Chat Completions and embeddings are in [`chat`]. A mapper imports nothing: it
+//! returns the request, and the host sends it to the endpoint and hands the response back, whatever
+//! its status.
 use crate::bindings;
-pub use crate::http::{PostError, apply_options, post};
-pub use bindings::enco::plugin::{host, types};
+pub use bindings::enco::plugin::types;
 pub use bindings::exports::enco::plugin::completion::{
     CompleteError, Completion, Request, StopReason,
 };
-use serde_json::{Map, Value, json};
-use types::{Failure, Message, Part, Role};
-pub use types::{Overflow, Settings, Usage};
-mod messages;
+use serde_json::{Map, Value};
+use types::{Failure, Message, Part, Role, ToolCall, ToolResult};
+pub use types::{HttpRequest, HttpResponse, Overflow, Settings, Usage};
+pub mod chat;
+
+/// How long a completion request may take, in milliseconds.
+///
+/// Ten minutes is the default of Anthropic's and OpenAI's own clients: a reply arrives only once
+/// it is complete, and a long one takes minutes.
+pub const COMPLETION_TIMEOUT_MS: u32 = 600_000;
+
+/// How long an embedding request may take, in milliseconds.
+pub const EMBEDDING_TIMEOUT_MS: u32 = 30_000;
 
 /// A failure with the given code; `retryable` means the same request may succeed later.
 pub fn failure(code: &str, message: impl Into<String>, retryable: bool) -> Failure {
@@ -31,36 +43,98 @@ pub fn bad_request(message: impl Into<String>) -> Failure {
     failure("provider.bad_request", message, false)
 }
 
-/// Classify a refused completion request.
+/// A POST of `body` as JSON to `url`.
 ///
-/// `read` is the protocol's reading of the service's JSON answer: an overflow it recognizes, with
-/// the numbers the service gave. An HTTP 413 is an overflow even when `read` recognizes nothing,
-/// since the status itself says the request is too large. Anything else stays the failure
-/// [`post`] classified.
-pub fn complete_error(
-    error: PostError,
+/// A mapper gives a path starting with `/`, which the host joins to the endpoint. `None` for
+/// `timeout_ms` means the host's default.
+pub fn post_json(url: impl Into<String>, body: &Value, timeout_ms: Option<u32>) -> HttpRequest {
+    HttpRequest {
+        method: "POST".into(),
+        url: url.into(),
+        headers: vec![("content-type".into(), "application/json".into())],
+        body: Some(body.to_string().into_bytes()),
+        timeout_ms,
+    }
+}
+
+/// The JSON of a successful response, or the failure its status means.
+///
+/// Retryable: 408 (`timeout`), 429 (`provider.rate_limited`) and 5xx (`provider.server`). Not
+/// retryable: 401 and 403 (`provider.auth`), any other status outside 2xx
+/// (`provider.bad_request`), and a successful body that is not JSON (`provider.bad_response`).
+pub fn json(response: &HttpResponse) -> Result<Value, Failure> {
+    if !(200..300).contains(&response.status) {
+        return Err(status_failure(response));
+    }
+    serde_json::from_slice(&response.body).map_err(|e| bad(format!("invalid JSON response: {e}")))
+}
+
+/// What a completion response means: its JSON, an overflow, or the failure its status means.
+///
+/// A successful response gives its JSON, and a refusal the failure [`json`] describes, unless the
+/// service turned the request away as too large. `read` is the protocol's reading of a refusal's
+/// JSON: an overflow it recognizes, with the numbers the service gave. An HTTP 413 is an overflow
+/// even when `read` recognizes nothing, since the status itself says the request is too large.
+pub fn answer(
+    response: &HttpResponse,
     read: impl FnOnce(&Value) -> Option<Overflow>,
-) -> CompleteError {
-    let PostError {
-        status,
-        body,
-        failure,
-    } = error;
-    if let Some(overflow) = serde_json::from_str::<Value>(&body)
+) -> Result<Value, CompleteError> {
+    if (200..300).contains(&response.status) {
+        return json(response).map_err(CompleteError::Failed);
+    }
+    if let Some(overflow) = serde_json::from_slice::<Value>(&response.body)
         .ok()
         .as_ref()
         .and_then(read)
     {
-        return CompleteError::Overflow(overflow);
+        return Err(CompleteError::Overflow(overflow));
     }
-    if status == Some(413) {
-        return CompleteError::Overflow(Overflow {
+    let failure = status_failure(response);
+    if response.status == 413 {
+        return Err(CompleteError::Overflow(Overflow {
             counted: None,
             accepted: None,
             message: failure.message,
-        });
+        }));
     }
-    CompleteError::Failed(failure)
+    Err(CompleteError::Failed(failure))
+}
+
+fn status_failure(response: &HttpResponse) -> Failure {
+    let mut excerpt = String::from_utf8_lossy(&response.body).into_owned();
+    excerpt.truncate(excerpt.floor_char_boundary(500));
+    let (code, retryable) = match response.status {
+        401 | 403 => ("provider.auth", false),
+        408 => ("timeout", true),
+        429 => ("provider.rate_limited", true),
+        500..=599 => ("provider.server", true),
+        _ => ("provider.bad_request", false),
+    };
+    failure(
+        code,
+        format!("HTTP {}: {excerpt}", response.status),
+        retryable,
+    )
+}
+
+/// `vectors` as the embeddings of `count` inputs, checked against the protocol's promise.
+///
+/// They are one nonempty vector of finite numbers per input, all of one width; otherwise the
+/// service's reply is `provider.bad_response`.
+pub fn embeddings(count: u32, vectors: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>, Failure> {
+    if usize::try_from(count) != Ok(vectors.len()) {
+        return Err(bad(format!(
+            "{} embeddings for {count} inputs",
+            vectors.len()
+        )));
+    }
+    let width = vectors.first().map_or(0, Vec::len);
+    if vectors.iter().any(|vector| {
+        vector.is_empty() || vector.len() != width || vector.iter().any(|value| !value.is_finite())
+    }) {
+        return Err(bad("embeddings must be nonempty, finite and of one width"));
+    }
+    Ok(vectors)
 }
 
 /// The whole number that follows `marker` in a service's message, such as a token limit it
@@ -90,156 +164,191 @@ pub fn empty_config(config: &str) -> Result<(), Failure> {
     }
 }
 
-/// Send `request` as one non-streaming Chat Completions call and return the reply as a
-/// [`Completion`].
+/// Merge `raw`, a JSON object of caller options, into `body`; options may only add fields, and
+/// never one named in `reserved`.
 ///
-/// `settings.options` may add fields to the request, but not replace one this function writes or
-/// reserves, such as `model`, `messages` or `stream`. A reply with fields the contract has no
-/// place for is kept whole in an extension part and sent back as it came. A refusal that states
-/// the model's maximum context length, as DeepSeek's does, is an overflow.
-pub async fn complete(settings: Settings, request: Request) -> Result<Completion, CompleteError> {
-    let body = chat_request(&settings, request).map_err(CompleteError::Failed)?;
-    let response = post(&settings, "chat/completions", body, None)
-        .await
-        .map_err(|error| complete_error(error, chat_overflow))?;
-    parse_completion(response).map_err(CompleteError::Failed)
+/// A conflict or invalid JSON fails as `provider.bad_request`.
+pub fn apply_options(body: &mut Value, raw: &str, reserved: &[&str]) -> Result<(), Failure> {
+    let options: Map<String, Value> =
+        serde_json::from_str(raw).map_err(|e| bad_request(format!("invalid options: {e}")))?;
+    if let Some(name) = options
+        .keys()
+        .find(|name| reserved.contains(&name.as_str()))
+    {
+        return Err(bad_request(format!("options cannot override {name}")));
+    }
+    merge(body, Value::Object(options))
+        .map_err(|path| bad_request(format!("options cannot override {path}")))
 }
 
-/// A Chat Completions refusal of an over-long request, in the words DeepSeek uses.
+/// Add `overlay` to `base`, failing wherever both set a value.
 ///
-/// "This model's maximum context length is W tokens. However, you requested T tokens (M in the
-/// messages, C in the completion)." The window counts the completion, so the input it accepts is
-/// W − C. Only that breakdown gives numbers; a refusal that splits the request otherwise, or not
-/// at all, is an overflow without them.
-fn chat_overflow(answer: &Value) -> Option<Overflow> {
-    let message = answer.pointer("/error/message")?.as_str()?;
-    let window = number_after(message, "maximum context length is ")?;
-    let breakdown = message.split_once(" tokens (").and_then(|(_, requested)| {
-        let (messages, rest) = requested.split_once(" in the messages, ")?;
-        let (completion, _) = rest.split_once(" in the completion)")?;
-        Some((messages.parse().ok()?, completion.parse::<u64>().ok()?))
-    });
-    Some(Overflow {
-        counted: breakdown.map(|(messages, _)| messages),
-        accepted: breakdown.map(|(_, completion)| window.saturating_sub(completion)),
-        message: message.into(),
-    })
-}
-
-fn chat_request(settings: &Settings, request: Request) -> Result<Value, Failure> {
-    let messages = messages::encode(&request.messages)?;
-    let mut body = json!({ "model": settings.model, "messages": messages });
-    if !request.tools.is_empty() {
-        let tools = request
-            .tools
-            .iter()
-            .map(|tool| {
-                let parameters = serde_json::from_str::<Value>(&tool.input_schema)
-                    .map_err(|e| bad_request(e.to_string()))?;
-                Ok(json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": parameters,
-                    },
-                }))
-            })
-            .collect::<Result<Vec<_>, Failure>>()?;
-        body["tools"] = json!(tools);
-    }
-    if let Some(max) = request.max_output_tokens {
-        body["max_tokens"] = json!(max);
-    }
-    apply_options(
-        &mut body,
-        &settings.options,
-        &[
-            "model",
-            "messages",
-            "tools",
-            "max_tokens",
-            "max_completion_tokens",
-            "stream",
-            "stream_options",
-        ],
-    )?;
-    Ok(body)
-}
-
-/// Embed each input through the `embeddings` endpoint, returning one vector per input, in input
-/// order.
-///
-/// The request times out after 30 seconds. The reply must hold exactly one non-empty vector of
-/// finite numbers for each input, all of the same length; otherwise the call fails as
-/// `provider.bad_response`.
-pub async fn embed(settings: Settings, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure> {
-    let count = inputs.len();
-    let mut body = json!({ "model": settings.model, "input": inputs });
-    apply_options(
-        &mut body,
-        &settings.options,
-        &["model", "input", "encoding_format"],
-    )?;
-    let response = post(&settings, "embeddings", body, Some(30000)).await?;
-    let data = response
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or_else(|| bad("missing embeddings data"))?;
-    if data.len() != count {
-        return Err(bad("embedding count does not match input count"));
-    }
-    let mut embeddings: Vec<_> = data
-        .iter()
-        .map(|embedding| {
-            // Compatible APIs may omit a scalar's default zero value.
-            // Coverage validation below still rejects duplicate or missing positions.
-            let index = match embedding.get("index") {
-                None => 0,
-                Some(value) => value
-                    .as_u64()
-                    .ok_or_else(|| bad("invalid embedding index"))?,
-            };
-            let vector: Vec<f32> = serde_json::from_value(
-                embedding
-                    .get("embedding")
-                    .cloned()
-                    .ok_or_else(|| bad("missing embedding"))?,
-            )
-            .map_err(|e| bad(e.to_string()))?;
-            if vector.is_empty() || vector.iter().any(|value| !value.is_finite()) {
-                return Err(bad("embedding must contain finite numbers"));
+/// This is the one rule for adding JSON a plugin did not write to JSON it did: objects merge key
+/// by key and take the keys `base` lacks, equal-length arrays merge by position, and anything
+/// else, `null` included, is a conflict reported by its dotted path.
+pub fn merge(base: &mut Value, overlay: Value) -> Result<(), String> {
+    match (base, overlay) {
+        (Value::Object(base), Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                match base.get_mut(&key) {
+                    Some(slot) => merge(slot, value).map_err(|path| join_path(&key, path))?,
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
             }
-            Ok((index, vector))
-        })
-        .collect::<Result<_, Failure>>()?;
-    if embeddings
-        .windows(2)
-        .any(|pair| pair[0].1.len() != pair[1].1.len())
-    {
-        return Err(bad("embedding vectors have inconsistent widths"));
+            Ok(())
+        }
+        (Value::Array(base), Value::Array(overlay)) if base.len() == overlay.len() => {
+            for (index, (slot, value)) in base.iter_mut().zip(overlay).enumerate() {
+                merge(slot, value).map_err(|path| join_path(&index.to_string(), path))?;
+            }
+            Ok(())
+        }
+        _ => Err(String::new()),
     }
-    embeddings.sort_by_key(|(index, _)| *index);
-    if embeddings
+}
+
+fn join_path(segment: &str, below: String) -> String {
+    if below.is_empty() {
+        segment.into()
+    } else {
+        format!("{segment}.{below}")
+    }
+}
+
+/// A request's messages grouped as a protocol sends them.
+///
+/// System and user messages stand alone, and each assistant message comes with the tool messages
+/// after it, which answer its calls.
+pub enum Turn<'a> {
+    /// A system or user message.
+    Message(&'a Message),
+    /// An assistant message at `position` in the request, and each of its calls in order.
+    Assistant {
+        /// The assistant message.
+        message: &'a Message,
+        /// Its index among the request's messages, from which [`call_id`] names its calls.
+        position: usize,
+        /// Its calls in order, each with the result that answers it.
+        calls: Vec<Call<'a>>,
+    },
+}
+
+/// A call, the ID it goes out under, and the tool message that answers it.
+pub struct Call<'a> {
+    /// The ID the call and its result share.
+    ///
+    /// A message with an extension goes out whole, as its plugin stored it, so its calls keep the
+    /// service's IDs, even empty ones; a call rebuilt from canonical parts takes [`call_id`].
+    pub id: String,
+    /// The call as the assistant message holds it, whose own `id` may be empty.
+    pub call: &'a ToolCall,
+    /// The tool message that answers it: its result, then any images.
+    pub message: &'a Message,
+    /// The result that message starts with.
+    pub result: &'a ToolResult,
+}
+
+/// The turns of `messages`.
+///
+/// A call and its result pair by the service's ID, or in order among the calls it gave none. The
+/// host sends a tool message only right after the assistant message whose call it answers, with
+/// a result for every call; a request that breaks this is `provider.bad_request`.
+pub fn turns(messages: &[Message]) -> Result<Vec<Turn<'_>>, Failure> {
+    let mut turns = vec![];
+    let mut index = 0;
+    while let Some(message) = messages.get(index) {
+        let position = index;
+        index += 1;
+        match message.role {
+            Role::Tool => {
+                return Err(bad_request(
+                    "a tool message must follow the assistant message whose call it answers",
+                ));
+            }
+            Role::Assistant => {
+                let answers = messages[index..]
+                    .iter()
+                    .take_while(|next| next.role == Role::Tool)
+                    .count();
+                let calls = answered(message, position, &messages[index..index + answers])?;
+                index += answers;
+                turns.push(Turn::Assistant {
+                    message,
+                    position,
+                    calls,
+                });
+            }
+            Role::System | Role::User => turns.push(Turn::Message(message)),
+        }
+    }
+    Ok(turns)
+}
+
+/// The ID of the `index`th call of the assistant message at `position` when rebuilt from parts.
+///
+/// It is the service's own, or `call_{position}_{index}` when it gave none.
+pub fn call_id(call: &ToolCall, position: usize, index: usize) -> String {
+    if call.id.is_empty() {
+        format!("call_{position}_{index}")
+    } else {
+        call.id.clone()
+    }
+}
+
+fn answered<'a>(
+    assistant: &'a Message,
+    position: usize,
+    tools: &'a [Message],
+) -> Result<Vec<Call<'a>>, Failure> {
+    let results: Vec<_> = tools
         .iter()
+        .filter_map(|message| match message.parts.first() {
+            Some(Part::ToolResult(result)) => Some((message, result)),
+            _ => None,
+        })
+        .collect();
+    let mut unnamed = results
+        .iter()
+        .filter(|(_, result)| result.call_id.is_empty());
+    let whole = assistant
+        .parts
+        .iter()
+        .any(|part| matches!(part, Part::Extension(_)));
+    assistant
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::ToolCall(call) => Some(call),
+            _ => None,
+        })
         .enumerate()
-        .any(|(i, (index, _))| *index != i as u64)
-    {
-        return Err(bad("embedding indexes must cover the input once"));
-    }
-    Ok(embeddings.into_iter().map(|(_, vector)| vector).collect())
+        .map(|(index, call)| {
+            let found = if call.id.is_empty() {
+                unnamed.next()
+            } else {
+                results.iter().find(|(_, result)| result.call_id == call.id)
+            };
+            let (message, result) =
+                found.ok_or_else(|| bad_request(format!("missing result for {}", call.name)))?;
+            Ok(Call {
+                id: if whole {
+                    call.id.clone()
+                } else {
+                    call_id(call, position, index)
+                },
+                call,
+                message,
+                result,
+            })
+        })
+        .collect()
 }
 
-fn wire_call(call: &types::ToolCall) -> Value {
-    json!({
-        "id": call.id,
-        "type": "function",
-        "function": { "name": call.name, "arguments": call.arguments },
-    })
-}
-
-/// What `wire` carries beyond `canonical`, in the shape of `wire`.
-fn extras(wire: Value, canonical: &Value) -> Map<String, Value> {
+/// What `wire` carries beyond `canonical`, in the shape of `wire`: the fields `canonical` lacks,
+/// and below the fields both have, what differs there.
+pub fn extras(wire: Value, canonical: &Value) -> Map<String, Value> {
     let (Value::Object(mut wire), Value::Object(canonical)) = (wire, canonical) else {
         return Map::new();
     };
@@ -256,7 +365,7 @@ fn extras(wire: Value, canonical: &Value) -> Map<String, Value> {
 
 /// Whether service fields carry anything: in JSON, `null` and an empty list or object mean the
 /// same as an absent field.
-fn carries(value: &Value) -> bool {
+pub fn carries(value: &Value) -> bool {
     match value {
         Value::Null => false,
         Value::Array(items) => !items.is_empty(),
@@ -265,98 +374,34 @@ fn carries(value: &Value) -> bool {
     }
 }
 
-fn parse_completion(response: Value) -> Result<Completion, Failure> {
-    let choice = response
-        .pointer("/choices/0")
-        .ok_or_else(|| bad("missing choices[0]"))?;
-    let message = parse_message(choice.get("message"))?;
-    let usage = parse_usage(response.get("usage"))?;
-    let stop_reason = match choice.get("finish_reason").and_then(Value::as_str) {
-        Some("stop") => StopReason::EndTurn,
-        Some("tool_calls") => StopReason::ToolCalls,
-        Some("length") => StopReason::MaxTokens,
-        Some(_) => StopReason::Other,
-        // A response cut off upstream, for example by moderation, may not say how it ended.
-        None => return Err(bad("finish_reason must be a string")),
-    };
-    Ok(Completion {
-        message,
-        usage,
-        stop_reason,
-    })
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
 
-fn parse_message(value: Option<&Value>) -> Result<Message, Failure> {
-    let whole = value
-        .and_then(Value::as_object)
-        .ok_or_else(|| bad("missing assistant message"))?;
-    let mut wire = whole.clone();
-    match wire.remove("role") {
-        Some(Value::String(role)) if role == "assistant" => {}
-        _ => return Err(bad("completion role must be assistant")),
+    #[test]
+    fn nested_options_preserve_written_fields_and_report_conflicts() -> Result<(), Failure> {
+        let mut body = json!({"generationConfig": {"maxOutputTokens": 100}});
+        apply_options(
+            &mut body,
+            r#"{"generationConfig":{"thinkingConfig":{"thinkingLevel":"HIGH"}}}"#,
+            &[],
+        )?;
+        assert_eq!(body["generationConfig"]["maxOutputTokens"], 100);
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "HIGH"
+        );
+        let conflict = apply_options(
+            &mut body,
+            r#"{"generationConfig":{"maxOutputTokens":null}}"#,
+            &[],
+        );
+        assert_eq!(
+            conflict.map_err(|failure| failure.message),
+            Err("options cannot override generationConfig.maxOutputTokens".into())
+        );
+        assert!(apply_options(&mut body, r#"{"stream":false}"#, &["stream"]).is_err());
+        Ok(())
     }
-    let mut parts = vec![];
-    match wire.remove("content") {
-        None | Some(Value::Null) => {}
-        Some(Value::String(text)) => parts.push(Part::Text(text)),
-        Some(_) => return Err(bad("completion content must be text or null")),
-    }
-    let calls = match wire.remove("tool_calls") {
-        None | Some(Value::Null) => vec![],
-        Some(Value::Array(calls)) => calls,
-        Some(_) => return Err(bad("tool_calls must be an array")),
-    };
-    let mut ids = std::collections::HashSet::new();
-    let mut carried = carries(&Value::Object(wire));
-    for call in calls {
-        let parsed = types::ToolCall {
-            id: field(&call, "/id")?,
-            name: field(&call, "/function/name")?,
-            arguments: field(&call, "/function/arguments")?,
-        };
-        if !ids.insert(parsed.id.clone()) {
-            return Err(bad("duplicate provider call ID"));
-        }
-        carried |= carries(&Value::Object(extras(call, &wire_call(&parsed))));
-        parts.push(Part::ToolCall(parsed));
-    }
-    // A reply with more than the canonical fields goes back whole, as the service wrote it.
-    if carried {
-        parts.push(Part::Extension(types::Extension {
-            data: Value::Object(whole.clone()).to_string(),
-        }));
-    }
-    Ok(Message {
-        role: Role::Assistant,
-        parts,
-    })
-}
-
-fn parse_usage(value: Option<&Value>) -> Result<Usage, Failure> {
-    let usage = value.ok_or_else(|| bad("missing usage"))?;
-    let input_tokens = usage
-        .get("prompt_tokens")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| bad("missing prompt_tokens"))?;
-    let output_tokens = usage
-        .get("completion_tokens")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| bad("missing completion_tokens"))?;
-    let cached_input_tokens = usage
-        .pointer("/prompt_tokens_details/cached_tokens")
-        .or_else(|| usage.get("prompt_cache_hit_tokens"))
-        .and_then(Value::as_u64);
-    Ok(Usage {
-        input_tokens,
-        output_tokens,
-        cached_input_tokens,
-    })
-}
-
-fn field(value: &Value, path: &str) -> Result<String, Failure> {
-    value
-        .pointer(path)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| bad(format!("missing text at {path}")))
 }

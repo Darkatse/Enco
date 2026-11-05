@@ -18,7 +18,7 @@ fn plan(node: NodeId) -> ContextPlan {
                 effect: Effect::ReadOnly,
             },
         )],
-        max_output_tokens: Some(1_024),
+        max_output_tokens: 1_024.try_into().unwrap(),
         omitted: Vec::new(),
     }
 }
@@ -79,7 +79,7 @@ async fn plans_share_catalogs_and_prefixes_but_bound_restoration_work() {
     let mut saved = Vec::new();
     for seq in 1..=66 {
         plan.items.push(inline(format!("New message {seq}")));
-        plan.max_output_tokens = Some(1_024 + seq as u32);
+        plan.max_output_tokens = (1_024 + seq as u32).try_into().unwrap();
         let hash = save(&store, event.session, seq, plan.clone()).await;
         saved.push((hash, plan.clone()));
     }
@@ -227,7 +227,7 @@ async fn fresh_databases_enable_incremental_vacuum_and_old_versions_stay_untouch
         .pragma_query_value(None, "auto_vacuum", |row| row.get(0))
         .unwrap();
     assert_eq!(mode, 2);
-    db.pragma_update(None, "user_version", 20).unwrap();
+    db.pragma_update(None, "user_version", 21).unwrap();
     drop(store);
     assert!(matches!(
         SqliteStore::open(
@@ -236,8 +236,8 @@ async fn fresh_databases_enable_incremental_vacuum_and_old_versions_stay_untouch
         )
         .await,
         Err(StoreError::SchemaVersion {
-            found: 20,
-            expected: 21
+            found: 21,
+            expected: 22
         })
     ));
     let sessions: i64 = db
@@ -247,5 +247,5 @@ async fn fresh_databases_enable_incremental_vacuum_and_old_versions_stay_untouch
     let version: i64 = db
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
 }

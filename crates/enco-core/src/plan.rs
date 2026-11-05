@@ -9,8 +9,8 @@ pub struct ContextPlan {
     pub items: Vec<PlanItem>,
     /// Disclosed capabilities together with their frozen definitions.
     pub tools: Vec<(CapabilityId, DisclosedTool)>,
-    /// Requested output budget; absent means provider default.
-    pub max_output_tokens: Option<u32>,
+    /// The most tokens the reply may use, within the budget of the target the plan is for.
+    pub max_output_tokens: std::num::NonZeroU32,
     /// Reasons content was not included in this request.
     pub omitted: Vec<Omission>,
 }

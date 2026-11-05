@@ -5,13 +5,12 @@ use crate::{
     channel_convert as convert,
     credentials::{self, CallCredential},
     host_imports::{self, HostState},
+    mapping,
     origins::Destinations,
     plugin::WasmPlugin,
 };
 use async_trait::async_trait;
-use enco_core::{
-    ContentHash, Failure, FileData, GenerationId, MappingOrigin, MappingRecord, Outgoing, code,
-};
+use enco_core::{Failure, FileData, GenerationId, MappingOrigin, Outgoing, code};
 use enco_kernel::{
     Channel, ChannelActivity, ChannelActivityUpdate, ChannelAdapter, ChannelCallError,
     ChannelCommand, ChannelFault, ChannelIdentity, ChannelPacingGap, ChannelQuotedMessage,
@@ -127,30 +126,20 @@ impl Channel for WasmChannel {
 
 impl Transport {
     async fn record(&self, export: &str, arguments: Value) -> Result<MappingOrigin, StoreError> {
-        let record = MappingRecord {
-            generation: self.generation,
-            export: format!("channel.{export}"),
+        mapping::record(
+            self.store.as_ref(),
+            self.generation,
+            format!("channel.{export}"),
             arguments,
-        };
-        let bytes = serde_json::to_vec(&record)
-            .map_err(|error| StoreError::Backend(format!("mapping record: {error}")))?;
-        Ok(MappingOrigin {
-            call: self.store.put_blob(&bytes).await?,
-            index: 0,
-        })
+        )
+        .await
     }
 
-    async fn response_record(&self, response: &wire::Response) -> Result<Value, StoreError> {
-        let wire::Response {
-            status,
-            headers,
-            body,
-        } = response;
-        let body: ContentHash = self.store.put_blob(body).await?;
-        Ok(json!({"status": status, "headers": headers, "body": body}))
+    async fn response_record(&self, response: &wire::HttpResponse) -> Result<Value, StoreError> {
+        mapping::response(self.store.as_ref(), response).await
     }
 
-    async fn http(&self, request: wire::Request) -> Result<wire::Response, ChannelFault> {
+    async fn http(&self, request: wire::HttpRequest) -> Result<wire::HttpResponse, ChannelFault> {
         let request = request_for(&self.destinations, request)
             .map_err(|failure| convert::failure(failure, false, None))?;
         self.exchange(request, &self.credentials)
@@ -161,22 +150,16 @@ impl Transport {
     /// Send a request whose destination is already allowed, with these credentials.
     async fn exchange(
         &self,
-        request: host::HttpRequest,
+        request: wire::HttpRequest,
         credentials: &[CallCredential],
-    ) -> Result<wire::Response, host::HttpFailure> {
-        let host::HttpResponse {
-            status,
-            headers,
-            body,
-        } = host_imports::http(&self.mapper.plugin.http, credentials, request).await?;
-        Ok(wire::Response {
-            status,
-            headers,
-            body,
-        })
+    ) -> Result<wire::HttpResponse, host::HttpFailure> {
+        host_imports::http(&self.mapper.plugin.http, credentials, request).await
     }
 
-    async fn answered(&self, response: wire::Response) -> Result<ChannelSent, ChannelCallError> {
+    async fn answered(
+        &self,
+        response: wire::HttpResponse,
+    ) -> Result<ChannelSent, ChannelCallError> {
         let origin = self
             .record(
                 "answered",
@@ -394,8 +377,8 @@ impl ChannelAdapter for Connection {
 }
 
 impl Transport {
-    async fn notice(&self, request: wire::Request) -> Result<(), ChannelFault> {
-        let wire::Response { status, .. } = self.http(request).await?;
+    async fn notice(&self, request: wire::HttpRequest) -> Result<(), ChannelFault> {
+        let wire::HttpResponse { status, .. } = self.http(request).await?;
         if (200..300).contains(&status) {
             return Ok(());
         }
@@ -436,20 +419,10 @@ fn fault(failure: host::HttpFailure) -> ChannelFault {
 
 fn request_for(
     destinations: &Destinations,
-    request: wire::Request,
-) -> Result<host::HttpRequest, Failure> {
-    let wire::Request {
-        method,
-        url,
-        headers,
-        body,
-        timeout_ms,
-    } = request;
-    Ok(host::HttpRequest {
-        method,
-        url: destinations.request(&url)?.to_string(),
-        headers,
-        body,
-        timeout_ms,
+    request: wire::HttpRequest,
+) -> Result<wire::HttpRequest, Failure> {
+    Ok(wire::HttpRequest {
+        url: destinations.request(&request.url)?.to_string(),
+        ..request
     })
 }

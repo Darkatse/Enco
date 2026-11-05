@@ -1,6 +1,6 @@
 //! OneBot conversations, locators, request envelopes and delivery evidence; no transport or
 //! credentials live here.
-use crate::channel::{Fault, Request, Response};
+use crate::channel::{Fault, HttpRequest, HttpResponse};
 use enco_sdk::{
     channel::{Quote, Quoted},
     types::{Failure, QuoteKind},
@@ -154,8 +154,8 @@ pub(super) fn fault(code: &str, message: String) -> Fault {
 /// How long an action without a file may take.
 pub(super) const ACTION_TIMEOUT_MS: u32 = 30_000;
 
-pub(super) fn request(action: &str, body: Value, timeout_ms: u32) -> Request {
-    Request {
+pub(super) fn request(action: &str, body: Value, timeout_ms: u32) -> HttpRequest {
+    HttpRequest {
         method: "POST".into(),
         url: format!("/{action}"),
         headers: vec![("content-type".into(), "application/json".into())],
@@ -164,7 +164,7 @@ pub(super) fn request(action: &str, body: Value, timeout_ms: u32) -> Request {
     }
 }
 
-pub(super) fn checked(response: &Response) -> Result<(), Fault> {
+pub(super) fn checked(response: &HttpResponse) -> Result<(), Fault> {
     if (200..300).contains(&response.status) {
         return Ok(());
     }
@@ -182,7 +182,7 @@ pub(super) fn checked(response: &Response) -> Result<(), Fault> {
 
 /// The envelope of SnowLuma's `response` to an action; an HTTP failure or an unreadable envelope
 /// is a fault.
-pub(super) fn envelope(response: &Response) -> Result<Envelope, Fault> {
+pub(super) fn envelope(response: &HttpResponse) -> Result<Envelope, Fault> {
     checked(response)?;
     serde_json::from_slice(&response.body).map_err(|_| Fault {
         unknown: true,
@@ -190,7 +190,7 @@ pub(super) fn envelope(response: &Response) -> Result<Envelope, Fault> {
     })
 }
 
-pub(super) fn answer(response: Response) -> Result<Value, Fault> {
+pub(super) fn answer(response: HttpResponse) -> Result<Value, Fault> {
     match envelope(&response)? {
         Envelope::Ok { data } => Ok(data),
         Envelope::Failed { retcode, wording } => Err(fault(

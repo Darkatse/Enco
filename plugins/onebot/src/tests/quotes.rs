@@ -14,7 +14,7 @@ fn stored_message(user: u64, segments: Value) -> Value {
         "message":segments,"raw_message":"","font":0,"post_type":"message"})
 }
 
-fn api(data: Value) -> Response {
+fn api(data: Value) -> HttpResponse {
     response(&json!({"status":"ok","retcode":0,"data":data}).to_string())
 }
 

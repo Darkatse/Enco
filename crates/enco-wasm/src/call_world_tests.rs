@@ -14,11 +14,9 @@ use wasmtime_wasi::{
 };
 
 fn composer(now: DateTime<Utc>, round: RoundId) -> WasiCtx {
-    let (network, config, wasi) = CallWorld::Composer { now, round }
-        .configure(&serde_json::json!({"text": "configured"}))
+    let (_, _, wasi) = CallWorld::Composer { now, round }
+        .configure(&serde_json::json!({}))
         .expect("composer world");
-    assert!(matches!(network, Network::Closed));
-    assert_eq!(config, r#"{"text":"configured"}"#);
     wasi
 }
 
@@ -106,13 +104,11 @@ fn declarations_and_probes_have_no_network() {
 }
 
 #[test]
-fn mapper_wasi_repeats_clocks_and_randomness_without_capabilities() {
-    let (network, config, mut first) = CallWorld::Mapper
+fn mapper_wasi_repeats_clocks_and_randomness() {
+    let (_, _, mut first) = CallWorld::Mapper
         .configure(&serde_json::json!({"ignored": true}))
         .unwrap();
     let (_, _, mut second) = CallWorld::Mapper.configure(&serde_json::json!({})).unwrap();
-    assert!(matches!(network, Network::Closed));
-    assert_eq!(config, "{}");
     for _ in 0..3 {
         assert_eq!(
             random::Host::get_random_bytes(first.random(), 64).unwrap(),

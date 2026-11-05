@@ -12,7 +12,7 @@ fn view() -> ActivityView {
     }
 }
 
-fn body(request: &super::super::channel::Request) -> Result<Value, String> {
+fn body(request: &super::super::channel::HttpRequest) -> Result<Value, String> {
     serde_json::from_slice(request.body.as_deref().ok_or("body")?).map_err(|e| e.to_string())
 }
 

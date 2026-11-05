@@ -8,7 +8,8 @@ mod wire;
 
 use bindings::exports::enco::plugin::{channel, lifecycle};
 use channel::{
-    Arrival, Command, Fault, FetchStep, Identity, Outgoing, ReadStep, Reading, Request, Response,
+    Arrival, Command, Fault, FetchStep, HttpRequest, HttpResponse, Identity, Outgoing, ReadStep,
+    Reading,
 };
 use enco_sdk::{
     channel::{ActivityUpdate, ActivityView},
@@ -101,11 +102,11 @@ impl channel::Guest for Plugin {
         None
     }
 
-    fn identify() -> Request {
+    fn identify() -> HttpRequest {
         request("getMe", json!({}), READ_TIMEOUT_MS)
     }
 
-    fn identified(response: Response) -> Result<Identity, Fault> {
+    fn identified(response: HttpResponse) -> Result<Identity, Fault> {
         let account: Account = answer("getMe", response)?;
         Ok(Identity {
             protocol: "telegram".into(),
@@ -134,7 +135,11 @@ impl channel::Guest for Plugin {
         incoming::received(identity, state, response)
     }
 
-    fn fetch(locator: String, responses: Vec<Response>, _limit: u32) -> Result<FetchStep, Fault> {
+    fn fetch(
+        locator: String,
+        responses: Vec<HttpResponse>,
+        _limit: u32,
+    ) -> Result<FetchStep, Fault> {
         match fetch_step(&locator, responses) {
             // Telegram rejected this file for good; the connection itself is still usable.
             Err(fault) if !fault.fatal && !fault.unknown && !fault.failure.retryable => {
@@ -151,11 +156,11 @@ impl channel::Guest for Plugin {
         outgoing::split(message)
     }
 
-    fn send(conversation: String, part: Outgoing) -> Result<Request, Fault> {
+    fn send(conversation: String, part: Outgoing) -> Result<HttpRequest, Fault> {
         Ok(outgoing::send(conversation, part))
     }
 
-    fn answered(response: Response) -> Result<Option<String>, Fault> {
+    fn answered(response: HttpResponse) -> Result<Option<String>, Fault> {
         match answer::<Answer>("Telegram request", response)? {
             Answer::Message(sent) => Ok(Some(sent.message_id.to_string())),
             Answer::Acknowledged(true) => Ok(None),
@@ -163,7 +168,7 @@ impl channel::Guest for Plugin {
         }
     }
 
-    fn commands(_identity: Identity, commands: Vec<Command>) -> Vec<Request> {
+    fn commands(_identity: Identity, commands: Vec<Command>) -> Vec<HttpRequest> {
         [("all_private_chats", true), ("all_group_chats", false)]
             .into_iter()
             .map(|(scope, direct)| {
@@ -192,7 +197,7 @@ impl channel::Guest for Plugin {
             .collect()
     }
 
-    fn respond(handle: String, text: Option<String>) -> Result<Option<Request>, Fault> {
+    fn respond(handle: String, text: Option<String>) -> Result<Option<HttpRequest>, Fault> {
         Ok(Some(request(
             "answerCallbackQuery",
             json!({"callback_query_id": handle, "text": text}),
@@ -205,28 +210,28 @@ impl channel::Guest for Plugin {
         replies_here: bool,
         shown: Option<String>,
         update: ActivityUpdate,
-    ) -> Option<Request> {
+    ) -> Option<HttpRequest> {
         activity::activity(conversation, replies_here, shown, update)
     }
 
-    fn presence(conversation: String, view: ActivityView) -> Option<Request> {
+    fn presence(conversation: String, view: ActivityView) -> Option<HttpRequest> {
         activity::presence(conversation, view)
     }
 
-    fn open_conversation(beside: String, session: Vec<String>) -> Option<Request> {
+    fn open_conversation(beside: String, session: Vec<String>) -> Option<HttpRequest> {
         activity::open(beside, session)
     }
 
-    fn opened(beside: String, response: Response) -> Result<String, Fault> {
+    fn opened(beside: String, response: HttpResponse) -> Result<String, Fault> {
         activity::opened(beside, response)
     }
 
-    fn close_conversation(conversation: String) -> Option<Request> {
+    fn close_conversation(conversation: String) -> Option<HttpRequest> {
         activity::close(conversation)
     }
 }
 
-fn fetch_step(locator: &str, responses: Vec<Response>) -> Result<FetchStep, Fault> {
+fn fetch_step(locator: &str, responses: Vec<HttpResponse>) -> Result<FetchStep, Fault> {
     let mut responses = responses.into_iter();
     let Some(response) = responses.next() else {
         return Ok(FetchStep::Request(request(
@@ -237,7 +242,7 @@ fn fetch_step(locator: &str, responses: Vec<Response>) -> Result<FetchStep, Faul
     };
     let file: File = answer("getFile", response)?;
     let Some(response) = responses.next() else {
-        return Ok(FetchStep::Request(Request {
+        return Ok(FetchStep::Request(HttpRequest {
             method: "GET".into(),
             url: format!("/file/bot/{}", wire::path(&file.file_path)),
             headers: vec![],

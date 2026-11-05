@@ -1,15 +1,15 @@
 use super::{
     Plugin,
     channel::{
-        Arrival, Command, FetchStep, FileData, Guest, Identity, Outgoing, ReadStep, Response,
+        Arrival, Command, FetchStep, FileData, Guest, HttpResponse, Identity, Outgoing, ReadStep,
     },
 };
 use enco_sdk::channel::{Action, CommandKind};
 use enco_sdk::channel::{ActivityUpdate, ActivityView};
 use serde_json::{Value, json};
 
-fn response(status: u16, body: &[u8]) -> Response {
-    Response {
+fn response(status: u16, body: &[u8]) -> HttpResponse {
+    HttpResponse {
         status,
         headers: vec![],
         body: body.into(),

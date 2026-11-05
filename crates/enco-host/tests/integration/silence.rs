@@ -128,13 +128,14 @@ impl Provider for HeldProvider {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, CompleteError> {
+        record: Option<Recording>,
+    ) -> Result<Answered, StoreError> {
         let release = self.release.lock().unwrap().take();
         if let Some(release) = release {
             self.entered.notify_one();
             release.await.unwrap();
         }
-        self.scripted.complete(settings, request).await
+        self.scripted.complete(settings, request, record).await
     }
 }
 

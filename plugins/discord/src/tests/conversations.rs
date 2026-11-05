@@ -135,7 +135,7 @@ fn only_an_unknown_channel_removes_a_conversation() -> Result<(), String> {
         ),
         ("<html>Not Found</html>".into(), "channel.http.404"),
     ] {
-        let fault = Plugin::answered(Response {
+        let fault = Plugin::answered(HttpResponse {
             status: 404,
             headers: vec![],
             body: body.into_bytes(),

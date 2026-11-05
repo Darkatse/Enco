@@ -73,6 +73,7 @@ impl Kernel {
                 EntryBody::AttemptSettled {
                     attempt: id,
                     result,
+                    ..
                 } if id == attempt => Some(result.clone()),
                 _ => None,
             });

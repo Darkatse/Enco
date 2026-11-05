@@ -1,5 +1,6 @@
-/// Enco plugin contract. Plugins interact with the host only through these imports.
-package enco:plugin@0.15.0;
+/// Enco plugin contract. Plugins interact with the host only through it: each exports the
+/// interfaces of its world, and only a tool plugin imports `host`.
+package enco:plugin@0.16.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -171,10 +172,10 @@ interface types {
         reason: unviewable-reason,
     }
 
-    /// Endpoint, model and adapter options supplied by the caller for this call.
+    /// The model and adapter options of the endpoint this call is for.
+    ///
+    /// The endpoint's base URL stays with the host, which joins a mapper's request path to it.
     record settings {
-        /// The service's base URL; request paths are appended to it.
-        base-url: string,
         /// The model the service runs.
         model: string,
         /// Options the adapter merges into its request, as a JSON object.
@@ -220,25 +221,16 @@ interface types {
         /// A halt of this Session or an ancestor stopped it.
         halted,
     }
-}
 
-/// Host-owned logging and transport available to plugins.
-interface host {
-    use types.{json};
-
-    /// The configuration of this invocation's generation, excluding credential mappings.
-    config: func() -> json;
-    /// Severity attached to a plugin diagnostic.
-    enum log-level { trace, debug, info, warn, error }
-
-    /// Write a diagnostic to the host log.
-    log: func(level: log-level, message: string);
-
-    /// An HTTP request for the host to send.
+    /// What the host sends over HTTP: the method, destination, headers, body and time limit.
+    ///
+    /// For `host.http`, `url` is an absolute URL. A mapper's request goes to the service it maps:
+    /// `url` is a path starting with `/`, which the host joins to that service's base URL. A
+    /// channel's may also be an absolute URL on the base URL's origin or on one of its `origins`.
     record http-request {
         /// The method, such as `GET` or `POST`.
         method: string,
-        /// The absolute URL.
+        /// Where to send it, as stated above.
         url: string,
         /// Header names and values, in order.
         headers: list<tuple<string, string>>,
@@ -248,15 +240,28 @@ interface host {
         timeout-ms: option<u32>,
     }
 
-    /// An HTTP status, headers and fully collected response body.
+    /// An HTTP response, whatever its status, with its whole body.
     record http-response {
         /// The status code, such as 200.
         status: u16,
         /// Header names and values, in order.
         headers: list<tuple<string, string>>,
-        /// The whole body, already collected.
+        /// The whole body.
         body: list<u8>,
     }
+}
+
+/// Host-owned configuration, logging and transport, which only tool plugins import.
+interface host {
+    use types.{json, http-request, http-response};
+
+    /// The configuration of this invocation's generation, excluding credential mappings.
+    config: func() -> json;
+    /// Severity attached to a plugin diagnostic.
+    enum log-level { trace, debug, info, warn, error }
+
+    /// Write a diagnostic to the host log.
+    log: func(level: log-level, message: string);
 
     /// Classifies failures while constructing, sending or reading an HTTP request.
     enum http-error-kind { invalid-request, connect, timeout, body, too-large, other }
@@ -298,20 +303,25 @@ interface tools {
     call: async func(name: string, input: json) -> outcome;
 }
 
-/// Adapts canonical requests to a model service protocol.
+/// Adapts canonical requests to a model service protocol, as a pure mapper.
+///
+/// The host sends what `encode` returns to the endpoint and records the response before `decode`
+/// reads it, so each settlement can be traced to what the service said.
 interface completion {
-    use types.{failure, message, overflow, tool-spec, settings, usage};
+    use types.{failure, message, overflow, tool-spec, settings, usage, http-request, http-response};
 
     /// The frozen messages, disclosed tools and output budget for one completion.
     ///
     /// User messages may include images; tool messages contain one result followed by any images.
+    /// The calls of each assistant message are answered right after it, one tool message per call,
+    /// whose result carries the call's `id`.
     record request {
         /// The messages, in order.
         messages: list<message>,
         /// The tools the model may call.
         tools: list<tool-spec>,
-        /// The most tokens the reply may use; the service's default when absent.
-        max-output-tokens: option<u32>,
+        /// The most tokens the reply may use.
+        max-output-tokens: u32,
     }
 
     /// The service-reported reason that generation stopped.
@@ -329,7 +339,7 @@ interface completion {
         stop-reason: stop-reason,
     }
 
-    /// Why `complete` returned no completion.
+    /// Why `decode` returned no completion.
     variant complete-error {
         /// The request failed.
         failed(failure),
@@ -337,31 +347,52 @@ interface completion {
         overflow(overflow),
     }
 
-    /// Perform one non-streaming completion.
+    /// The request that asks the service for this completion.
+    ///
+    /// The host sends it to the endpoint only, with the endpoint's credentials, and records the
+    /// response before `decode` reads it.
     ///
     /// # Errors
-    /// `overflow` when the service turns the request away as larger than the model accepts, as
-    /// an HTTP 413 always does. Otherwise `failed`, with the codes `provider.network`,
-    /// `provider.auth`, `provider.rate_limited`, `provider.server`, `provider.bad_request`,
-    /// `provider.bad_response`, and `timeout`.
-    complete: async func(settings: settings, request: request) -> result<completion, complete-error>;
+    /// `provider.bad_request` when the protocol cannot express `request` or `settings.options`.
+    encode: func(settings: settings, request: request) -> result<http-request, failure>;
+
+    /// What the service's response to `encode`'s request means, whatever its status.
+    ///
+    /// A request that got no response never reaches this function: the host reports it as
+    /// `provider.network` or `timeout`.
+    ///
+    /// # Errors
+    /// `overflow` when the service turns the request away as larger than the model accepts, as an
+    /// HTTP 413 always does. Otherwise `failed`, with the codes `provider.auth`,
+    /// `provider.rate_limited`, `provider.server`, `provider.bad_request`, `provider.bad_response`
+    /// and `timeout`.
+    decode: func(response: http-response) -> result<completion, complete-error>;
 }
 
-/// Embeds texts for retrieval independently of model completion.
+/// Embeds texts for retrieval independently of model completion, as a pure mapper.
 interface embedding {
-    use types.{failure, settings};
+    use types.{failure, settings, http-request, http-response};
 
-    /// Return exactly one nonempty vector of finite numbers per input, in input order.
-    /// All returned vectors must have the same width.
+    /// The request that embeds `inputs`; the host sends it as it sends `completion.encode`'s.
     ///
     /// # Errors
-    /// Uses `provider.*` failure codes and `timeout`, as in `completion.complete`.
-    embed: async func(settings: settings, inputs: list<string>) -> result<list<list<f32>>, failure>;
+    /// `provider.bad_request` when the protocol cannot express `inputs` or `settings.options`.
+    encode: func(settings: settings, inputs: list<string>) -> result<http-request, failure>;
+
+    /// One nonempty vector of finite numbers per input, in input order, all of the same width.
+    ///
+    /// `count` is how many inputs `encode` was given. A response that does not hold that many such
+    /// vectors is `provider.bad_response`.
+    ///
+    /// # Errors
+    /// The codes `completion.decode` lists for `failed`.
+    decode: func(count: u32, response: http-response) -> result<list<list<f32>>, failure>;
 }
 
-/// Answers independent questions against shared evidence, without generating messages.
+/// Answers independent questions against shared evidence, without generating messages, as a pure
+/// mapper.
 interface decision {
-    use types.{failure, settings};
+    use types.{failure, settings, http-request, http-response};
 
     /// An option or score level.
     record label {
@@ -404,12 +435,21 @@ interface decision {
         refused,
     }
 
-    /// Evaluate each question against the same text state. Return one matching answer
-    /// per question in input order; any question may instead receive `refused`.
+    /// The request that asks the service to judge each of `questions` against the same text
+    /// `state`; the host sends it as it sends `completion.encode`'s.
     ///
     /// # Errors
-    /// Uses `provider.*` failure codes and `timeout`, as in `completion.complete`.
-    decide: async func(settings: settings, state: string, questions: list<question>) -> result<list<answer>, failure>;
+    /// `provider.bad_request` when the protocol cannot express `questions` or `settings.options`.
+    encode: func(settings: settings, state: string, questions: list<question>) -> result<http-request, failure>;
+
+    /// One answer per question of `questions`, in their order and of their kind.
+    ///
+    /// `questions` are the ones `encode` was given, and the response is the service's to that
+    /// request, whatever its status. Any question may instead receive `refused`.
+    ///
+    /// # Errors
+    /// The codes `completion.decode` lists for `failed`.
+    decode: func(questions: list<question>, response: http-response) -> result<list<answer>, failure>;
 }
 
 /// Describes and checks the component without assigning its registry identity.
@@ -474,56 +514,58 @@ interface lifecycle {
     probe: async func() -> result<_, failure>;
 }
 
-/// Imports and lifecycle operations shared by all plugins.
-world base {
-    import host;
-    export lifecycle;
-}
-
-/// A plugin exposing completion and embedding operations.
+/// A model service's mapper for completion and embedding.
+///
+/// It imports nothing: the host sends its requests to the endpoint, and records each completion's
+/// response before decoding it.
 world provider-plugin {
-    include base;
+    export lifecycle;
     export completion;
     export embedding;
 }
 
-/// A plugin exposing model completion.
+/// A model service's mapper for completion; it imports nothing.
 world completion-plugin {
-    include base;
+    export lifecycle;
     export completion;
 }
 
-/// A plugin exposing text embedding.
+/// A model service's mapper for text embedding; it imports nothing.
 world embedding-plugin {
-    include base;
+    export lifecycle;
     export embedding;
 }
 
-/// A plugin exposing typed decisions over shared evidence.
+/// A decision service's mapper; it imports nothing.
 world decision-plugin {
-    include base;
+    export lifecycle;
     export decision;
 }
 
-/// A plugin exposing model-facing tools.
+/// A plugin exposing model-facing tools, the only kind that imports host capabilities.
+///
+/// A tool acts while it runs: where it goes and in how many steps is its own logic, and the host
+/// settles each call by its outcome.
 world tool-plugin {
-    include base;
+    import host;
+    export lifecycle;
     export tools;
 }
 
 /// Writes the model requests of the Sessions whose profile names this plugin.
 ///
-/// A composition is a pure function of its arguments, the plugin's configuration and its own code,
-/// and changes nothing but its result: it has no files, no environment variables and no network, so
-/// `host.http` fails. The wall clock reads the Round's instant, the monotonic clock stands still and
-/// randomness is seeded by the Round, so the same generation, called again within a Round with the
-/// same arguments, returns the same plan.
+/// A composition is a pure function of its arguments and its own code, and changes nothing but its
+/// result: a composer imports nothing and has no files or environment variables, and the plugin's
+/// configuration reaches only `lifecycle.describe` and `options-schema`. The wall clock reads the
+/// Round's instant, the monotonic clock stands still and randomness is seeded by the Round, so the
+/// same generation, called again within a Round with the same arguments, returns the same plan.
 ///
 /// The host records each plan before sending it and resolves its Log references. A plan breaks
 /// this contract when it discloses a capability outside this Round, refers to a position outside
 /// the transcript, or sends images to a model that does not accept them; when a reply plan leaves
-/// out a capability in `lifeline`; or when a compaction discloses any tool, stops where no Round
-/// ends, or leaves no transcript item after it for the reply to answer.
+/// out a capability in `lifeline`; when a plan's output limit is 0 or above its target's budget; or
+/// when a compaction discloses any tool, stops where no Round ends, or leaves no transcript item
+/// after it for the reply to answer.
 interface composer {
     use types.{datetime, failure, image-format, json, overflow, quote-kind, role, run-end, tool-spec, unviewable, usage};
 
@@ -1170,8 +1212,9 @@ interface composer {
         items: list<plan-item>,
         /// The tools to disclose, by identity.
         tools: list<capability-id>,
-        /// The most tokens the reply may use; the service's default when absent.
-        max-output-tokens: option<u32>,
+        /// The most tokens the reply may use: at least 1, and at most the `max-output-tokens` of the
+        /// budget of the target the plan is for.
+        max-output-tokens: u32,
         /// What the composer left out, and why.
         omitted: list<omission>,
     }
@@ -1219,9 +1262,9 @@ interface composer {
     compose: func(options: json, input: compose-input) -> result<composition, failure>;
 }
 
-/// A plugin that writes model requests.
+/// A plugin that writes model requests; it imports nothing.
 world composer-plugin {
-    include base;
+    export lifecycle;
     export composer;
 }
 
@@ -1229,32 +1272,7 @@ world composer-plugin {
 ///
 /// The host records each external input before handing it over, and carries out what the mapper asks.
 interface channel {
-    use types.{datetime, failure, json, quote-kind, run-end, unviewable};
-
-    /// A request for the host to send.
-    record request {
-        /// The method, such as `GET` or `POST`.
-        method: string,
-        /// A path starting with `/`, joined to the connection's base URL, or an absolute URL at
-        /// one of the mapper's `origins`.
-        url: string,
-        /// Header names and values, in order.
-        headers: list<tuple<string, string>>,
-        /// The bytes to send, if any.
-        body: option<list<u8>>,
-        /// The time limit in milliseconds; the host's default when absent.
-        timeout-ms: option<u32>,
-    }
-
-    /// A response the protocol returned, whatever its status.
-    record response {
-        /// The status code, such as 200.
-        status: u16,
-        /// Header names and values, in order.
-        headers: list<tuple<string, string>>,
-        /// The whole body.
-        body: list<u8>,
-    }
+    use types.{datetime, failure, http-request, http-response, json, quote-kind, run-end, unviewable};
 
     /// A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection
     /// stops.
@@ -1284,7 +1302,7 @@ interface channel {
     /// How the host reads the protocol next.
     variant read-step {
         /// Send this request; its response is one arrival.
-        request(request),
+        request(http-request),
         /// Open this socket; each frame on it is one arrival, until it closes.
         socket(socket),
     }
@@ -1292,7 +1310,7 @@ interface channel {
     /// Something that reached the mapper through the host.
     variant arrival {
         /// The response to the read request.
-        response(response),
+        response(http-response),
         /// A text frame on the open socket.
         frame(string),
         /// The socket closed, by the protocol or through a network failure.
@@ -1322,7 +1340,7 @@ interface channel {
         /// Protocol acknowledgments to send before acceptance, with no effect beyond confirming receipt.
         ///
         /// Answers to this reading's messages are sent only after these complete.
-        acknowledgments: list<request>,
+        acknowledgments: list<http-request>,
         /// Milliseconds until a `timer` arrival, replacing any pending timer; absent keeps it.
         /// Timers end with the socket.
         timer: option<u32>,
@@ -1541,7 +1559,7 @@ interface channel {
     /// The next step of fetching the content a locator names.
     variant fetch-step {
         /// Send this request and call again with its response.
-        request(request),
+        request(http-request),
         /// Get this absolute URL taken from the protocol's content and call again with its
         /// response.
         ///
@@ -1623,9 +1641,9 @@ interface channel {
     /// when the generation loads.
     pacing: func() -> option<pacing-gap>;
     /// The request that reads which account the connection reaches.
-    identify: func() -> request;
+    identify: func() -> http-request;
     /// The account in that request's response.
-    identified: func(response: response) -> result<identity, fault>;
+    identified: func(response: http-response) -> result<identity, fault>;
     /// How to read next, from the latest protocol state; `state` is absent before the protocol
     /// gave one.
     ///
@@ -1643,24 +1661,24 @@ interface channel {
     ///
     /// One fetch may send at most `limit` requests and downloads in all; asking for more is a
     /// contract failure.
-    fetch: func(locator: string, responses: list<response>, limit: u32) -> result<fetch-step, fault>;
+    fetch: func(locator: string, responses: list<http-response>, limit: u32) -> result<fetch-step, fault>;
     /// The protocol messages to send, in order; at least one, none empty. Together they carry all
     /// of the message's text and its file, laid out as the protocol needs.
     split: func(message: outgoing) -> list<outgoing>;
     /// The request that sends one part to a conversation.
-    send: func(conversation: string, part: outgoing) -> result<request, fault>;
+    send: func(conversation: string, part: outgoing) -> result<http-request, fault>;
     /// What the protocol answered: the ID of the message a request created, if any, or why it
     /// failed.
     ///
     /// A failure with code `channel.conversation_gone` means the conversation no longer exists;
     /// the host forgets its route.
-    answered: func(response: response) -> result<option<string>, fault>;
+    answered: func(response: http-response) -> result<option<string>, fault>;
     /// The request that answers the accepted message carrying `handle`, showing `text` to its
     /// sender; absent when nothing more needs sending.
-    respond: func(handle: string, text: option<string>) -> result<option<request>, fault>;
+    respond: func(handle: string, text: option<string>) -> result<option<http-request>, fault>;
     /// Requests that offer the host's commands in the protocol's menus, sent when a connection
     /// starts.
-    commands: func(identity: identity, commands: list<command>) -> list<request>;
+    commands: func(identity: identity, commands: list<command>) -> list<http-request>;
     /// Creates, refreshes, rewrites or removes a Run's view; absent when nothing needs sending,
     /// and for a new view when the protocol shows none.
     ///
@@ -1678,13 +1696,13 @@ interface channel {
         replies-here: bool,
         shown: option<string>,
         update: activity-update,
-    ) -> option<request>;
+    ) -> option<http-request>;
     /// A passing sign in `conversation` that the Agent is working, such as typing or an expiring
     /// draft of `view`; absent when the protocol has none.
     ///
     /// The host sends it only where the Run's replies go, when the Run starts and at each refresh
     /// until it ends, keeps nothing of it, and reads its response with `answered`.
-    presence: func(conversation: string, view: activity-view) -> option<request>;
+    presence: func(conversation: string, view: activity-view) -> option<http-request>;
     /// The request opening a child Session's own conversation beside `beside`, where its parent
     /// shows; absent when the mapper knows the protocol cannot open one there.
     ///
@@ -1692,16 +1710,16 @@ interface channel {
     /// not shown on this connection. `session` is the child's full name, segment by segment; lay
     /// out the title so that it reads apart from the conversations people open. Opening may leave
     /// the protocol's one-time notice.
-    open-conversation: func(beside: string, session: list<string>) -> option<request>;
+    open-conversation: func(beside: string, session: list<string>) -> option<http-request>;
     /// The nonempty ID of the conversation that an `open-conversation` request made beside
     /// `beside` created, or why it failed.
-    opened: func(beside: string, response: response) -> result<string, fault>;
+    opened: func(beside: string, response: http-response) -> result<string, fault>;
     /// The request that puts away a conversation opened for a child Session once that Session is
     /// archived; absent when nothing needs sending.
     ///
     /// For instance, this deletes a topic or archives a thread. The host reads its response with
     /// `answered`.
-    close-conversation: func(conversation: string) -> option<request>;
+    close-conversation: func(conversation: string) -> option<http-request>;
 }
 
 /// A messaging protocol's mapper. It imports nothing; the host trusts it with the connection's

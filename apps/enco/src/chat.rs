@@ -84,7 +84,9 @@ fn render(
         } => {
             purposes.insert(attempt, purpose);
         }
-        EntryBody::AttemptSettled { attempt, result } => {
+        EntryBody::AttemptSettled {
+            attempt, result, ..
+        } => {
             let purpose = purposes.remove(&attempt);
             match result {
                 AttemptResult::Completed { message, .. }

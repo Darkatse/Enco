@@ -1,7 +1,8 @@
 //! Turns component bytes into a loaded plugin.
 //!
 //! A component may import only WASI and the `enco:plugin` `host` and `types` interfaces of a
-//! compatible version; any other import, `completion` included, is rejected at load.
+//! compatible version; any other import, `completion` included, is rejected at load. Only a tool
+//! plugin may import `host`: a component exporting anything else computes from its arguments.
 use crate::{
     bindings::{
         BasePre, CONTRACT_VERSION, ChannelPluginPre, CompletionPluginPre, ComposerPluginPre,
@@ -106,6 +107,22 @@ impl Runtime for WasmRuntime {
                 .get_export_index(None, format!("enco:plugin/{interface}@{CONTRACT_VERSION}"))
                 .is_some()
         };
+        // Every export but `tools` reads only its arguments: the host carries out a mapper's
+        // requests and fixes a composition's world, so the component must not reach the host's
+        // capabilities itself.
+        let pure = ["channel", "completion", "embedding", "decision", "composer"]
+            .into_iter()
+            .find(|interface| exports(interface));
+        if let Some(interface) = pure
+            && component
+                .component_type()
+                .imports(&self.engine.engine)
+                .any(|(name, _)| name.starts_with("enco:plugin/host@"))
+        {
+            return Err(LoadError::Component(format!(
+                "a component exporting {interface} computes from its arguments and cannot import host capabilities; only tool plugins can"
+            )));
+        }
         let completion = exports("completion")
             .then(|| CompletionPluginPre::new(pre.clone()))
             .transpose()
@@ -122,16 +139,6 @@ impl Runtime for WasmRuntime {
             .then(|| ComposerPluginPre::new(pre.clone()))
             .transpose()
             .map_err(load_error)?;
-        if exports("channel")
-            && component
-                .component_type()
-                .imports(&self.engine.engine)
-                .any(|(name, _)| name.starts_with("enco:plugin/host@"))
-        {
-            return Err(LoadError::Component(
-                "channel mappers cannot import host capabilities".into(),
-            ));
-        }
         let channel = exports("channel")
             .then(|| ChannelPluginPre::new(pre.clone()))
             .transpose()

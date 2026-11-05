@@ -155,6 +155,7 @@ fn context_uses_completed_reply_measurements_and_follows_the_current_branch() {
     let mut tail = entries(vec![
         started(failed, AttemptPurpose::Reply, "failed-model"),
         EntryBody::AttemptSettled {
+            origin: None,
             attempt: failed,
             result: AttemptResult::Failed {
                 failure: Failure {
@@ -220,6 +221,7 @@ fn endpoint(model: &str, window: u32, max_output: u32) -> CompletionEndpoint {
 
 fn overflowed(attempt: AttemptId, accepted: Option<u64>) -> EntryBody {
     EntryBody::AttemptSettled {
+        origin: None,
         attempt,
         result: AttemptResult::Overflow {
             overflow: Overflow {

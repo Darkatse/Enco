@@ -7,7 +7,8 @@ mod wire;
 
 use bindings::exports::enco::plugin::{channel, lifecycle};
 use channel::{
-    Arrival, Command, Fault, FetchStep, Identity, Outgoing, ReadStep, Reading, Request, Response,
+    Arrival, Command, Fault, FetchStep, HttpRequest, HttpResponse, Identity, Outgoing, ReadStep,
+    Reading,
 };
 use enco_sdk::{
     channel::{ActivityUpdate, ActivityView},
@@ -75,11 +76,11 @@ impl channel::Guest for Plugin {
         None
     }
 
-    fn identify() -> Request {
+    fn identify() -> HttpRequest {
         wire::request("GET", "/applications/@me".into(), None)
     }
 
-    fn identified(response: Response) -> Result<Identity, Fault> {
+    fn identified(response: HttpResponse) -> Result<Identity, Fault> {
         let application: Application = wire::answer(response)?;
         let facts = Facts {
             application: application.id,
@@ -103,7 +104,11 @@ impl channel::Guest for Plugin {
         gateway::received(identity, state.as_deref(), arrival)
     }
 
-    fn fetch(locator: String, responses: Vec<Response>, _limit: u32) -> Result<FetchStep, Fault> {
+    fn fetch(
+        locator: String,
+        responses: Vec<HttpResponse>,
+        _limit: u32,
+    ) -> Result<FetchStep, Fault> {
         let mut responses = responses.into_iter();
         if let Some(channel) = locator.strip_prefix(incoming::CHANNEL_NAME) {
             let Some(response) = responses.next() else {
@@ -142,11 +147,11 @@ impl channel::Guest for Plugin {
         outgoing::split(message)
     }
 
-    fn send(conversation: String, part: Outgoing) -> Result<Request, Fault> {
+    fn send(conversation: String, part: Outgoing) -> Result<HttpRequest, Fault> {
         Ok(outgoing::send(conversation, part))
     }
 
-    fn answered(response: Response) -> Result<Option<String>, Fault> {
+    fn answered(response: HttpResponse) -> Result<Option<String>, Fault> {
         if response.status == 204 {
             return Ok(None);
         }
@@ -168,7 +173,7 @@ impl channel::Guest for Plugin {
         }
     }
 
-    fn respond(handle: String, text: Option<String>) -> Result<Option<Request>, Fault> {
+    fn respond(handle: String, text: Option<String>) -> Result<Option<HttpRequest>, Fault> {
         incoming::respond(&handle, text)
     }
 
@@ -176,7 +181,7 @@ impl channel::Guest for Plugin {
         clippy::expect_used,
         reason = "commands consume the identity returned by identified"
     )]
-    fn commands(identity: Identity, commands: Vec<Command>) -> Vec<Request> {
+    fn commands(identity: Identity, commands: Vec<Command>) -> Vec<HttpRequest> {
         let facts: Facts = serde_json::from_str(&identity.facts).expect("identified Discord facts");
         vec![wire::request(
             "PUT",
@@ -190,11 +195,11 @@ impl channel::Guest for Plugin {
         _replies_here: bool,
         shown: Option<String>,
         update: ActivityUpdate,
-    ) -> Option<Request> {
+    ) -> Option<HttpRequest> {
         outgoing::activity(conversation, shown, update)
     }
 
-    fn presence(conversation: String, _view: ActivityView) -> Option<Request> {
+    fn presence(conversation: String, _view: ActivityView) -> Option<HttpRequest> {
         Some(wire::request(
             "POST",
             format!("/channels/{}/typing", wire::path(&conversation)),
@@ -202,7 +207,7 @@ impl channel::Guest for Plugin {
         ))
     }
 
-    fn open_conversation(beside: String, session: Vec<String>) -> Option<Request> {
+    fn open_conversation(beside: String, session: Vec<String>) -> Option<HttpRequest> {
         // The conversation ID cannot tell a direct message, thread or forum post from a channel
         // that takes threads; Discord refuses the first three, and `opened` gives that failure.
         Some(wire::request(
@@ -214,7 +219,7 @@ impl channel::Guest for Plugin {
         ))
     }
 
-    fn opened(_beside: String, response: Response) -> Result<String, Fault> {
+    fn opened(_beside: String, response: HttpResponse) -> Result<String, Fault> {
         #[derive(Deserialize)]
         struct Thread {
             id: String,
@@ -223,7 +228,7 @@ impl channel::Guest for Plugin {
         Ok(thread.id)
     }
 
-    fn close_conversation(conversation: String) -> Option<Request> {
+    fn close_conversation(conversation: String) -> Option<HttpRequest> {
         Some(wire::request(
             "PATCH",
             format!("/channels/{}", wire::path(&conversation)),

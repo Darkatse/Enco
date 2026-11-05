@@ -120,7 +120,7 @@ impl Receiver {
         }
     }
 
-    async fn request(&mut self, request: wire::Request) -> Result<(), ChannelCallError> {
+    async fn request(&mut self, request: wire::HttpRequest) -> Result<(), ChannelCallError> {
         let response = tokio::select! {
             () = self.stop.cancelled() => return Ok(()),
             result = self.transport.http(request) => result?,

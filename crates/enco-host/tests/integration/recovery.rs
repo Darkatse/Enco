@@ -30,7 +30,8 @@ impl Provider for PendingProvider {
         &self,
         _: &ProviderSettings,
         _: ProviderRequest,
-    ) -> Result<Completion, CompleteError> {
+        _: Option<Recording>,
+    ) -> Result<Answered, StoreError> {
         let _dropped = Dropped(&self.dropped);
         self.entered.notify_one();
         std::future::pending().await

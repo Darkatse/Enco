@@ -146,7 +146,7 @@ pub(super) fn reply(
     Composition::Reply(Plan {
         items,
         tools: tools(input),
-        max_output_tokens: Some(input.reply.budget.max_output_tokens),
+        max_output_tokens: input.reply.budget.max_output_tokens,
         omitted,
     })
 }

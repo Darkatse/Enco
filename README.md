@@ -29,7 +29,7 @@ The entire system follows one baseline rule: no change or migration submitted th
 
 Every capability lives in a WebAssembly plugin. Enco can rewrite or replace any of them while running.
 
-Model providers (OpenAI-Compatible, Gemini, DeepSeek), relevance decisions (TypeSafe), web search and fetch tools, the policy that assembles each model request (`composer`), and chat channels (Telegram, Discord, QQ OneBot) are all standalone WebAssembly components. The kernel only records facts, determines which code serves each round, validates requests and schedules execution. If you dislike how a plugin works, fork it, or ask your Enco to write a new one.
+Model providers (OpenAI-Compatible, OpenAI Responses, Anthropic Messages, Gemini, DeepSeek), relevance decisions (TypeSafe), web search and fetch tools, the policy that assembles each model request (`composer`), and chat channels (Telegram, Discord, QQ OneBot) are all standalone WebAssembly components. The kernel only records facts, determines which code serves each round, validates requests and schedules execution. If you dislike how a plugin works, fork it, or ask your Enco to write a new one.
 
 A plugin can only call what the [WIT contract](sdk/wit/CONTRACT.md) exposes, while the kernel enforces type and rollback safety, eliminating plugin dependency hell at the root.
 

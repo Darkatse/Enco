@@ -75,6 +75,7 @@ pub(crate) fn settings(model: &str) -> ProviderSettings {
 
 pub(crate) fn completed(attempt: AttemptId, input_tokens: u64) -> EntryBody {
     EntryBody::AttemptSettled {
+        origin: None,
         attempt,
         result: AttemptResult::Completed {
             message: Message {

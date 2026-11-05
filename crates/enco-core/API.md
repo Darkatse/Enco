@@ -714,7 +714,7 @@ impl Serialize for ContentHash
 pub struct ContextPlan {
     pub items: Vec<PlanItem>,
     pub tools: Vec<(crate::CapabilityId, DisclosedTool)>,
-    pub max_output_tokens: Option<u32>,
+    pub max_output_tokens: std::num::NonZeroU32,
     pub omitted: Vec<Omission>,
 }
 ```
@@ -723,7 +723,7 @@ The complete request plan, recorded by content address before sending.
 
 - `items` — Messages in request order.
 - `tools` — Disclosed capabilities together with their frozen definitions.
-- `max_output_tokens` — Requested output budget; absent means provider default.
+- `max_output_tokens` — The most tokens the reply may use, within the budget of the target the plan is for.
 - `omitted` — Reasons content was not included in this request.
 
 ### `ContextPlan::hash`
@@ -1094,6 +1094,7 @@ pub enum EntryBody {
     AttemptSettled {
         attempt: crate::AttemptId,
         result: AttemptResult,
+        origin: Option<crate::MappingOrigin>,
     },
     ToolCallStarted {
         round: crate::RoundId,
@@ -1149,6 +1150,10 @@ Facts accepted by the Session owner.
 - `AttemptSettled` — A provider attempt completed or failed.
   - `attempt` — Provider attempt associated with this fact.
   - `result` — Durable settlement returned by the provider.
+  - `origin` — The recorded call that decoded the service's response.
+
+    Absent when no response arrived, the request could not be built, the attempt was
+    cancelled, or recovery wrote the settlement.
 - `ToolCallStarted` — Committed before execution. Calls rejected by dispatch do not receive this entry.
   - `round` — Round containing this fact.
   - `call` — Host identity of the proposed tool call.

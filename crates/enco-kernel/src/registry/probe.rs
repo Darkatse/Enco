@@ -31,10 +31,18 @@ pub(super) async fn call(
                         } else {
                             vec![]
                         },
-                        max_output_tokens: Some(max_output_tokens.get()),
+                        max_output_tokens: *max_output_tokens,
                     },
+                    // A candidate has no generation yet, and a probe's answer is not a Log fact.
+                    None,
                 )
                 .await
+                .map_err(|error| Failure {
+                    code: code::PLUGIN_REJECTED.into(),
+                    message: format!("probe could not run: {error}"),
+                    retryable: false,
+                })?
+                .result
                 .map_err(CompleteError::into_failure);
             Ok(checked(result, |_| Ok(())))
         }

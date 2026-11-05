@@ -1,6 +1,6 @@
 //! Components V2 rendering and bounded multipart messages, including the Run's activity view.
 use crate::{
-    channel::{Outgoing, Request},
+    channel::{HttpRequest, Outgoing},
     wire,
 };
 use enco_sdk::channel::{ActivityUpdate, CANCEL_LABEL, FormPart, multipart};
@@ -174,7 +174,7 @@ fn components_v2(components: Vec<Value>, flags: u32) -> Value {
     })
 }
 
-pub(super) fn send(conversation: String, message: Outgoing) -> Request {
+pub(super) fn send(conversation: String, message: Outgoing) -> HttpRequest {
     let mut components = text_components(&tables(&message.text));
     if let Some(file) = &message.file {
         let image = file.data.starts_with(b"\x89PNG\r\n\x1a\n")
@@ -209,7 +209,7 @@ pub(super) fn send(conversation: String, message: Outgoing) -> Request {
             data: &file.data,
         },
     ]);
-    Request {
+    HttpRequest {
         method: "POST".into(),
         url,
         headers: vec![("content-type".into(), content_type)],
@@ -222,7 +222,7 @@ pub(super) fn activity(
     conversation: String,
     shown: Option<String>,
     update: ActivityUpdate,
-) -> Option<Request> {
+) -> Option<HttpRequest> {
     let url = format!("/channels/{}/messages", wire::path(&conversation));
     let components = match update {
         ActivityUpdate::Remove => {

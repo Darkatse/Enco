@@ -1,6 +1,6 @@
 use enco_sdk::protocol::{
-    Request, Settings, apply_options, bad_request,
-    types::{Failure, Image, Message, Part, Role, ToolCall, ToolResult, ToolSpec},
+    Call, Request, Settings, Turn, apply_options, bad_request, call_id, turns,
+    types::{Failure, Image, Message, Part, Role, ToolSpec},
 };
 use serde_json::{Value, json};
 
@@ -8,31 +8,45 @@ use serde_json::{Value, json};
 /// this plugin's own replies replay whole, so they carry Google's documented placeholder.
 const UNSIGNED: &str = "skip_thought_signature_validator";
 
+/// Gemini rejects a function call turn that follows neither a user turn nor function responses.
+/// A history that starts with one, as after a summary that ends mid-Run, gets this user turn
+/// before it; it says only that earlier turns are left out.
+const LEADING: &str = "(Earlier turns are not shown.)";
+
 pub fn completion(settings: &Settings, request: Request) -> Result<Value, Failure> {
     let mut system = vec![];
     let mut contents = vec![];
-    for (index, message) in request.messages.iter().enumerate() {
-        match message.role {
-            Role::System => system.extend(message.parts.iter().filter_map(|part| match part {
-                Part::Text(text) => Some(json!({"text": text})),
-                _ => None,
-            })),
-            Role::User => contents.push(content(message)?),
-            Role::Assistant => {
-                contents.push(content(message)?);
-                let tools: Vec<_> = request.messages[index + 1..]
-                    .iter()
-                    .take_while(|next| next.role == Role::Tool)
-                    .collect();
-                if !tools.is_empty() {
-                    contents.push(results(message, &tools)?);
+    for turn in turns(&request.messages)? {
+        match turn {
+            Turn::Message(message) if message.role == Role::System => {
+                system.extend(message.parts.iter().filter_map(|part| match part {
+                    Part::Text(text) => Some(json!({"text": text})),
+                    _ => None,
+                }));
+            }
+            Turn::Message(message) => {
+                contents.push(json!({"role": "user", "parts": user(message)?}));
+            }
+            Turn::Assistant {
+                message,
+                position,
+                calls,
+            } => {
+                contents.push(model(message, position)?);
+                if !calls.is_empty() {
+                    contents.push(results(&calls));
                 }
             }
-            // Taken with the assistant message whose calls they answer.
-            Role::Tool => {}
         }
     }
-    let mut body = json!({"contents": contents, "safetySettings": safety()});
+    if contents.first().is_some_and(calls_first) {
+        contents.insert(0, json!({"role": "user", "parts": [{"text": LEADING}]}));
+    }
+    let mut body = json!({
+        "contents": contents,
+        "safetySettings": safety(),
+        "generationConfig": {"maxOutputTokens": request.max_output_tokens},
+    });
     if !system.is_empty() {
         body["systemInstruction"] = json!({"parts": system});
     }
@@ -44,15 +58,20 @@ pub fn completion(settings: &Settings, request: Request) -> Result<Value, Failur
             .collect::<Result<Vec<_>, _>>()?;
         body["tools"] = json!([{"functionDeclarations": declarations}]);
     }
-    if let Some(max) = request.max_output_tokens {
-        body["generationConfig"] = json!({"maxOutputTokens": max});
-    }
     apply_options(
         &mut body,
         &settings.options,
         &["contents", "systemInstruction", "tools"],
     )?;
     Ok(body)
+}
+
+/// Whether `content` is a model turn that calls a function.
+fn calls_first(content: &Value) -> bool {
+    content["role"] == "model"
+        && content["parts"]
+            .as_array()
+            .is_some_and(|parts| parts.iter().any(|part| part.get("functionCall").is_some()))
 }
 
 fn declaration(tool: ToolSpec) -> Result<Value, Failure> {
@@ -65,87 +84,70 @@ fn declaration(tool: ToolSpec) -> Result<Value, Failure> {
     }))
 }
 
-fn content(message: &Message) -> Result<Value, Failure> {
-    if message.role == Role::Assistant {
-        for part in &message.parts {
-            if let Part::Extension(extension) = part {
-                return serde_json::from_str(&extension.data)
-                    .map_err(|error| bad_request(error.to_string()));
-            }
-        }
+/// The parts of a user turn: the message's text and images.
+fn user(message: &Message) -> Result<Vec<Value>, Failure> {
+    message
+        .parts
+        .iter()
+        .map(|part| match part {
+            Part::Text(text) => Ok(json!({"text": text})),
+            Part::Image(image) => Ok(inline(image)),
+            _ => Err(bad_request("a user message holds only text and images")),
+        })
+        .collect()
+}
+
+/// The model turn of the assistant message at `position`: the reply this plugin kept whole,
+/// exactly as stored, or one built from the canonical parts.
+fn model(message: &Message, position: usize) -> Result<Value, Failure> {
+    if let Some(data) = message.parts.iter().find_map(|part| match part {
+        Part::Extension(extension) => Some(&extension.data),
+        _ => None,
+    }) {
+        return serde_json::from_str(data).map_err(|error| bad_request(error.to_string()));
     }
+    let mut calls = 0;
     let parts = message
         .parts
         .iter()
-        .map(wire_part)
+        .map(|part| match part {
+            Part::Text(text) => Ok(json!({"text": text})),
+            Part::ToolCall(call) => {
+                let args: Value = serde_json::from_str(&call.arguments)
+                    .map_err(|error| bad_request(error.to_string()))?;
+                let id = call_id(call, position, calls);
+                calls += 1;
+                let call = json!({"id": id, "name": call.name, "args": args});
+                Ok(json!({"functionCall": call, "thoughtSignature": UNSIGNED}))
+            }
+            _ => Err(bad_request(
+                "an assistant message holds only text and tool calls",
+            )),
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    let role = if message.role == Role::Assistant {
-        "model"
-    } else {
-        "user"
-    };
-    Ok(json!({"role": role, "parts": parts}))
+    Ok(json!({"role": "model", "parts": parts}))
 }
 
-fn wire_part(part: &Part) -> Result<Value, Failure> {
-    match part {
-        Part::Text(text) => Ok(json!({"text": text})),
-        Part::Image(image) => Ok(inline(image)),
-        Part::ToolCall(call) => {
-            let args: Value = serde_json::from_str(&call.arguments)
-                .map_err(|error| bad_request(error.to_string()))?;
-            let call = json!({"id": call.id, "name": call.name, "args": args});
-            Ok(json!({"functionCall": call, "thoughtSignature": UNSIGNED}))
-        }
-        _ => Err(bad_request("unexpected part outside a tool result batch")),
-    }
+/// The function responses to an assistant message's calls, as one user turn.
+fn results(calls: &[Call]) -> Value {
+    let parts: Vec<_> = calls.iter().map(function_response).collect();
+    json!({"role": "user", "parts": parts})
 }
 
-/// The protocol pairs a call and its result by ID, or by order when the service gave the call
-/// none; the kernel settles results in call order.
-fn results(assistant: &Message, tools: &[&Message]) -> Result<Value, Failure> {
-    let results: Vec<_> = tools
-        .iter()
-        .filter_map(|message| match message.parts.first() {
-            Some(Part::ToolResult(result)) => Some((*message, result)),
-            _ => None,
-        })
-        .collect();
-    let mut unnamed = results
-        .iter()
-        .filter(|(_, result)| result.call_id.is_empty());
-    let parts = assistant
-        .parts
-        .iter()
-        .filter_map(|part| match part {
-            Part::ToolCall(call) => Some(call),
-            _ => None,
-        })
-        .map(|call| {
-            let found = if call.id.is_empty() {
-                unnamed.next()
-            } else {
-                results.iter().find(|(_, result)| result.call_id == call.id)
-            };
-            let (message, result) =
-                found.ok_or_else(|| bad_request(format!("missing result for {}", call.name)))?;
-            Ok(function_response(call, message, result))
-        })
-        .collect::<Result<Vec<_>, Failure>>()?;
-    Ok(json!({"role": "user", "parts": parts}))
-}
-
-fn function_response(call: &ToolCall, message: &Message, result: &ToolResult) -> Value {
+fn function_response(call: &Call) -> Value {
+    let result = call.result;
     let response = if result.is_error {
         json!({"error": result.content})
     } else {
         json!({"output": result.content})
     };
-    let mut wire = json!({"name": call.name, "response": response});
+    let mut wire = json!({"name": call.call.name, "response": response});
+    // Only a call in a reply sent whole can lack an ID, and the service pairs it by order.
     if !call.id.is_empty() {
         wire["id"] = json!(call.id);
     }
-    let images = message
+    let images = call
+        .message
         .parts
         .iter()
         .filter_map(|part| match part {

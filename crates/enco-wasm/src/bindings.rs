@@ -1,24 +1,32 @@
-//! Wasmtime bindings: one for the lifecycle every plugin exports, and one for each other interface
-//! a plugin can export.
+//! Wasmtime bindings: one for what the host links and the lifecycle every plugin exports, and one
+//! for each other interface a plugin can export.
 //!
 //! A plugin that exports several interfaces, such as a provider, is bound once for each; the
 //! interfaces they share map to one set of Rust types.
+mod base {
+    // The host links `host` for every component and calls `lifecycle` on each; no plugin world
+    // pairs them, since only tool plugins import `host`.
+    wasmtime::component::bindgen!({
+        path: "../../sdk/wit",
+        inline: "
+            package enco:host;
+            world base {
+                import enco:plugin/host@0.16.0;
+                export enco:plugin/lifecycle@0.16.0;
+            }
+        ",
+        world: "enco:host/base",
+        exports: { default: async },
+    });
+}
+
 mod completion {
     wasmtime::component::bindgen!({
         path: "../../sdk/wit",
         world: "completion-plugin",
         exports: { default: async },
-    });
-}
-
-mod base {
-    wasmtime::component::bindgen!({
-        path: "../../sdk/wit",
-        world: "base",
-        exports: { default: async },
         with: {
-            "enco:plugin/types": super::completion::enco::plugin::types,
-            "enco:plugin/host": super::completion::enco::plugin::host,
+            "enco:plugin/types": super::base::enco::plugin::types,
         },
     });
 }
@@ -29,8 +37,7 @@ mod embedding {
         world: "embedding-plugin",
         exports: { default: async },
         with: {
-            "enco:plugin/types": super::completion::enco::plugin::types,
-            "enco:plugin/host": super::completion::enco::plugin::host,
+            "enco:plugin/types": super::base::enco::plugin::types,
         },
     });
 }
@@ -41,8 +48,7 @@ mod decision {
         world: "decision-plugin",
         exports: { default: async },
         with: {
-            "enco:plugin/types": super::completion::enco::plugin::types,
-            "enco:plugin/host": super::completion::enco::plugin::host,
+            "enco:plugin/types": super::base::enco::plugin::types,
         },
     });
 }
@@ -53,8 +59,8 @@ mod tools {
         world: "tool-plugin",
         exports: { default: async },
         with: {
-            "enco:plugin/types": super::completion::enco::plugin::types,
-            "enco:plugin/host": super::completion::enco::plugin::host,
+            "enco:plugin/types": super::base::enco::plugin::types,
+            "enco:plugin/host": super::base::enco::plugin::host,
         },
     });
 }
@@ -65,18 +71,19 @@ mod composer {
         world: "composer-plugin",
         exports: { default: async },
         with: {
-            "enco:plugin/types": super::completion::enco::plugin::types,
-            "enco:plugin/host": super::completion::enco::plugin::host,
+            "enco:plugin/types": super::base::enco::plugin::types,
         },
     });
 }
 
 /// Package version of `sdk/wit/plugin.wit`; change it together with the WIT.
-pub(crate) const CONTRACT_VERSION: &str = "0.15.0";
+pub(crate) const CONTRACT_VERSION: &str = "0.16.0";
 
-pub(crate) use base::BasePre;
 pub(crate) use base::exports::enco::plugin::lifecycle;
-pub(crate) use completion::{CompletionPluginPre, enco, exports};
+pub(crate) use base::{BasePre, enco};
+pub(crate) use completion::{
+    CompletionPluginPre, exports::enco::plugin::completion as completions,
+};
 pub(crate) use decision::{DecisionPluginPre, exports::enco::plugin::decision as decisions};
 pub(crate) use embedding::EmbeddingPluginPre;
 pub(crate) use tools::ToolPluginPre;
@@ -89,7 +96,7 @@ mod channel {
         world: "channel-plugin",
         exports: { default: async },
         with: {
-            "enco:plugin/types": super::completion::enco::plugin::types,
+            "enco:plugin/types": super::base::enco::plugin::types,
         },
     });
 }

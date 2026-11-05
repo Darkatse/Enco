@@ -1,16 +1,16 @@
 use super::{
     Plugin,
     channel::{
-        Arrival, Closure, Command, FileData, Guest, Identity, Outgoing, ReadStep, Reading, Request,
-        Response,
+        Arrival, Closure, Command, FileData, Guest, HttpRequest, HttpResponse, Identity, Outgoing,
+        ReadStep, Reading,
     },
 };
 use enco_sdk::channel::{Action, CommandKind, Quote, Quoted};
 use enco_sdk::channel::{ActivityUpdate, ActivityView, ToolActivity, ToolState};
 use serde_json::{Value, json};
 
-fn response(status: u16, body: Value) -> Response {
-    Response {
+fn response(status: u16, body: Value) -> HttpResponse {
+    HttpResponse {
         status,
         headers: vec![],
         body: body.to_string().into_bytes(),
@@ -33,7 +33,7 @@ fn frame(state: Option<String>, frame: Value) -> Result<Reading, String> {
     arrival(state, Arrival::Frame(frame.to_string()))
 }
 
-fn body(request: &Request) -> Result<Value, String> {
+fn body(request: &HttpRequest) -> Result<Value, String> {
     serde_json::from_slice(request.body.as_deref().ok_or("missing body")?)
         .map_err(|error| error.to_string())
 }

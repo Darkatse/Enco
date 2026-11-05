@@ -6,16 +6,17 @@ use std::time::Duration;
 use wasmtime_wasi::{HostMonotonicClock, HostWallClock, WasiCtx};
 
 pub(crate) enum CallWorld {
-    /// Serving a call: the plugin's configuration, and network carrying these credentials.
-    Regular(Vec<CallCredential>),
-    /// Mapping recorded protocol input: fixed clocks and random seed, no configuration or network.
+    /// Running a tool: the plugin's configuration, and network carrying these credentials.
+    Tool(Vec<CallCredential>),
+    /// Running a mapper's encode or decode: fixed clocks and random seed, no configuration or
+    /// network.
     Mapper,
     /// Declaring what the generation offers: its configuration, without network, so a reload
     /// never depends on an outside service.
     Declaration,
     /// Checking the code alone: no configuration and no network.
     Probe,
-    /// Composing within a Round: its configuration, the Round's clock and randomness, no network.
+    /// Composing within a Round: the Round's clock and randomness, no configuration or network.
     Composer { now: DateTime<Utc>, round: RoundId },
 }
 
@@ -29,7 +30,7 @@ impl CallWorld {
             wasi.inherit_stderr();
         }
         let (network, config) = match self {
-            Self::Regular(credentials) => (Network::open(credentials), config.to_string()),
+            Self::Tool(credentials) => (Network::open(credentials), config.to_string()),
             Self::Declaration => (Network::Closed, config.to_string()),
             Self::Probe => (Network::Closed, "{}".into()),
             Self::Mapper => {
@@ -57,7 +58,7 @@ impl CallWorld {
                 .secure_random(StdRng::from_seed(random_seed))
                 .insecure_random(StdRng::from_seed(random_seed))
                 .insecure_random_seed(seed);
-                (Network::Closed, config.to_string())
+                (Network::Closed, "{}".into())
             }
         };
         Ok((network, config, wasi.build()))

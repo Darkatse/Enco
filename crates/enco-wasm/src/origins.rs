@@ -1,4 +1,4 @@
-//! Validated network origins shared by channel destinations and credential recipients.
+//! Validated network origins shared by mapper destinations and credential recipients.
 use enco_core::Failure;
 use reqwest::Url;
 
@@ -89,7 +89,8 @@ impl Origin {
     }
 }
 
-/// A connection's selected service and the additional origins accepted with its generation.
+/// A mapper's selected service, a channel connection's or a Provider's endpoint, and the
+/// additional origins its generation declares.
 pub(crate) struct Destinations {
     service: Origin,
     declared: Vec<Origin>,
@@ -135,7 +136,7 @@ impl Destinations {
         let text = if requested.starts_with('/') {
             if requested.starts_with("//") {
                 return Err(crate::convert::bad(
-                    "channel destination cannot supply an authority",
+                    "a request destination cannot supply an authority",
                 ));
             }
             let base = &self.service.url;
@@ -148,7 +149,7 @@ impl Destinations {
             requested.to_owned()
         };
         let url = Url::parse(&text)
-            .map_err(|error| crate::convert::bad(format!("channel destination: {error}")))?;
+            .map_err(|error| crate::convert::bad(format!("request destination: {error}")))?;
         if text.trim() != text
             || text.contains('\\')
             || !schemes.contains(&url.scheme())
@@ -157,7 +158,7 @@ impl Destinations {
             || url.fragment().is_some()
         {
             return Err(crate::convert::bad(
-                "channel destination has an invalid scheme, credentials, fragment or backslash",
+                "a request destination has an invalid scheme, credentials, fragment or backslash",
             ));
         }
         Ok(url)
@@ -169,7 +170,7 @@ fn within<'a>(url: Url, origins: impl IntoIterator<Item = &'a Origin>) -> Result
         Ok(url)
     } else {
         Err(crate::convert::bad(
-            "channel destination is outside its declared origins",
+            "a request destination is outside the service and its declared origins",
         ))
     }
 }

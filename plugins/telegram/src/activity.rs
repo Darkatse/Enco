@@ -1,6 +1,6 @@
 //! Live drafts and cards, epilogues and child topics translated to Bot API requests.
 use crate::{
-    channel::{Fault, Request, Response},
+    channel::{Fault, HttpRequest, HttpResponse},
     limits::{SEND_TIMEOUT_MS, TOPIC_NAME_CHARS},
     wire::{answer, conversation, conversation_id, destination, request},
 };
@@ -20,7 +20,7 @@ fn private(chat: &str) -> bool {
     !chat.starts_with('-')
 }
 
-pub(super) fn presence(id: String, view: ActivityView) -> Option<Request> {
+pub(super) fn presence(id: String, view: ActivityView) -> Option<HttpRequest> {
     let (chat, thread) = conversation(&id);
     let mut body = destination(chat, thread);
     let method = if private(chat) {
@@ -40,7 +40,7 @@ pub(super) fn activity(
     replies_here: bool,
     shown: Option<String>,
     update: ActivityUpdate,
-) -> Option<Request> {
+) -> Option<HttpRequest> {
     let (chat, thread) = conversation(&id);
     let mut body = json!({"chat_id": chat});
     match update {
@@ -79,7 +79,7 @@ pub(super) fn activity(
 
 /// Child topics open only in private chats. Telegram refuses one when the owner has not turned on
 /// topics for the bot, and `opened` gives that failure.
-pub(super) fn open(beside: String, session: Vec<String>) -> Option<Request> {
+pub(super) fn open(beside: String, session: Vec<String>) -> Option<HttpRequest> {
     let (chat, _) = conversation(&beside);
     if !private(chat) {
         return None;
@@ -95,7 +95,7 @@ pub(super) fn open(beside: String, session: Vec<String>) -> Option<Request> {
     ))
 }
 
-pub(super) fn opened(beside: String, response: Response) -> Result<String, Fault> {
+pub(super) fn opened(beside: String, response: HttpResponse) -> Result<String, Fault> {
     #[derive(Deserialize)]
     struct Topic {
         message_thread_id: i64,
@@ -106,7 +106,7 @@ pub(super) fn opened(beside: String, response: Response) -> Result<String, Fault
 }
 
 /// A topic in a private chat cannot be closed, so putting it away deletes it.
-pub(super) fn close(id: String) -> Option<Request> {
+pub(super) fn close(id: String) -> Option<HttpRequest> {
     let (chat, thread) = conversation(&id);
     let thread = thread?;
     Some(request(

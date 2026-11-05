@@ -191,10 +191,13 @@ async fn retained_files_are_bounded_and_a_pinned_adapter_outlives_its_file() {
             ProviderRequest {
                 messages: vec![],
                 tools: vec![],
-                max_output_tokens: None,
+                max_output_tokens: 64.try_into().unwrap(),
             },
+            None,
         )
         .await
+        .unwrap()
+        .result
         .unwrap();
     assert_eq!(reply.message, Message::text(Role::Assistant, "one"));
     let orphan = ContentHash::of(b"orphan");

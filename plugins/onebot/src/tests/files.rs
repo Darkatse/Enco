@@ -13,11 +13,11 @@ fn content(segments: Value, direct: bool) -> Result<Content, String> {
     }
 }
 
-fn answer(data: Value) -> Response {
+fn answer(data: Value) -> HttpResponse {
     response(&json!({"status":"ok", "retcode":0, "data":data}).to_string())
 }
 
-fn stream(frames: &[Value]) -> Response {
+fn stream(frames: &[Value]) -> HttpResponse {
     response(
         &frames
             .iter()

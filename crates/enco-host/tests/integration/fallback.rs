@@ -25,9 +25,10 @@ impl Provider for Clocked {
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, CompleteError> {
+        record: Option<Recording>,
+    ) -> Result<Answered, StoreError> {
         self.calls.lock().unwrap().push(tokio::time::Instant::now());
-        self.provider.complete(settings, request).await
+        self.provider.complete(settings, request, record).await
     }
 }
 
@@ -365,14 +366,19 @@ impl Provider for PurposeProvider {
         &self,
         _: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, CompleteError> {
+        _record: Option<Recording>,
+    ) -> Result<Answered, StoreError> {
         let summary = request.tools.is_empty();
         self.requests.lock().unwrap().push(request);
-        if summary {
-            Ok(reply("a concise summary")?)
+        let result = if summary {
+            reply("a concise summary").map_err(CompleteError::from)
         } else {
             Err(unavailable(false).into())
-        }
+        };
+        Ok(Answered {
+            result,
+            origin: None,
+        })
     }
 }
 
@@ -583,7 +589,7 @@ async fn an_empty_or_cut_off_summary_falls_back_to_the_next_compaction_budget() 
         {
             let requests = primary.requests.lock().unwrap();
             assert_eq!(requests.len(), 1);
-            assert_eq!(requests[0].max_output_tokens, Some(8192));
+            assert_eq!(requests[0].max_output_tokens.get(), 8192);
         }
         {
             let requests = backup.requests.lock().unwrap();
@@ -591,7 +597,7 @@ async fn an_empty_or_cut_off_summary_falls_back_to_the_next_compaction_budget() 
             assert!(
                 requests
                     .iter()
-                    .all(|request| request.max_output_tokens == Some(256)
+                    .all(|request| request.max_output_tokens.get() == 256
                         && request.tools.is_empty())
             );
         }

@@ -1,6 +1,8 @@
-//! OpenAI-compatible completions and embeddings through the shared WIT protocol.
+//! OpenAI-compatible Chat Completions and embeddings, mapped by the SDK's shared implementation.
 use bindings::exports::enco::plugin::{completion, embedding, lifecycle};
-use enco_sdk::protocol::{CompleteError, Completion, Request, Settings, types::Failure};
+use enco_sdk::protocol::{
+    CompleteError, Completion, HttpRequest, HttpResponse, Request, Settings, chat, types::Failure,
+};
 
 enco_sdk::export!(provider, Plugin);
 
@@ -32,13 +34,21 @@ impl lifecycle::Guest for Plugin {
 }
 
 impl completion::Guest for Plugin {
-    async fn complete(settings: Settings, request: Request) -> Result<Completion, CompleteError> {
-        enco_sdk::protocol::complete(settings, request).await
+    fn encode(settings: Settings, request: Request) -> Result<HttpRequest, Failure> {
+        chat::encode(&settings, request)
+    }
+
+    fn decode(response: HttpResponse) -> Result<Completion, CompleteError> {
+        chat::decode(&response)
     }
 }
 
 impl embedding::Guest for Plugin {
-    async fn embed(settings: Settings, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, Failure> {
-        enco_sdk::protocol::embed(settings, inputs).await
+    fn encode(settings: Settings, inputs: Vec<String>) -> Result<HttpRequest, Failure> {
+        chat::encode_embedding(&settings, &inputs)
+    }
+
+    fn decode(count: u32, response: HttpResponse) -> Result<Vec<Vec<f32>>, Failure> {
+        chat::decode_embedding(count, &response)
     }
 }

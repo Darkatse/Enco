@@ -94,28 +94,35 @@ impl SessionActor {
             Some(planned.plan.clone()),
         )
         .await?;
-        let result = tokio::select! {
+        let record = Recording {
+            generation: export.generation,
+            store: self.deps.store.clone(),
+        };
+        let Answered { result, origin } = tokio::select! {
             biased;
-            _ = token.cancelled() => Err(CompleteError::Failed(Failure {
-                code: code::CANCELLED.into(), message: "model request cancelled".into(), retryable: false,
-            })),
-            result = export.adapter.complete(&endpoint.settings, planned.request.clone()) => result,
+            _ = token.cancelled() => Answered {
+                result: Err(CompleteError::Failed(Failure {
+                    code: code::CANCELLED.into(), message: "model request cancelled".into(), retryable: false,
+                })),
+                origin: None,
+            },
+            answered = export.adapter.complete(&endpoint.settings, planned.request.clone(), Some(record)) => answered?,
         };
         let result = match result {
             Ok(completion) => match self
-                .settle_completion(planned, attempt, export.generation, &completion)
+                .settle_completion(planned, attempt, export.generation, &completion, origin)
                 .await?
             {
                 Some(failure) => Err(failure),
                 None => Ok(Ok(completion)),
             },
             Err(CompleteError::Overflow(overflow)) => {
-                self.settle_overflow(attempt, export.generation, &overflow)
+                self.settle_overflow(attempt, export.generation, &overflow, origin)
                     .await?;
                 Ok(Err(overflow))
             }
             Err(CompleteError::Failed(failure)) => {
-                self.settle_failure(attempt, export.generation, &failure)
+                self.settle_failure(attempt, export.generation, &failure, origin)
                     .await?;
                 Err(failure)
             }
@@ -132,6 +139,7 @@ impl SessionActor {
         attempt: AttemptId,
         generation: GenerationId,
         completion: &Completion,
+        origin: Option<MappingOrigin>,
     ) -> Result<Option<Failure>, RoundError> {
         let result = AttemptResult::Completed {
             message: completion.message.clone(),
@@ -139,7 +147,11 @@ impl SessionActor {
             stop: completion.stop,
         };
         let unusable = result.failure(planned.kind.purpose());
-        let mut bodies = vec![EntryBody::AttemptSettled { attempt, result }];
+        let mut bodies = vec![EntryBody::AttemptSettled {
+            attempt,
+            result,
+            origin,
+        }];
         if unusable.is_none()
             && let AttemptKind::Compaction(upto) = planned.kind
         {
@@ -163,6 +175,7 @@ impl SessionActor {
         attempt: AttemptId,
         generation: GenerationId,
         overflow: &Overflow,
+        origin: Option<MappingOrigin>,
     ) -> Result<(), RoundError> {
         self.commit(
             vec![EntryBody::AttemptSettled {
@@ -170,6 +183,7 @@ impl SessionActor {
                 result: AttemptResult::Overflow {
                     overflow: overflow.clone(),
                 },
+                origin,
             }],
             None,
         )
@@ -187,6 +201,7 @@ impl SessionActor {
         attempt: AttemptId,
         generation: GenerationId,
         failure: &Failure,
+        origin: Option<MappingOrigin>,
     ) -> Result<(), RoundError> {
         self.commit(
             vec![EntryBody::AttemptSettled {
@@ -194,6 +209,7 @@ impl SessionActor {
                 result: AttemptResult::Failed {
                     failure: failure.clone(),
                 },
+                origin,
             }],
             None,
         )

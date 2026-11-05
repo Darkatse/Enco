@@ -1,20 +1,28 @@
-//! TypeSafe's named wire answers map back to the caller's question and label order.
+//! TypeSafe's wire format: questions go out keyed by position, and the named answers that come back
+//! map to the caller's question and label order.
 use crate::decision::{Answer, Question, QuestionKind};
-use enco_sdk::protocol::{Settings, apply_options, bad, failure, post, types::Failure};
+use enco_sdk::protocol::{
+    HttpRequest, HttpResponse, Settings, apply_options, bad, bad_request, json, post_json,
+    types::Failure,
+};
 use serde_json::{Map, Value, json};
 
 /// The contract's allowance for service rounding (`decision.answer`).
 const DECISION_SUM_TOLERANCE: f64 = 0.01;
 
-pub async fn decide(
-    settings: Settings,
-    state: String,
-    questions: Vec<Question>,
-) -> Result<Vec<Answer>, Failure> {
+/// How long a decision request may take, in milliseconds.
+const TIMEOUT_MS: u32 = 10_000;
+
+/// The request that asks `/systemone` to judge `questions` against `state`.
+pub fn encode(
+    settings: &Settings,
+    state: &str,
+    questions: &[Question],
+) -> Result<HttpRequest, Failure> {
     let wire_questions = questions
         .iter()
         .enumerate()
-        .map(|(i, question)| encode_question(question).map(|value| (format!("q{i}"), value)))
+        .map(|(i, question)| encode_question(question).map(|value| (key(i), value)))
         .collect::<Result<Map<_, _>, _>>()?;
     let mut body = json!({ "model": settings.model, "state": state, "questions": wire_questions });
     apply_options(
@@ -22,7 +30,12 @@ pub async fn decide(
         &settings.options,
         &["model", "state", "questions"],
     )?;
-    let response = post(&settings, "systemone", body, Some(10000)).await?;
+    Ok(post_json("/systemone", &body, Some(TIMEOUT_MS)))
+}
+
+/// One answer per question, in order, from the service's response to [`encode`]'s request.
+pub fn decode(questions: &[Question], response: &HttpResponse) -> Result<Vec<Answer>, Failure> {
+    let response = json(response)?;
     let answers = response
         .get("answers")
         .and_then(Value::as_object)
@@ -35,11 +48,16 @@ pub async fn decide(
         .enumerate()
         .map(|(i, question)| {
             let answer = answers
-                .get(&format!("q{i}"))
-                .ok_or_else(|| bad(format!("missing answer q{i}")))?;
+                .get(&key(i))
+                .ok_or_else(|| bad(format!("missing answer {}", key(i))))?;
             decode_answer(answer, &question.kind)
         })
         .collect()
+}
+
+/// The wire key of the question at `index`.
+fn key(index: usize) -> String {
+    format!("q{index}")
 }
 
 fn encode_question(question: &Question) -> Result<Value, Failure> {
@@ -52,11 +70,10 @@ fn encode_question(question: &Question) -> Result<Value, Failure> {
                     .insert(label.name.clone(), json!(label.description))
                     .is_some()
                 {
-                    return Err(failure(
-                        "provider.bad_request",
-                        format!("duplicate choice label: {}", label.name),
-                        false,
-                    ));
+                    return Err(bad_request(format!(
+                        "duplicate choice label: {}",
+                        label.name
+                    )));
                 }
             }
             json!({ "type": "choice", "criteria": criteria })

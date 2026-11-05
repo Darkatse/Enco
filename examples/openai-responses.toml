@@ -1,0 +1,30 @@
+[owner]
+timezone = "America/New_York"
+
+# OpenAI Responses, without server-side conversation state. `options` add request fields under
+# the API's own names.
+[endpoint.chat]
+plugin = "openai-responses"
+base_url = "https://api.openai.com/v1"
+model = "<reasoning model>"
+accepts = ["image"]
+api_key_env = "OPENAI_API_KEY"
+options = { reasoning = { effort = "medium" } }
+
+# The model's context window, and an output limit a reply can reach within ten minutes.
+window_tokens = 400000
+max_output_tokens = 16000
+
+[profile.default]
+reply = ["chat"]
+compaction = ["chat"]
+
+[endpoint.embed]
+plugin = "openai-compatible"
+base_url = "https://api.openai.com/v1"
+model = "text-embedding-3-small"
+dimensions = 1536
+api_key_env = "OPENAI_API_KEY"
+
+[memory]
+embedding = "embed"

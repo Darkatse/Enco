@@ -105,7 +105,7 @@ impl Composer for Summarizing {
                     sources: vec![],
                 }],
                 tools: vec![],
-                max_output_tokens: Some(compaction.budget.max_output_tokens.get()),
+                max_output_tokens: compaction.budget.max_output_tokens.get(),
                 omitted: vec![],
             },
         })
@@ -419,7 +419,7 @@ impl Composer for Exhausting {
                     sources: vec![],
                 }],
                 tools: vec![],
-                max_output_tokens: Some(compaction.budget.max_output_tokens.get()),
+                max_output_tokens: compaction.budget.max_output_tokens.get(),
                 omitted: vec![],
             },
         })

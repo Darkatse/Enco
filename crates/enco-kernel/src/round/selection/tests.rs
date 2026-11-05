@@ -25,6 +25,7 @@ fn start(attempt: AttemptId, purpose: AttemptPurpose, model: &str, plan: &str) -
 
 fn refused(attempt: AttemptId) -> EntryBody {
     EntryBody::AttemptSettled {
+        origin: None,
         attempt,
         result: AttemptResult::Overflow {
             overflow: Overflow {

@@ -71,6 +71,7 @@ pub(crate) fn last_reply<'a>(conversation: &[&'a Entry]) -> Option<LastReply<'a>
             EntryBody::AttemptSettled {
                 attempt,
                 result: AttemptResult::Completed { usage, .. },
+                ..
             } => {
                 answered.insert(*attempt, (entry.pos, usage));
             }
@@ -208,6 +209,7 @@ pub(crate) fn project(entries: &[&Entry]) -> Transcript {
             EntryBody::AttemptSettled {
                 attempt,
                 result: AttemptResult::Completed { message, .. },
+                ..
             } if attempts
                 .get(attempt)
                 .is_some_and(|(purpose, _)| *purpose == AttemptPurpose::Reply) =>

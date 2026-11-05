@@ -8,8 +8,8 @@ struct Fixture;
 const SOCKET: &str = "SOCKET_ORIGIN";
 const CDN: &str = "CDN_ORIGIN";
 
-fn request(method: &str, url: &str) -> channel::Request {
-    channel::Request { method: method.into(), url: url.into(), headers: Vec::new(), body: None, timeout_ms: None }
+fn request(method: &str, url: &str) -> channel::HttpRequest {
+    channel::HttpRequest { method: method.into(), url: url.into(), headers: Vec::new(), body: None, timeout_ms: None }
 }
 
 fn reading() -> channel::Reading {
@@ -33,8 +33,8 @@ impl lifecycle::Guest for Fixture {
 impl channel::Guest for Fixture {
     fn pacing() -> Option<channel::PacingGap> { None }
     fn origins() -> Vec<String> { vec![SOCKET.into(), CDN.into()] }
-    fn identify() -> channel::Request { request("GET", "/identify") }
-    fn identified(response: channel::Response) -> Result<channel::Identity, channel::Fault> {
+    fn identify() -> channel::HttpRequest { request("GET", "/identify") }
+    fn identified(response: channel::HttpResponse) -> Result<channel::Identity, channel::Fault> {
         Ok(channel::Identity { protocol: "fixture".into(), account: "one".into(), facts: String::from_utf8(response.body).unwrap() })
     }
     fn read(_identity: channel::Identity, state: Option<String>) -> Result<channel::ReadStep, channel::Fault> {
@@ -64,20 +64,20 @@ impl channel::Guest for Fixture {
         }
         Ok(result)
     }
-    fn fetch(locator: String, responses: Vec<channel::Response>, _limit: u32) -> Result<channel::FetchStep, channel::Fault> {
+    fn fetch(locator: String, responses: Vec<channel::HttpResponse>, _limit: u32) -> Result<channel::FetchStep, channel::Fault> {
         Ok(match responses.last() {
             Some(response) if locator != "endless" => channel::FetchStep::File(response.body.clone()),
             _ => channel::FetchStep::Download(format!("{CDN}/file")),
         })
     }
     fn split(message: channel::Outgoing) -> Vec<channel::Outgoing> { vec![message] }
-    fn send(_conversation: String, _part: channel::Outgoing) -> Result<channel::Request, channel::Fault> { Ok(request("POST", "/send")) }
-    fn answered(_response: channel::Response) -> Result<Option<String>, channel::Fault> { Ok(None) }
-    fn respond(_handle: String, _text: Option<String>) -> Result<Option<channel::Request>, channel::Fault> { Ok(None) }
-    fn commands(_identity: channel::Identity, _commands: Vec<channel::Command>) -> Vec<channel::Request> { Vec::new() }
-    fn activity(_conversation: String, _replies_here: bool, _shown: Option<String>, _update: enco_sdk::channel::ActivityUpdate) -> Option<channel::Request> { None }
-    fn presence(_conversation: String, _view: enco_sdk::channel::ActivityView) -> Option<channel::Request> { None }
-    fn open_conversation(_beside: String, _session: Vec<String>) -> Option<channel::Request> { None }
-    fn opened(_beside: String, _response: channel::Response) -> Result<String, channel::Fault> { unreachable!() }
-    fn close_conversation(_conversation: String) -> Option<channel::Request> { None }
+    fn send(_conversation: String, _part: channel::Outgoing) -> Result<channel::HttpRequest, channel::Fault> { Ok(request("POST", "/send")) }
+    fn answered(_response: channel::HttpResponse) -> Result<Option<String>, channel::Fault> { Ok(None) }
+    fn respond(_handle: String, _text: Option<String>) -> Result<Option<channel::HttpRequest>, channel::Fault> { Ok(None) }
+    fn commands(_identity: channel::Identity, _commands: Vec<channel::Command>) -> Vec<channel::HttpRequest> { Vec::new() }
+    fn activity(_conversation: String, _replies_here: bool, _shown: Option<String>, _update: enco_sdk::channel::ActivityUpdate) -> Option<channel::HttpRequest> { None }
+    fn presence(_conversation: String, _view: enco_sdk::channel::ActivityView) -> Option<channel::HttpRequest> { None }
+    fn open_conversation(_beside: String, _session: Vec<String>) -> Option<channel::HttpRequest> { None }
+    fn opened(_beside: String, _response: channel::HttpResponse) -> Result<String, channel::Fault> { unreachable!() }
+    fn close_conversation(_conversation: String) -> Option<channel::HttpRequest> { None }
 }

@@ -351,7 +351,7 @@ fn recorded_plan(plan: &ContextPlan) -> wire::Plan {
                 )| capability(id),
             )
             .collect(),
-        max_output_tokens: *max_output_tokens,
+        max_output_tokens: max_output_tokens.get(),
         omitted: omitted.iter().map(omission).collect(),
     }
 }

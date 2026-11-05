@@ -12,6 +12,7 @@ Session execution through explicit ports.
 - struct `Active` — The generation that runs under one name in ordinary operation.
 - struct `ActiveConfig` — The active configuration generation: registered content plus the declarations derived from it.
 - enum `Answer` — Finite probabilities in [0, 1], or a refusal for this question. Choice and score distributions follow label order and sum to one, allowing rounding.
+- struct `Answered` — How a completion call ended, with the recorded call that decoded the service's response.
 - enum `ArtifactSource` — Newly built bytes or a content address already known to the store.
 - struct `BoundComposer` — A composer generation paired with options accepted by that generation's schema.
 - struct `Budget` — Context limits supplied by configuration.
@@ -110,6 +111,7 @@ Session execution through explicit ports.
 - struct `ProviderRequest` — A canonical model request. Session requests resolve a frozen, recorded plan; registry probes contain only fixed validation content.
 - struct `Question` — Instructions and the allowed answer shape for one independent judgment.
 - enum `QuestionKind` — A predicate, unordered alternatives, or score levels ordered from low to high.
+- struct `Recording` — Where a Provider records the responses it decodes, under the generation that decodes them.
 - enum `Referrer` — What in the configuration refers to a plugin name.
 - struct `Registered` — The result of one accepted registration, with the evidence gathered before acceptance.
 - struct `RegisteredIntent` — Only the facts needed to compare and prepare new intent.
@@ -351,6 +353,29 @@ Implements:
 
 ```rust
 impl Debug for Answer
+```
+
+## struct `Answered`
+
+`src/ports/provider.rs`
+
+```rust
+pub struct Answered {
+    pub result: Result<Completion, CompleteError>,
+    pub origin: Option<MappingOrigin>,
+}
+```
+
+How a completion call ended, with the recorded call that decoded the service's response.
+
+- `result` — The completion, or why there is none.
+- `origin` — The decoding call's record; absent when no response arrived, the request could not be
+  built, or the call had no `record`.
+
+Implements:
+
+```rust
+impl Debug for Answered
 ```
 
 ## enum `ArtifactSource`
@@ -1619,7 +1644,7 @@ impl Debug for CompositionItem
 pub struct CompositionPlan {
     pub items: Vec<CompositionItem>,
     pub tools: Vec<CapabilityId>,
-    pub max_output_tokens: Option<u32>,
+    pub max_output_tokens: u32,
     pub omitted: Vec<Omission>,
 }
 ```
@@ -1628,7 +1653,7 @@ Composer output before the kernel freezes the Round's tool definitions with it.
 
 - `items` — Messages in request order.
 - `tools` — Capabilities selected from this Round.
-- `max_output_tokens` — Requested output budget; absent means provider default.
+- `max_output_tokens` — The most tokens the reply may use; the kernel checks it against the target's budget.
 - `omitted` — Content this policy left out, with its reasons.
 
 Implements:
@@ -3463,7 +3488,7 @@ impl Serialize for Proposed
 pub struct ProviderRequest<I = ImageData> {
     pub messages: Vec<Message<I>>,
     pub tools: Vec<DisclosedTool>,
-    pub max_output_tokens: Option<u32>,
+    pub max_output_tokens: std::num::NonZeroU32,
 }
 ```
 
@@ -3472,7 +3497,7 @@ registry probes contain only fixed validation content.
 
 - `messages` — Canonical messages in request order.
 - `tools` — Frozen definitions disclosed to the model.
-- `max_output_tokens` — Optional output limit.
+- `max_output_tokens` — The most tokens the reply may use.
 
 Implements:
 
@@ -3530,6 +3555,28 @@ Implements:
 ```rust
 impl Clone for QuestionKind
 impl Debug for QuestionKind
+```
+
+## struct `Recording`
+
+`src/ports/provider.rs`
+
+```rust
+pub struct Recording {
+    pub generation: GenerationId,
+    pub store: std::sync::Arc<dyn Store>,
+}
+```
+
+Where a Provider records the responses it decodes, under the generation that decodes them.
+
+- `generation` — The Provider generation that decodes the response.
+- `store` — The store that keeps the response body and the mapping record.
+
+Implements:
+
+```rust
+impl Clone for Recording
 ```
 
 ## enum `Referrer`
@@ -5412,11 +5459,14 @@ Completion boundary. Implementations own timeouts and per-invocation state.
 ### `Provider::complete`
 
 ```rust
-async fn complete(&self, settings: &ProviderSettings, request: ProviderRequest) -> Result<Completion, CompleteError>
+async fn complete(&self, settings: &ProviderSettings, request: ProviderRequest, record: Option<Recording>) -> Result<Answered, StoreError>
 ```
 
 Complete a frozen request; the transport resolves credentials from the settings.
-Dropping the future cancels local work.
+
+With `record`, the service's response is recorded there before it is decoded, and the
+answer names that record; failing to record it is a store error, not an answer. Dropping
+the future cancels local work.
 
 ## trait `Runtime`
 

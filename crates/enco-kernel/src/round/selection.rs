@@ -230,7 +230,9 @@ impl Combination {
                 } if *started_for == purpose && self.took(&entry.body) => {
                     started.insert(*attempt, *round);
                 }
-                EntryBody::AttemptSettled { attempt, result } => {
+                EntryBody::AttemptSettled {
+                    attempt, result, ..
+                } => {
                     if let Some(round) = started.remove(attempt) {
                         rounds.insert(round, (entry.pos, result.failure(purpose)));
                     }
@@ -257,6 +259,7 @@ impl Combination {
                 EntryBody::AttemptSettled {
                     attempt,
                     result: AttemptResult::Overflow { overflow },
+                    ..
                 } => {
                     if let Some(plan) = plans.get(attempt) {
                         refused.push((*plan, overflow));

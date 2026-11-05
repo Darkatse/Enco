@@ -13,7 +13,9 @@
 - `sdk/`：随宿主分发的插件 SDK
 - `manual/`：由宿主根据当前运行代际自动生成的只读手册
 - `workspace/`：新 Session 的默认工作目录
-- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。数据库模式版本 21 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
+- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。数据库模式版本 22 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
+
+`config.toml` 中每个模型 endpoint 用 `plugin` 选定协议：`openai-compatible` 与 `deepseek` 走 Chat Completions，`openai-responses` 走 OpenAI Responses，`anthropic` 走 Anthropic Messages，`gemini` 走 Gemini Generate Content。`options` 里的字段按各家 API 的原名并进请求，例如 Anthropic 的 `thinking` 与 `output_config`、Responses 的 `reasoning`，但不能覆盖插件自己写的字段，也不能写插件保留的字段，例如 `stream` 与 Responses 的 `previous_response_id`。补全请求不流式，回复整段到齐才返回，最多等 10 分钟；输出上限定得很大时可能超时，经过中转时中间的代理也可能更早断开。每种协议的配置示例见 [examples/](../examples/)。
 
 ### CLI 命令
 

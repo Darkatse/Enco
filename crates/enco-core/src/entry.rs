@@ -1,7 +1,7 @@
 use crate::{
     AttemptId, CallId, CapabilityId, CodeRef, ContentHash, DateTime, Effect, Event, EventBody,
-    Failure, GenerationId, Image, LogPos, Message, Part, Role, RoundId, RunId, Settlement,
-    ToolCall, ToolResult, Utc,
+    Failure, GenerationId, Image, LogPos, MappingOrigin, Message, Part, Role, RoundId, RunId,
+    Settlement, ToolCall, ToolResult, Utc,
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +64,11 @@ pub enum EntryBody {
         attempt: AttemptId,
         /// Durable settlement returned by the provider.
         result: AttemptResult,
+        /// The recorded call that decoded the service's response.
+        ///
+        /// Absent when no response arrived, the request could not be built, the attempt was
+        /// cancelled, or recovery wrote the settlement.
+        origin: Option<MappingOrigin>,
     },
     /// Committed before execution. Calls rejected by dispatch do not receive this entry.
     ToolCallStarted {

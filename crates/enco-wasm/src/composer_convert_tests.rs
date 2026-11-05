@@ -18,7 +18,7 @@ fn reply(hash: String, node: String) -> wire::Composition {
             node,
             name: "fs_read".into(),
         }],
-        max_output_tokens: None,
+        max_output_tokens: 1024,
         omitted: vec![],
     })
 }

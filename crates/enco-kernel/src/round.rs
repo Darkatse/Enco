@@ -326,14 +326,19 @@ fn bind_composition(
         message,
         retryable: false,
     };
-    let (plan, kind) = match composition {
-        Composition::Plan(plan) => (plan, AttemptKind::Reply),
+    let (plan, kind, budget, overflowed) = match composition {
+        Composition::Plan(plan) => (
+            plan,
+            AttemptKind::Reply,
+            &input.reply.budget,
+            input.reply.overflowed.as_ref(),
+        ),
         Composition::Compact { upto, plan } => {
-            if input.compaction.is_none() {
+            let Some(target) = &input.compaction else {
                 return Err(invalid(
                     "compaction is not available for this composition".into(),
                 ));
-            }
+            };
             if !input.transcript.round_ends.contains(&upto) {
                 return Err(invalid("compaction must end at a complete Round".into()));
             }
@@ -348,18 +353,16 @@ fn bind_composition(
                     "compaction must leave history after it to reply to".into(),
                 ));
             }
-            (plan, AttemptKind::Compaction(upto))
+            (
+                plan,
+                AttemptKind::Compaction(upto),
+                &target.budget,
+                target.overflowed.as_ref(),
+            )
         }
     };
-    let plan = crate::plan::bind(plan, input, kind.purpose())
+    let plan = crate::plan::bind(plan, input, kind.purpose(), budget)
         .map_err(|error| invalid(error.to_string()))?;
-    let overflowed = match kind {
-        AttemptKind::Reply => input.reply.overflowed.as_ref(),
-        AttemptKind::Compaction(_) => input
-            .compaction
-            .as_ref()
-            .and_then(|compaction| compaction.overflowed.as_ref()),
-    };
     // A pure composition sent again would be turned away again.
     if overflowed.is_some_and(|overflowed| overflowed.plan == plan) {
         return Err(invalid(

@@ -1,16 +1,41 @@
+use crate::{Store, StoreError};
 use async_trait::async_trait;
 use enco_core::*;
+use std::sync::Arc;
 
 /// Completion boundary. Implementations own timeouts and per-invocation state.
 #[async_trait]
 pub trait Provider: Send + Sync {
     /// Complete a frozen request; the transport resolves credentials from the settings.
-    /// Dropping the future cancels local work.
+    ///
+    /// With `record`, the service's response is recorded there before it is decoded, and the
+    /// answer names that record; failing to record it is a store error, not an answer. Dropping
+    /// the future cancels local work.
     async fn complete(
         &self,
         settings: &ProviderSettings,
         request: ProviderRequest,
-    ) -> Result<Completion, CompleteError>;
+        record: Option<Recording>,
+    ) -> Result<Answered, StoreError>;
+}
+
+/// Where a Provider records the responses it decodes, under the generation that decodes them.
+#[derive(Clone)]
+pub struct Recording {
+    /// The Provider generation that decodes the response.
+    pub generation: GenerationId,
+    /// The store that keeps the response body and the mapping record.
+    pub store: Arc<dyn Store>,
+}
+
+/// How a completion call ended, with the recorded call that decoded the service's response.
+#[derive(Debug)]
+pub struct Answered {
+    /// The completion, or why there is none.
+    pub result: Result<Completion, CompleteError>,
+    /// The decoding call's record; absent when no response arrived, the request could not be
+    /// built, or the call had no `record`.
+    pub origin: Option<MappingOrigin>,
 }
 
 /// Why a completion did not happen.
@@ -46,8 +71,8 @@ pub struct ProviderRequest<I = ImageData> {
     pub messages: Vec<Message<I>>,
     /// Frozen definitions disclosed to the model.
     pub tools: Vec<DisclosedTool>,
-    /// Optional output limit.
-    pub max_output_tokens: Option<u32>,
+    /// The most tokens the reply may use.
+    pub max_output_tokens: std::num::NonZeroU32,
 }
 
 /// Provider output with host-assigned call identities.

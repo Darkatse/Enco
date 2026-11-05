@@ -67,7 +67,9 @@ fn settle_round(entries: &[Entry], result: &mut Vec<EntryBody>) {
             } => {
                 attempts.insert(*attempt, *purpose);
             }
-            EntryBody::AttemptSettled { attempt, result } => {
+            EntryBody::AttemptSettled {
+                attempt, result, ..
+            } => {
                 settled_attempts.insert(*attempt);
                 if let AttemptResult::Completed { message, .. } = result
                     && attempts.get(attempt) == Some(&AttemptPurpose::Reply)
@@ -94,6 +96,7 @@ fn settle_round(entries: &[Entry], result: &mut Vec<EntryBody>) {
                 result: AttemptResult::Failed {
                     failure: interrupted(true),
                 },
+                origin: None,
             });
         }
     }

@@ -19,6 +19,7 @@ mod process;
 mod profiles;
 #[path = "../../src/protocol.rs"]
 mod protocol;
+mod provider_records;
 mod quotes;
 mod reminder;
 mod send;

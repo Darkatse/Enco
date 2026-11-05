@@ -1,7 +1,7 @@
 //! Updates, addressing and attachments translated at the protocol boundary.
 use crate::{
     Facts,
-    channel::{Fault, Identity, Inbound, Reading, Response},
+    channel::{Fault, HttpResponse, Identity, Inbound, Reading},
     wire::{answer, conversation_id, invalid_response},
 };
 use enco_sdk::channel::{Action, CommandKind, ConversationName};
@@ -132,7 +132,7 @@ fn read_state(state: Option<&str>) -> Result<ReadState, Fault> {
 pub(super) fn received(
     identity: Identity,
     state: Option<String>,
-    response: Response,
+    response: HttpResponse,
 ) -> Result<Reading, Fault> {
     let mut state = read_state(state.as_deref())?;
     let facts = Facts::of(&identity)?;

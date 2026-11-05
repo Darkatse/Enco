@@ -200,6 +200,7 @@ impl ObservedRun {
             EntryBody::AttemptSettled {
                 attempt,
                 result: AttemptResult::Completed { message, .. },
+                ..
             } if self.reply_attempt == Some(attempt) => {
                 self.pending_excerpt = shorten(
                     message

@@ -233,6 +233,7 @@ fn final_reply_projection_preserves_content_and_its_parent_destination() {
             },
         },
         EntryBody::AttemptSettled {
+            origin: None,
             attempt,
             result: AttemptResult::Completed {
                 message: Message::text(Role::Assistant, "finished"),

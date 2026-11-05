@@ -11,7 +11,7 @@ fn updates(state: Option<String>, items: Value) -> Result<super::super::channel:
     .map_err(|fault| fault.failure.message)
 }
 
-fn payload(request: &super::super::channel::Request) -> Result<Value, String> {
+fn payload(request: &super::super::channel::HttpRequest) -> Result<Value, String> {
     serde_json::from_slice(request.body.as_deref().ok_or("missing body")?)
         .map_err(|e| e.to_string())
 }

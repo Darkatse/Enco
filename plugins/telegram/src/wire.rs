@@ -1,5 +1,5 @@
 //! Bot API envelopes and deterministic HTTP encodings.
-use crate::channel::{Fault, Request, Response};
+use crate::channel::{Fault, HttpRequest, HttpResponse};
 use enco_sdk::types::Failure;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -19,7 +19,10 @@ struct Parameters {
     retry_after: Option<u32>,
 }
 
-pub(super) fn answer<T: DeserializeOwned>(method: &str, response: Response) -> Result<T, Fault> {
+pub(super) fn answer<T: DeserializeOwned>(
+    method: &str,
+    response: HttpResponse,
+) -> Result<T, Fault> {
     let envelope = serde_json::from_slice::<Envelope<T>>(&response.body);
     let envelope = match envelope {
         Ok(envelope) => envelope,
@@ -71,8 +74,8 @@ pub(super) fn answer<T: DeserializeOwned>(method: &str, response: Response) -> R
     envelope.result.ok_or_else(|| invalid_response(method))
 }
 
-pub(super) fn request(method: &str, body: Value, timeout_ms: u32) -> Request {
-    Request {
+pub(super) fn request(method: &str, body: Value, timeout_ms: u32) -> HttpRequest {
+    HttpRequest {
         method: "POST".into(),
         url: format!("/bot/{method}"),
         headers: vec![("content-type".into(), "application/json".into())],

@@ -1,6 +1,6 @@
 //! Discord messages and native interactions translated once at the external boundary.
 use crate::{
-    channel::{Command, Fault, Inbound, Request},
+    channel::{Command, Fault, HttpRequest, Inbound},
     wire,
 };
 use enco_sdk::channel::{Action, CommandKind, ConversationName};
@@ -115,7 +115,7 @@ struct Handle {
     token: String,
 }
 
-pub(super) fn interaction(value: Value) -> Result<Option<(Inbound, Request)>, Fault> {
+pub(super) fn interaction(value: Value) -> Result<Option<(Inbound, HttpRequest)>, Fault> {
     let interaction: Interaction =
         serde_json::from_value(value).map_err(|_| wire::invalid("INTERACTION_CREATE"))?;
     let action = match (
@@ -183,7 +183,7 @@ pub(super) fn interaction(value: Value) -> Result<Option<(Inbound, Request)>, Fa
     )))
 }
 
-pub(super) fn respond(handle: &str, text: Option<String>) -> Result<Option<Request>, Fault> {
+pub(super) fn respond(handle: &str, text: Option<String>) -> Result<Option<HttpRequest>, Fault> {
     let handle: Handle = serde_json::from_str(handle)
         .map_err(|_| wire::fault("plugin.contract", "invalid Discord response handle", true))?;
     let url = format!(

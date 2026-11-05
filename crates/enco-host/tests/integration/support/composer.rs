@@ -29,7 +29,7 @@ pub fn reply_plan(input: &ComposeInput) -> CompositionPlan {
     CompositionPlan {
         items,
         tools: input.tools.iter().map(|(id, _)| id.clone()).collect(),
-        max_output_tokens: Some(input.reply.budget.max_output_tokens.get()),
+        max_output_tokens: input.reply.budget.max_output_tokens.get(),
         omitted: vec![],
     }
 }
@@ -83,7 +83,7 @@ impl Composer for HistoryComposer {
                         sources: vec![],
                     }],
                     tools: vec![],
-                    max_output_tokens: Some(compaction.budget.max_output_tokens.get()),
+                    max_output_tokens: compaction.budget.max_output_tokens.get(),
                     omitted: vec![],
                 },
             });

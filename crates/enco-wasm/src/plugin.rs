@@ -9,22 +9,19 @@ use crate::{
     },
     call_world::CallWorld,
     convert,
-    credentials::{self, Credential},
+    credentials::Credential,
     engine::WasmEngine,
-    host_imports::HostState,
+    host_imports::{HostState, Network},
     limits,
 };
 use async_trait::async_trait;
 use enco_core::*;
-use enco_kernel::{
-    Answer, CompleteError, Completion, Decision, Embedding, Lifecycle, Provider, ProviderRequest,
-    Question,
-};
+use enco_kernel::Lifecycle;
 use std::sync::Arc;
 use wasmtime::{Store, StoreLimitsBuilder, component::ResourceTable};
 
 /// Compiled exports with no captured endpoint or credential value.
-pub(super) struct WasmPlugin {
+pub(crate) struct WasmPlugin {
     pub lifecycle: BasePre<HostState>,
     pub completion: Option<CompletionPluginPre<HostState>>,
     pub embedding: Option<EmbeddingPluginPre<HostState>>,
@@ -39,6 +36,9 @@ pub(super) struct WasmPlugin {
 
 impl WasmPlugin {
     /// Every logical call owns a fresh Store and shares the same limits and failure boundary.
+    ///
+    /// A call that runs out of time is a retryable `timeout` when its world has network, and
+    /// `plugin.trap` otherwise.
     pub(super) async fn invoke<T>(
         &self,
         world: CallWorld,
@@ -46,6 +46,19 @@ impl WasmPlugin {
         call: impl AsyncFnOnce(Store<HostState>) -> wasmtime::Result<Result<T, types::Failure>>,
     ) -> Result<T, Failure> {
         let (network, config, wasi) = world.configure(&self.settings.config)?;
+        // Without network a call waits on nothing but its own code, so running out of time is that
+        // code's fault and repeating the call meets it again.
+        let timeout = match network {
+            Network::Open(_) => Failure {
+                code: code::TIMEOUT.into(),
+                message: "plugin invocation timed out".into(),
+                retryable: true,
+            },
+            Network::Closed => trap(format!(
+                "plugin code did not finish within {} s",
+                limits::PLUGIN_CALL_TIMEOUT.as_secs()
+            )),
+        };
         let state = HostState {
             network,
             config,
@@ -71,11 +84,7 @@ impl WasmPlugin {
             result = invoke => result,
         };
         result
-            .map_err(|_| Failure {
-                code: code::TIMEOUT.into(),
-                message: "plugin invocation timed out".into(),
-                retryable: true,
-            })?
+            .map_err(|_| timeout)?
             .map_err(|error| trap(format!("plugin call failed: {error}")))?
             .map_err(convert::failure)
     }
@@ -100,15 +109,8 @@ impl WasmPlugin {
     }
 }
 
-fn settings(settings: &ProviderSettings) -> types::Settings {
-    types::Settings {
-        base_url: settings.base_url.clone(),
-        model: settings.model.clone(),
-        options: settings.options.to_string(),
-    }
-}
-
-fn trap(message: impl Into<String>) -> Failure {
+/// The invocation itself failed, as opposed to the guest answering.
+pub(crate) fn trap(message: impl Into<String>) -> Failure {
     Failure {
         code: code::PLUGIN_TRAP.into(),
         message: message.into(),
@@ -128,116 +130,5 @@ impl Lifecycle for WasmPlugin {
                 .await?
         })
         .await
-    }
-}
-
-#[async_trait]
-impl Provider for WasmPlugin {
-    async fn complete(
-        &self,
-        params: &ProviderSettings,
-        request: ProviderRequest,
-    ) -> Result<Completion, CompleteError> {
-        let pre = self
-            .completion
-            .as_ref()
-            .ok_or_else(|| trap("completion export is missing"))?;
-        let request = convert::request(request);
-        let settings = settings(params);
-        let credentials = credentials::resolve(&self.credentials, &self.settings, Some(params))?;
-        // The guest's own error is an answer to convert, not a failure of the invocation.
-        let result = self
-            .invoke(
-                CallWorld::Regular(credentials),
-                Default::default(),
-                async move |mut store| {
-                    let plugin = pre.instantiate_async(&mut store).await?;
-                    store
-                        .run_concurrent(async move |accessor| {
-                            plugin
-                                .enco_plugin_completion()
-                                .call_complete(accessor, settings, request)
-                                .await
-                                .map(Ok)
-                        })
-                        .await?
-                },
-            )
-            .await?;
-        match result {
-            Ok(completion) => Ok(convert::completion(completion)?),
-            Err(error) => Err(convert::complete_error(error)?),
-        }
-    }
-}
-
-#[async_trait]
-impl Embedding for WasmPlugin {
-    async fn embed(
-        &self,
-        params: &ProviderSettings,
-        inputs: Vec<String>,
-    ) -> Result<Vec<Vec<f32>>, Failure> {
-        let pre = self
-            .embedding
-            .as_ref()
-            .ok_or_else(|| trap("embedding export is missing"))?;
-        let count = inputs.len();
-        let settings = settings(params);
-        let credentials = credentials::resolve(&self.credentials, &self.settings, Some(params))?;
-        let vectors = self
-            .invoke(
-                CallWorld::Regular(credentials),
-                Default::default(),
-                async move |mut store| {
-                    let plugin = pre.instantiate_async(&mut store).await?;
-                    store
-                        .run_concurrent(async move |accessor| {
-                            plugin
-                                .enco_plugin_embedding()
-                                .call_embed(accessor, settings, inputs)
-                                .await
-                        })
-                        .await?
-                },
-            )
-            .await?;
-        convert::embeddings(vectors, count)
-    }
-}
-
-#[async_trait]
-impl Decision for WasmPlugin {
-    async fn decide(
-        &self,
-        params: &ProviderSettings,
-        state: String,
-        questions: Vec<Question>,
-    ) -> Result<Vec<Answer>, Failure> {
-        let pre = self
-            .decision
-            .as_ref()
-            .ok_or_else(|| trap("decision export is missing"))?;
-        let wire_questions = questions.iter().map(convert::question).collect();
-        let settings = settings(params);
-        let credentials = credentials::resolve(&self.credentials, &self.settings, Some(params))?;
-        let answers = self
-            .invoke(
-                CallWorld::Regular(credentials),
-                Default::default(),
-                async move |mut store| {
-                    let plugin = pre.instantiate_async(&mut store).await?;
-                    store
-                        .run_concurrent(async move |accessor| {
-                            plugin
-                                .enco_plugin_decision()
-                                .call_decide(accessor, settings, state, wire_questions)
-                                .await
-                        })
-                        .await?
-                },
-            )
-            .await?;
-        convert::answers(answers, &questions)
     }
 }

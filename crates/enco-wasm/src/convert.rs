@@ -3,13 +3,21 @@
 //! Values from a guest are checked on the way in; one that breaks the contract, such as an
 //! embedding batch that does not match its inputs, fails as `plugin.contract`.
 use crate::{
-    bindings::{decisions, enco::plugin::types as wit, exports::enco::plugin::completion as wire},
+    bindings::{completions as wire, decisions, enco::plugin::types as wit},
     limits::DECISION_SUM_TOLERANCE,
 };
 use enco_core::*;
 use enco_kernel::{
     Answer, CompleteError, Completion, Label, ProviderRequest, Question, QuestionKind,
 };
+
+/// The endpoint parameters a Provider receives with each call.
+pub(crate) fn settings(settings: &ProviderSettings) -> wit::Settings {
+    wit::Settings {
+        model: settings.model.clone(),
+        options: settings.options.to_string(),
+    }
+}
 
 pub(crate) fn request(request: ProviderRequest) -> wire::Request {
     let ProviderRequest {
@@ -35,7 +43,7 @@ pub(crate) fn request(request: ProviderRequest) -> wire::Request {
                 },
             )
             .collect(),
-        max_output_tokens,
+        max_output_tokens: max_output_tokens.get(),
     }
 }
 
@@ -272,9 +280,13 @@ pub(crate) fn bad(message: impl Into<String>) -> Failure {
     }
 }
 
-pub(crate) fn embeddings(vectors: Vec<Vec<f32>>, count: usize) -> Result<Vec<Vec<f32>>, Failure> {
+/// The vectors a mapper decoded for `count` inputs, checked against its contract.
+///
+/// The contract is one nonempty vector of finite numbers per input, all of one width; anything
+/// else is `plugin.contract`.
+pub(crate) fn embeddings(vectors: Vec<Vec<f32>>, count: u32) -> Result<Vec<Vec<f32>>, Failure> {
     let width = vectors.first().map(Vec::len);
-    if vectors.len() != count
+    if usize::try_from(count) != Ok(vectors.len())
         || vectors.iter().any(|vector| {
             vector.is_empty()
                 || Some(vector.len()) != width

@@ -212,7 +212,9 @@ fn service_limit(conversation: &[&Entry], reply: &CompletionEndpoint) -> Option<
     let mut answered = 0;
     for entry in conversation.iter().rev() {
         match &entry.body {
-            EntryBody::AttemptSettled { attempt, result } => {
+            EntryBody::AttemptSettled {
+                attempt, result, ..
+            } => {
                 settled.insert(*attempt, result);
             }
             EntryBody::AttemptStarted {

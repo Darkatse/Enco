@@ -29,7 +29,7 @@ Enco 整个系统设计遵循一个原则：Agent 经正式路径提交的任何
 
 一切的能力都来自于 WebAssembly 插件。所有的插件都可以被 Enco 在运行过程中进行实时改写与替换。
 
-模型服务商（OpenAI-Compatible、Gemini、DeepSeek）、相关性决策（TypeSafe）、网页搜索与抓取工具、每次模型请求的组装策略（`composer`），以及聊天渠道（Telegram、Discord、QQ OneBot），全部是独立的 WebAssembly 组件。内核只负责记录事实、确定每个 Round 由哪份代码服务、校验请求和调度执行。不喜欢某个插件的做法，可以 fork 它，也可以直接让你的 Enco 写一个新的。
+模型服务商（OpenAI-Compatible、OpenAI Responses、Anthropic Messages、Gemini、DeepSeek）、相关性决策（TypeSafe）、网页搜索与抓取工具、每次模型请求的组装策略（`composer`），以及聊天渠道（Telegram、Discord、QQ OneBot），全部是独立的 WebAssembly 组件。内核只负责记录事实、确定每个 Round 由哪份代码服务、校验请求和调度执行。不喜欢某个插件的做法，可以 fork 它，也可以直接让你的 Enco 写一个新的。
 
 插件只能调用 [WIT 契约](sdk/wit/CONTRACT.md) 提供的能力，内核保证类型与回退安全。顺带从根源上解决插件依赖地狱。
 

@@ -73,12 +73,9 @@ fn usage(response: &Object) -> Result<Usage, Failure> {
     })
 }
 
-pub fn embeddings(response: Value, inputs: usize) -> Result<Vec<Vec<f32>>, Failure> {
-    let embeddings = read(object(&response, "response")?, "embeddings", list)?;
-    if embeddings.len() != inputs {
-        return Err(bad("embedding count does not match input count"));
-    }
-    embeddings
+/// One vector per embedding the response lists, in order.
+pub fn embeddings(response: Value) -> Result<Vec<Vec<f32>>, Failure> {
+    read(object(&response, "response")?, "embeddings", list)?
         .iter()
         .map(|embedding| {
             read(object(embedding, "embedding")?, "values", list)?

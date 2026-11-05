@@ -31,7 +31,7 @@ enum Preparation {
 #[derive(Serialize, Deserialize)]
 struct Payload<I, O> {
     items: I,
-    max_output_tokens: Option<u32>,
+    max_output_tokens: std::num::NonZeroU32,
     omitted: O,
 }
 
@@ -153,20 +153,24 @@ pub(super) fn restore(encoded: EncodedPlan) -> Result<ContextPlan, StoreError> {
     let tools = decompress(&encoded.catalog)
         .and_then(|bytes| serde_json::from_slice(&bytes).map_err(backend))
         .map_err(|error| failure(hash, format!("tool catalog: {error}")))?;
-    let mut plan = ContextPlan {
-        items: Vec::new(),
-        tools,
-        max_output_tokens: None,
-        omitted: Vec::new(),
-    };
+    // Each record appends items to its parent's; the newest carries the limit and omissions.
+    let mut items = Vec::new();
+    let mut newest = None;
     for record in encoded.records.into_iter().rev() {
         let payload: Payload<Vec<PlanItem>, Vec<Omission>> = decompress(&record.body)
             .and_then(|bytes| serde_json::from_slice(&bytes).map_err(backend))
             .map_err(|error| failure(hash, format!("plan record: {error}")))?;
-        plan.items.extend(payload.items);
-        plan.max_output_tokens = payload.max_output_tokens;
-        plan.omitted = payload.omitted;
+        items.extend(payload.items);
+        newest = Some((payload.max_output_tokens, payload.omitted));
     }
+    let (max_output_tokens, omitted) =
+        newest.ok_or_else(|| failure(hash, "the plan has no records"))?;
+    let plan = ContextPlan {
+        items,
+        tools,
+        max_output_tokens,
+        omitted,
+    };
     if plan.hash().map_err(backend)? != hash {
         return Err(failure(hash, "restored content does not match its address"));
     }

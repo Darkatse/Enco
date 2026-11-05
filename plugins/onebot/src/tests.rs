@@ -1,21 +1,21 @@
 use super::{
     Plugin,
-    channel::{Arrival, Closure, FetchStep, FileData, Guest, Identity, Outgoing, Response},
+    channel::{Arrival, Closure, FetchStep, FileData, Guest, HttpResponse, Identity, Outgoing},
     fixtures,
 };
 use enco_sdk::channel::{Action, ActivityView};
 use serde_json::{Value, json};
 
-fn response(body: &str) -> Response {
-    Response {
+fn response(body: &str) -> HttpResponse {
+    HttpResponse {
         status: 200,
         headers: vec![],
         body: body.as_bytes().into(),
     }
 }
 
-fn status(status: u16) -> Response {
-    Response {
+fn status(status: u16) -> HttpResponse {
+    HttpResponse {
         status,
         ..response("")
     }

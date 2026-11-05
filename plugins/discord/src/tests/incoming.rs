@@ -65,7 +65,7 @@ fn messages_keep_native_text_commands_addressing_threads_and_attachments() -> Re
     assert_eq!(
         Plugin::fetch(
             content.attachments[2].locator.clone(),
-            vec![Response {
+            vec![HttpResponse {
                 status: 200,
                 headers: vec![],
                 body: b"PDF bytes".to_vec()

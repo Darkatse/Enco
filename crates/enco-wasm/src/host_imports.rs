@@ -1,4 +1,5 @@
-//! The host functions a plugin can call: its configuration, logging and HTTP.
+//! The host functions a tool plugin imports, its configuration, logging and HTTP, and the HTTP the
+//! host sends for mappers.
 //!
 //! A request to a credential's origin carries that credential. Before a response or failure
 //! returns to the guest, each credential value in it is replaced with a placeholder; encoded forms,

@@ -1,6 +1,6 @@
 //! Lossless text layout, native images and standalone file uploads.
 use crate::{
-    channel::{Fault, FileData, Outgoing, Request},
+    channel::{Fault, FileData, HttpRequest, Outgoing},
     wire::{self, Conversation},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -50,7 +50,7 @@ pub(super) fn split(message: Outgoing) -> Vec<Outgoing> {
     parts
 }
 
-pub(super) fn send(conversation: &str, message: Outgoing) -> Result<Request, Fault> {
+pub(super) fn send(conversation: &str, message: Outgoing) -> Result<HttpRequest, Fault> {
     let (key, id, send, upload) = match Conversation::parse(conversation)? {
         Conversation::Private(user) => ("user_id", user, "send_private_msg", "upload_private_file"),
         Conversation::Group(group) => ("group_id", group, "send_group_msg", "upload_group_file"),
