@@ -178,12 +178,7 @@ impl WasmPlugin {
         request: wit::HttpRequest,
     ) -> Result<wit::HttpResponse, Failure> {
         let credentials = credentials::resolve(&self.credentials, &self.settings, Some(params))?;
-        let base = reqwest::Url::parse(&params.base_url).map_err(|error| Failure {
-            code: code::PROVIDER_BAD_REQUEST.into(),
-            message: format!("endpoint base URL {}: {error}", params.base_url),
-            retryable: false,
-        })?;
-        let url = Destinations::new(base, &[]).request(&request.url)?;
+        let url = Destinations::new(&params.base_url, &[]).request(&request.url)?;
         let request = wit::HttpRequest {
             url: url.to_string(),
             ..request

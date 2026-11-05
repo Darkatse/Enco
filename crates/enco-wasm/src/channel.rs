@@ -81,24 +81,19 @@ impl Channel for WasmChannel {
         generation: GenerationId,
         store: Arc<dyn Store>,
     ) -> Result<Arc<dyn ChannelAdapter>, ChannelCallError> {
-        // Registration checked the URL's form; opening only reads it.
-        let base_url = reqwest::Url::parse(&settings.base_url).map_err(|error| {
-            convert::failure(
-                crate::convert::bad(format!("channel base URL: {error}")),
-                false,
-                None,
-            )
-        })?;
-        let credentials =
-            credentials::resolve_channel(&self.plugin.credentials, &base_url, &settings.secrets)
-                .map_err(|failure| convert::failure(failure, false, None))?;
+        let credentials = credentials::resolve_channel(
+            &self.plugin.credentials,
+            &settings.base_url,
+            &settings.secrets,
+        )
+        .map_err(|failure| convert::failure(failure, false, None))?;
         let request = self
             .call(async |guest, store| guest.call_identify(store).await)
             .await
             .map_err(|failure| convert::failure(failure, false, None))?;
         let transport = Transport {
             mapper: self.clone(),
-            destinations: Destinations::new(base_url, &self.plugin.channel_origins),
+            destinations: Destinations::new(&settings.base_url, &self.plugin.channel_origins),
             credentials,
             generation,
             store,

@@ -554,7 +554,7 @@ async fn wasm_embedding_preserves_batch_order_and_rejects_reserved_options() {
         .await;
     let runtime = WasmRuntime::new().unwrap();
     let settings = ProviderSettings {
-        base_url: server.uri(),
+        base_url: server.uri().parse().unwrap(),
         model: "embedding".into(),
         api_key_env: None,
         options: json!({}),

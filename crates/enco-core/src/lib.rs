@@ -1,5 +1,6 @@
 //! Durable vocabulary shared by the kernel, host and local protocol.
 #![warn(missing_docs)]
+mod base_url;
 mod capability;
 mod delivery;
 mod entry;
@@ -23,6 +24,7 @@ mod session;
 mod session_name;
 mod tool;
 mod working_dir;
+pub use base_url::*;
 pub use capability::*;
 pub use chrono::{DateTime, FixedOffset, Utc};
 pub use chrono_tz::Tz;

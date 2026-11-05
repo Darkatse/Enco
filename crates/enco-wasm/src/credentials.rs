@@ -1,6 +1,6 @@
 //! Credentials stay in the transport; validated placements bind each recipient and location.
 use crate::{bindings::enco::plugin::host, origins::Origin};
-use enco_core::{Failure, PluginSettings, ProviderSettings, code};
+use enco_core::{BaseUrl, Failure, PluginSettings, ProviderSettings, code};
 use enco_kernel::{LoadError, Location};
 use reqwest::{
     Url,
@@ -136,20 +136,12 @@ pub(crate) fn resolve(
     for credential in declared {
         let (base, name) = if credential.caller_selected {
             let Some(endpoint) = endpoint else { continue };
-            (
-                Some(service_url(&endpoint.base_url)?),
-                endpoint.api_key_env.as_ref(),
-            )
+            (Some(endpoint.base_url.url()), endpoint.api_key_env.as_ref())
         } else {
             (None, settings.secrets.get(&credential.name))
         };
         if let Some(name) = name {
-            credentials.push(CallCredential::resolve(
-                credential,
-                base.as_ref(),
-                name,
-                "",
-            )?);
+            credentials.push(CallCredential::resolve(credential, base, name, "")?);
         }
     }
     Ok(credentials)
@@ -158,7 +150,7 @@ pub(crate) fn resolve(
 /// Connection credentials follow the service and secret mapping chosen for that account.
 pub(crate) fn resolve_channel(
     declared: &[Credential],
-    base: &Url,
+    base: &BaseUrl,
     secrets: &std::collections::BTreeMap<String, String>,
 ) -> Result<Vec<CallCredential>, Failure> {
     declared
@@ -167,29 +159,13 @@ pub(crate) fn resolve_channel(
             secrets.get(&credential.name).map(|name| {
                 CallCredential::resolve(
                     credential,
-                    Some(base),
+                    Some(base.url()),
                     name,
-                    base.path().trim_end_matches('/'),
+                    base.url().path().trim_end_matches('/'),
                 )
             })
         })
         .collect()
-}
-
-fn service_url(url: &str) -> Result<Url, Failure> {
-    let parsed = Url::parse(url).map_err(|error| {
-        failure(
-            code::PROVIDER_BAD_REQUEST,
-            format!("invalid service URL: {error}"),
-        )
-    })?;
-    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        return Err(failure(
-            code::PROVIDER_BAD_REQUEST,
-            "service URL requires an HTTP origin",
-        ));
-    }
-    Ok(parsed)
 }
 
 /// One invocation's credential, shared by all its placements and never handed to the guest.

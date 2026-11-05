@@ -1,5 +1,5 @@
 //! Connection declarations, validated once when registered and consumed at connection boundaries.
-use enco_core::PluginName;
+use enco_core::{BaseUrl, PluginName};
 use enco_kernel::{
     ChannelSettings, ConfigTable, KernelSettings, SettingsError, TableOwner, Use, UseTarget,
     parse_table,
@@ -15,7 +15,7 @@ pub struct ConnectionSettings {
     /// Registered mapper plugin.
     pub plugin: PluginName,
     /// Service origin, with an optional base path.
-    pub base_url: String,
+    pub base_url: BaseUrl,
     /// Protocol ID of the owner.
     pub owner: String,
     /// Credential names mapped to environment variable names.
@@ -75,20 +75,6 @@ fn declare(document: &Value, kernel: &KernelSettings) -> Result<Vec<Use>, Settin
         crate::memory_tool_specs().map_err(|error| SettingsError::new("channel", error))?;
     for (name, settings) in read(document)? {
         let table = format!("channel.{name}");
-        let url = reqwest::Url::parse(&settings.base_url)
-            .map_err(|error| SettingsError::new(&table, error))?;
-        if !matches!(url.scheme(), "http" | "https")
-            || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(SettingsError::new(
-                &table,
-                "base_url must be an HTTP(S) URL without credentials, query or fragment",
-            ));
-        }
         if settings.owner.trim().is_empty()
             || settings
                 .secrets

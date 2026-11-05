@@ -64,7 +64,7 @@ pub async fn open(
         .unwrap()
         .open(
             &ChannelSettings {
-                base_url: base.into(),
+                base_url: base.parse().unwrap(),
                 secrets: [(secret.into(), "ENCO_CHANNEL_FIXTURE_TOKEN".into())].into(),
             },
             GenerationId(31),

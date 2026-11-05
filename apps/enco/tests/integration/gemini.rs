@@ -25,7 +25,7 @@ async fn native_gemini_preserves_tool_parts_and_embeds_in_input_order() {
         .unwrap();
     let provider = loaded.completion.unwrap();
     let settings = ProviderSettings {
-        base_url: server.uri(),
+        base_url: server.uri().parse().unwrap(),
         model: "mock".into(),
         api_key_env: None,
         options: json!({"generationConfig": {"thinkingConfig": {"thinkingLevel": "LOW"}}}),

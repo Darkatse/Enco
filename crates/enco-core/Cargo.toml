@@ -13,6 +13,7 @@ blake3 = { workspace = true }
 chrono = { workspace = true }
 chrono-tz.workspace = true
 thiserror = { workspace = true }
+url = { workspace = true }
 
 [lints]
 workspace = true

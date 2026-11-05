@@ -2,7 +2,9 @@
 use crate::{
     Budget, CompletionEndpoint, ComposerSettings, Endpoints, Need, Profile, Use, UseTarget,
 };
-use enco_core::{DEFAULT_PROFILE, Modality, PluginName, ProfileName, ProviderSettings, Tz};
+use enco_core::{
+    BaseUrl, DEFAULT_PROFILE, Modality, PluginName, ProfileName, ProviderSettings, Tz,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -106,7 +108,7 @@ impl Default for Run {
 #[serde(deny_unknown_fields)]
 struct RawEndpoint {
     plugin: PluginName,
-    base_url: String,
+    base_url: BaseUrl,
     model: String,
     api_key_env: Option<String>,
     #[serde(default = "empty_options")]
@@ -169,11 +171,8 @@ impl KernelSettings {
             let table = format!("{}.{name}", ENDPOINT_TABLE.name());
             let raw: RawEndpoint =
                 serde_json::from_value(value).map_err(|error| SettingsError::new(&table, error))?;
-            if raw.base_url.trim().is_empty() || raw.model.trim().is_empty() {
-                return Err(SettingsError::new(
-                    table,
-                    "base_url and model must not be empty",
-                ));
+            if raw.model.trim().is_empty() {
+                return Err(SettingsError::new(table, "model must not be empty"));
             }
             endpoints.insert(
                 name.clone(),

@@ -226,7 +226,7 @@ fn final_reply_projection_preserves_content_and_its_parent_destination() {
             composer: GenerationId(1),
             provider: GenerationId(2),
             settings: ProviderSettings {
-                base_url: "https://example.test".into(),
+                base_url: "https://example.test".parse().unwrap(),
                 model: "model".into(),
                 api_key_env: None,
                 options: serde_json::json!({}),

@@ -39,7 +39,7 @@ async fn decision_plugin_maps_distributions_and_reports_bad_responses() {
         .unwrap();
     let decision = loaded.decision.unwrap();
     let settings = ProviderSettings {
-        base_url: server.uri(),
+        base_url: server.uri().parse().unwrap(),
         model: "mock".into(),
         api_key_env: None,
         options: json!({}),

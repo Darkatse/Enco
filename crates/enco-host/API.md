@@ -713,7 +713,7 @@ impl Drop for ChannelSupervisor
 ```rust
 pub struct ConnectionSettings {
     pub plugin: enco_core::PluginName,
-    pub base_url: String,
+    pub base_url: enco_core::BaseUrl,
     pub owner: String,
     pub secrets: std::collections::BTreeMap<String, String>,
     pub context: usize,

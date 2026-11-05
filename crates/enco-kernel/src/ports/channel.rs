@@ -1,7 +1,7 @@
 use crate::{Store, StoreError};
 use async_trait::async_trait;
 use enco_core::{
-    DateTime, Failure, FileData, GenerationId, MappingOrigin, Outgoing, QuoteKind, RunEnd,
+    BaseUrl, DateTime, Failure, FileData, GenerationId, MappingOrigin, Outgoing, QuoteKind, RunEnd,
     Unviewable, Utc,
 };
 use serde_json::Value;
@@ -25,7 +25,7 @@ pub trait Channel: Send + Sync {
 #[derive(Clone)]
 pub struct ChannelSettings {
     /// HTTP origin and optional base path used by this connection.
-    pub base_url: String,
+    pub base_url: BaseUrl,
     /// Mapper credential names mapped to environment variable names.
     pub secrets: BTreeMap<String, String>,
 }

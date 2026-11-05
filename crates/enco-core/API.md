@@ -12,6 +12,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `AttemptId` — Identity of one provider attempt, including failed attempts.
 - enum `AttemptPurpose` — Whether the model is replying or summarizing prior rounds.
 - enum `AttemptResult` — The durable settlement of a provider attempt.
+- struct `BaseUrl` — The address of a service: an HTTP(S) origin with an optional base path, which request paths are joined to.
 - struct `Binding` — Execution owner and fencing generation; a single node uses itself at epoch one.
 - struct `Boundary` — A Log entry at which a Session hands content to its reply destination, or would if it had any.
 - struct `CallId` — Host-assigned identity of one proposed tool invocation.
@@ -54,6 +55,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - enum `Initiator` — Provenance of an accepted change; Agent reasoning remains in its Session log.
 - struct `InputSchema` — A tool's argument schema: a closed object in the canonical subset that the plugin contract states for `tool-spec`.
 - enum `IntentPath` — An addressable configuration file or plugin directory in the Enco home.
+- enum `InvalidBaseUrl` — Text that is not a base URL; it does not repeat the text, which may hold a credential.
 - struct `InvalidIntentPath` — A path that cannot be addressed by the development commands.
 - struct `InvalidPluginName` — A plugin name outside the public naming grammar.
 - struct `InvalidProfileName` — A profile name outside the single-segment naming rule.
@@ -347,6 +349,42 @@ impl Debug for AttemptResult
 impl<'de> Deserialize<'de> for AttemptResult
 impl PartialEq for AttemptResult
 impl Serialize for AttemptResult
+```
+
+## struct `BaseUrl`
+
+`src/base_url.rs`
+
+```rust
+pub struct BaseUrl(/* private field */);
+```
+
+The address of a service: an HTTP(S) origin with an optional base path, which request paths
+are joined to.
+
+Only parsing makes one, so it never carries credentials, a query or a fragment; it is kept and
+compared in its normalized form.
+
+### `BaseUrl::url`
+
+```rust
+pub fn url(&self) -> &Url
+```
+
+The parsed URL.
+
+Implements:
+
+```rust
+impl Clone for BaseUrl
+impl Debug for BaseUrl
+impl<'de> Deserialize<'de> for BaseUrl
+impl Eq for BaseUrl
+impl From<BaseUrl> for String
+impl FromStr for BaseUrl
+impl PartialEq for BaseUrl
+impl Serialize for BaseUrl
+impl TryFrom<String> for BaseUrl
 ```
 
 ## struct `Binding`
@@ -1954,6 +1992,31 @@ impl PartialOrd for IntentPath
 impl Serialize for IntentPath
 ```
 
+## enum `InvalidBaseUrl`
+
+`src/base_url.rs`
+
+```rust
+pub enum InvalidBaseUrl {
+    Unparsed(url::ParseError),
+    Shape,
+}
+```
+
+Text that is not a base URL; it does not repeat the text, which may hold a credential.
+
+- `Unparsed` — The text is not a URL.
+- `Shape` — The URL is not an HTTP(S) origin with an optional path.
+
+Implements:
+
+```rust
+impl Debug for InvalidBaseUrl
+impl Display for InvalidBaseUrl
+impl Error for InvalidBaseUrl
+impl From<ParseError> for InvalidBaseUrl
+```
+
 ## struct `InvalidIntentPath`
 
 `src/intent.rs`
@@ -2844,7 +2907,7 @@ impl Serialize for ProfileName
 
 ```rust
 pub struct ProviderSettings {
-    pub base_url: String,
+    pub base_url: crate::BaseUrl,
     pub model: String,
     pub api_key_env: Option<String>,
     pub options: serde_json::Value,

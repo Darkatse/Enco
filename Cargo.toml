@@ -35,6 +35,7 @@ zstd = { version = "0.13.3", default-features = false } # one-shot compression o
 rand = "0.10.3"
 # Response bodies are read as raw bytes, never decoded as text, so `charset` stays off.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "system-proxy"] }
+url = "2.5.8"
 # What the plugin runtime uses: async components compiled by Cranelift, the on-disk cache and
 # epoch interruption. Text formats, GC, threads, profilers and debuggers stay out of the binary;
 # tests that write components as text enable `wat` themselves.

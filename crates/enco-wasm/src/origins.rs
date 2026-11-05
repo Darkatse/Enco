@@ -1,5 +1,5 @@
 //! Validated network origins shared by mapper destinations and credential recipients.
-use enco_core::Failure;
+use enco_core::{BaseUrl, Failure};
 use reqwest::Url;
 
 /// A declared origin, or the service a caller selects.
@@ -102,9 +102,9 @@ const REQUEST_SCHEMES: [&str; 2] = ["http", "https"];
 const SOCKET_SCHEMES: [&str; 2] = ["ws", "wss"];
 
 impl Destinations {
-    pub fn new(base: Url, declared: &[Origin]) -> Self {
+    pub fn new(base: &BaseUrl, declared: &[Origin]) -> Self {
         Self {
-            service: Origin::service(&base),
+            service: Origin::service(base.url()),
             declared: declared.to_vec(),
         }
     }
@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn channel_requests_and_sockets_use_the_same_approved_origins() {
         let destinations = Destinations::new(
-            Url::parse("https://api.example/v1").unwrap(),
+            &"https://api.example/v1".parse::<BaseUrl>().unwrap(),
             &[
                 Origin::parse("https://cdn.example").unwrap(),
                 Origin::parse("wss://*.gateway.example").unwrap(),
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn downloads_reach_only_declared_origins() {
         let destinations = Destinations::new(
-            Url::parse("https://api.example/v1").unwrap(),
+            &"https://api.example/v1".parse::<BaseUrl>().unwrap(),
             &[Origin::parse("https://cdn.example").unwrap()],
         );
         assert!(
@@ -288,11 +288,12 @@ mod tests {
             ("https://api.example/v1/", "wss://api.example/v1/event"),
             ("http://api.example:443", "ws://api.example:443/event"),
         ] {
-            let destinations = Destinations::new(Url::parse(base).unwrap(), &[]);
+            let destinations = Destinations::new(&base.parse::<BaseUrl>().unwrap(), &[]);
             assert_eq!(destinations.socket("/event").unwrap().as_str(), expected);
             assert!(destinations.socket(expected).is_ok());
         }
-        let destinations = Destinations::new(Url::parse("https://api.example").unwrap(), &[]);
+        let destinations =
+            Destinations::new(&"https://api.example".parse::<BaseUrl>().unwrap(), &[]);
         for (invalid, because) in [
             (
                 "ws://api.example/event",

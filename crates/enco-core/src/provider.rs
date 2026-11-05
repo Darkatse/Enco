@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderSettings {
     /// Service endpoint for this call.
-    pub base_url: String,
+    pub base_url: crate::BaseUrl,
     /// Service-specific model identifier.
     pub model: String,
     /// Environment variable the host transport reads at invocation time.

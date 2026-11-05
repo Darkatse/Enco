@@ -494,7 +494,7 @@ fn controlled(kernel: Kernel, store: Arc<SqliteStore>) -> Harness {
 fn settings() -> ConnectionSettings {
     ConnectionSettings {
         plugin: "fixture".parse().unwrap(),
-        base_url: "http://localhost".into(),
+        base_url: "http://localhost".parse().unwrap(),
         owner: "owner".into(),
         secrets: Default::default(),
         context: 0,

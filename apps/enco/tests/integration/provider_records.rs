@@ -42,7 +42,7 @@ async fn complete(base_url: String) -> (tempfile::TempDir, Arc<SqliteStore>, Ans
         .completion
         .unwrap();
     let settings = ProviderSettings {
-        base_url,
+        base_url: base_url.parse().unwrap(),
         model: "mock".into(),
         api_key_env: None,
         options: json!({}),

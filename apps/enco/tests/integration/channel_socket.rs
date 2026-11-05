@@ -240,7 +240,7 @@ async fn adapter(
         .unwrap()
         .open(
             &ChannelSettings {
-                base_url: base.into(),
+                base_url: base.parse().unwrap(),
                 secrets: [("token".into(), "ENCO_CHANNEL_FIXTURE_TOKEN".into())].into(),
             },
             GenerationId(32),

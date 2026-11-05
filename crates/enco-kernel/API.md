@@ -1155,7 +1155,7 @@ The confirmed result of sending one part.
 
 ```rust
 pub struct ChannelSettings {
-    pub base_url: String,
+    pub base_url: enco_core::BaseUrl,
     pub secrets: std::collections::BTreeMap<String, String>,
 }
 ```

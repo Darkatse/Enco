@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 /// One identification, held until the test answers it.
 struct OpenAttempt {
-    base_url: String,
+    base_url: BaseUrl,
     generation: GenerationId,
     result: oneshot::Sender<Result<(), Fault>>,
 }
@@ -233,7 +233,7 @@ async fn a_retrying_opening_holds_up_no_other_connection_and_connects_once_the_s
     );
     let first = receive(&mut openings).await;
     let second = receive(&mut openings).await;
-    let (offline, ready) = if first.base_url.contains("offline") {
+    let (offline, ready) = if first.base_url.url().as_str().contains("offline") {
         (first, second)
     } else {
         (second, first)
@@ -242,7 +242,7 @@ async fn a_retrying_opening_holds_up_no_other_connection_and_connects_once_the_s
     ready.succeed();
     receive(&mut polling).await;
     let retry = receive(&mut openings).await;
-    assert!(retry.base_url.contains("offline"));
+    assert!(retry.base_url.url().as_str().contains("offline"));
     let status = supervisor.status().await.unwrap();
     assert!(matches!(
         state(&status, "offline"),

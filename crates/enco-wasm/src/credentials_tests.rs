@@ -170,7 +170,7 @@ fn caller_selected_secret_is_shared_with_fixed_recipient_placements() {
     }])
     .unwrap();
     let endpoint = ProviderSettings {
-        base_url: "https://api.example/v1".into(),
+        base_url: "https://api.example/v1".parse().unwrap(),
         api_key_env: Some("CARGO_MANIFEST_DIR".into()),
         model: "test".into(),
         options: serde_json::json!({}),

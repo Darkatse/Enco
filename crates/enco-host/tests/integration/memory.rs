@@ -290,7 +290,7 @@ async fn live_memory_settings_rebuild_only_the_vector_space_and_recover_invalid_
     for (field, value) in [
         (
             "base_url",
-            serde_json::json!("https://another-service.invalid"),
+            serde_json::json!("https://another-service.invalid/v1"),
         ),
         ("model", serde_json::json!("another-model")),
         ("options", serde_json::json!({"encoding": "float"})),
