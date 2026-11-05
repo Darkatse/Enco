@@ -104,7 +104,7 @@ opt-level = 3
 `release.yml` 在推送到 `main`、推送 `v*` 标签与手动触发时运行：
 
 1. **构建**，四个平台并行：
-   - 准备环境：检出代码，`rustup toolchain install` 按 `rust-toolchain.toml` 装好固定版本与 `wasm32-wasip2`；按 README 的循环为每个工作区 `cargo fetch`，xtask 离线运行。
+   - 准备环境：检出代码，`rustup toolchain install` 按 `rust-toolchain.toml` 装好固定版本与 `wasm32-wasip2`；`Swatinem/rust-cache` 按平台恢复 `main` 上次构建的依赖，只在 `main` 上保存，标签构建只读；按 README 的循环为每个工作区 `cargo fetch`，xtask 离线运行。
    - 编译：`cargo xtask build-factory`，再 `cargo build --profile dist -p enco --locked`。
    - 上传：二进制按 `enco-<os>-<arch>` 命名。
 

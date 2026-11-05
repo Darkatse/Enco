@@ -40,6 +40,14 @@ jobs:
           fi
           rustup toolchain install
 
+      - uses: Swatinem/rust-cache@v2
+        # Dependencies come from the last build on main with the same manifests and toolchain;
+        # enco's crates and its fat-LTO link always build. Plugins are separate workspaces, so only
+        # what they share with the main workspace survives the cache's cleanup.
+        with:
+          key: ${{ matrix.asset }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Fetch dependencies
         # xtask runs offline, so every workspace is fetched first.
         run: |
