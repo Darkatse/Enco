@@ -5,10 +5,10 @@
 | 位置 | 职责 |
 |---|---|
 | `openai-compatible/src/lib.rs` | OpenAI-Compatible 入口：Chat Completions 与 embeddings |
-| `gemini/src/lib.rs`、`request.rs`、`response.rs` | Gemini Generate Content 与批量 embeddings |
+| `gemini/src/lib.rs`、`request.rs`、`response.rs`、`stream.rs` | Gemini Generate Content 与批量 embeddings |
 | `deepseek/src/lib.rs` | DeepSeek 入口：只导出 completion |
-| `anthropic/src/lib.rs`、`request.rs`、`response.rs` | Anthropic Messages：只导出 completion |
-| `openai-responses/src/lib.rs`、`request.rs`、`response.rs` | OpenAI Responses：只导出 completion，不用服务端状态 |
+| `anthropic/src/lib.rs`、`request.rs`、`response.rs`、`stream.rs` | Anthropic Messages：只导出 completion |
+| `openai-responses/src/lib.rs`、`request.rs`、`response.rs`、`stream.rs` | OpenAI Responses：只导出 completion，不用服务端状态 |
 | `typesafe/src/lib.rs`、`protocol.rs` | TypeSafe 的 System One 协议：只导出 decision |
 | `web/src/lib.rs`、`config.rs` | web 工具声明、配置与服务声明 |
 | `web/src/fetch.rs`、`search.rs`、`http.rs` | 网页读取、搜索与 HTTP 传输 |
@@ -16,6 +16,7 @@
 | `test-fixture/` | 应用与评测共用的源码夹具，参与门禁，不内嵌到宿主 |
 | `../sdk/src/lib.rs` | 共用的类型绑定与 `export!` |
 | `../sdk/src/protocol.rs`、`protocol/chat.rs` | Provider 与决策映射器共用的请求构造、响应状态分类与 options 合并；Chat Completions / Embeddings 的编码与解码 |
+| `../sdk/src/protocol/stream.rs` | 流式补全共用的 `stream` 选项、请求时限与 SSE 切分；各协议在自己的 `stream` 模块把事件拼回非流式的响应 |
 | `../sdk/src/schema.rs` | 由参数类型生成工具的规范 schema；宿主经 `#[path]` 编译同一个文件 |
 
 首次依赖预取见根目录的[构建说明](../README.zh-CN.md#从源码构建)；`xtask` 命令离线运行。

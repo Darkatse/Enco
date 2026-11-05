@@ -127,5 +127,6 @@ pub(super) fn send(conversation: String, message: Outgoing) -> HttpRequest {
         headers: vec![("content-type".into(), content_type)],
         body: Some(body),
         timeout_ms: Some(UPLOAD_TIMEOUT_MS),
+        idle_timeout_ms: None,
     }
 }

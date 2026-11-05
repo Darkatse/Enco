@@ -3,7 +3,11 @@
 //! A plan whose items extend the Session's latest plan stores only what it adds, chained to that
 //! plan; any other plan, or one whose chain has reached the limit, is stored in full. Each distinct
 //! tool catalog is stored once, and restoring checks the complete content against its address.
-use super::{SqliteStore, backend, rows};
+use super::{
+    SqliteStore, backend,
+    evidence::{compress, decompress},
+    rows,
+};
 use crate::limits::PLAN_CHAIN_LIMIT;
 use enco_core::{ContentHash, ContextPlan, Omission, PlanItem, SessionId};
 use enco_kernel::{PlanWrite, StoreError};
@@ -228,14 +232,6 @@ impl EncodedWrite {
         .map_err(backend)?;
         Ok(())
     }
-}
-
-fn compress(bytes: &[u8]) -> Result<Vec<u8>, StoreError> {
-    zstd::stream::encode_all(bytes, 3).map_err(backend)
-}
-
-fn decompress(bytes: &[u8]) -> Result<Vec<u8>, StoreError> {
-    zstd::stream::decode_all(bytes).map_err(backend)
 }
 
 fn failure(hash: ContentHash, reason: impl Into<String>) -> StoreError {

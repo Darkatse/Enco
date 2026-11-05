@@ -9,7 +9,7 @@ const SOCKET: &str = "SOCKET_ORIGIN";
 const CDN: &str = "CDN_ORIGIN";
 
 fn request(method: &str, url: &str) -> channel::HttpRequest {
-    channel::HttpRequest { method: method.into(), url: url.into(), headers: Vec::new(), body: None, timeout_ms: None }
+    channel::HttpRequest { method: method.into(), url: url.into(), headers: Vec::new(), body: None, timeout_ms: None, idle_timeout_ms: None }
 }
 
 fn reading() -> channel::Reading {

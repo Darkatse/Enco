@@ -350,7 +350,7 @@ pub struct StorePaths {
 Files owned by the persistence adapter.
 
 - `db` — SQLite authority.
-- `blobs` — Removable content-addressed history.
+- `blobs` — Content-addressed files the Agent and the owner read by path; removable history.
 - `artifacts` — Retained content-addressed components.
 
 ## struct `SystemClock`

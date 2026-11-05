@@ -81,6 +81,7 @@ pub(super) fn request(method: &str, body: Value, timeout_ms: u32) -> HttpRequest
         headers: vec![("content-type".into(), "application/json".into())],
         body: Some(body.to_string().into_bytes()),
         timeout_ms: Some(timeout_ms),
+        idle_timeout_ms: None,
     }
 }
 

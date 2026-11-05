@@ -17,6 +17,7 @@ pub(crate) async fn request(
         ],
         body: body.map(|body| body.to_string().into_bytes()),
         timeout_ms: None,
+        idle_timeout_ms: None,
     })
     .await
     .map_err(|error| bad(format!("HTTP request failed: {}", excerpt(&error.message))))?;

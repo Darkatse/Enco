@@ -2,7 +2,7 @@
 use crate::{ContentHash, GenerationId};
 use serde::{Deserialize, Serialize};
 
-/// A recorded mapper call; response bodies are separate blobs referenced by its arguments.
+/// A recorded mapper call; each response body is separate evidence that its arguments address.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MappingRecord {
     /// The registered generation that interpreted these arguments.
@@ -16,7 +16,7 @@ pub struct MappingRecord {
 /// An output's position in one immutable mapper call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MappingOrigin {
-    /// Content address of the serialized mapping record.
+    /// Evidence address of the serialized mapping record.
     pub call: ContentHash,
     /// Zero-based position in the returned values; zero for a single result.
     pub index: u32,

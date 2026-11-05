@@ -11,7 +11,7 @@ accepts = ["image"]
 api_key_env = "OPENAI_API_KEY"
 options = { reasoning = { effort = "medium" } }
 
-# The model's context window, and an output limit a reply can reach within ten minutes.
+# The model's context window, and the output limit of one reply.
 window_tokens = 400000
 max_output_tokens = 16000
 

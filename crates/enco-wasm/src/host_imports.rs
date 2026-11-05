@@ -3,7 +3,8 @@
 //!
 //! A request to a credential's origin carries that credential. Before a response or failure
 //! returns to the guest, each credential value in it is replaced with a placeholder; encoded forms,
-//! such as Base64, are not. A probe has no network access at all.
+//! such as Base64, are not. A request that names a silence limit fails as a timeout when the
+//! service sends nothing for that long. A probe has no network access at all.
 use crate::{bindings::enco::plugin::host, credentials::CallCredential, limits};
 use std::{sync::Arc, time::Duration};
 use wasmtime::component::{Accessor, HasSelf, ResourceTable};
@@ -111,22 +112,27 @@ pub(crate) async fn http(
     credentials: &[CallCredential],
     request: host::HttpRequest,
 ) -> Result<host::HttpResponse, host::HttpFailure> {
+    let idle = request
+        .idle_timeout_ms
+        .map(|ms| Duration::from_millis(ms.into()));
     let mut request = build_request(client, request)?;
     for credential in credentials {
         credential.attach(&mut request);
     }
-    let mut result = send(client, request).await;
+    let mut result = send(client, request, idle).await;
     for credential in credentials {
         credential.redact(&mut result);
     }
     result
 }
 
+/// Send `request` and read its whole body, waiting at most `idle` for each next bytes.
 async fn send(
     client: &reqwest::Client,
     request: reqwest::Request,
+    idle: Option<Duration>,
 ) -> Result<host::HttpResponse, host::HttpFailure> {
-    let mut response = client.execute(request).await.map_err(|e| {
+    let mut response = within(idle, client.execute(request)).await?.map_err(|e| {
         let (kind, request_sent) = if e.is_timeout() {
             (host::HttpErrorKind::Timeout, true)
         } else if e.is_connect() {
@@ -148,7 +154,7 @@ async fn send(
         })
         .collect();
     let mut body = vec![];
-    while let Some(chunk) = response.chunk().await.map_err(|e| {
+    while let Some(chunk) = within(idle, response.chunk()).await?.map_err(|e| {
         failure(
             if e.is_timeout() {
                 host::HttpErrorKind::Timeout
@@ -175,6 +181,23 @@ async fn send(
         status,
         headers,
         body,
+    })
+}
+
+/// Await `next`, failing as a timeout when nothing arrives within `idle`.
+async fn within<T>(
+    idle: Option<Duration>,
+    next: impl Future<Output = T>,
+) -> Result<T, host::HttpFailure> {
+    let Some(idle) = idle else {
+        return Ok(next.await);
+    };
+    tokio::time::timeout(idle, next).await.map_err(|_| {
+        failure(
+            host::HttpErrorKind::Timeout,
+            format!("the service sent nothing for {} ms", idle.as_millis()),
+            true,
+        )
     })
 }
 
@@ -205,3 +228,7 @@ fn build_request(
     }
     builder.build().map_err(|error| invalid(error.to_string()))
 }
+
+#[cfg(test)]
+#[path = "host_imports_tests.rs"]
+mod tests;

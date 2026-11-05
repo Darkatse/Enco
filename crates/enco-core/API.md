@@ -64,7 +64,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `InvalidWorkingDir` — A working directory that is not an absolute UTF-8 path.
 - struct `LogPos` — Structural Log ordering; wall clocks never determine this order.
 - struct `MappingOrigin` — An output's position in one immutable mapper call.
-- struct `MappingRecord` — A recorded mapper call; response bodies are separate blobs referenced by its arguments.
+- struct `MappingRecord` — A recorded mapper call; each response body is separate evidence that its arguments address.
 - struct `Memory` — A self-contained fact about the owner; its current authority is the memory database.
 - struct `MemoryId` — Identity of an editable memory.
 - struct `Message` — Provider-independent message; this shape is part of the Log format.
@@ -2175,7 +2175,7 @@ pub struct MappingOrigin {
 
 An output's position in one immutable mapper call.
 
-- `call` — Content address of the serialized mapping record.
+- `call` — Evidence address of the serialized mapping record.
 - `index` — Zero-based position in the returned values; zero for a single result.
 
 Implements:
@@ -2202,7 +2202,7 @@ pub struct MappingRecord {
 }
 ```
 
-A recorded mapper call; response bodies are separate blobs referenced by its arguments.
+A recorded mapper call; each response body is separate evidence that its arguments address.
 
 - `generation` — The registered generation that interpreted these arguments.
 - `export` — The exported function, such as `channel.received`.

@@ -305,14 +305,14 @@ async fn onebot_reply_to_forward_records_the_last_fetch_with_both_responses() {
     assert_eq!(messages[0].text, "meet at eight");
     assert_eq!(messages[0].unviewable.len(), 1);
     let record: MappingRecord =
-        serde_json::from_slice(&store.get_blob(&origin.call).await.unwrap()).unwrap();
+        serde_json::from_slice(&store.evidence(&origin.call).await.unwrap()).unwrap();
     assert_eq!(record.export, "channel.fetch");
     assert_eq!(record.arguments["locator"], "onebot:reply:-7");
     let responses = record.arguments["responses"].as_array().unwrap();
     assert_eq!(responses.len(), 2);
     for (recorded, expected) in responses.iter().zip([reply, forward]) {
         let hash = serde_json::from_value(recorded["body"].clone()).unwrap();
-        let bytes = store.get_blob(&hash).await.unwrap();
+        let bytes = store.evidence(&hash).await.unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
     }
 }
@@ -380,7 +380,7 @@ async fn discord_resumed_forward_frames_keep_their_quote_at_the_host_receiver() 
     assert_eq!(quoted[0].text, "Hello :wave:");
     assert!(quoted[0].sender.is_none());
     let record: MappingRecord =
-        serde_json::from_slice(&store.get_blob(&messages[0].origin.call).await.unwrap()).unwrap();
+        serde_json::from_slice(&store.evidence(&messages[0].origin.call).await.unwrap()).unwrap();
     assert_eq!(record.export, "channel.received");
     assert!(
         record.arguments["arrival"]["frame"]

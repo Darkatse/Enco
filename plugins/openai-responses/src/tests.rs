@@ -8,7 +8,9 @@ use enco_sdk::protocol::{
 use serde_json::{Value, json};
 
 mod samples;
-use samples::{COMMENTARY_REPLY, INCOMPLETE_REPLY, REASONING_REPLY};
+use samples::{
+    COMMENTARY_REPLY, INCOMPLETE_REPLY, INCOMPLETE_STREAM, REASONING_REPLY, REASONING_STREAM,
+};
 
 fn settings(options: Value) -> Settings {
     Settings {
@@ -366,4 +368,98 @@ fn another_refusal_is_a_bad_request() {
         answer,
         Err(CompleteError::Failed(failure)) if failure.code == "provider.bad_request"
     ));
+}
+
+/// What `decode` makes of a successful streamed `body`.
+fn streamed(body: &str) -> Result<Completion, CompleteError> {
+    Plugin::decode(HttpResponse {
+        status: 200,
+        headers: vec![(
+            "content-type".into(),
+            "text/event-stream; charset=utf-8".into(),
+        )],
+        body: body.as_bytes().to_vec(),
+    })
+}
+
+#[test]
+fn requests_stream_unless_the_owner_turns_it_off() -> Result<(), Failure> {
+    let request = || Request {
+        messages: vec![said(Role::User, "Hi.")],
+        tools: vec![],
+        max_output_tokens: 2000,
+    };
+    let streamed = Plugin::encode(settings(json!({})), request())?;
+    assert!(streamed.idle_timeout_ms.is_some());
+    assert_eq!(
+        encode(vec![said(Role::User, "Hi.")], json!({}))?["stream"],
+        true
+    );
+    let whole = Plugin::encode(settings(json!({"stream": false})), request())?;
+    assert!(whole.idle_timeout_ms.is_none());
+    let body = encode(vec![said(Role::User, "Hi.")], json!({"stream": false}))?;
+    assert!(body.get("stream").is_none());
+    Ok(())
+}
+
+#[test]
+fn a_stream_reads_as_the_response_it_ends_with() -> Result<(), CompleteError> {
+    let reply = streamed(REASONING_STREAM)?;
+    assert_eq!(reply.stop_reason, StopReason::ToolCalls);
+    assert_eq!(reply.usage.input_tokens, 72);
+    assert_eq!(reply.usage.output_tokens, 175);
+    let cities: Vec<_> = reply
+        .message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::ToolCall(call) => Some(call.arguments.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cities,
+        [
+            r#"{"city":"Paris"}"#,
+            r#"{"city":"Lyon"}"#,
+            r#"{"city":"Nice"}"#
+        ]
+    );
+    assert!(matches!(
+        reply.message.parts.last(),
+        Some(Part::Extension(_))
+    ));
+    let cut = streamed(INCOMPLETE_STREAM)?;
+    assert_eq!(cut.stop_reason, StopReason::MaxTokens);
+    Ok(())
+}
+
+#[test]
+fn a_stream_without_its_end_or_with_a_failure_fails_by_code() {
+    let failure = |body: &str| match streamed(body) {
+        Err(CompleteError::Failed(failure)) => Some(failure),
+        _ => None,
+    };
+    let unfinished: String = REASONING_STREAM
+        .split("\n\n")
+        .filter(|event| !event.contains("response.completed"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    assert!(failure(&unfinished).is_some_and(|f| f.code == "provider.server" && f.retryable));
+    let failed = |code: &str| {
+        format!(
+            "event: response.failed\ndata: {{\"type\":\"response.failed\",\"response\":{{\"status\":\"failed\",\"error\":{{\"code\":\"{code}\",\"message\":\"m\"}}}}}}\n\n"
+        )
+    };
+    assert!(failure(&failed("server_error")).is_some_and(|f| f.retryable));
+    assert!(
+        failure(&failed("invalid_prompt"))
+            .is_some_and(|f| f.code == "provider.bad_response" && !f.retryable)
+    );
+    assert!(matches!(
+        streamed(&failed("context_length_exceeded")),
+        Err(CompleteError::Overflow(_))
+    ));
+    let error = "event: error\ndata: {\"type\":\"error\",\"code\":\"rate_limit_exceeded\",\"message\":\"slow down\"}\n\n";
+    assert!(failure(error).is_some_and(|f| f.code == "provider.rate_limited" && f.retryable));
 }

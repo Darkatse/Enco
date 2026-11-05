@@ -1,7 +1,7 @@
 //! Records the external input a pure mapper is about to read, so every output keeps its source.
 //!
 //! A record holds the generation, the export and its complete arguments, with each response body
-//! stored as a content-addressed blob; channel mappers and Providers share this one form.
+//! stored as evidence of its own; channel mappers and Providers share this one form.
 use crate::bindings::enco::plugin::types::HttpResponse;
 use enco_core::{ContentHash, GenerationId, MappingOrigin, MappingRecord};
 use enco_kernel::{Store, StoreError};
@@ -23,7 +23,7 @@ pub(crate) async fn record(
     let bytes = serde_json::to_vec(&record)
         .map_err(|error| StoreError::Backend(format!("mapping record: {error}")))?;
     Ok(MappingOrigin {
-        call: store.put_blob(&bytes).await?,
+        call: store.put_evidence(&bytes).await?,
         index: 0,
     })
 }
@@ -38,6 +38,6 @@ pub(crate) async fn response(
         headers,
         body,
     } = response;
-    let body: ContentHash = store.put_blob(body).await?;
+    let body: ContentHash = store.put_evidence(body).await?;
     Ok(json!({"status": status, "headers": headers, "body": body}))
 }

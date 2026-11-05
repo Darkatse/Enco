@@ -777,11 +777,12 @@ The label of the activity card's button that cancels the Run.
 Pure helpers for Provider and decision mappers: the request a service needs, what its response
 means, and the owner's options merged into the request.
 
-OpenAI-compatible Chat Completions and embeddings are in `chat`. A mapper imports nothing: it
-returns the request, and the host sends it to the endpoint and hands the response back, whatever
-its status.
+OpenAI-compatible Chat Completions and embeddings are in `chat`, and what streamed
+completions share is in `stream`. A mapper imports nothing: it returns the request, and the
+host sends it to the endpoint and hands the whole response back, whatever its status.
 
 - module `protocol::chat` — OpenAI-compatible Chat Completions and embeddings, as the pure encode and decode a Provider exports.
+- module `protocol::stream` — Streamed completions: the request that asks for a stream, the server-sent events it brings back, and the failures a stream reports on the way.
 - module `protocol::types` — same as `types`
 - struct `protocol::Call` — A call, the ID it goes out under, and the tool message that answers it.
 - enum `protocol::CompleteError` — Why `decode` returned no completion.
@@ -794,7 +795,7 @@ its status.
 - enum `protocol::StopReason` — The service-reported reason that generation stopped.
 - enum `protocol::Turn` — A request's messages grouped as a protocol sends them.
 - struct `protocol::Usage` — same as `types::Usage`
-- fn `protocol::answer` — What a completion response means: its JSON, an overflow, or the failure its status means.
+- fn `protocol::answer` — What a completion response means: the JSON of its reply, an overflow, or a failure.
 - fn `protocol::apply_options` — Merge `raw`, a JSON object of caller options, into `body`; options may only add fields, and never one named in `reserved`.
 - fn `protocol::bad` — A non-retryable `provider.bad_response` failure: the reply is malformed or not what the protocol promises.
 - fn `protocol::bad_request` — A non-retryable `provider.bad_request` failure: the request cannot succeed as written.
@@ -804,12 +805,12 @@ its status.
 - fn `protocol::empty_config` — Accept only `{}` as the plugin's configuration; anything else fails with `config.invalid`.
 - fn `protocol::extras` — What `wire` carries beyond `canonical`, in the shape of `wire`: the fields `canonical` lacks, and below the fields both have, what differs there.
 - fn `protocol::failure` — A failure with the given code; `retryable` means the same request may succeed later.
-- fn `protocol::json` — The JSON of a successful response, or the failure its status means.
+- fn `protocol::json` — The JSON of a successful response, or the failure its status means (`status_failure`).
 - fn `protocol::merge` — Add `overlay` to `base`, failing wherever both set a value.
 - fn `protocol::number_after` — The whole number that follows `marker` in a service's message, such as a token limit it states in prose.
 - fn `protocol::post_json` — A POST of `body` as JSON to `url`.
 - fn `protocol::turns` — The turns of `messages`.
-- const `protocol::COMPLETION_TIMEOUT_MS` — How long a completion request may take, in milliseconds.
+- const `protocol::COMPLETION_TIMEOUT_MS` — How long a completion request that is not streamed may take, in milliseconds.
 - const `protocol::EMBEDDING_TIMEOUT_MS` — How long an embedding request may take, in milliseconds.
 
 ## struct `protocol::Call`
@@ -977,15 +978,20 @@ after it, which answer its calls.
 `src/protocol.rs`
 
 ```rust
-pub fn answer(response: &HttpResponse, read: impl FnOnce(&serde_json::Value) -> Option<Overflow>) -> Result<serde_json::Value, CompleteError>
+pub fn answer(response: &HttpResponse, read: impl FnOnce(&serde_json::Value) -> Option<Overflow>, fold: impl FnOnce(Vec<stream::Event>) -> Result<serde_json::Value, CompleteError>) -> Result<serde_json::Value, CompleteError>
 ```
 
-What a completion response means: its JSON, an overflow, or the failure its status means.
+What a completion response means: the JSON of its reply, an overflow, or a failure.
 
-A successful response gives its JSON, and a refusal the failure `json` describes, unless the
-service turned the request away as too large. `read` is the protocol's reading of a refusal's
-JSON: an overflow it recognizes, with the numbers the service gave. An HTTP 413 is an overflow
-even when `read` recognizes nothing, since the status itself says the request is too large.
+A successful response in the `text/event-stream` media type is a stream: `stream::events`
+reads it and `fold` turns its events into the JSON the same reply has as one response, or into
+the error the stream reported. Any other successful response is that JSON itself. So a stream,
+a reply sent whole and a response recorded before streaming read the same way.
+
+A refusal is the failure `json` describes, unless the service turned the request away as too
+large. `read` is the protocol's reading of a refusal's JSON: an overflow it recognizes, with
+the numbers the service gave. An HTTP 413 is an overflow even when `read` recognizes nothing,
+since the status itself says the request is too large.
 
 ## fn `protocol::apply_options`
 
@@ -1098,11 +1104,9 @@ A failure with the given code; `retryable` means the same request may succeed la
 pub fn json(response: &HttpResponse) -> Result<serde_json::Value, types::Failure>
 ```
 
-The JSON of a successful response, or the failure its status means.
+The JSON of a successful response, or the failure its status means (`status_failure`).
 
-Retryable: 408 (`timeout`), 429 (`provider.rate_limited`) and 5xx (`provider.server`). Not
-retryable: 401 and 403 (`provider.auth`), any other status outside 2xx
-(`provider.bad_request`), and a successful body that is not JSON (`provider.bad_response`).
+A successful body that is not JSON is `provider.bad_response`.
 
 ## fn `protocol::merge`
 
@@ -1164,10 +1168,10 @@ a result for every call; a request that breaks this is `provider.bad_request`.
 pub const COMPLETION_TIMEOUT_MS: u32 = 600_000;
 ```
 
-How long a completion request may take, in milliseconds.
+How long a completion request that is not streamed may take, in milliseconds.
 
-Ten minutes is the default of Anthropic's and OpenAI's own clients: a reply arrives only once
-it is complete, and a long one takes minutes.
+Ten minutes is the default of Anthropic's and OpenAI's own clients: such a reply arrives only
+once it is complete, and a long one takes minutes.
 
 ## const `protocol::EMBEDDING_TIMEOUT_MS`
 
@@ -1350,7 +1354,7 @@ Canonical data exchanged between the host and plugins.
 - enum `types::Effect` — Mutation semantics used to order calls and settle interrupted work.
 - struct `types::Extension` — Opaque adapter fields: the whole message as the adapter that wrote it replays it.
 - struct `types::Failure` — An operation failure.
-- struct `types::HttpRequest` — What the host sends over HTTP: the method, destination, headers, body and time limit.
+- struct `types::HttpRequest` — What the host sends over HTTP: the method, destination, headers, body and time limits.
 - struct `types::HttpResponse` — An HTTP response, whatever its status, with its whole body.
 - struct `types::Image` — An image in a message.
 - enum `types::ImageFormat` — Image encodings that every supported service accepts.
@@ -1493,22 +1497,29 @@ pub struct HttpRequest {
     pub headers: Vec<(String, String)>,
     pub body: ::core::option::Option<Vec<u8>>,
     pub timeout_ms: ::core::option::Option<u32>,
+    pub idle_timeout_ms: ::core::option::Option<u32>,
 }
 ```
 
-What the host sends over HTTP: the method, destination, headers, body and time limit.
+What the host sends over HTTP: the method, destination, headers, body and time limits.
 
 For `host.http`, `url` is an absolute URL. A mapper's request goes to the service it maps:
 `url` is a path starting with `/`, which the host joins to that service's base URL. A
 channel's may also be an absolute URL on the base URL's origin or on one of its `origins`.
 
-Without a `user-agent` header, the host sends `Enco/<version>`.
+Without a `user-agent` header, the host sends `Enco/<version>`. Running out of either time
+limit is a timeout.
 
 - `method` — The method, such as `GET` or `POST`.
 - `url` — Where to send it, as stated above.
 - `headers` — Header names and values, in order.
 - `body` — The bytes to send, if any.
-- `timeout_ms` — The time limit in milliseconds; the host's default when absent.
+- `timeout_ms` — The limit in milliseconds on the whole exchange, from sending to the end of the body;
+  the host's default when absent.
+- `idle_timeout_ms` — The longest wait in milliseconds for anything from the service, so a silent one fails.
+
+  It bounds the wait for the response head after sending, then for each next bytes of
+  the body. Absent, only `timeout-ms` applies.
 
 Implements:
 
@@ -2049,9 +2060,9 @@ A JSON document encoded as UTF-8 text.
 OpenAI-compatible Chat Completions and embeddings, as the pure encode and decode a Provider
 exports.
 
-- fn `protocol::chat::decode` — What a Chat Completions response means.
+- fn `protocol::chat::decode` — What a Chat Completions response means, streamed or not.
 - fn `protocol::chat::decode_embedding` — One vector per input, in input order, from an `embeddings` response to `count` inputs.
-- fn `protocol::chat::encode` — The request for one non-streaming Chat Completions call.
+- fn `protocol::chat::encode` — The request for one Chat Completions call, streamed with its usage unless the options set `stream` to `false`.
 - fn `protocol::chat::encode_embedding` — The request that embeds each input through the `embeddings` endpoint.
 
 ## fn `protocol::chat::decode`
@@ -2062,11 +2073,13 @@ exports.
 pub fn decode(response: &super::HttpResponse) -> Result<super::Completion, super::CompleteError>
 ```
 
-What a Chat Completions response means.
+What a Chat Completions response means, streamed or not.
 
-A reply with fields the contract has no place for is kept whole in an extension part and sent
-back as it came. A refusal that states the model's maximum context length, as DeepSeek's does,
-is an overflow.
+A stream folds into the response it is in one piece (see `chunks::fold`). A reply with fields
+the contract has no place for is kept whole in an extension part and sent back as it came. A
+refusal that states the model's maximum context length, as DeepSeek's does, is an overflow.
+A service that streams no usage fails with `missing usage`; the owner can then turn streaming
+off.
 
 ## fn `protocol::chat::decode_embedding`
 
@@ -2089,10 +2102,11 @@ The indexes must cover the vectors once, and the vectors must be the embeddings
 pub fn encode(settings: &super::Settings, request: super::Request) -> Result<super::HttpRequest, crate::types::Failure>
 ```
 
-The request for one non-streaming Chat Completions call.
+The request for one Chat Completions call, streamed with its usage unless the options set
+`stream` to `false`.
 
 `settings.options` may add fields to the request, but not replace one this function writes or
-reserves, such as `model`, `messages` or `stream`.
+reserves, such as `model`, `messages` or `stream_options`.
 
 ## fn `protocol::chat::encode_embedding`
 
@@ -2106,6 +2120,147 @@ The request that embeds each input through the `embeddings` endpoint.
 
 It times out after 30 seconds. `settings.options` may add fields, but not replace `model`,
 `input` or `encoding_format`.
+
+# module `enco_sdk::protocol::stream`
+
+`src/protocol/stream.rs`
+
+Streamed completions: the request that asks for a stream, the server-sent events it brings
+back, and the failures a stream reports on the way.
+
+A stream is only transport. The host reads it whole, and the mapper folds its events into the
+JSON the same reply has as one response, so one reading follows either way (see [`answer`]).
+
+[`answer`]: super::answer
+
+- struct `protocol::stream::Event` — One server-sent event: its type, `message` when the stream named none, and its data.
+- fn `protocol::stream::ended_early` — A stream that ended before `marker`, its protocol's sign of a complete reply.
+- fn `protocol::stream::events` — The events of an SSE body, read by the WHATWG rules.
+- fn `protocol::stream::post_completion` — A completion POST of `body` as JSON to `url`, a path the host joins to the endpoint.
+- fn `protocol::stream::status_failure` — The failure an HTTP `status` means, with `message`.
+- fn `protocol::stream::streaming` — Whether the caller's options ask for a stream, and the options without `stream`.
+- const `protocol::stream::STREAM_IDLE_TIMEOUT_MS` — How long a streamed completion may go without a byte, in milliseconds.
+- const `protocol::stream::STREAM_TIMEOUT_MS` — How long a streamed completion may take in all, in milliseconds.
+
+## struct `protocol::stream::Event`
+
+`src/protocol/stream.rs`
+
+```rust
+pub struct Event {
+    pub name: String,
+    pub data: String,
+}
+```
+
+One server-sent event: its type, `message` when the stream named none, and its data.
+
+- `name` — The `event` field, or `message`.
+- `data` — The `data` lines joined with `\n`.
+
+Implements:
+
+```rust
+impl Clone for Event
+impl Debug for Event
+impl Eq for Event
+impl PartialEq for Event
+```
+
+## fn `protocol::stream::ended_early`
+
+`src/protocol/stream.rs`
+
+```rust
+pub fn ended_early(marker: &str) -> types::Failure
+```
+
+A stream that ended before `marker`, its protocol's sign of a complete reply.
+
+The service cut the reply short, so asking again may succeed: a retryable `provider.server`.
+
+## fn `protocol::stream::events`
+
+`src/protocol/stream.rs`
+
+```rust
+pub fn events(body: &[u8]) -> Result<Vec<Event>, types::Failure>
+```
+
+The events of an SSE body, read by the WHATWG rules.
+
+Lines end in CRLF, LF or CR; a leading BOM is skipped; a line starting with `:` is a comment;
+one space after a field's colon is dropped; `data` lines join with `\n`; a blank line
+dispatches an event that has data. What follows the last line ending is unfinished and is
+dropped, as is an event the body ends without dispatching. A body that is not UTF-8 is
+`provider.bad_response`.
+
+## fn `protocol::stream::post_completion`
+
+`src/protocol/stream.rs`
+
+```rust
+pub fn post_completion(url: impl Into<String>, body: &serde_json::Value, stream: bool) -> super::HttpRequest
+```
+
+A completion POST of `body` as JSON to `url`, a path the host joins to the endpoint.
+
+A stream asks for `text/event-stream` and may take `STREAM_TIMEOUT_MS` in all, with at most
+`STREAM_IDLE_TIMEOUT_MS` between bytes; a single reply may take `COMPLETION_TIMEOUT_MS`.
+
+## fn `protocol::stream::status_failure`
+
+`src/protocol/stream.rs`
+
+```rust
+pub fn status_failure(status: u16, message: impl Into<String>) -> types::Failure
+```
+
+The failure an HTTP `status` means, with `message`.
+
+Retryable: 408 (`timeout`), 429 (`provider.rate_limited`) and 5xx (`provider.server`). Not
+retryable: 401 and 403 (`provider.auth`) and any other status (`provider.bad_request`). A
+stream that reports an error after its 200 is classified here by the status its protocol
+gives that error.
+
+## fn `protocol::stream::streaming`
+
+`src/protocol/stream.rs`
+
+```rust
+pub fn streaming(options: &str) -> Result<(bool, String), types::Failure>
+```
+
+Whether the caller's options ask for a stream, and the options without `stream`.
+
+`stream` is Enco's own option, not a field of the request: `true` unless the owner wrote
+`false`; anything else is `provider.bad_request`.
+
+## const `protocol::stream::STREAM_IDLE_TIMEOUT_MS`
+
+`src/protocol/stream.rs`
+
+```rust
+pub const STREAM_IDLE_TIMEOUT_MS: u32 = 300_000;
+```
+
+How long a streamed completion may go without a byte, in milliseconds.
+
+Five minutes, as in codex and rig: a reasoning model that streams no summary can be silent for
+minutes. A gateway's keepalive comments count as bytes.
+
+## const `protocol::stream::STREAM_TIMEOUT_MS`
+
+`src/protocol/stream.rs`
+
+```rust
+pub const STREAM_TIMEOUT_MS: u32 = 1_800_000;
+```
+
+How long a streamed completion may take in all, in milliseconds.
+
+Thirty minutes: while bytes keep coming the reply is progressing, and 32k tokens at 20 a
+second take 27 minutes.
 
 # module `enco_sdk::bindings::enco::plugin`
 

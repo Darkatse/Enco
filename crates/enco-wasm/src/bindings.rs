@@ -11,8 +11,8 @@ mod base {
         inline: "
             package enco:host;
             world base {
-                import enco:plugin/host@0.16.0;
-                export enco:plugin/lifecycle@0.16.0;
+                import enco:plugin/host@0.17.0;
+                export enco:plugin/lifecycle@0.17.0;
             }
         ",
         world: "enco:host/base",
@@ -77,7 +77,7 @@ mod composer {
 }
 
 /// Package version of `sdk/wit/plugin.wit`; change it together with the WIT.
-pub(crate) const CONTRACT_VERSION: &str = "0.16.0";
+pub(crate) const CONTRACT_VERSION: &str = "0.17.0";
 
 pub(crate) use base::exports::enco::plugin::lifecycle;
 pub(crate) use base::{BasePre, enco};

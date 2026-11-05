@@ -1,5 +1,7 @@
 use enco_sdk::protocol::{
-    Call, Request, Settings, Turn, apply_options, bad_request, call_id, turns,
+    Call, Request, Settings, Turn, apply_options, bad_request, call_id,
+    stream::streaming,
+    turns,
     types::{Failure, Image, Message, Part, Role, ToolSpec},
 };
 use serde_json::{Value, json};
@@ -13,7 +15,10 @@ const UNSIGNED: &str = "skip_thought_signature_validator";
 /// before it; it says only that earlier turns are left out.
 const LEADING: &str = "(Earlier turns are not shown.)";
 
-pub fn completion(settings: &Settings, request: Request) -> Result<Value, Failure> {
+/// The body of one `generateContent` request, and whether it asks for a stream, as it does unless
+/// the options set `stream` to `false`; a stream is a different method, not a field of the body.
+pub fn completion(settings: &Settings, request: Request) -> Result<(Value, bool), Failure> {
+    let (stream, options) = streaming(&settings.options)?;
     let mut system = vec![];
     let mut contents = vec![];
     for turn in turns(&request.messages)? {
@@ -60,10 +65,10 @@ pub fn completion(settings: &Settings, request: Request) -> Result<Value, Failur
     }
     apply_options(
         &mut body,
-        &settings.options,
+        &options,
         &["contents", "systemInstruction", "tools"],
     )?;
-    Ok(body)
+    Ok((body, stream))
 }
 
 /// Whether `content` is a model turn that calls a function.

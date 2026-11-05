@@ -248,6 +248,7 @@ fn fetch_step(locator: &str, responses: Vec<HttpResponse>) -> Result<FetchStep, 
             headers: vec![],
             body: None,
             timeout_ms: Some(READ_TIMEOUT_MS),
+            idle_timeout_ms: None,
         }));
     };
     if !(200..300).contains(&response.status) {

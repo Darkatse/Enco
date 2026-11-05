@@ -25,9 +25,9 @@ pub mod bindings {
         inline: "
             package enco:sdk;
             world sdk {
-                import enco:plugin/host@0.16.0;
-                include enco:plugin/completion-plugin@0.16.0;
-                export enco:plugin/channel@0.16.0;
+                import enco:plugin/host@0.17.0;
+                include enco:plugin/completion-plugin@0.17.0;
+                export enco:plugin/channel@0.17.0;
             }
         ",
         generate_all,
@@ -105,33 +105,33 @@ macro_rules! export {
     // Only a tool plugin imports `host`; every other world imports nothing.
     (tools, $implementation:ident) => {
         $crate::export!(@bindings "tool-plugin", $implementation, [],
-            "enco:plugin/host@0.16.0": enco_sdk::host,
+            "enco:plugin/host@0.17.0": enco_sdk::host,
         );
     };
     (composer, $implementation:ident) => { $crate::export!(@bindings "composer-plugin", $implementation, [PartialEq],); };
     (channel, $implementation:ident) => {
         $crate::export!(@bindings "channel-plugin", $implementation, [PartialEq],
-            "enco:plugin/channel@0.16.0/command-kind": enco_sdk::channel::CommandKind,
-            "enco:plugin/channel@0.16.0/action": enco_sdk::channel::Action,
-            "enco:plugin/channel@0.16.0/content": enco_sdk::channel::Content,
-            "enco:plugin/channel@0.16.0/attachment": enco_sdk::channel::Attachment,
-            "enco:plugin/channel@0.16.0/quote": enco_sdk::channel::Quote,
-            "enco:plugin/channel@0.16.0/quoted": enco_sdk::channel::Quoted,
-            "enco:plugin/channel@0.16.0/quoted-message": enco_sdk::channel::QuotedMessage,
-            "enco:plugin/channel@0.16.0/activity-epilogue": enco_sdk::channel::ActivityEpilogue,
-            "enco:plugin/channel@0.16.0/activity-update": enco_sdk::channel::ActivityUpdate,
-            "enco:plugin/channel@0.16.0/conversation-name": enco_sdk::channel::ConversationName,
-            "enco:plugin/channel@0.16.0/activity-view": enco_sdk::channel::ActivityView,
-            "enco:plugin/channel@0.16.0/tool-activity": enco_sdk::channel::ToolActivity,
-            "enco:plugin/channel@0.16.0/tool-state": enco_sdk::channel::ToolState,
+            "enco:plugin/channel@0.17.0/command-kind": enco_sdk::channel::CommandKind,
+            "enco:plugin/channel@0.17.0/action": enco_sdk::channel::Action,
+            "enco:plugin/channel@0.17.0/content": enco_sdk::channel::Content,
+            "enco:plugin/channel@0.17.0/attachment": enco_sdk::channel::Attachment,
+            "enco:plugin/channel@0.17.0/quote": enco_sdk::channel::Quote,
+            "enco:plugin/channel@0.17.0/quoted": enco_sdk::channel::Quoted,
+            "enco:plugin/channel@0.17.0/quoted-message": enco_sdk::channel::QuotedMessage,
+            "enco:plugin/channel@0.17.0/activity-epilogue": enco_sdk::channel::ActivityEpilogue,
+            "enco:plugin/channel@0.17.0/activity-update": enco_sdk::channel::ActivityUpdate,
+            "enco:plugin/channel@0.17.0/conversation-name": enco_sdk::channel::ConversationName,
+            "enco:plugin/channel@0.17.0/activity-view": enco_sdk::channel::ActivityView,
+            "enco:plugin/channel@0.17.0/tool-activity": enco_sdk::channel::ToolActivity,
+            "enco:plugin/channel@0.17.0/tool-state": enco_sdk::channel::ToolState,
         );
     };
     (@provider $world:literal, $implementation:ident) => {
         $crate::export!(@bindings $world, $implementation, [],
-            "enco:plugin/completion@0.16.0/request": enco_sdk::protocol::Request,
-            "enco:plugin/completion@0.16.0/completion": enco_sdk::protocol::Completion,
-            "enco:plugin/completion@0.16.0/stop-reason": enco_sdk::protocol::StopReason,
-            "enco:plugin/completion@0.16.0/complete-error": enco_sdk::protocol::CompleteError,
+            "enco:plugin/completion@0.17.0/request": enco_sdk::protocol::Request,
+            "enco:plugin/completion@0.17.0/completion": enco_sdk::protocol::Completion,
+            "enco:plugin/completion@0.17.0/stop-reason": enco_sdk::protocol::StopReason,
+            "enco:plugin/completion@0.17.0/complete-error": enco_sdk::protocol::CompleteError,
         );
     };
     (@bindings $world:literal, $implementation:ident, [$($derives:path),*], $($types:tt)*) => {
@@ -144,7 +144,7 @@ macro_rules! export {
                 runtime_path: "enco_sdk::wit_bindgen::rt",
                 additional_derives: [$($derives),*],
                 with: {
-                    "enco:plugin/types@0.16.0": enco_sdk::types,
+                    "enco:plugin/types@0.17.0": enco_sdk::types,
                     $($types)*
                 },
             });

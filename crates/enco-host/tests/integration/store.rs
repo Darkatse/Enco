@@ -304,6 +304,31 @@ async fn blob_reads_reject_content_that_no_longer_matches_its_address() {
 }
 
 #[tokio::test]
+async fn evidence_is_kept_once_and_read_back_only_when_it_matches_its_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = support::open_store(dir.path()).await;
+    let record = br#"{"generation":7,"export":"completion.decode","arguments":{}}"#.repeat(20);
+    let hash = store.put_evidence(&record).await.unwrap();
+    assert_eq!(store.put_evidence(&record).await.unwrap(), hash);
+    assert_eq!(store.evidence(&hash).await.unwrap(), record);
+    let db = rusqlite::Connection::open(dir.path().join("enco.db")).unwrap();
+    let stored: Vec<u8> = db
+        .query_row("SELECT body FROM evidence", [], |row| row.get(0))
+        .unwrap();
+    assert!(stored.len() < record.len());
+    let changed = zstd::stream::encode_all(&b"changed"[..], 3).unwrap();
+    db.execute("UPDATE evidence SET body=?", [changed]).unwrap();
+    assert!(matches!(
+        store.evidence(&hash).await,
+        Err(StoreError::Evidence(_))
+    ));
+    assert!(matches!(
+        store.evidence(&ContentHash::of(b"never stored")).await,
+        Err(StoreError::Evidence(_))
+    ));
+}
+
+#[tokio::test]
 async fn schedule_cursor_and_inbox_delivery_commit_together() {
     let dir = tempfile::tempdir().unwrap();
     let store = support::open_store(dir.path()).await;

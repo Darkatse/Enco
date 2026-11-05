@@ -325,7 +325,7 @@ async fn take_messages(
         for message in messages {
             assert_eq!(message.key, expected.to_string());
             assert_eq!(protocol, Some(json!(expected)));
-            let bytes = store.get_blob(&message.origin.call).await.unwrap();
+            let bytes = store.evidence(&message.origin.call).await.unwrap();
             let record: MappingRecord = serde_json::from_slice(&bytes).unwrap();
             let state = if expected == 1 {
                 Value::Null
@@ -343,29 +343,32 @@ async fn take_messages(
 }
 
 async fn assert_records(root: &Path, store: &dyn Store) {
-    let mut arrivals = Vec::new();
+    let secret = |bytes: &[u8]| {
+        bytes
+            .windows(SECRET.len())
+            .any(|part| part == SECRET.as_bytes())
+    };
     for shard in std::fs::read_dir(root.join("blobs")).unwrap() {
         for file in std::fs::read_dir(shard.unwrap().path()).unwrap() {
-            let bytes = std::fs::read(file.unwrap().path()).unwrap();
-            assert!(
-                !bytes
-                    .windows(SECRET.len())
-                    .any(|part| part == SECRET.as_bytes())
-            );
-            if let Ok(record) = serde_json::from_slice::<MappingRecord>(&bytes) {
-                assert_eq!(record.generation, GenerationId(32));
-                if record.export == "channel.received" {
-                    arrivals.push(record.arguments["arrival"].clone());
-                }
-                if record.export == "channel.identified" {
-                    let hash = serde_json::from_value(record.arguments["response"]["body"].clone())
-                        .unwrap();
-                    let bytes = store.get_blob(&hash).await.unwrap();
-                    assert_eq!(
-                        serde_json::from_slice::<Value>(&bytes).unwrap()["echo"],
-                        "[redacted:ENCO_CHANNEL_FIXTURE_TOKEN]"
-                    );
-                }
+            assert!(!secret(&std::fs::read(file.unwrap().path()).unwrap()));
+        }
+    }
+    let mut arrivals = Vec::new();
+    for bytes in crate::support::evidence(root, store).await {
+        assert!(!secret(&bytes));
+        if let Ok(record) = serde_json::from_slice::<MappingRecord>(&bytes) {
+            assert_eq!(record.generation, GenerationId(32));
+            if record.export == "channel.received" {
+                arrivals.push(record.arguments["arrival"].clone());
+            }
+            if record.export == "channel.identified" {
+                let hash =
+                    serde_json::from_value(record.arguments["response"]["body"].clone()).unwrap();
+                let bytes = store.evidence(&hash).await.unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&bytes).unwrap()["echo"],
+                    "[redacted:ENCO_CHANNEL_FIXTURE_TOKEN]"
+                );
             }
         }
     }

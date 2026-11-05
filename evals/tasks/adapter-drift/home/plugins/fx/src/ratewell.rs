@@ -40,6 +40,7 @@ pub(crate) async fn latest(base: &str, symbols: &[String]) -> Result<Latest, Fai
         headers: vec![("accept".into(), "application/json".into())],
         body: None,
         timeout_ms: None,
+        idle_timeout_ms: None,
     })
     .await
     .map_err(|error| Failure {

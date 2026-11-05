@@ -1,10 +1,11 @@
 //! Gemini Generate Content and batch embeddings, as pure encode and decode.
 mod request;
 mod response;
+mod stream;
 use bindings::exports::enco::plugin::{completion, embedding, lifecycle};
 use enco_sdk::protocol::{
-    COMPLETION_TIMEOUT_MS, CompleteError, Completion, EMBEDDING_TIMEOUT_MS, HttpRequest,
-    HttpResponse, Overflow, Request, Settings, answer, embeddings, json, number_after, post_json,
+    CompleteError, Completion, EMBEDDING_TIMEOUT_MS, HttpRequest, HttpResponse, Overflow, Request,
+    Settings, answer, embeddings, json, number_after, post_json, stream::post_completion,
     types::Failure,
 };
 use serde_json::Value;
@@ -40,13 +41,17 @@ impl lifecycle::Guest for Plugin {
 
 impl completion::Guest for Plugin {
     fn encode(settings: Settings, request: Request) -> Result<HttpRequest, Failure> {
-        let body = request::completion(&settings, request)?;
-        let path = format!("/models/{}:generateContent", settings.model);
-        Ok(post_json(path, &body, Some(COMPLETION_TIMEOUT_MS)))
+        let (body, stream) = request::completion(&settings, request)?;
+        let path = if stream {
+            format!("/models/{}:streamGenerateContent?alt=sse", settings.model)
+        } else {
+            format!("/models/{}:generateContent", settings.model)
+        };
+        Ok(post_completion(path, &body, stream))
     }
 
     fn decode(response: HttpResponse) -> Result<Completion, CompleteError> {
-        let response = answer(&response, overflow)?;
+        let response = answer(&response, overflow, stream::fold)?;
         response::completion(response).map_err(CompleteError::Failed)
     }
 }

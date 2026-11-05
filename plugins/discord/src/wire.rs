@@ -57,6 +57,7 @@ pub(super) fn request(method: &str, url: String, body: Option<Value>) -> HttpReq
         headers: headers(body.as_ref().map(|_| "application/json".into())),
         body: body.map(|body| body.to_string().into_bytes()),
         timeout_ms: Some(REQUEST_TIMEOUT_MS),
+        idle_timeout_ms: None,
     }
 }
 

@@ -28,7 +28,8 @@ async fn native_gemini_preserves_tool_parts_and_embeds_in_input_order() {
         base_url: server.uri().parse().unwrap(),
         model: "mock".into(),
         api_key_env: None,
-        options: json!({"generationConfig": {"thinkingConfig": {"thinkingLevel": "LOW"}}}),
+        // The mock answers `generateContent`, which only an unstreamed request calls.
+        options: json!({"stream": false, "generationConfig": {"thinkingConfig": {"thinkingLevel": "LOW"}}}),
     };
     let first = provider
         .complete(

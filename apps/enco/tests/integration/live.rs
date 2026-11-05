@@ -258,7 +258,7 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
             .unwrap()
             .is_empty()
     );
-    let mut attempts = 0;
+    let mut plans = Vec::new();
     let mut input_tokens = 0;
     let mut output_tokens = 0;
     let mut cached_input_tokens = 0;
@@ -275,26 +275,7 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
         .unwrap();
         for entry in log {
             match entry.body {
-                EntryBody::AttemptStarted { plan, .. } => {
-                    let hash = plan.to_string();
-                    let plan: ContextPlan = serde_json::from_slice(
-                        &std::fs::read(
-                            daemon
-                                .root
-                                .path()
-                                .join(".data/blobs")
-                                .join(&hash[..2])
-                                .join(hash),
-                        )
-                        .unwrap(),
-                    )
-                    .unwrap();
-                    assert!(
-                        !plan.omitted.iter().any(|o| o.source == "memory:semantic"),
-                        "real embedding must succeed without fallback"
-                    );
-                    attempts += 1;
-                }
+                EntryBody::AttemptStarted { plan, .. } => plans.push(plan),
                 EntryBody::AttemptSettled {
                     result: AttemptResult::Completed { usage, .. },
                     ..
@@ -308,8 +289,29 @@ async fn deepseek_and_gemini_complete_the_personal_assistant_scenario() {
         }
     }
     graceful_stop(&mut daemon).await;
+    let data = daemon.root.path().join(".data");
+    let store = enco_host::SqliteStore::open(
+        enco_host::StorePaths {
+            db: data.join("enco.db"),
+            blobs: data.join("blobs"),
+            artifacts: data.join("artifacts"),
+        },
+        daemon.root.path().join("workspace"),
+    )
+    .await
+    .unwrap();
+    for hash in &plans {
+        let plan = enco_kernel::Store::plan(&store, hash).await.unwrap();
+        assert!(
+            !plan.omitted.iter().any(|o| o.source == "memory:semantic"),
+            "real embedding must succeed without fallback"
+        );
+    }
     println!(
-        "live passed: {attempts} attempts; tokens input={}, output={}, cached_input={}; no embedding fallback",
-        input_tokens, output_tokens, cached_input_tokens
+        "live passed: {} attempts; tokens input={}, output={}, cached_input={}; no embedding fallback",
+        plans.len(),
+        input_tokens,
+        output_tokens,
+        cached_input_tokens
     );
 }

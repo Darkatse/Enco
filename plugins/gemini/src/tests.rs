@@ -1,9 +1,11 @@
-use super::{request, response};
+use super::{Plugin, completion::Guest as _, request, response};
 use enco_sdk::protocol::{
-    Request, Settings, StopReason,
+    CompleteError, Completion, HttpResponse, Request, Settings, StopReason,
     types::{Failure, Image, ImageFormat, Message, Part, Role, ToolResult},
 };
 use serde_json::{Value, json};
+
+mod samples;
 
 fn settings(options: Value) -> Settings {
     Settings {
@@ -54,7 +56,7 @@ fn results_return_in_call_order_as_one_user_content() -> Result<(), Failure> {
         json!({"role": "model", "parts": [call("a"), call("b")]}),
         "STOP",
     ))?;
-    let body = request::completion(
+    let (body, _) = request::completion(
         &settings(json!({})),
         request(asked(vec![
             assistant.message,
@@ -81,7 +83,7 @@ fn calls_without_ids_take_their_results_in_order() -> Result<(), Failure> {
         "STOP",
     ))?;
     assert_eq!(assistant.stop_reason, StopReason::ToolCalls);
-    let body = request::completion(
+    let (body, _) = request::completion(
         &settings(json!({})),
         request(asked(vec![
             assistant.message,
@@ -130,7 +132,7 @@ fn only_calls_from_other_services_carry_the_placeholder_signature() -> Result<()
             .cloned()
             .collect(),
     };
-    let body = request::completion(
+    let (body, _) = request::completion(
         &settings(json!({})),
         request(asked(vec![
             own,
@@ -154,7 +156,7 @@ fn a_history_that_starts_with_a_call_gets_a_user_turn_before_it() -> Result<(), 
         "STOP",
     ))?
     .message;
-    let body = request::completion(
+    let (body, _) = request::completion(
         &settings(json!({})),
         request(vec![calling, result("a", false)]),
     )?;
@@ -167,7 +169,7 @@ fn a_history_that_starts_with_a_call_gets_a_user_turn_before_it() -> Result<(), 
         role: Role::Assistant,
         parts: vec![Part::Text("Earlier I read it.".into())],
     };
-    let body = request::completion(
+    let (body, _) = request::completion(
         &settings(json!({})),
         request(vec![speaking, asked(vec![]).remove(0)]),
     )?;
@@ -218,7 +220,7 @@ fn thinking_that_exhausts_the_output_budget_is_an_empty_reply() -> Result<(), Fa
 
 #[test]
 fn user_images_are_inline_parts() -> Result<(), Failure> {
-    let body = request::completion(
+    let (body, _) = request::completion(
         &settings(json!({})),
         request(vec![Message {
             role: Role::User,
@@ -247,4 +249,85 @@ fn options_cannot_override_safety_settings() {
         request::completion(&settings(options), request(vec![]))
             .is_err_and(|failure| failure.message == "options cannot override safetySettings")
     );
+}
+
+/// What `decode` makes of a successful streamed `body`.
+fn streamed(body: &str) -> Result<Completion, CompleteError> {
+    Plugin::decode(HttpResponse {
+        status: 200,
+        headers: vec![("content-type".into(), "text/event-stream".into())],
+        body: body.as_bytes().to_vec(),
+    })
+}
+
+/// The model turn a reply keeps whole for replay.
+fn kept(reply: &Completion) -> Value {
+    reply
+        .message
+        .parts
+        .iter()
+        .find_map(|part| match part {
+            Part::Extension(extension) => serde_json::from_str(&extension.data).ok(),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn requests_stream_unless_the_owner_turns_it_off() -> Result<(), Failure> {
+    let streamed = Plugin::encode(settings(json!({})), request(vec![]))?;
+    assert_eq!(
+        streamed.url,
+        "/models/configured-model:streamGenerateContent?alt=sse"
+    );
+    assert!(streamed.idle_timeout_ms.is_some());
+    let whole = Plugin::encode(settings(json!({"stream": false})), request(vec![]))?;
+    assert_eq!(whole.url, "/models/configured-model:generateContent");
+    assert!(whole.idle_timeout_ms.is_none());
+    let body: Value = serde_json::from_slice(whole.body.as_deref().unwrap_or_default())
+        .map_err(|e| enco_sdk::protocol::bad(e.to_string()))?;
+    assert!(body.get("stream").is_none());
+    Ok(())
+}
+
+#[test]
+fn a_stream_keeps_its_signed_parts_where_they_came() -> Result<(), CompleteError> {
+    let call = streamed(samples::SIGNED_CALL)?;
+    assert_eq!(call.stop_reason, StopReason::ToolCalls);
+    assert_eq!(call.usage.input_tokens, 68);
+    assert!(matches!(
+        call.message.parts.as_slice(),
+        [Part::ToolCall(called), Part::Extension(_)]
+            if called.id == "call_102324" && called.arguments == r#"{"city":"Nice"}"#
+    ));
+    let parts = &kept(&call)["parts"];
+    assert_eq!(parts.as_array().map(Vec::len), Some(1));
+    assert!(parts[0]["thoughtSignature"].is_string());
+    let text = streamed(samples::TEXT)?;
+    assert_eq!(text.stop_reason, StopReason::EndTurn);
+    assert!(matches!(
+        text.message.parts.as_slice(),
+        [Part::Text(said), Part::Extension(_)] if said == "Hello, how are you today?"
+    ));
+    let parts = &kept(&text)["parts"];
+    assert_eq!(parts[0], json!({"text": "Hello, how are you today?"}));
+    assert_eq!(parts[1]["text"], "");
+    assert!(parts[1]["thoughtSignature"].is_string());
+    Ok(())
+}
+
+#[test]
+fn a_stream_that_stops_early_or_reports_an_error_may_be_retried() {
+    let failure = |body: &str| match streamed(body) {
+        Err(CompleteError::Failed(failure)) => Some(failure),
+        _ => None,
+    };
+    let unfinished: String = samples::TEXT
+        .split("\n\n")
+        .filter(|event| !event.contains("finishReason"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    assert!(failure(&unfinished).is_some_and(|f| f.code == "provider.server" && f.retryable));
+    let busy = "data: {\"error\": {\"code\": 503, \"message\": \"busy\", \"status\": \"UNAVAILABLE\"}}\n\n";
+    assert!(failure(busy).is_some_and(|f| f.code == "provider.server" && f.retryable));
 }

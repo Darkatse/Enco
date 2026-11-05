@@ -5,6 +5,8 @@ use enco_sdk::protocol::{
 };
 use serde_json::{Value, json};
 
+mod samples;
+
 /// A real reply from `claude-haiku-5-5` with adaptive thinking at high effort.
 const THINKING_REPLY: &str = r#"{
   "model": "claude-haiku-5-5",
@@ -249,7 +251,7 @@ fn calls_without_ids_share_a_synthesized_id_with_their_results() -> Result<(), F
 
 #[test]
 fn options_cannot_override_reserved_fields() {
-    for options in [json!({"max_tokens": 64}), json!({"stream": true})] {
+    for options in [json!({"max_tokens": 64}), json!({"stream": "on"})] {
         let encoded = encode(vec![said(Role::User, "Hi.")], options);
         assert!(encoded.is_err_and(|failure| failure.code == "provider.bad_request"));
     }
@@ -321,4 +323,123 @@ fn another_refusal_is_a_bad_request() {
         answer,
         Err(CompleteError::Failed(failure)) if failure.code == "provider.bad_request"
     ));
+}
+
+/// What `decode` makes of a successful streamed `body`.
+fn streamed(body: &str) -> Result<Completion, CompleteError> {
+    Plugin::decode(HttpResponse {
+        status: 200,
+        headers: vec![(
+            "content-type".into(),
+            "text/event-stream; charset=utf-8".into(),
+        )],
+        body: body.as_bytes().to_vec(),
+    })
+}
+
+fn stream_failure(body: &str) -> Result<Failure, Failure> {
+    match streamed(body) {
+        Err(CompleteError::Failed(failure)) => Ok(failure),
+        other => Err(bad(format!("expected a failure, got {other:?}"))),
+    }
+}
+
+#[test]
+fn requests_stream_unless_the_owner_turns_it_off() -> Result<(), Failure> {
+    let request = || Request {
+        messages: vec![said(Role::User, "Hi.")],
+        tools: vec![],
+        max_output_tokens: 1024,
+    };
+    let streamed = Plugin::encode(settings(json!({})), request())?;
+    assert!(streamed.idle_timeout_ms.is_some());
+    assert!(
+        streamed
+            .headers
+            .contains(&("accept".into(), "text/event-stream".into()))
+    );
+    assert_eq!(
+        encode(vec![said(Role::User, "Hi.")], json!({}))?["stream"],
+        true
+    );
+    let whole = Plugin::encode(settings(json!({"stream": false})), request())?;
+    assert!(whole.idle_timeout_ms.is_none());
+    let body = encode(vec![said(Role::User, "Hi.")], json!({"stream": false}))?;
+    assert!(body.get("stream").is_none());
+    Ok(())
+}
+
+#[test]
+fn a_stream_reads_as_the_message_it_spells() -> Result<(), CompleteError> {
+    let reply = streamed(samples::THINKING_CALL)?;
+    assert_eq!(reply.stop_reason, StopReason::ToolCalls);
+    assert_eq!(reply.usage.input_tokens, 406);
+    assert_eq!(reply.usage.output_tokens, 331);
+    let [Part::ToolCall(call), Part::Extension(whole)] = reply.message.parts.as_slice() else {
+        return Err(CompleteError::Failed(bad(format!(
+            "unexpected parts {:?}",
+            reply.message.parts
+        ))));
+    };
+    assert_eq!(call.id, "toolu_017GSxXn5j52bDCWB5mTXMoc");
+    assert_eq!(call.arguments, r#"{"city":"Nice"}"#);
+    let whole: Value =
+        serde_json::from_str(&whole.data).map_err(|e| CompleteError::Failed(bad(e.to_string())))?;
+    let thinking = &whole["content"][0];
+    assert_eq!(thinking["type"], "thinking");
+    assert!(
+        thinking["signature"]
+            .as_str()
+            .is_some_and(|signature| signature.starts_with("CAQSsgsK"))
+    );
+    assert_eq!(whole["content"][1]["input"], json!({"city": "Nice"}));
+    let text = streamed(samples::TEXT)?;
+    assert_eq!(text.stop_reason, StopReason::EndTurn);
+    let [Part::Text(said)] = text.message.parts.as_slice() else {
+        return Err(CompleteError::Failed(bad(format!(
+            "unexpected parts {:?}",
+            text.message.parts
+        ))));
+    };
+    assert!(said.starts_with("Hello there, friend! How are you?"));
+    assert!(said.ends_with("Hello there, friend, good day!"));
+    Ok(())
+}
+
+#[test]
+fn a_call_that_never_stops_keeps_its_input_as_unstreamed_replies_do() -> Result<(), CompleteError> {
+    // The same request unstreamed answered `"input": {}` with `max_tokens`.
+    let cut = streamed(samples::CUT_CALL)?;
+    assert_eq!(cut.stop_reason, StopReason::MaxTokens);
+    assert!(matches!(
+        cut.message.parts.as_slice(),
+        [Part::ToolCall(call), Part::Extension(_)] if call.name == "write_note" && call.arguments == "{}"
+    ));
+    let none = streamed(samples::NO_ARGUMENTS)?;
+    assert!(matches!(
+        none.message.parts.as_slice(),
+        [Part::ToolCall(call), Part::Extension(_)] if call.name == "get_time" && call.arguments == "{}"
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_stream_cut_short_or_overloaded_may_be_retried() -> Result<(), Failure> {
+    let unfinished = samples::THINKING_CALL
+        .replace("event: message_stop", "event: dropped")
+        .replace("\"message_stop\"", "\"dropped\"");
+    let cut = stream_failure(&unfinished)?;
+    assert_eq!(cut.code, "provider.server");
+    assert!(cut.retryable);
+    let start = samples::TEXT.split("\n\n").next().unwrap_or_default();
+    let overloaded = stream_failure(&format!(
+        "{start}\n\nevent: error\ndata: {{\"type\":\"error\",\"error\":{{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}}}\n\n"
+    ))?;
+    assert_eq!(overloaded.code, "provider.server");
+    assert!(overloaded.retryable);
+    let unknown = stream_failure(
+        "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"new_error\"}}\n\n",
+    )?;
+    assert_eq!(unknown.code, "provider.bad_response");
+    Ok(())
 }

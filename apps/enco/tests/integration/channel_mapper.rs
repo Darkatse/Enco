@@ -28,7 +28,6 @@ async fn recorded_channel_calls() {
         .up_to_n_times(1)
         .mount(&server)
         .await;
-    let blobs = root.path().join("blobs");
     let generation = GenerationId(31);
     assert_eq!(adapter.identity().key(), "telegram:42");
     let updates = channel::messages(adapter.clone()).await;
@@ -45,7 +44,7 @@ async fn recorded_channel_calls() {
     assert_eq!(record.arguments["state"], Value::Null);
     let response = &record.arguments["arrival"]["response"];
     let body = store
-        .get_blob(&serde_json::from_value(response["body"].clone()).unwrap())
+        .evidence(&serde_json::from_value(response["body"].clone()).unwrap())
         .await
         .unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), raw);
@@ -88,8 +87,10 @@ async fn recorded_channel_calls() {
         assert!(request.url.path().starts_with("/bot42:test-secret/"));
     }
     // A failed evidence write is a storage failure, not a normal protocol refusal.
-    std::fs::remove_dir_all(&blobs).unwrap();
-    std::fs::write(&blobs, b"not a directory").unwrap();
+    rusqlite::Connection::open(root.path().join("enco.db"))
+        .unwrap()
+        .execute_batch("DROP TABLE evidence")
+        .unwrap();
     assert!(matches!(
         channel::reading(adapter.clone(), None).await,
         Err(ChannelCallError::Store(_))
@@ -97,7 +98,7 @@ async fn recorded_channel_calls() {
 }
 
 async fn mapping(store: &dyn Store, hash: enco_core::ContentHash) -> MappingRecord {
-    let bytes = store.get_blob(&hash).await.unwrap();
+    let bytes = store.evidence(&hash).await.unwrap();
     assert!(
         !bytes
             .windows(b"42:test-secret".len())
@@ -139,15 +140,11 @@ async fn attachment_exchange_records_each_complete_mapper_input() {
         .await;
     let fetched = adapter.fetch_file("a-image").await.unwrap();
     assert_eq!(fetched.content.unwrap(), image);
-    let mut records = Vec::new();
-    for shard in std::fs::read_dir(root.path().join("blobs")).unwrap() {
-        for file in std::fs::read_dir(shard.unwrap().path()).unwrap() {
-            let bytes = std::fs::read(file.unwrap().path()).unwrap();
-            if let Ok(record) = serde_json::from_slice::<MappingRecord>(&bytes) {
-                records.push(record);
-            }
-        }
-    }
+    let records: Vec<MappingRecord> = crate::support::evidence(root.path(), &*store)
+        .await
+        .iter()
+        .filter_map(|bytes| serde_json::from_slice(bytes).ok())
+        .collect();
     assert_eq!(
         records
             .iter()
@@ -169,7 +166,7 @@ async fn attachment_exchange_records_each_complete_mapper_input() {
         assert_eq!(responses.len(), index);
         if index == 2 {
             let body = store
-                .get_blob(&serde_json::from_value(responses[1]["body"].clone()).unwrap())
+                .evidence(&serde_json::from_value(responses[1]["body"].clone()).unwrap())
                 .await
                 .unwrap();
             assert_eq!(body, image);

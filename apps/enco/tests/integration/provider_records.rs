@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{header, method, path},
+    matchers::{body_partial_json, header, method, path},
 };
 
 const GENERATION: GenerationId = GenerationId(7);
@@ -83,10 +83,10 @@ async fn service(status: u16, body: &Value) -> MockServer {
 async fn recorded(store: &SqliteStore, origin: Option<MappingOrigin>) -> (MappingRecord, Vec<u8>) {
     let origin = origin.unwrap();
     let record: MappingRecord =
-        serde_json::from_slice(&store.get_blob(&origin.call).await.unwrap()).unwrap();
+        serde_json::from_slice(&store.evidence(&origin.call).await.unwrap()).unwrap();
     let body: ContentHash =
         serde_json::from_value(record.arguments["response"]["body"].clone()).unwrap();
-    let bytes = store.get_blob(&body).await.unwrap();
+    let bytes = store.evidence(&body).await.unwrap();
     (record, bytes)
 }
 
@@ -131,4 +131,30 @@ async fn a_request_without_a_response_names_no_record_and_may_be_retried() {
     };
     assert_eq!(failure.code, code::PROVIDER_NETWORK);
     assert!(failure.retryable);
+}
+
+#[tokio::test]
+async fn a_streamed_reply_is_recorded_as_sent_and_read_whole() {
+    let stream = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"h\"}}]}\n\n",
+        ": keepalive\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"i\"},\"finish_reason\":\"stop\"}],",
+        "\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(header("accept", "text/event-stream"))
+        .and(body_partial_json(
+            json!({"stream": true, "stream_options": {"include_usage": true}}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(stream, "text/event-stream"))
+        .mount(&server)
+        .await;
+    let (_root, store, answered) = complete(server.uri()).await;
+    let (record, bytes) = recorded(&store, answered.origin).await;
+    assert_eq!(answered.result.unwrap().message.joined_text(), "hi");
+    assert_eq!(record.export, "completion.decode");
+    assert_eq!(bytes, stream.as_bytes());
 }

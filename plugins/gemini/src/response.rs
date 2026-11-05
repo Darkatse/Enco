@@ -54,7 +54,8 @@ fn canonical_parts(content: &Object) -> Result<Vec<Part>, Failure> {
             }));
         } else if let Some(text) = field(part, "text") {
             let text = text.as_str().ok_or_else(|| bad("invalid text"))?;
-            if !read(part, "thought", Value::as_bool)? {
+            // A signature may arrive on a part of empty text, which says nothing itself.
+            if !text.is_empty() && !read(part, "thought", Value::as_bool)? {
                 parts.push(Part::Text(text.into()));
             }
         }

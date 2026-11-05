@@ -46,6 +46,11 @@ CREATE TABLE context_plans (
   body    BLOB NOT NULL                  -- zstd-compressed items, output budget and omissions
 ) STRICT;
 
+CREATE TABLE evidence (
+  hash TEXT PRIMARY KEY,                 -- Address of the uncompressed bytes
+  body BLOB NOT NULL                     -- zstd-compressed mapping record or response it read
+) STRICT;
+
 CREATE TABLE inbox (
   order_no       INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id       TEXT NOT NULL UNIQUE,

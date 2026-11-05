@@ -1,6 +1,6 @@
 /// Enco plugin contract. Plugins interact with the host only through it: each exports the
 /// interfaces of its world, and only a tool plugin imports `host`.
-package enco:plugin@0.16.0;
+package enco:plugin@0.17.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -222,13 +222,14 @@ interface types {
         halted,
     }
 
-    /// What the host sends over HTTP: the method, destination, headers, body and time limit.
+    /// What the host sends over HTTP: the method, destination, headers, body and time limits.
     ///
     /// For `host.http`, `url` is an absolute URL. A mapper's request goes to the service it maps:
     /// `url` is a path starting with `/`, which the host joins to that service's base URL. A
     /// channel's may also be an absolute URL on the base URL's origin or on one of its `origins`.
     ///
-    /// Without a `user-agent` header, the host sends `Enco/<version>`.
+    /// Without a `user-agent` header, the host sends `Enco/<version>`. Running out of either time
+    /// limit is a timeout.
     record http-request {
         /// The method, such as `GET` or `POST`.
         method: string,
@@ -238,8 +239,14 @@ interface types {
         headers: list<tuple<string, string>>,
         /// The bytes to send, if any.
         body: option<list<u8>>,
-        /// The time limit in milliseconds; the host's default when absent.
+        /// The limit in milliseconds on the whole exchange, from sending to the end of the body;
+        /// the host's default when absent.
         timeout-ms: option<u32>,
+        /// The longest wait in milliseconds for anything from the service, so a silent one fails.
+        ///
+        /// It bounds the wait for the response head after sending, then for each next bytes of
+        /// the body. Absent, only `timeout-ms` applies.
+        idle-timeout-ms: option<u32>,
     }
 
     /// An HTTP response, whatever its status, with its whole body.

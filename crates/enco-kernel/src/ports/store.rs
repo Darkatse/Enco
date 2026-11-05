@@ -147,12 +147,21 @@ pub trait Store: Send + Sync {
     async fn artifact(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError>;
 
     // ---- Blobs (content-addressed, idempotent writes)
-    /// Persist immutable bytes before recording their content address.
+    /// Persist content the Agent or the owner may read by path, such as an attachment, an image
+    /// or a long tool result, before recording its content address.
     async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
     /// Read bytes and verify they match their recorded address.
     async fn get_blob(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError>;
-    /// Local path of a blob, recorded with the truncation fact of a long tool result.
+    /// Local path of a blob, which the Agent reads with its tools; the file holds the bytes as
+    /// written.
     fn blob_path(&self, hash: &ContentHash) -> PathBuf;
+
+    // ---- Evidence (content-addressed, idempotent writes)
+    /// Persist evidence of a mapper call, such as its record or a response it read, addressed by
+    /// its bytes; nothing reads it by path.
+    async fn put_evidence(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>;
+    /// Read evidence and verify it matches its address.
+    async fn evidence(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError>;
 }
 
 /// Persistent node identity and recovery policy.
@@ -303,6 +312,9 @@ pub enum StoreError {
     /// Immutable bytes are missing or do not match their address.
     #[error("blob {0} is corrupt or missing")]
     Blob(ContentHash),
+    /// Recorded evidence is missing or does not match its address.
+    #[error("evidence {0} is corrupt or missing")]
+    Evidence(ContentHash),
     /// A plan or one of its storage dependencies is missing or fails content verification.
     #[error("plan {hash}: {reason}")]
     Plan {

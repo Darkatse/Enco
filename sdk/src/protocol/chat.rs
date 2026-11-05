@@ -1,19 +1,25 @@
 //! OpenAI-compatible Chat Completions and embeddings, as the pure encode and decode a Provider
 //! exports.
 use super::{
-    COMPLETION_TIMEOUT_MS, CompleteError, Completion, EMBEDDING_TIMEOUT_MS, HttpRequest,
-    HttpResponse, Overflow, Request, Settings, StopReason, Usage, answer, apply_options, bad,
-    bad_request, carries, embeddings, extras, json, number_after, post_json,
+    CompleteError, Completion, EMBEDDING_TIMEOUT_MS, HttpRequest, HttpResponse, Overflow, Request,
+    Settings, StopReason, Usage, answer, apply_options, bad, bad_request, carries, embeddings,
+    extras, json, number_after, post_json,
+    stream::{post_completion, streaming},
 };
 use crate::types::{self, Failure, Message, Part, Role};
 use serde_json::{Value, json};
+mod chunks;
 mod messages;
+#[cfg(test)]
+mod samples;
 
-/// The request for one non-streaming Chat Completions call.
+/// The request for one Chat Completions call, streamed with its usage unless the options set
+/// `stream` to `false`.
 ///
 /// `settings.options` may add fields to the request, but not replace one this function writes or
-/// reserves, such as `model`, `messages` or `stream`.
+/// reserves, such as `model`, `messages` or `stream_options`.
 pub fn encode(settings: &Settings, request: Request) -> Result<HttpRequest, Failure> {
+    let (stream, options) = streaming(&settings.options)?;
     let messages = messages::encode(&request.messages)?;
     let mut body = json!({
         "model": settings.model,
@@ -39,33 +45,34 @@ pub fn encode(settings: &Settings, request: Request) -> Result<HttpRequest, Fail
             .collect::<Result<Vec<_>, Failure>>()?;
         body["tools"] = json!(tools);
     }
+    if stream {
+        body["stream"] = json!(true);
+        body["stream_options"] = json!({"include_usage": true});
+    }
     apply_options(
         &mut body,
-        &settings.options,
+        &options,
         &[
             "model",
             "messages",
             "tools",
             "max_tokens",
             "max_completion_tokens",
-            "stream",
             "stream_options",
         ],
     )?;
-    Ok(post_json(
-        "/chat/completions",
-        &body,
-        Some(COMPLETION_TIMEOUT_MS),
-    ))
+    Ok(post_completion("/chat/completions", &body, stream))
 }
 
-/// What a Chat Completions response means.
+/// What a Chat Completions response means, streamed or not.
 ///
-/// A reply with fields the contract has no place for is kept whole in an extension part and sent
-/// back as it came. A refusal that states the model's maximum context length, as DeepSeek's does,
-/// is an overflow.
+/// A stream folds into the response it is in one piece (see `chunks::fold`). A reply with fields
+/// the contract has no place for is kept whole in an extension part and sent back as it came. A
+/// refusal that states the model's maximum context length, as DeepSeek's does, is an overflow.
+/// A service that streams no usage fails with `missing usage`; the owner can then turn streaming
+/// off.
 pub fn decode(response: &HttpResponse) -> Result<Completion, CompleteError> {
-    let response = answer(response, overflow)?;
+    let response = answer(response, overflow, chunks::fold)?;
     parse_completion(response).map_err(CompleteError::Failed)
 }
 
@@ -229,7 +236,9 @@ fn parse_message(value: Option<&Value>) -> Result<Message, Failure> {
 }
 
 fn parse_usage(value: Option<&Value>) -> Result<Usage, Failure> {
-    let usage = value.ok_or_else(|| bad("missing usage"))?;
+    let usage = value.ok_or_else(|| {
+        bad("missing usage; a service that streams none needs the option \"stream\": false")
+    })?;
     let input_tokens = usage
         .get("prompt_tokens")
         .and_then(Value::as_u64)

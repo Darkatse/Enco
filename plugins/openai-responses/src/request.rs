@@ -2,7 +2,9 @@
 //! its place, a kept reply's output items as they came, an ID on every call, a prompt cache key for
 //! the conversation, and no service state.
 use enco_sdk::protocol::{
-    Call, Request, Settings, Turn, apply_options, bad_request, call_id, turns,
+    Call, Request, Settings, Turn, apply_options, bad_request, call_id,
+    stream::streaming,
+    turns,
     types::{Failure, Image, Message, Part, Role, ToolResult, ToolSpec},
 };
 use serde_json::{Value, json};
@@ -16,7 +18,6 @@ const RESERVED: &[&str] = &[
     "input",
     "tools",
     "max_output_tokens",
-    "stream",
     "store",
     "include",
     "previous_response_id",
@@ -27,11 +28,13 @@ const RESERVED: &[&str] = &[
     "prompt_cache_key",
 ];
 
-/// The body of one non-streaming, stateless Responses request.
+/// The body of one stateless Responses request, and whether it asks for a stream, as it does
+/// unless the options set `stream` to `false`.
 ///
 /// Every request carries the whole history: the service stores nothing, and returns reasoning
 /// encrypted so a later request can replay it.
-pub fn completion(settings: &Settings, request: Request) -> Result<Value, Failure> {
+pub fn completion(settings: &Settings, request: Request) -> Result<(Value, bool), Failure> {
+    let (stream, options) = streaming(&settings.options)?;
     let mut input = vec![];
     for turn in turns(&request.messages)? {
         match turn {
@@ -65,8 +68,11 @@ pub fn completion(settings: &Settings, request: Request) -> Result<Value, Failur
     if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
-    apply_options(&mut body, &settings.options, RESERVED)?;
-    Ok(body)
+    if stream {
+        body["stream"] = json!(true);
+    }
+    apply_options(&mut body, &options, RESERVED)?;
+    Ok((body, stream))
 }
 
 /// The key that routes a request to the service's prompt cache.

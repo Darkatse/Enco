@@ -1,9 +1,9 @@
 //! Pure helpers for Provider and decision mappers: the request a service needs, what its response
 //! means, and the owner's options merged into the request.
 //!
-//! OpenAI-compatible Chat Completions and embeddings are in [`chat`]. A mapper imports nothing: it
-//! returns the request, and the host sends it to the endpoint and hands the response back, whatever
-//! its status.
+//! OpenAI-compatible Chat Completions and embeddings are in [`chat`], and what streamed
+//! completions share is in [`stream`]. A mapper imports nothing: it returns the request, and the
+//! host sends it to the endpoint and hands the whole response back, whatever its status.
 use crate::bindings;
 pub use bindings::enco::plugin::types;
 pub use bindings::exports::enco::plugin::completion::{
@@ -13,11 +13,13 @@ use serde_json::{Map, Value};
 use types::{Failure, Message, Part, Role, ToolCall, ToolResult};
 pub use types::{HttpRequest, HttpResponse, Overflow, Settings, Usage};
 pub mod chat;
+pub mod stream;
+use stream::{Event, status_failure};
 
-/// How long a completion request may take, in milliseconds.
+/// How long a completion request that is not streamed may take, in milliseconds.
 ///
-/// Ten minutes is the default of Anthropic's and OpenAI's own clients: a reply arrives only once
-/// it is complete, and a long one takes minutes.
+/// Ten minutes is the default of Anthropic's and OpenAI's own clients: such a reply arrives only
+/// once it is complete, and a long one takes minutes.
 pub const COMPLETION_TIMEOUT_MS: u32 = 600_000;
 
 /// How long an embedding request may take, in milliseconds.
@@ -54,32 +56,40 @@ pub fn post_json(url: impl Into<String>, body: &Value, timeout_ms: Option<u32>) 
         headers: vec![("content-type".into(), "application/json".into())],
         body: Some(body.to_string().into_bytes()),
         timeout_ms,
+        idle_timeout_ms: None,
     }
 }
 
-/// The JSON of a successful response, or the failure its status means.
+/// The JSON of a successful response, or the failure its status means ([`status_failure`]).
 ///
-/// Retryable: 408 (`timeout`), 429 (`provider.rate_limited`) and 5xx (`provider.server`). Not
-/// retryable: 401 and 403 (`provider.auth`), any other status outside 2xx
-/// (`provider.bad_request`), and a successful body that is not JSON (`provider.bad_response`).
+/// A successful body that is not JSON is `provider.bad_response`.
 pub fn json(response: &HttpResponse) -> Result<Value, Failure> {
     if !(200..300).contains(&response.status) {
-        return Err(status_failure(response));
+        return Err(refusal(response));
     }
     serde_json::from_slice(&response.body).map_err(|e| bad(format!("invalid JSON response: {e}")))
 }
 
-/// What a completion response means: its JSON, an overflow, or the failure its status means.
+/// What a completion response means: the JSON of its reply, an overflow, or a failure.
 ///
-/// A successful response gives its JSON, and a refusal the failure [`json`] describes, unless the
-/// service turned the request away as too large. `read` is the protocol's reading of a refusal's
-/// JSON: an overflow it recognizes, with the numbers the service gave. An HTTP 413 is an overflow
-/// even when `read` recognizes nothing, since the status itself says the request is too large.
+/// A successful response in the `text/event-stream` media type is a stream: [`stream::events`]
+/// reads it and `fold` turns its events into the JSON the same reply has as one response, or into
+/// the error the stream reported. Any other successful response is that JSON itself. So a stream,
+/// a reply sent whole and a response recorded before streaming read the same way.
+///
+/// A refusal is the failure [`json`] describes, unless the service turned the request away as too
+/// large. `read` is the protocol's reading of a refusal's JSON: an overflow it recognizes, with
+/// the numbers the service gave. An HTTP 413 is an overflow even when `read` recognizes nothing,
+/// since the status itself says the request is too large.
 pub fn answer(
     response: &HttpResponse,
     read: impl FnOnce(&Value) -> Option<Overflow>,
+    fold: impl FnOnce(Vec<Event>) -> Result<Value, CompleteError>,
 ) -> Result<Value, CompleteError> {
     if (200..300).contains(&response.status) {
+        if streamed(response) {
+            return fold(stream::events(&response.body).map_err(CompleteError::Failed)?);
+        }
         return json(response).map_err(CompleteError::Failed);
     }
     if let Some(overflow) = serde_json::from_slice::<Value>(&response.body)
@@ -89,7 +99,7 @@ pub fn answer(
     {
         return Err(CompleteError::Overflow(overflow));
     }
-    let failure = status_failure(response);
+    let failure = refusal(response);
     if response.status == 413 {
         return Err(CompleteError::Overflow(Overflow {
             counted: None,
@@ -100,21 +110,25 @@ pub fn answer(
     Err(CompleteError::Failed(failure))
 }
 
-fn status_failure(response: &HttpResponse) -> Failure {
+/// The failure a response's status means, quoting the start of its body.
+fn refusal(response: &HttpResponse) -> Failure {
     let mut excerpt = String::from_utf8_lossy(&response.body).into_owned();
     excerpt.truncate(excerpt.floor_char_boundary(500));
-    let (code, retryable) = match response.status {
-        401 | 403 => ("provider.auth", false),
-        408 => ("timeout", true),
-        429 => ("provider.rate_limited", true),
-        500..=599 => ("provider.server", true),
-        _ => ("provider.bad_request", false),
-    };
-    failure(
-        code,
+    status_failure(
+        response.status,
         format!("HTTP {}: {excerpt}", response.status),
-        retryable,
     )
+}
+
+/// Whether the response's media type is `text/event-stream`.
+fn streamed(response: &HttpResponse) -> bool {
+    response.headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("content-type")
+            && value
+                .split(';')
+                .next()
+                .is_some_and(|media| media.trim().eq_ignore_ascii_case("text/event-stream"))
+    })
 }
 
 /// `vectors` as the embeddings of `count` inputs, checked against the protocol's promise.

@@ -5,6 +5,7 @@ mod blob;
 mod commit;
 mod connections;
 mod content;
+mod evidence;
 mod plans;
 mod registry;
 mod rows;
@@ -26,13 +27,13 @@ use std::{
 /// It covers the SQLite schema and the JSON kept in it, such as plan records and connection
 /// state. Until P4, persistent format changes require a new database; opening never migrates or
 /// deletes the old one, and nothing reads an older format.
-const SCHEMA_VERSION: u32 = 22;
+const SCHEMA_VERSION: u32 = 23;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
     /// SQLite authority.
     pub db: PathBuf,
-    /// Removable content-addressed history.
+    /// Content-addressed files the Agent and the owner read by path; removable history.
     pub blobs: PathBuf,
     /// Retained content-addressed components.
     pub artifacts: PathBuf,
@@ -436,6 +437,18 @@ impl Store for SqliteStore {
 
     fn blob_path(&self, hash: &ContentHash) -> PathBuf {
         blob_path(&self.paths.blobs, hash)
+    }
+
+    async fn put_evidence(&self, bytes: &[u8]) -> Result<ContentHash, StoreError> {
+        let bytes = bytes.to_vec();
+        self.run(move |connection| evidence::put(connection, &bytes))
+            .await
+    }
+
+    async fn evidence(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError> {
+        let hash = *hash;
+        self.run(move |connection| evidence::get(connection, hash))
+            .await
     }
 }
 

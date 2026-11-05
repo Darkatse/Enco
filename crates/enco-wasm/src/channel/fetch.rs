@@ -117,6 +117,7 @@ impl Connection {
                         headers: Vec::new(),
                         body: None,
                         timeout_ms: None,
+                        idle_timeout_ms: None,
                     };
                     transport.exchange(request, &[]).await
                 }

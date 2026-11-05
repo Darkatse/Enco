@@ -1,7 +1,9 @@
 //! The Messages request body for a canonical completion request: system text at the top level,
 //! each batch of tool results in one user message, an ID on every call, and the cache marker.
 use enco_sdk::protocol::{
-    Call, Request, Settings, Turn, apply_options, bad_request, call_id, turns,
+    Call, Request, Settings, Turn, apply_options, bad_request, call_id,
+    stream::streaming,
+    turns,
     types::{Failure, Image, Message, Part, Role, ToolResult, ToolSpec},
 };
 use serde_json::{Value, json};
@@ -13,15 +15,16 @@ const RESERVED: &[&str] = &[
     "system",
     "tools",
     "max_tokens",
-    "stream",
     "cache_control",
 ];
 
-/// The body of one non-streaming Messages request.
+/// The body of one Messages request, and whether it asks for a stream, as it does unless the
+/// options set `stream` to `false`.
 ///
 /// Roles stay as the history has them: the service accepts a history that starts with the
 /// assistant and repeated roles.
-pub fn completion(settings: &Settings, request: Request) -> Result<Value, Failure> {
+pub fn completion(settings: &Settings, request: Request) -> Result<(Value, bool), Failure> {
+    let (stream, options) = streaming(&settings.options)?;
     let mut system = vec![];
     let mut messages = vec![];
     for turn in turns(&request.messages)? {
@@ -65,8 +68,11 @@ pub fn completion(settings: &Settings, request: Request) -> Result<Value, Failur
             .collect::<Result<Vec<_>, _>>()?;
         body["tools"] = json!(tools);
     }
-    apply_options(&mut body, &settings.options, RESERVED)?;
-    Ok(body)
+    if stream {
+        body["stream"] = json!(true);
+    }
+    apply_options(&mut body, &options, RESERVED)?;
+    Ok((body, stream))
 }
 
 fn tool(tool: ToolSpec) -> Result<Value, Failure> {

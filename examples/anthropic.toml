@@ -11,7 +11,6 @@ api_key_env = "ANTHROPIC_API_KEY"
 options = { output_config = { effort = "high" } }
 
 window_tokens = 1000000
-# A reply arrives only once it is complete, within ten minutes.
 max_output_tokens = 16000
 
 [profile.default]

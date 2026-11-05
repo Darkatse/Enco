@@ -19,6 +19,23 @@ use tokio::{
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
 pub const UNSET_API_KEY_ENV: &str = "ENCO_TEST_UNSET_API_KEY";
 
+/// Every piece of evidence the store at `root` holds: each mapping record and each response.
+pub async fn evidence(root: &Path, store: &dyn enco_kernel::Store) -> Vec<Vec<u8>> {
+    let db = rusqlite::Connection::open(root.join("enco.db")).unwrap();
+    let hashes: Vec<ContentHash> = db
+        .prepare("SELECT hash FROM evidence")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|hash| hash.unwrap().parse().unwrap())
+        .collect();
+    let mut all = Vec::new();
+    for hash in hashes {
+        all.push(store.evidence(&hash).await.unwrap());
+    }
+    all
+}
+
 pub struct Daemon {
     pub child: Child,
     pub root: tempfile::TempDir,

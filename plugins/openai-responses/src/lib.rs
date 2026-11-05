@@ -1,10 +1,11 @@
 //! OpenAI Responses completions, as pure encode and decode over stateless requests.
 mod request;
 mod response;
+mod stream;
 use bindings::exports::enco::plugin::{completion, lifecycle};
 use enco_sdk::protocol::{
-    COMPLETION_TIMEOUT_MS, CompleteError, Completion, HttpRequest, HttpResponse, Overflow, Request,
-    Settings, answer, post_json, types::Failure,
+    CompleteError, Completion, HttpRequest, HttpResponse, Overflow, Request, Settings, answer,
+    stream::post_completion, types::Failure,
 };
 use serde_json::Value;
 
@@ -39,12 +40,12 @@ impl lifecycle::Guest for Plugin {
 
 impl completion::Guest for Plugin {
     fn encode(settings: Settings, request: Request) -> Result<HttpRequest, Failure> {
-        let body = request::completion(&settings, request)?;
-        Ok(post_json("/responses", &body, Some(COMPLETION_TIMEOUT_MS)))
+        let (body, stream) = request::completion(&settings, request)?;
+        Ok(post_completion("/responses", &body, stream))
     }
 
     fn decode(response: HttpResponse) -> Result<Completion, CompleteError> {
-        let response = answer(&response, overflow)?;
+        let response = answer(&response, overflow, stream::fold)?;
         response::completion(&response).map_err(CompleteError::Failed)
     }
 }

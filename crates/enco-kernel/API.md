@@ -4837,6 +4837,7 @@ pub enum StoreError {
     ScheduleNotActive(ScheduleId),
     UnknownSession(SessionId),
     Blob(ContentHash),
+    Evidence(ContentHash),
     Plan {
         hash: ContentHash,
         reason: String,
@@ -4866,6 +4867,7 @@ A failed storage operation or commit precondition.
 - `ScheduleNotActive` — The scheduler's expected state no longer matches the authority.
 - `UnknownSession` — The target Session does not exist.
 - `Blob` — Immutable bytes are missing or do not match their address.
+- `Evidence` — Recorded evidence is missing or does not match its address.
 - `Plan` — A plan or one of its storage dependencies is missing or fails content verification.
   - `hash` — Address of the complete plan being restored.
   - `reason` — The missing dependency or invalid stored content.
@@ -5779,7 +5781,8 @@ Read and verify component bytes by content address.
 async fn put_blob(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>
 ```
 
-Persist immutable bytes before recording their content address.
+Persist content the Agent or the owner may read by path, such as an attachment, an image
+or a long tool result, before recording its content address.
 
 ### `Store::get_blob`
 
@@ -5795,7 +5798,25 @@ Read bytes and verify they match their recorded address.
 fn blob_path(&self, hash: &ContentHash) -> PathBuf
 ```
 
-Local path of a blob, recorded with the truncation fact of a long tool result.
+Local path of a blob, which the Agent reads with its tools; the file holds the bytes as
+written.
+
+### `Store::put_evidence`
+
+```rust
+async fn put_evidence(&self, bytes: &[u8]) -> Result<ContentHash, StoreError>
+```
+
+Persist evidence of a mapper call, such as its record or a response it read, addressed by
+its bytes; nothing reads it by path.
+
+### `Store::evidence`
+
+```rust
+async fn evidence(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError>
+```
+
+Read evidence and verify it matches its address.
 
 ## trait `Tool`
 
