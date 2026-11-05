@@ -15,7 +15,7 @@
 - `workspace/`：新 Session 的默认工作目录
 - `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。数据库模式版本 22 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
 
-`config.toml` 中每个模型 endpoint 用 `plugin` 选定协议，`base_url` 是 HTTP(S) 服务地址，可以带路径，不能带凭证、query 或 fragment，渠道的 `base_url` 也是这样：`openai-compatible` 与 `deepseek` 走 Chat Completions，`openai-responses` 走 OpenAI Responses，`anthropic` 走 Anthropic Messages，`gemini` 走 Gemini Generate Content。`options` 里的字段按各家 API 的原名并进请求，例如 Anthropic 的 `thinking` 与 `output_config`、Responses 的 `reasoning`，但不能覆盖插件自己写的字段，也不能写插件保留的字段，例如 `stream` 与 Responses 的 `previous_response_id`。补全请求不流式，回复整段到齐才返回，最多等 10 分钟；输出上限定得很大时可能超时，经过中转时中间的代理也可能更早断开。每种协议的配置示例见 [examples/](../examples/)。
+`config.toml` 中每个模型 endpoint 用 `plugin` 选定协议，`base_url` 是 HTTP(S) 服务地址，可以带路径，不能带凭证、query 或 fragment，渠道的 `base_url` 也是这样：`openai-compatible` 与 `deepseek` 走 Chat Completions，`openai-responses` 走 OpenAI Responses，`anthropic` 走 Anthropic Messages，`gemini` 走 Gemini Generate Content。`options` 里的字段按各家 API 的原名并进请求，例如 Anthropic 的 `thinking` 与 `output_config`、Responses 的 `reasoning`，但不能覆盖插件自己写的字段，也不能写插件保留的字段，例如 `stream` 与 Responses 的 `previous_response_id`。`openai-responses` 按每个会话不变的开头（模型、工具、开头的 system 消息与第一条 user 消息）算出 `prompt_cache_key`，同一会话的请求因此落在同一份提示缓存上，经过中转时也一样。补全请求不流式，回复整段到齐才返回，最多等 10 分钟；输出上限定得很大时可能超时，经过中转时中间的代理也可能更早断开。每种协议的配置示例见 [examples/](../examples/)。
 
 ### CLI 命令
 

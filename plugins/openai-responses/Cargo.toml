@@ -10,6 +10,7 @@ license = "Apache-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
+blake3 = "1.8.7"
 enco-sdk = { path = "../../sdk" }
 serde_json = "1.0.151"
 

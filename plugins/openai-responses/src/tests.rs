@@ -155,6 +155,29 @@ fn messages_become_items_in_place_and_nothing_stays_on_the_service() -> Result<(
 }
 
 #[test]
+fn a_conversation_keeps_its_prompt_cache_key_as_it_grows() -> Result<(), Failure> {
+    let key = |messages| encode(messages, json!({})).map(|body| body["prompt_cache_key"].clone());
+    let opening = vec![
+        said(Role::System, "Answer tersely."),
+        said(Role::User, "Which is warmer?"),
+    ];
+    let mut later = opening.clone();
+    later.extend([
+        said(Role::Assistant, "Paris."),
+        said(Role::User, "And tomorrow?"),
+    ]);
+    let another = vec![
+        said(Role::System, "Answer tersely."),
+        said(Role::User, "Which is colder?"),
+    ];
+    let first = key(opening)?;
+    assert!(first.is_string());
+    assert_eq!(key(later)?, first);
+    assert_ne!(key(another)?, first);
+    Ok(())
+}
+
+#[test]
 fn tools_are_flat_functions_with_strict_off() -> Result<(), Failure> {
     let schema = json!({
         "type": "object",

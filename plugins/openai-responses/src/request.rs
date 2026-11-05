@@ -1,5 +1,6 @@
 //! The Responses request body for a canonical completion request: every message as input items in
-//! its place, a kept reply's output items as they came, an ID on every call, and no service state.
+//! its place, a kept reply's output items as they came, an ID on every call, a prompt cache key for
+//! the conversation, and no service state.
 use enco_sdk::protocol::{
     Call, Request, Settings, Turn, apply_options, bad_request, call_id, turns,
     types::{Failure, Image, Message, Part, Role, ToolResult, ToolSpec},
@@ -23,6 +24,7 @@ const RESERVED: &[&str] = &[
     "background",
     "truncation",
     "instructions",
+    "prompt_cache_key",
 ];
 
 /// The body of one non-streaming, stateless Responses request.
@@ -47,23 +49,38 @@ pub fn completion(settings: &Settings, request: Request) -> Result<Value, Failur
             }
         }
     }
+    let tools = request
+        .tools
+        .into_iter()
+        .map(tool)
+        .collect::<Result<Vec<_>, _>>()?;
     let mut body = json!({
         "model": settings.model,
+        "prompt_cache_key": cache_key(&settings.model, &tools, &input),
         "input": input,
         "max_output_tokens": request.max_output_tokens,
         "store": false,
         "include": ["reasoning.encrypted_content"],
     });
-    if !request.tools.is_empty() {
-        let tools = request
-            .tools
-            .into_iter()
-            .map(tool)
-            .collect::<Result<Vec<_>, _>>()?;
+    if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
     apply_options(&mut body, &settings.options, RESERVED)?;
     Ok(body)
+}
+
+/// The key that routes a request to the service's prompt cache.
+///
+/// It hashes what a conversation's requests keep in common, the model, the tools, the leading
+/// system messages and the first user message, so each conversation keeps reaching the cache that
+/// holds its beginning, and a compaction that rewrites that beginning starts a new key.
+fn cache_key(model: &str, tools: &[Value], input: &[Value]) -> String {
+    let system = input.iter().take_while(|item| item["role"] == "system");
+    let head: Vec<_> = system
+        .chain(input.iter().find(|item| item["role"] == "user"))
+        .collect();
+    let seed = json!([model, tools, head]).to_string();
+    format!("enco-{}", &blake3::hash(seed.as_bytes()).to_hex()[..32])
 }
 
 /// A function tool, with `strict` written as `false`: left out, the service rewrites the schema
