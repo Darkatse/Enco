@@ -9,6 +9,9 @@ use std::{sync::Arc, time::Duration};
 use wasmtime::component::{Accessor, HasSelf, ResourceTable};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
+/// The `User-Agent` the host sends with each request and socket opening that names none.
+pub(crate) const USER_AGENT: &str = concat!("Enco/", env!("CARGO_PKG_VERSION"));
+
 pub(crate) struct HostState {
     pub wasi: WasiCtx,
     pub table: ResourceTable,

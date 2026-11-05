@@ -227,6 +227,8 @@ interface types {
     /// For `host.http`, `url` is an absolute URL. A mapper's request goes to the service it maps:
     /// `url` is a path starting with `/`, which the host joins to that service's base URL. A
     /// channel's may also be an absolute URL on the base URL's origin or on one of its `origins`.
+    ///
+    /// Without a `user-agent` header, the host sends `Enco/<version>`.
     record http-request {
         /// The method, such as `GET` or `POST`.
         method: string,
@@ -1275,7 +1277,7 @@ interface channel {
     use types.{datetime, failure, http-request, http-response, json, quote-kind, run-end, unviewable};
 
     /// A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection
-    /// stops.
+    /// stops; its opening request carries the `user-agent` `Enco/<version>`.
     record socket {
         /// Where to open the socket: a path on the base URL, or an absolute `ws` or `wss` URL.
         ///

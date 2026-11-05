@@ -76,9 +76,11 @@ fn opening_request(
         .map_err(|error| {
             crate::convert::bad(credentials::redact_text(credentials, &error.to_string()))
         })?;
-    opening
-        .headers_mut()
-        .extend(std::mem::take(request.headers_mut()));
+    let headers = opening.headers_mut();
+    headers.extend(std::mem::take(request.headers_mut()));
+    headers.entry(reqwest::header::USER_AGENT).or_insert(
+        reqwest::header::HeaderValue::from_static(crate::host_imports::USER_AGENT),
+    );
     Ok(opening)
 }
 

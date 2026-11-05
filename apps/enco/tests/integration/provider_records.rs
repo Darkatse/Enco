@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path},
+    matchers::{header, method, path},
 };
 
 const GENERATION: GenerationId = GenerationId(7);
@@ -63,11 +63,16 @@ async fn complete(base_url: String) -> (tempfile::TempDir, Arc<SqliteStore>, Ans
     (root, store, answered)
 }
 
-/// The service at a mock server answering `/chat/completions` with `status` and `body`.
+/// The service at a mock server answering `/chat/completions` with `status` and `body`, to a
+/// request that names Enco as its client.
 async fn service(status: u16, body: &Value) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
+        .and(header(
+            "user-agent",
+            concat!("Enco/", env!("CARGO_PKG_VERSION")),
+        ))
         .respond_with(ResponseTemplate::new(status).set_body_json(body))
         .mount(&server)
         .await;

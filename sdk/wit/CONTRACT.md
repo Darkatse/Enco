@@ -302,6 +302,8 @@ For `host.http`, `url` is an absolute URL. A mapper's request goes to the servic
 `url` is a path starting with `/`, which the host joins to that service's base URL. A
 channel's may also be an absolute URL on the base URL's origin or on one of its `origins`.
 
+Without a `user-agent` header, the host sends `Enco/<version>`.
+
 | Field | Type | Description |
 |---|---|---|
 | `method` | `string` | The method, such as `GET` or `POST`. |
@@ -1301,7 +1303,7 @@ The host records each external input before handing it over, and carries out wha
 #### record `socket`
 
 A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection
-stops.
+stops; its opening request carries the `user-agent` `Enco/<version>`.
 
 | Field | Type | Description |
 |---|---|---|

@@ -50,6 +50,7 @@ impl WasmRuntime {
         Ok(Self {
             engine: Arc::new(WasmEngine::new()?),
             http: reqwest::Client::builder()
+                .user_agent(crate::host_imports::USER_AGENT)
                 .redirect(same_origin_redirects())
                 .build()?,
         })

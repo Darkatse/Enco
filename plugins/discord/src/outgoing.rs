@@ -212,7 +212,7 @@ pub(super) fn send(conversation: String, message: Outgoing) -> HttpRequest {
     HttpRequest {
         method: "POST".into(),
         url,
-        headers: vec![("content-type".into(), content_type)],
+        headers: wire::headers(Some(content_type)),
         body: Some(body),
         timeout_ms: Some(UPLOAD_TIMEOUT_MS),
     }

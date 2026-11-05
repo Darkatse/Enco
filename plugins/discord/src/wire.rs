@@ -6,6 +6,13 @@ use serde_json::Value;
 
 /// The time limit of every request but an upload.
 const REQUEST_TIMEOUT_MS: u32 = 30_000;
+/// The `User-Agent` Discord asks of HTTP API clients, `DiscordBot ($url, $versionNumber)`; a
+/// request without one may be blocked.
+const USER_AGENT: &str = concat!(
+    "DiscordBot (https://github.com/Darkatse/Enco, ",
+    env!("CARGO_PKG_VERSION"),
+    ")"
+);
 /// Discord's JSON error code for a channel or thread that does not exist.
 const UNKNOWN_CHANNEL: u64 = 10003;
 
@@ -36,14 +43,18 @@ pub(super) fn invalid(context: &str) -> Fault {
     )
 }
 
+/// The headers of a request to Discord, with its body's content type when it has a body.
+pub(super) fn headers(content_type: Option<String>) -> Vec<(String, String)> {
+    let mut headers = vec![("user-agent".into(), USER_AGENT.into())];
+    headers.extend(content_type.map(|value| ("content-type".into(), value)));
+    headers
+}
+
 pub(super) fn request(method: &str, url: String, body: Option<Value>) -> HttpRequest {
     HttpRequest {
         method: method.into(),
         url,
-        headers: body
-            .as_ref()
-            .map(|_| vec![("content-type".into(), "application/json".into())])
-            .unwrap_or_default(),
+        headers: headers(body.as_ref().map(|_| "application/json".into())),
         body: body.map(|body| body.to_string().into_bytes()),
         timeout_ms: Some(REQUEST_TIMEOUT_MS),
     }

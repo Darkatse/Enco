@@ -1502,6 +1502,8 @@ For `host.http`, `url` is an absolute URL. A mapper's request goes to the servic
 `url` is a path starting with `/`, which the host joins to that service's base URL. A
 channel's may also be an absolute URL on the base URL's origin or on one of its `origins`.
 
+Without a `user-agent` header, the host sends `Enco/<version>`.
+
 - `method` — The method, such as `GET` or `POST`.
 - `url` — Where to send it, as stated above.
 - `headers` — Header names and values, in order.
@@ -2157,7 +2159,7 @@ The host records each external input before handing it over, and carries out wha
 - struct `bindings::exports::enco::plugin::channel::QuotedMessage` — same as `channel::QuotedMessage`
 - enum `bindings::exports::enco::plugin::channel::ReadStep` — How the host reads the protocol next.
 - struct `bindings::exports::enco::plugin::channel::Reading` — What the mapper asks of the host after one arrival.
-- struct `bindings::exports::enco::plugin::channel::Socket` — A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection stops.
+- struct `bindings::exports::enco::plugin::channel::Socket` — A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection stops; its opening request carries the `user-agent` `Enco/<version>`.
 - struct `bindings::exports::enco::plugin::channel::ToolActivity` — same as `channel::ToolActivity`
 - enum `bindings::exports::enco::plugin::channel::ToolState` — same as `channel::ToolState`
 - trait `bindings::exports::enco::plugin::channel::Guest` — (no summary)
@@ -2544,7 +2546,7 @@ pub struct Socket {
 ```
 
 A WebSocket the host opens and keeps until the mapper asks to reconnect or the connection
-stops.
+stops; its opening request carries the `user-agent` `Enco/<version>`.
 
 - `url` — Where to open the socket: a path on the base URL, or an absolute `ws` or `wss` URL.
 
