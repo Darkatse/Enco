@@ -125,6 +125,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - fn `parse_arguments` — Parse a call's arguments into the tool's argument type.
 - fn `transcribe_name_segment` — Turn external text into one name segment; return none when no valid segment remains.
 - fn `unanswered_input` — Latest interactive input still waiting for a final reply or an unsuccessful Run result.
+- fn `unanswered_input_reach` — How far back `unanswered_input` reads: to the latest answer, halt or input that asks for a reply; `None` when `entries` hold none of them.
 - const `CONFIGURATION_FILE` — The owner's configuration file, relative to the Enco home.
 - const `DEFAULT_PROFILE` — Profile selected when a Session is created; every node configuration must define it.
 - const `PLUGINS_DIRECTORY` — The directory holding one source directory per plugin, relative to the Enco home.
@@ -888,6 +889,17 @@ pub fn resume(destination: Option<ReplyDestination>) -> Self
 ```
 
 Resume folding after a boundary that recorded this destination.
+
+### `DeliveryProjection::reach`
+
+```rust
+pub fn reach(entries: &[Entry]) -> Option<LogPos>
+```
+
+How far back folding the end of a Log must start to reach the state folding all of it does.
+
+That is the latest Round start, which clears the reply in progress, or the latest input
+that chose a destination, whichever is earlier; `None` when either may lie before `entries`.
 
 ### `DeliveryProjection::destination`
 
@@ -4225,6 +4237,17 @@ pub fn unanswered_input(entries: &[crate::Entry]) -> Option<&crate::Event>
 Latest interactive input still waiting for a final reply or an unsuccessful Run result.
 
 Mid-Run messages and skipped replies do not answer it; a consumed halt invalidates the wait.
+
+## fn `unanswered_input_reach`
+
+`src/delivery/state.rs`
+
+```rust
+pub fn unanswered_input_reach(entries: &[crate::Entry]) -> Option<crate::LogPos>
+```
+
+How far back `unanswered_input` reads: to the latest answer, halt or input that asks for a
+reply; `None` when `entries` hold none of them.
 
 ## const `CONFIGURATION_FILE`
 

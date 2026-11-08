@@ -70,6 +70,7 @@ impl WasmPlugin {
                 .memory_size(limits::WASM_MEMORY_LIMIT)
                 .build(),
         };
+        let _ticking = self.engine.ticking();
         let mut store = Store::new(&self.engine.engine, state);
         store.limiter(|state| &mut state.limits);
         store.epoch_deadline_async_yield_and_update(1);

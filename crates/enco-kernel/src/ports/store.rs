@@ -59,6 +59,17 @@ pub trait Store: Send + Sync {
         session: SessionId,
         after: Option<LogPos>,
     ) -> Result<Vec<Entry>, StoreError>;
+    /// Read at most `limit` entries immediately before `before`, or before the end without it, in
+    /// structural order; fewer means the read reached the start of the Log.
+    async fn log_before(
+        &self,
+        session: SessionId,
+        before: Option<LogPos>,
+        limit: usize,
+    ) -> Result<Vec<Entry>, StoreError>;
+    /// Read the entry at `pos`, if the Log has one there.
+    async fn log_entry(&self, session: SessionId, pos: LogPos)
+    -> Result<Option<Entry>, StoreError>;
     /// Fold a child's unconsumed inputs, then its Log, newest first through `ChildStateFold`,
     /// reading only as far back as the fold needs.
     async fn child_state(&self, child: SessionId) -> Result<ChildState, StoreError>;

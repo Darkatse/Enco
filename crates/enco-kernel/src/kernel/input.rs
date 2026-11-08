@@ -119,7 +119,12 @@ impl Kernel {
         if super::running(&lock(&self.sessions), session) {
             return Ok(true);
         }
-        let entries = self.deps.store.log(session, None).await?;
+        let entries = crate::reach::read_back(
+            self.deps.store.as_ref(),
+            session,
+            crate::transcript::transcript_reach,
+        )
+        .await?;
         let conversation = crate::transcript::conversation(&entries);
         Ok(crate::transcript::has_compactable_round(&conversation))
     }
@@ -130,10 +135,11 @@ impl Kernel {
             to,
             reason,
         };
-        let entries = self.deps.store.log(session, None).await?;
-        let entry = entries
-            .iter()
-            .find(|entry| entry.pos == to)
+        let entry = self
+            .deps
+            .store
+            .log_entry(session, to)
+            .await?
             .ok_or_else(|| rejected("the position is not in its Log"))?;
         match &entry.body {
             EntryBody::EventConsumed { event } if event.body.is_command() => {

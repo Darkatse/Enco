@@ -1,6 +1,7 @@
 //! What the owner reads about one Session: where it stands, its children, and how much context
 //! its conversation uses. Node-wide facts stay in `Kernel::status`.
 use super::*;
+use crate::reach::earliest;
 
 /// One Session as its owner reads it, from its actor, its Log and the running configuration.
 #[derive(Debug, Clone)]
@@ -65,8 +66,6 @@ pub enum RunState {
 pub struct ContextUsage {
     /// The latest completed reply request in the conversation, if any.
     pub last_request: Option<LastRequest>,
-    /// How many compactions the conversation records.
-    pub compactions: usize,
     /// Whether a compaction request waits for the next Run.
     pub compaction_requested: bool,
     /// The input limit the first reply model's service gave when it last turned a request away, a
@@ -104,8 +103,12 @@ impl Kernel {
             .get(&session.profile)
             .map(|profile| profile.reply.first().clone());
         let children = self.deps.store.children(id).await?;
-        let entries = self.deps.store.log(id, None).await?;
+        let entries = crate::reach::read_back(self.deps.store.as_ref(), id, |end| {
+            reach(end, reply.as_ref())
+        })
+        .await?;
         let pending = self.deps.store.pending(id).await?;
+        let halted = self.deps.store.child_state(id).await?.halted;
         let (status, running_children) = {
             let handles = lock(&self.sessions);
             let running_children = children
@@ -116,7 +119,7 @@ impl Kernel {
         };
         let conversation = crate::transcript::conversation(&entries);
         Ok(SessionOverview {
-            run: run_state(&entries, &pending, &status),
+            run: run_state(&entries, halted, &status),
             context: context_usage(&conversation, &pending, reply.as_ref()),
             session: status.session,
             reply: reply.map(|first| ReplyModel {
@@ -130,7 +133,26 @@ impl Kernel {
     }
 }
 
-fn run_state(entries: &[Entry], pending: &[Event], status: &SessionStatus) -> RunState {
+/// How far back the overview reads: what `run_state` and `context_usage` read.
+fn reach(entries: &[Entry], reply: Option<&CompletionEndpoint>) -> Option<LogPos> {
+    let conversation = crate::transcript::conversation(entries);
+    let reads = [
+        crate::transcript::last_reply_reach(&conversation),
+        crate::transcript::compaction_requested_reach(&conversation),
+    ];
+    let limit = reply.map(|reply| service_limit_reach(&conversation, reply));
+    earliest([
+        run_state_reach(entries),
+        crate::transcript::conversation_reach(
+            entries,
+            &conversation,
+            earliest(reads.into_iter().chain(limit)),
+        ),
+    ])
+}
+
+/// `halted` is the Session's halt as its parent would read it.
+fn run_state(entries: &[Entry], halted: Option<Halt>, status: &SessionStatus) -> RunState {
     if let Some(reason) = &status.stopped {
         return RunState::Stopped {
             reason: reason.clone(),
@@ -156,27 +178,25 @@ fn run_state(entries: &[Entry], pending: &[Event], status: &SessionStatus) -> Ru
     if let Some(position) = status.waiting {
         return RunState::Waiting { position };
     }
-    let mut fold = ChildStateFold::default();
-    if pending
-        .iter()
-        .rev()
-        .try_for_each(|event| fold.input(event))
-        .is_continue()
-    {
-        let _ = entries
-            .iter()
-            .rev()
-            .try_for_each(|entry| fold.entry(&entry.body));
-    }
-    if let Some(halt) = fold.finish().halted {
+    if let Some(halt) = halted {
         return RunState::Halted(halt);
     }
     RunState::Idle {
-        last_run: entries.iter().rev().find_map(|entry| match &entry.body {
-            EntryBody::RunEnded { end, .. } => Some((entry.at, end.clone())),
-            _ => None,
-        }),
+        last_run: last_run(entries).map(|(entry, end)| (entry.at, end.clone())),
     }
+}
+
+/// How far back `run_state` reads: to the latest Run end, where both counting the running Run's
+/// Rounds and finding the last Run stop; `None` when no Run has ended.
+fn run_state_reach(entries: &[Entry]) -> Option<LogPos> {
+    last_run(entries).map(|(entry, _)| entry.pos)
+}
+
+fn last_run(entries: &[Entry]) -> Option<(&Entry, &RunEnd)> {
+    entries.iter().rev().find_map(|entry| match &entry.body {
+        EntryBody::RunEnded { end, .. } => Some((entry, end)),
+        _ => None,
+    })
 }
 
 fn context_usage(
@@ -192,10 +212,6 @@ fn context_usage(
                 entry.pos > last.settled && matches!(entry.body, EntryBody::Compacted { .. })
             }),
         }),
-        compactions: conversation
-            .iter()
-            .filter(|entry| matches!(entry.body, EntryBody::Compacted { .. }))
-            .count(),
         compaction_requested: crate::transcript::compaction_requested(conversation, pending),
         service_limit: reply.and_then(|reply| service_limit(conversation, reply)),
     }
@@ -207,8 +223,32 @@ fn context_usage(
 /// counts as a reply does. Only a limit that, with the output budget, falls short of the
 /// configured window counts, and only until an answered request carries more input than it.
 fn service_limit(conversation: &[&Entry], reply: &CompletionEndpoint) -> Option<u64> {
+    let refusal = refusal(conversation, reply)?;
+    let room = refusal
+        .accepted
+        .saturating_add(reply.budget.max_output_tokens.get().into());
+    (refusal.answered <= refusal.accepted && room < reply.budget.context_tokens.get().into())
+        .then_some(refusal.accepted)
+}
+
+/// How far back `service_limit` reads the conversation: to the latest refused request that gave
+/// a limit; `None` when the service never gave one.
+fn service_limit_reach(conversation: &[&Entry], reply: &CompletionEndpoint) -> Option<LogPos> {
+    refusal(conversation, reply).map(|refusal| refusal.started)
+}
+
+/// The latest request the reply endpoint's service turned away with a limit.
+struct Refusal {
+    /// Where the request started.
+    started: LogPos,
+    /// The input limit the service gave.
+    accepted: u64,
+    /// The most input a later answered request carried, as the service counted it.
+    answered: u64,
+}
+
+fn refusal(conversation: &[&Entry], reply: &CompletionEndpoint) -> Option<Refusal> {
     let mut settled = HashMap::new();
-    // The most input a later answered request carried, as the service counted it.
     let mut answered = 0;
     for entry in conversation.iter().rev() {
         match &entry.body {
@@ -230,10 +270,11 @@ fn service_limit(conversation: &[&Entry], reply: &CompletionEndpoint) -> Option<
                             ..
                         },
                 }) => {
-                    let room = accepted.saturating_add(reply.budget.max_output_tokens.get().into());
-                    return (answered <= *accepted
-                        && room < reply.budget.context_tokens.get().into())
-                    .then_some(*accepted);
+                    return Some(Refusal {
+                        started: entry.pos,
+                        accepted: *accepted,
+                        answered,
+                    });
                 }
                 _ => {}
             },

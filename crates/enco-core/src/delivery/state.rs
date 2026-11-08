@@ -1,4 +1,4 @@
-use crate::{EntryBody, Event, EventBody, EventSource, Halt, ReplyDestination};
+use crate::{Entry, EntryBody, Event, EventBody, EventSource, Halt, LogPos, ReplyDestination};
 use std::ops::ControlFlow;
 
 /// What a fact, read newest first, settles about the wait for an answer.
@@ -24,14 +24,28 @@ fn wait(body: &EntryBody) -> Option<Wait<'_>> {
     }
 }
 
+/// The latest entry that settles the wait for an answer, and how.
+fn decision(entries: &[Entry]) -> Option<(LogPos, Wait<'_>)> {
+    entries
+        .iter()
+        .rev()
+        .find_map(|entry| wait(&entry.body).map(|wait| (entry.pos, wait)))
+}
+
 /// Latest interactive input still waiting for a final reply or an unsuccessful Run result.
 ///
 /// Mid-Run messages and skipped replies do not answer it; a consumed halt invalidates the wait.
-pub fn unanswered_input(entries: &[crate::Entry]) -> Option<&Event> {
-    match entries.iter().rev().find_map(|entry| wait(&entry.body))? {
+pub fn unanswered_input(entries: &[Entry]) -> Option<&Event> {
+    match decision(entries)?.1 {
         Wait::On(event) => Some(event),
         Wait::Over => None,
     }
+}
+
+/// How far back `unanswered_input` reads: to the latest answer, halt or input that asks for a
+/// reply; `None` when `entries` hold none of them.
+pub fn unanswered_input_reach(entries: &[Entry]) -> Option<LogPos> {
+    decision(entries).map(|(pos, _)| pos)
 }
 
 /// Child facts computed from committed history followed by accepted, unconsumed inputs.

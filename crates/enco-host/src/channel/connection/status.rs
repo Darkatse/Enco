@@ -132,12 +132,6 @@ fn context_line(overview: &SessionOverview) -> String {
             text
         }
     };
-    match context.compactions {
-        0 => {}
-        1 => text.push_str("; compacted once"),
-        2 => text.push_str("; compacted twice"),
-        n => text.push_str(&format!("; compacted {n} times")),
-    }
     if context.compaction_requested {
         text.push_str("; compaction requested for the next Run");
     }

@@ -161,6 +161,10 @@ enum Switch {
     Off,
 }
 
+// glibc keeps freed memory in per-thread arenas, so a long-running daemon's footprint only grows.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 #[expect(clippy::too_many_lines, reason = "one dispatch arm per CLI command")]
 #[expect(

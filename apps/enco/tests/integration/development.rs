@@ -17,24 +17,26 @@ use protocol::Command;
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
 use support::{Daemon, embeddings, finish, response, running_generation, tool_message};
-use tokio::sync::Notify;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument::WithSubscriber;
 use tracing_subscriber::{Layer, layer::SubscriberExt};
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
 
-/// Observe the guest's own entry marker before cancelling its CPU-bound call.
-struct Entered(Arc<Notify>);
+/// Observe the guests' own entry markers before cancelling their CPU-bound calls.
+struct Entered(Arc<Semaphore>);
 impl<S: tracing::Subscriber> Layer<S> for Entered {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
         if event.metadata().target() == "plugin" {
-            self.0.notify_one();
+            self.0.add_permits(1);
         }
     }
 }
 
+/// Loading runs `describe` first, so the epoch clock has gone idle before the calls start; it
+/// keeps ticking for the call still running after the other is cancelled.
 #[tokio::test]
-async fn cancelling_a_source_built_computing_plugin_settles_unknown_and_joins() {
+async fn cancelling_source_built_computing_plugin_calls_settles_each_unknown_and_joins() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path();
     let server = MockServer::start().await;
@@ -90,33 +92,39 @@ async fn cancelling_a_source_built_computing_plugin_settles_unknown_and_joins() 
         .find(|spec| spec.name == "fixture_spin")
         .unwrap()
         .clone();
-    let entered = Arc::new(Notify::new());
-    let subscriber = tracing_subscriber::registry().with(Entered(entered.clone()));
-    let cancel = CancellationToken::new();
-    let context = CallContext {
-        session: SessionId::new(),
-        working_dir: enco_core::WorkingDir::new(
-            store.node().await.unwrap().id,
-            home.join("workspace"),
-        )
-        .unwrap(),
-        call: CallId::new(),
-        cancel: cancel.clone(),
-        result_budget: 1024,
-    };
-    let invoked = tokio::spawn(
-        async move { tools.adapter.call(context, &spec, Default::default()).await }
-            .with_subscriber(subscriber),
-    );
-    tokio::time::timeout(Duration::from_secs(8), entered.notified())
-        .await
-        .unwrap();
-    cancel.cancel();
-    let outcome = tokio::time::timeout(Duration::from_secs(8), invoked)
+    let entered = Arc::new(Semaphore::new(0));
+    let node = store.node().await.unwrap().id;
+    let calls: Vec<_> = (0..2)
+        .map(|_| {
+            let cancel = CancellationToken::new();
+            let context = CallContext {
+                session: SessionId::new(),
+                working_dir: enco_core::WorkingDir::new(node, home.join("workspace")).unwrap(),
+                call: CallId::new(),
+                cancel: cancel.clone(),
+                result_budget: 1024,
+            };
+            let (adapter, spec) = (tools.adapter.clone(), spec.clone());
+            let invoked = tokio::spawn(
+                async move { adapter.call(context, &spec, Default::default()).await }
+                    .with_subscriber(tracing_subscriber::registry().with(Entered(entered.clone()))),
+            );
+            (cancel, invoked)
+        })
+        .collect();
+    tokio::time::timeout(Duration::from_secs(8), entered.acquire_many(2))
         .await
         .unwrap()
-        .unwrap();
-    assert!(matches!(outcome, Outcome::Unknown { failure } if failure.code == code::CANCELLED));
+        .unwrap()
+        .forget();
+    for (cancel, invoked) in calls {
+        cancel.cancel();
+        let outcome = tokio::time::timeout(Duration::from_secs(8), invoked)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(outcome, Outcome::Unknown { failure } if failure.code == code::CANCELLED));
+    }
 }
 
 async fn apply(daemon: &Daemon) -> Value {

@@ -255,23 +255,88 @@ pub(super) fn log(
         epoch: Epoch(0),
         seq: Seq(0),
     });
-    let mut query = connection
-        .prepare(
+    query_entries(
+        connection,
+        "SELECT epoch,seq,at,body
+         FROM log
+         WHERE session_id=? AND (epoch,seq)>(?,?)
+         ORDER BY epoch,seq",
+        params![
+            session.to_string(),
+            signed(position.epoch.0)?,
+            signed(position.seq.0)?
+        ],
+    )
+}
+
+pub(super) fn log_before(
+    connection: &Connection,
+    session: SessionId,
+    before: Option<LogPos>,
+    limit: usize,
+) -> Result<Vec<Entry>, StoreError> {
+    let limit = i64::try_from(limit).map_err(backend)?;
+    // The bound is its own statement: behind `? IS NULL OR`, SQLite could not seek to it in the
+    // key and would scan from the end of the Session's Log on every page.
+    let mut entries = match before {
+        None => query_entries(
+            connection,
             "SELECT epoch,seq,at,body
              FROM log
-             WHERE session_id=? AND (epoch,seq)>(?,?)
-             ORDER BY epoch,seq",
-        )
-        .map_err(backend)?;
-    query
-        .query_map(
+             WHERE session_id=?
+             ORDER BY epoch DESC, seq DESC
+             LIMIT ?",
+            params![session.to_string(), limit],
+        ),
+        Some(before) => query_entries(
+            connection,
+            "SELECT epoch,seq,at,body
+             FROM log
+             WHERE session_id=? AND (epoch,seq)<(?,?)
+             ORDER BY epoch DESC, seq DESC
+             LIMIT ?",
             params![
                 session.to_string(),
-                signed(position.epoch.0)?,
-                signed(position.seq.0)?
+                signed(before.epoch.0)?,
+                signed(before.seq.0)?,
+                limit
             ],
+        ),
+    }?;
+    entries.reverse();
+    Ok(entries)
+}
+
+pub(super) fn log_entry(
+    connection: &Connection,
+    session: SessionId,
+    pos: LogPos,
+) -> Result<Option<Entry>, StoreError> {
+    // SQLite stores signed integers, so no Log holds a position beyond them.
+    let (Ok(epoch), Ok(seq)) = (i64::try_from(pos.epoch.0), i64::try_from(pos.seq.0)) else {
+        return Ok(None);
+    };
+    connection
+        .query_row(
+            "SELECT epoch,seq,at,body
+             FROM log
+             WHERE session_id=? AND epoch=? AND seq=?",
+            params![session.to_string(), epoch, seq],
             rows::entry,
         )
+        .optional()
+        .map_err(backend)
+}
+
+fn query_entries(
+    connection: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<Entry>, StoreError> {
+    connection
+        .prepare(sql)
+        .map_err(backend)?
+        .query_map(params, rows::entry)
         .map_err(backend)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(backend)

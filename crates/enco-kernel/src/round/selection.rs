@@ -1,4 +1,4 @@
-use super::{context::Measured, run_entries};
+use super::{context::Measured, run_entries, this_round};
 use crate::{run::RoundError, session::SessionActor, *};
 use enco_core::*;
 use std::{collections::HashMap, sync::Arc};
@@ -52,7 +52,7 @@ impl SessionActor {
     /// Pick both purposes against the latest view and this Run's Log.
     pub(super) fn select<'p>(&self, profile: &'p Profile, safe_mode: bool) -> Selection<'p> {
         let view = self.deps.registry.view();
-        let entries = run_entries(&self.entries);
+        let entries = run_entries(self.tail.entries());
         let pick = |endpoints, purpose| pick(endpoints, purpose, &view.exports, entries, safe_mode);
         Selection {
             reply: pick(&profile.reply, AttemptPurpose::Reply),
@@ -94,7 +94,8 @@ impl SessionActor {
         Ok((reply, compaction))
     }
 
-    /// The latest plan `combination` turned away in this Round that `transcript` still holds.
+    /// The latest plan `combination` turned away in this Round that `transcript` still holds; a
+    /// new Round composes for the configured window again.
     ///
     /// A plan whose Log items a compaction has since summarized can no longer be measured against
     /// the conversation, so an earlier refusal stands in for it. The plans are read back from the
@@ -104,7 +105,7 @@ impl SessionActor {
         combination: &Combination,
         transcript: &Transcript,
     ) -> Result<Option<Overflowed>, RoundError> {
-        for (plan, overflow) in combination.overflowed(this_round(&self.entries)) {
+        for (plan, overflow) in combination.overflowed(this_round(self.tail.entries())) {
             let plan = self.deps.store.plan(plan).await?;
             if crate::plan::held(&plan, transcript) {
                 return Ok(Some(Overflowed {
@@ -115,16 +116,6 @@ impl SessionActor {
         }
         Ok(None)
     }
-}
-
-/// The current Round's entries, from its start; a new Round composes for the configured window
-/// again.
-fn this_round(entries: &[Entry]) -> &[Entry] {
-    let start = entries
-        .iter()
-        .rposition(|entry| matches!(entry.body, EntryBody::RoundStarted { .. }))
-        .map_or(0, |index| index + 1);
-    &entries[start..]
 }
 
 /// The first candidate in configured order whose code resolves and whose combination is not

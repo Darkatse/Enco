@@ -1,9 +1,11 @@
 mod admission;
 mod commit;
+mod tail;
 
 use crate::{Clock, KernelError, Store, limits::SESSION_BROADCAST_CAPACITY, snapshot::Snapshot};
 use enco_core::*;
 use std::sync::{Arc, Mutex, MutexGuard};
+use tail::LogTail;
 use tokio::{
     sync::{Notify, broadcast},
     task::JoinHandle,
@@ -52,7 +54,7 @@ impl SessionHandle {
                 session,
                 deps,
                 handle: task_handle,
-                entries: vec![],
+                tail: LogTail::default(),
                 next: 1,
                 delivery: DeliveryProjection::default(),
             };
@@ -75,8 +77,7 @@ pub(crate) struct SessionActor {
     pub session: SessionRecord,
     pub deps: Arc<SessionDeps>,
     pub handle: Arc<SessionHandle>,
-    // Keep the full Log in memory; project incrementally if long Sessions make scans costly.
-    pub entries: Vec<Entry>,
+    pub tail: LogTail,
     pub next: u64,
     /// What the committed Log hands to its reply destination, folded up to its last entry.
     pub delivery: DeliveryProjection,
@@ -84,17 +85,20 @@ pub(crate) struct SessionActor {
 
 impl SessionActor {
     async fn serve(&mut self) -> Result<(), KernelError> {
-        self.entries = self.deps.store.log(self.session.id, None).await?;
-        for entry in &self.entries {
+        let entries = crate::reach::read_back(self.deps.store.as_ref(), self.session.id, |end| {
+            crate::reach::earliest([tail::reach(end), DeliveryProjection::reach(end)])
+        })
+        .await?;
+        for entry in &entries {
             self.delivery.step(entry);
         }
-        self.next = self
-            .entries
+        self.next = entries
             .iter()
             .rev()
             .find(|e| e.pos.epoch == self.session.binding.epoch)
             .map_or(1, |e| e.pos.seq.0 + 1);
-        let recovery = crate::recovery::recover(&self.entries);
+        self.tail = LogTail::new(entries);
+        let recovery = crate::recovery::recover(self.tail.entries());
         if !recovery.is_empty() {
             self.commit(recovery, None).await?;
         }
@@ -141,7 +145,7 @@ impl SessionActor {
             if self.session.archived_at.is_some() {
                 return Ok(());
             }
-            if pending.is_empty() && !crate::transcript::backtracked_to_input(&self.entries) {
+            if pending.is_empty() && !crate::transcript::backtracked_to_input(self.tail.entries()) {
                 tokio::select! {
                     _ = self.handle.wake.notified() => {},
                     _ = self.deps.shutdown.cancelled() => return Ok(()),

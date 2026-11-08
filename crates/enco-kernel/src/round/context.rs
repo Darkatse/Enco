@@ -30,20 +30,12 @@ impl SessionActor {
         token: &CancellationToken,
     ) -> Result<Gathered, RoundError> {
         // A Round reads its history from the conversation as it now stands, not the whole Log.
-        let conversation = crate::transcript::conversation(&self.entries);
-        let latest_event = conversation
-            .iter()
-            .rev()
-            .find_map(|entry| crate::transcript::input(entry).cloned());
-        let new_input = conversation
-            .iter()
-            .rev()
-            .take_while(|entry| !matches!(entry.body, EntryBody::RoundEnded { .. }))
-            .any(|entry| crate::transcript::input(entry).is_some());
+        let conversation = crate::transcript::conversation(self.tail.entries());
         let query = ContextQuery {
             session: self.session.clone(),
-            latest_event,
-            new_input,
+            latest_event: crate::transcript::latest_input(&conversation)
+                .map(|(_, event)| event.clone()),
+            new_input: crate::transcript::new_input(&conversation),
             cancel: token.child_token(),
         };
         let profile_instructions = if safe_mode {
@@ -78,7 +70,7 @@ impl SessionActor {
     /// The conversation's transcript, where each blob it refers to is stored, and whether it
     /// carries the owner's compaction request; a compaction changes all three.
     pub(super) fn transcript(&self) -> (Transcript, HashMap<ContentHash, PathBuf>, bool) {
-        let conversation = crate::transcript::conversation(&self.entries);
+        let conversation = crate::transcript::conversation(self.tail.entries());
         let transcript = crate::transcript::project(&conversation);
         let blob_paths = transcript
             .items

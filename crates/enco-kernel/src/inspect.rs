@@ -29,7 +29,9 @@ impl Kernel {
         session: SessionId,
         attempt: Option<AttemptId>,
     ) -> Result<Inspection, KernelError> {
-        let entries = self.deps.store.log(session, None).await?;
+        let entries =
+            crate::reach::read_back(self.deps.store.as_ref(), session, |end| reach(end, attempt))
+                .await?;
         let Some((
             index,
             EntryBody::AttemptStarted {
@@ -41,9 +43,7 @@ impl Kernel {
                 plan: hash,
                 ..
             },
-        )) = entries.iter().enumerate().rev()
-            .map(|(index, entry)| (index, &entry.body))
-            .find(|(_, body)| matches!(body, EntryBody::AttemptStarted { attempt: id, .. } if attempt.is_none_or(|wanted| wanted == *id)))
+        )) = started(&entries, attempt).map(|index| (index, &entries[index].body))
         else {
             return Err(KernelError::UnknownAttempt(
                 session,
@@ -88,4 +88,18 @@ impl Kernel {
             result,
         })
     }
+}
+
+/// Where the inspected Attempt started: the specified one, or the latest.
+fn started(entries: &[Entry], attempt: Option<AttemptId>) -> Option<usize> {
+    entries.iter().rposition(|entry| match entry.body {
+        EntryBody::AttemptStarted { attempt: id, .. } => attempt.is_none_or(|wanted| wanted == id),
+        _ => false,
+    })
+}
+
+/// How far back `inspect` reads: as far as projecting the conversation before the Attempt does;
+/// `None` while the Attempt is not found.
+fn reach(entries: &[Entry], attempt: Option<AttemptId>) -> Option<LogPos> {
+    transcript::transcript_reach(&entries[..started(entries, attempt)?])
 }

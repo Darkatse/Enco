@@ -35,7 +35,7 @@ impl SessionActor {
         calls: &[&ToolCall],
         token: &CancellationToken,
     ) -> Result<(), crate::run::RoundError> {
-        let skip = skip_allowed(calls.len(), &self.entries);
+        let skip = skip_allowed(calls.len(), self.tail.entries());
         let mut remaining = calls;
         while !remaining.is_empty() {
             let count = remaining
@@ -167,8 +167,9 @@ impl SessionActor {
         }
     }
 
+    /// Whether `call`, proposed in this Round, settled successfully.
     fn settled_ok(&self, call: CallId) -> bool {
-        self.entries
+        crate::round::this_round(self.tail.entries())
             .iter()
             .rev()
             .find_map(|entry| match &entry.body {

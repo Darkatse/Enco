@@ -28,9 +28,7 @@ fn status(running: bool, waiting: Option<usize>, stopped: Option<&str>) -> Sessi
 fn execution_state_prioritizes_failure_running_and_waiting_over_halt() {
     let run = RunId::new();
     let round = RoundId::new();
-    // The halt is superseded by the input the later Run answered.
     let mut history = entries(vec![
-        consumed(halt()),
         EntryBody::RunStarted { run },
         message(),
         EntryBody::RoundStarted {
@@ -47,22 +45,23 @@ fn execution_state_prioritizes_failure_running_and_waiting_over_halt() {
             working_dir: WorkingDir::new(NodeId::new(), "/tmp".into()).unwrap(),
         },
     ]);
+    let halted = || Some(owner_halt());
     assert!(matches!(
-        run_state(&history, &[], &status(true, Some(1), Some("disk"))),
+        run_state(&history, halted(), &status(true, Some(1), Some("disk"))),
         RunState::Stopped { .. }
     ));
     assert!(
-        matches!(run_state(&history, &[], &status(true, Some(1), None)),
-        RunState::Running { started_at, round: 2 } if started_at == history[1].at)
+        matches!(run_state(&history, halted(), &status(true, Some(1), None)),
+        RunState::Running { started_at, round: 2 } if started_at == history[0].at)
     );
     assert!(matches!(
-        run_state(&history, &[], &status(false, Some(3), None)),
+        run_state(&history, halted(), &status(false, Some(3), None)),
         RunState::Waiting { position: 3 }
     ));
     history.push(Entry {
         pos: LogPos {
             epoch: Epoch(1),
-            seq: Seq(7),
+            seq: Seq(6),
         },
         at: Utc::now(),
         body: EntryBody::RunEnded {
@@ -71,41 +70,21 @@ fn execution_state_prioritizes_failure_running_and_waiting_over_halt() {
         },
     });
     assert!(matches!(
-        run_state(&history, &[], &status(false, None, None)),
+        run_state(&history, None, &status(false, None, None)),
         RunState::Idle {
             last_run: Some((_, RunEnd::Completed))
         }
     ));
-    let halted = [event(halt())];
     assert!(matches!(
-        run_state(&history, &halted, &status(false, None, None)),
+        run_state(&history, halted(), &status(false, None, None)),
         RunState::Halted(_)
-    ));
-    let compact = [event(halt()), event(EventBody::Compact)];
-    assert!(matches!(
-        run_state(&history, &compact, &status(false, None, None)),
-        RunState::Halted(_)
-    ));
-    let newer = [
-        event(halt()),
-        event(EventBody::UserMessage {
-            text: "continue".into(),
-            attachments: vec![],
-            unviewable: vec![],
-            earlier: vec![],
-            quote: None,
-        }),
-    ];
-    assert!(matches!(
-        run_state(&history, &newer, &status(false, None, None)),
-        RunState::Idle { .. }
     ));
 }
 
 #[test]
 fn admission_does_not_invent_a_start_or_reuse_an_ended_run() {
     assert!(matches!(
-        run_state(&[], &[], &status(true, None, None)),
+        run_state(&[], None, &status(true, None, None)),
         RunState::Idle { last_run: None }
     ));
     let run = RunId::new();
@@ -118,14 +97,13 @@ fn admission_does_not_invent_a_start_or_reuse_an_ended_run() {
         },
     ]);
     assert!(matches!(
-        run_state(&history, &[], &status(true, None, None)),
+        run_state(&history, None, &status(true, None, None)),
         RunState::Idle {
             last_run: Some((_, RunEnd::Completed))
         }
     ));
-    let pending = [event(halt())];
     assert!(matches!(
-        run_state(&history, &pending, &status(true, None, None)),
+        run_state(&history, Some(owner_halt()), &status(true, None, None)),
         RunState::Halted(_)
     ));
 }
@@ -175,7 +153,6 @@ fn context_uses_completed_reply_measurements_and_follows_the_current_branch() {
     assert_eq!(last.model, "measured-model");
     assert_eq!(last.usage.input_tokens, 1234);
     assert!(last.compacted_since);
-    assert_eq!(context.compactions, 1);
     assert!(!context.compaction_requested);
 
     history.push(Entry {
@@ -190,7 +167,6 @@ fn context_uses_completed_reply_measurements_and_follows_the_current_branch() {
     });
     let context = context_usage(&crate::transcript::conversation(&history), &[], None);
     assert!(!context.last_request.unwrap().compacted_since);
-    assert_eq!(context.compactions, 0);
     history.push(Entry {
         pos: LogPos {
             epoch: Epoch(1),
@@ -201,7 +177,6 @@ fn context_uses_completed_reply_measurements_and_follows_the_current_branch() {
     });
     let context = context_usage(&crate::transcript::conversation(&history), &[], None);
     assert!(context.last_request.is_none());
-    assert_eq!(context.compactions, 0);
 }
 
 fn endpoint(model: &str, window: u32, max_output: u32) -> CompletionEndpoint {
@@ -291,4 +266,36 @@ fn service_limit_appears_only_when_the_reply_service_accepts_less_than_its_windo
         overflowed(summary, Some(128_000)),
     ];
     assert_eq!(limit(&refused_summary, &reply), Some(128_000));
+}
+
+#[test]
+fn the_overview_read_back_to_its_reach_matches_the_whole_log() {
+    let history = history();
+    let reply = endpoint("reply-model", 1_000_000, 65_536);
+    // The actor's state is read apart from the Log, so it may be newer or older than either.
+    let statuses = [
+        status(true, None, None),
+        status(false, None, None),
+        status(false, Some(1), None),
+    ];
+    let overview = |entries: &[Entry]| {
+        let runs: Vec<_> = statuses
+            .iter()
+            .map(|status| run_state(entries, None, status))
+            .collect();
+        let conversation = crate::transcript::conversation(entries);
+        format!(
+            "{runs:?} {:?}",
+            context_usage(&conversation, &[], Some(&reply))
+        )
+    };
+    for end in 1..=history.len() {
+        let log = &history[..end];
+        let whole = overview(log);
+        for read in (0..end).map(|from| &log[from..]) {
+            if let Some(from) = crate::reach::start(read, reach(read, Some(&reply))) {
+                assert_eq!(overview(&read[from..]), whole, "keeping {from}.. of {end}");
+            }
+        }
+    }
 }

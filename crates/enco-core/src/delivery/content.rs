@@ -1,5 +1,5 @@
 use crate::{
-    AttemptId, AttemptPurpose, AttemptResult, Entry, EntryBody, Outgoing, ReplyDestination,
+    AttemptId, AttemptPurpose, AttemptResult, Entry, EntryBody, LogPos, Outgoing, ReplyDestination,
     RoundEnd, RunEnd,
 };
 
@@ -44,6 +44,26 @@ impl DeliveryProjection {
             destination,
             ..Self::default()
         }
+    }
+
+    /// How far back folding the end of a Log must start to reach the state folding all of it does.
+    ///
+    /// That is the latest Round start, which clears the reply in progress, or the latest input
+    /// that chose a destination, whichever is earlier; `None` when either may lie before `entries`.
+    pub fn reach(entries: &[Entry]) -> Option<LogPos> {
+        let latest = |chooses: fn(&EntryBody) -> bool| {
+            entries
+                .iter()
+                .rev()
+                .find(|entry| chooses(&entry.body))
+                .map(|entry| entry.pos)
+        };
+        let round = latest(|body| matches!(body, EntryBody::RoundStarted { .. }))?;
+        let destination = latest(|body| match body {
+            EntryBody::EventConsumed { event } => event.reply_destination().is_some(),
+            _ => false,
+        })?;
+        Some(round.min(destination))
     }
 
     /// Where replies go after the entries folded so far: the latest input that asked for a reply.

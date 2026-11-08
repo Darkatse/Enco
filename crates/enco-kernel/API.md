@@ -1821,7 +1821,6 @@ Shared input to a Round's context sources.
 ```rust
 pub struct ContextUsage {
     pub last_request: Option<LastRequest>,
-    pub compactions: usize,
     pub compaction_requested: bool,
     pub service_limit: Option<u64>,
 }
@@ -1830,7 +1829,6 @@ pub struct ContextUsage {
 How much context a Session's current conversation uses, as recorded.
 
 - `last_request` — The latest completed reply request in the conversation, if any.
-- `compactions` — How many compactions the conversation records.
 - `compaction_requested` — Whether a compaction request waits for the next Run.
 - `service_limit` — The input limit the first reply model's service gave when it last turned a request away, a
   reply or a summary.
@@ -5581,6 +5579,23 @@ async fn log(&self, session: SessionId, after: Option<LogPos>) -> Result<Vec<Ent
 ```
 
 Read immutable facts in structural order after an optional position.
+
+### `Store::log_before`
+
+```rust
+async fn log_before(&self, session: SessionId, before: Option<LogPos>, limit: usize) -> Result<Vec<Entry>, StoreError>
+```
+
+Read at most `limit` entries immediately before `before`, or before the end without it, in
+structural order; fewer means the read reached the start of the Log.
+
+### `Store::log_entry`
+
+```rust
+async fn log_entry(&self, session: SessionId, pos: LogPos) -> Result<Option<Entry>, StoreError>
+```
+
+Read the entry at `pos`, if the Log has one there.
 
 ### `Store::child_state`
 

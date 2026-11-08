@@ -56,10 +56,12 @@ impl SessionActor {
         if let CommitOutcome::Committed { delivered } = &outcome {
             self.delivery = delivery;
             self.next += entries.len() as u64;
-            for entry in entries {
-                self.entries.push(entry.clone());
-                let _ = self.handle.entries.send(entry);
+            for entry in &entries {
+                let _ = self.handle.entries.send(entry.clone());
             }
+            self.tail
+                .extend(self.deps.store.as_ref(), self.session.id, entries)
+                .await?;
             self.handle.changed.notify_waiters();
             for id in delivered {
                 let session = self

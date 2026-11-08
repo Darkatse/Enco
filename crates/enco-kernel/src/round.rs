@@ -28,7 +28,7 @@ impl SessionActor {
         let (session, ancestors, view) = self.deps.registry.session_view(self.session.id).await?;
         self.session = session;
         let mode = safe_mode(
-            &self.entries,
+            self.tail.entries(),
             run,
             self.deps.store.node().await?.safe_mode,
             &view.active_generations(),
@@ -403,10 +403,36 @@ fn safe_mode(
     (generations == active).then(|| SafeMode::Failed(failure.clone()))
 }
 
-/// Recovery decisions use the current Run's facts, including entries hidden by compaction.
-fn run_entries(entries: &[Entry]) -> &[Entry] {
+/// The current Run's entries from its start, including those compaction hides; recovery decisions
+/// use them.
+pub(crate) fn run_entries(entries: &[Entry]) -> &[Entry] {
+    run_start(entries).map_or(&[], |start| &entries[start..])
+}
+
+/// How far back `run_entries` reads: to the latest Run start; `None` when no Run has started.
+pub(crate) fn run_entries_reach(entries: &[Entry]) -> Option<LogPos> {
+    run_start(entries).map(|start| entries[start].pos)
+}
+
+fn run_start(entries: &[Entry]) -> Option<usize> {
     entries
         .iter()
         .rposition(|entry| matches!(entry.body, EntryBody::RunStarted { .. }))
-        .map_or(&[], |start| &entries[start..])
+}
+
+/// The current Round's entries after its start.
+pub(crate) fn this_round(entries: &[Entry]) -> &[Entry] {
+    let start = round_start(entries).map_or(0, |start| start + 1);
+    &entries[start..]
+}
+
+/// How far back `this_round` reads: to the latest Round start; `None` when no Round has started.
+pub(crate) fn this_round_reach(entries: &[Entry]) -> Option<LogPos> {
+    round_start(entries).map(|start| entries[start].pos)
+}
+
+fn round_start(entries: &[Entry]) -> Option<usize> {
+    entries
+        .iter()
+        .rposition(|entry| matches!(entry.body, EntryBody::RoundStarted { .. }))
 }

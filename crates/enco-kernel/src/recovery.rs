@@ -3,18 +3,10 @@ use enco_core::*;
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn recover(entries: &[Entry]) -> Vec<EntryBody> {
-    let Some((start, run)) = entries
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(i, e)| match e.body {
-            EntryBody::RunStarted { run } => Some((i, run)),
-            _ => None,
-        })
-    else {
+    let tail = crate::round::run_entries(entries);
+    let Some(&EntryBody::RunStarted { run }) = tail.first().map(|entry| &entry.body) else {
         return vec![];
     };
-    let tail = &entries[start..];
     if tail.iter().any(|entry| {
         matches!(
             entry.body,

@@ -144,8 +144,10 @@ fn replies_halts_and_takeover_have_distinct_effects_on_the_parent_wait() {
     assert!(!child_state(&history, &[]).awaiting);
     assert_eq!(reply_destination(&history), Some(ReplyDestination::Parent));
     let stop = halt();
-    let stopped = child_state(&history, &[stop]);
+    let compact = event(EventSource::Cli, EventBody::Compact);
+    let stopped = child_state(&history, &[stop, compact]);
     assert!(!stopped.awaiting);
+    // A compaction request neither resumes a halted Session nor waits for a reply.
     assert!(stopped.halted.is_some());
     assert!(!stopped.replies_to_owner);
     let owner = event(

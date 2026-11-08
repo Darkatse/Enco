@@ -211,7 +211,6 @@ async fn compaction_is_pending_until_the_first_round_of_the_next_run_and_clear_d
     assert!(status.contains("compaction requested for the next Run"));
     command(&mut h, update(4, Action::Message("continue".into()))).await;
     let (status, _) = command(&mut h, update(5, Action::Status)).await;
-    assert!(status.contains("compacted once"));
     assert!(!status.contains("compaction requested"));
     {
         let inputs = composer.0.lock().unwrap();
@@ -439,7 +438,7 @@ async fn status_keeps_the_measured_reply_after_compaction_and_names_its_original
     let (text, _) = command(&mut h, update(4, Action::Status)).await;
     assert!(text.starts_with("main · profile other · alternate"));
     assert!(text.contains("last Run failed: service unavailable"));
-    assert!(text.contains("Context: 450 of 64k tokens in the last request (0%), 0% cached (on fixture); compacted since that request; compacted once"));
+    assert!(text.contains("Context: 450 of 64k tokens in the last request (0%), 0% cached (on fixture); compacted since that request"));
     channel.shutdown().await.unwrap();
     h.kernel.shutdown().await.unwrap();
 }

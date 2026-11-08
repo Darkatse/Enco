@@ -245,6 +245,25 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn log_before(
+        &self,
+        session: SessionId,
+        before: Option<LogPos>,
+        limit: usize,
+    ) -> Result<Vec<Entry>, StoreError> {
+        self.run(move |connection| sessions::log_before(connection, session, before, limit))
+            .await
+    }
+
+    async fn log_entry(
+        &self,
+        session: SessionId,
+        pos: LogPos,
+    ) -> Result<Option<Entry>, StoreError> {
+        self.run(move |connection| sessions::log_entry(connection, session, pos))
+            .await
+    }
+
     async fn child_state(&self, child: SessionId) -> Result<ChildState, StoreError> {
         self.run(move |connection| sessions::child_state(connection, child))
             .await

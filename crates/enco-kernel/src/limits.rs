@@ -7,6 +7,11 @@ pub(crate) const MAX_OVERFLOW_RESENDS: u32 = 3;
 pub(crate) const TOOL_RESULT_INLINE_BYTES: usize = 16 * 1024;
 pub(crate) const TOOL_RESULT_PREVIEW_BYTES: usize = 4 * 1024;
 pub(crate) const SESSION_BROADCAST_CAPACITY: usize = 256;
+/// Entries the first read back from a Log's end asks for.
+///
+/// Each further read asks for as many as were read, so this only changes how often the store is
+/// asked, never what the reads see.
+pub(crate) const LOG_PAGE: usize = 256;
 pub(crate) const SCHEDULER_TICK: Duration = Duration::from_secs(1);
 pub(crate) const SCHEDULER_CHANNEL_CAPACITY: usize = 64;
 pub(crate) const MIN_RECURRENCE_INTERVAL: Duration = Duration::from_secs(15 * 60);
