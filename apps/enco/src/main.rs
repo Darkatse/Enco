@@ -165,6 +165,25 @@ enum Switch {
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// How often the daemon lets mimalloc return freed memory.
+const RETURN_FREED_MEMORY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Start a thread that returns freed memory to the system for the life of the process.
+///
+/// mimalloc returns memory only when the program next calls into it, so a daemon that goes quiet
+/// would keep it. Returning it at every free instead flushes the TLB for pages about to be reused.
+fn return_freed_memory() -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("enco-allocator".into())
+        .spawn(|| {
+            loop {
+                std::thread::sleep(RETURN_FREED_MEMORY);
+                mimalloc::collect(false);
+            }
+        })
+        .map(drop)
+}
+
 #[tokio::main]
 #[expect(clippy::too_many_lines, reason = "one dispatch arm per CLI command")]
 #[expect(
@@ -224,6 +243,7 @@ async fn main() -> Result<()> {
                 )
                 .with_writer(std::io::stderr)
                 .init();
+            return_freed_memory().context("start the allocator thread")?;
             return daemon::serve(paths).await;
         }
         Action::Chat { session } => return chat::chat(&paths, session).await,

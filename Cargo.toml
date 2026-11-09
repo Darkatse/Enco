@@ -33,7 +33,9 @@ triviumdb = "=0.8.8"                     # 0.x, pinned exactly; only the derived
 imagesize = { version = "0.15.0", default-features = false, features = ["png", "jpeg", "webp"] }
 zstd = { version = "0.13.3", default-features = false } # one-shot compression only
 rand = "0.10.3"
-mimalloc = "0.1.52"
+# mimalloc's own crate at a release: the crates.io `mimalloc` lags, and its `no_thp` does not
+# opt the process out of transparent huge pages.
+mimalloc ={ git = "https://github.com/microsoft/mimalloc", tag = "v3.6.1", features = ["no_thp"] }
 # Response bodies are read as raw bytes, never decoded as text, so `charset` stays off.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "system-proxy"] }
 url = "2.5.8"

@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 async fn open_following(
     root: &Path,
     runtime: Arc<dyn Runtime>,
-    bytes: &[u8],
+    bytes: &'static [u8],
     document: serde_json::Value,
 ) -> (Arc<SqliteStore>, Arc<Development>, Arc<Registry>) {
     let store = Arc::new(open_store(root).await);

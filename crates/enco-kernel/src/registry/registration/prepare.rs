@@ -1,5 +1,6 @@
 use super::super::configuration::Declaration;
 use super::*;
+use std::borrow::Cow;
 
 pub(in crate::registry) struct Plan {
     pub expected: Expected,
@@ -11,7 +12,8 @@ pub(in crate::registry) struct Plan {
 }
 
 pub(in crate::registry) struct Content {
-    pub bytes: Vec<u8>,
+    /// Borrowed when embedded in the host binary; owned when built or read from the store.
+    pub bytes: Cow<'static, [u8]>,
     pub settings: PluginSettings,
     pub origin: Origin,
 }
@@ -105,10 +107,10 @@ async fn plan_plugin(
         .unwrap_or_default();
     let action = match change {
         PluginChange::Code { artifact, .. } => Action::Code(Content {
-            bytes: match artifact {
+            bytes: Cow::Owned(match artifact {
                 ArtifactSource::Bytes(bytes) => bytes,
                 ArtifactSource::Stored(hash) => deps.store.artifact(&hash).await?,
-            },
+            }),
             settings,
             origin: Origin::Code {
                 registration: plan.expected.next,
@@ -122,7 +124,7 @@ async fn plan_plugin(
                 Action::Existing(generation, Box::new(loaded))
             } else {
                 Action::Code(Content {
-                    bytes: factory.artifact.clone(),
+                    bytes: Cow::Borrowed(factory.artifact),
                     settings,
                     origin: Origin::Code {
                         registration: plan.expected.next,
@@ -283,14 +285,14 @@ async fn plan_settings(
 pub(in crate::registry) async fn artifact(
     deps: &RegistryDeps,
     record: &GenerationRecord,
-) -> Result<Vec<u8>, RegistryError> {
+) -> Result<Cow<'static, [u8]>, RegistryError> {
     match deps
         .factory
         .iter()
-        .find(|factory| ContentHash::of(&factory.artifact) == record.artifact)
+        .find(|factory| ContentHash::of(factory.artifact) == record.artifact)
     {
-        Some(factory) => Ok(factory.artifact.clone()),
-        None => Ok(deps.store.artifact(&record.artifact).await?),
+        Some(factory) => Ok(Cow::Borrowed(factory.artifact)),
+        None => Ok(Cow::Owned(deps.store.artifact(&record.artifact).await?)),
     }
 }
 

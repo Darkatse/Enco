@@ -224,7 +224,7 @@ pub fn fixture(completion: Arc<dyn Provider>, embedding: Arc<dyn Embedding>) -> 
 pub fn registry_deps(
     store: Arc<SqliteStore>,
     runtime: Arc<dyn Runtime>,
-    factory: &[u8],
+    factory: &'static [u8],
 ) -> RegistryDeps {
     RegistryDeps {
         lifeline: LIFELINE.map(String::from).into(),
@@ -242,12 +242,12 @@ pub fn registry_deps(
             FactoryPlugin {
                 name: "fixture".parse().unwrap(),
                 id: FIXTURE_ID.parse().unwrap(),
-                artifact: factory.to_vec(),
+                artifact: factory,
             },
             FactoryPlugin {
                 name: COMPOSER.parse().unwrap(),
                 id: COMPOSER_ID.parse().unwrap(),
-                artifact: COMPOSER_BYTES.to_vec(),
+                artifact: COMPOSER_BYTES,
             },
         ],
         composer: COMPOSER.parse().unwrap(),

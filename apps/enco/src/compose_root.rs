@@ -124,11 +124,11 @@ pub(crate) async fn compose(paths: &Paths) -> Result<Arc<Application>> {
 fn factory() -> Result<Vec<FactoryPlugin>> {
     FACTORY
         .iter()
-        .map(|(name, id, bytes)| {
+        .map(|&(name, id, artifact)| {
             Ok(FactoryPlugin {
                 name: name.parse()?,
                 id: id.parse()?,
-                artifact: bytes.to_vec(),
+                artifact,
             })
         })
         .collect()

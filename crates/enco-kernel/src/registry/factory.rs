@@ -14,7 +14,7 @@ pub(super) async fn record(deps: &RegistryDeps, state: &mut State) -> Result<(),
         {
             return Err(RegistryError::FactoryIdentity(factory.name.clone()));
         }
-        let hash = ContentHash::of(&factory.artifact);
+        let hash = ContentHash::of(factory.artifact);
         let existing = state.history.generations.values().rev().find(|record| {
             record.plugin == factory.id
                 && record.artifact == hash
@@ -41,7 +41,7 @@ pub(super) async fn record(deps: &RegistryDeps, state: &mut State) -> Result<(),
         };
         let loaded = deps
             .runtime
-            .load(&factory.artifact, &generation.settings)
+            .load(factory.artifact, &generation.settings)
             .await
             .map_err(|error| {
                 rejected(Cause::Load {
@@ -90,7 +90,7 @@ pub(super) async fn retain(
             .filter_map(|reference| state.history.generations.get(&reference.generation))
             .any(|record| record.artifact == hash);
         if referenced {
-            deps.store.put_artifact(&factory.artifact).await?;
+            deps.store.put_artifact(factory.artifact).await?;
         }
     }
     Ok(())

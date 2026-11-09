@@ -70,8 +70,8 @@ pub struct FactoryPlugin {
     pub name: PluginName,
     /// Stable host-assigned identity, independent of component self-description.
     pub id: PluginId,
-    /// Embedded component bytes.
-    pub artifact: Vec<u8>,
+    /// Component bytes embedded in the host binary, readable for the whole process.
+    pub artifact: &'static [u8],
 }
 
 /// A host-owned group of tables and its pure declaration function.

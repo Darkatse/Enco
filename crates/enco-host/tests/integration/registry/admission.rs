@@ -267,14 +267,10 @@ async fn unrelated_unavailable_plugins_do_not_block_incremental_repairs() {
     let factory = FactoryPlugin {
         name: "optional".parse().unwrap(),
         id: PluginId::new(),
-        artifact: b"optional".to_vec(),
+        artifact: b"optional",
     };
     let mut deps = registry_deps(store.clone(), runtime.clone(), FACTORY_BYTES);
-    deps.factory.push(FactoryPlugin {
-        name: factory.name.clone(),
-        id: factory.id,
-        artifact: factory.artifact.clone(),
-    });
+    deps.factory.push(factory.clone());
     let registry = open_registry(deps, configuration_request(document.clone()))
         .await
         .unwrap();

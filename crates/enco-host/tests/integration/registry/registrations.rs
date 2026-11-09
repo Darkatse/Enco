@@ -8,7 +8,7 @@ use std::{path::Path, sync::Arc};
 async fn open(
     root: &Path,
     runtime: Arc<dyn Runtime>,
-    bytes: &[u8],
+    bytes: &'static [u8],
     document: serde_json::Value,
 ) -> (Arc<SqliteStore>, Arc<Registry>) {
     let store = Arc::new(open_store(root).await);

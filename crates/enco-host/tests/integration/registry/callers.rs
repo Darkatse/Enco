@@ -365,7 +365,7 @@ async fn safe_mode_replies_when_another_use_needs_an_interface_absent_from_facto
     deps.factory.push(FactoryPlugin {
         name: "embedder".parse().unwrap(),
         id: PluginId::new(),
-        artifact: b"embedding".to_vec(),
+        artifact: b"embedding",
     });
     let (development, registry) =
         open_home(dir.path(), store.clone(), deps, document.clone()).await;

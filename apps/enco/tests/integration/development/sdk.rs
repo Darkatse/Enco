@@ -176,10 +176,10 @@ async fn open(
             lifeline: Default::default(),
             factory: FACTORY
                 .iter()
-                .map(|(name, id, bytes)| FactoryPlugin {
-                    name: (*name).parse().unwrap(),
+                .map(|&(name, id, artifact)| FactoryPlugin {
+                    name: name.parse().unwrap(),
                     id: id.parse().unwrap(),
-                    artifact: bytes.to_vec(),
+                    artifact,
                 })
                 .collect(),
             composer: FACTORY_COMPOSER.parse().unwrap(),

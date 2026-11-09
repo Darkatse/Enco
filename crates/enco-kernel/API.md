@@ -2166,7 +2166,7 @@ The generation that runs under each name in ordinary operation, in name order.
 pub struct FactoryPlugin {
     pub name: PluginName,
     pub id: PluginId,
-    pub artifact: Vec<u8>,
+    pub artifact: &'static [u8],
 }
 ```
 
@@ -2174,7 +2174,7 @@ A plugin supplied with the host binary.
 
 - `name` — Host-reserved routing name.
 - `id` — Stable host-assigned identity, independent of component self-description.
-- `artifact` — Embedded component bytes.
+- `artifact` — Component bytes embedded in the host binary, readable for the whole process.
 
 Implements:
 
