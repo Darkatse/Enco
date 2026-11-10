@@ -13,7 +13,7 @@ Enco is a personal agent assistant that runs on your own machines. Built on a Ru
 </div>
 
 > [!NOTE]
-> Enco is still in early development. The kernel (P0), plugin hot-swapping and automatic rollback (P1), self-maintained plugins (P2), and conversation backtracking, Telegram and Discord channel plugins (P3 M30 to M32) are implemented. See the [roadmap](#roadmap) for later phases. Features, interfaces and configuration formats may change before 1.0.
+> Enco is still in early development. The kernel (P0), plugin hot-swapping and automatic rollback (P1), self-maintained plugins (P2), channels as plugins (P3: conversation backtracking, Telegram, Discord and QQ OneBot), and delegation to child sessions are implemented. The next phase is the multi-device Space (P4); see the [roadmap](#roadmap). Features, interfaces and configuration formats may change before 1.0.
 
 ## What Enco is
 
@@ -61,9 +61,9 @@ Third-party tool servers (such as MCP), model services, web pages, documents, co
 
 The idea is close to Ghost in the Shell: the assistant is the ghost, and each of your devices is a shell it can inhabit. Your phone, computer and server form one Space. Mid-conversation, the agent can leave your phone and continue on your server with its full record, while still calling back to the phone's camera or location remotely (P5).
 
-Membership and ownership are maintained by a consensus control plane (CP). Chat connections and timers use leases so another node takes over when the holder disappears, while during a network split the minority side continues running its own sessions. Even the single-node version already stores data in the multi-node shape (ULIDs, `(epoch, seq)` log positions, ownership bindings and content-addressed files).
+Membership and ownership are maintained by a consensus control plane (CP). Chat connections use leases so another node takes over when the holder disappears; timers belong to sessions and fire on the node that runs the session. During a network split, the minority side continues running its own sessions. Even the single-node version already stores data in the multi-node shape (ULIDs, `(epoch, seq)` log positions, ownership bindings and content-addressed files).
 
-When a node hits a fault (network outage, hardware failure or power loss), chat connections and timers automatically fail over to another node once their lease TTL expires; active sessions use sticky ownership so two nodes never execute the same session at once, and can be safely taken over on another node with the owner's confirmation. Once recovered, the node syncs back to the latest state automatically.
+When a node hits a fault (network outage, hardware failure or power loss), chat connections automatically fail over to another node once their lease TTL expires; active sessions use sticky ownership so two nodes never execute the same session at once, and can be safely taken over on another node with the owner's confirmation, taking their timers with them. Once recovered, the node syncs back to the latest state automatically.
 
 ### Small concept set and runtime overhead
 
@@ -80,10 +80,11 @@ Enco currently runs on macOS and Linux as a background service with a command-li
 | P0 | Kernel: sessions, durable log, crash recovery, OpenAI-Compatible and DeepSeek provider plugins, memory, reminders, safe mode | Done |
 | P1 | Replacing plugins and configuration at runtime with health checks and rollback | Done |
 | P2 | The agent maintains its own plugins from the generated manual and plugin source, verified by black-box evals | Done |
-| P3 | Channels as plugins: conversation backtracking (M30), Telegram (M31) and Discord (M32) mappers, QQ OneBot (M33) | In progress (M30 to M32 done) |
-| Delegation and scripts | Delegating work to child sessions on other models; sandboxed scripts orchestrating tool calls | Planned |
-| P4 | Multiple devices: consensus control plane, session roaming, replication | Planned |
+| P3 | Channels as plugins: conversation backtracking, Telegram, Discord and QQ OneBot mappers, quoted replies and forwards | Done |
+| Delegation | Delegating work to child sessions on other models, each with its own topic in chat channels | Done |
+| P4 | Multiple devices: consensus control plane, session roaming and takeover, replication, channel failover | In progress |
 | P5 | Phones as nodes | Planned |
+| Scripts | Sandboxed scripts orchestrating tool calls | Planned |
 
 Each phase has acceptance criteria, listed in [docs/Roadmap.md](docs/Roadmap.md).
 
