@@ -70,7 +70,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 
 ### 承诺可恢复，不承诺不失败
 
-插件会坏，服务会断，进程会被杀。设计的目标是让每一种失败都落在一个已知的、可以继续的位置：试用中的代际自动回退，出厂代际垫底，Round 失败进入安全模式，连接断开后按协议重连补收，无法确认的效果记为 `unknown`。恢复路径从不依赖被替换的东西本身，所以回退不经校验，原生管理入口不经模型。
+插件会坏，服务会断，进程会被杀。设计的目标是让每一种失败都落在一个已知的、可以继续的位置：试用中的代际自动回退，出厂代码垫底，Round 失败进入安全模式，连接断开后按协议重连补收，无法确认的效果记为 `unknown`。恢复路径从不依赖被替换的东西本身，所以回退不经校验，原生管理入口不经模型。
 
 ### 自动机制只做有证据的事
 
@@ -95,9 +95,9 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | Host | 节点提供的机制：fs、exec、http、连接、定时、状态、blob、检索索引 |
 | Node | 一个运行中的内核及其 Host：完整节点、Edge 节点，或只参与控制平面的见证者 |
 | Space | 主人全部节点的集合；控制平面（成员、Binding、期望状态）由共识维护 |
-| Binding | `key → (node, epoch)`，单写者资源的所有权：Session 是粘滞所有权，渠道与定时是租约 |
+| Binding | `key → (node, epoch)`，单写者资源的所有权：Session 是粘滞所有权，渠道是租约 |
 
-其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief、回音、回溯（Backtrack）、委派、子 Session、全名、叫停（Halt）、归档、工作目录、常驻说明、角色说明；ContextPlan、Composer、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、Factory、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store；外部、Mapper（映射器）、MappingRecord（映射记录）、MappingOrigin（映射出处）、定本；Connection（连接）、Account（账号）、Realm。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。
+其余固定的词：Inbox、Run、Attempt、Entry、Transcript、Brief、回音、回溯（Backtrack）、委派、子 Session、全名、叫停（Halt）、归档、工作目录、常驻说明、角色说明；ContextPlan、Composer、ContextSource、策略点；Outcome、Failure；Provider、Completion、Endpoint、Profile；Artifact、Registry、Registration、Exports、Trial / Healthy / Failed、出厂代码（Factory，宿主的内容，不是代际）、系统代际；Memory、Memories、MemoryIndex、recall；Schedule；SafeMode、Lifeline；Commit、Store；外部、Mapper（映射器）、MappingRecord（映射记录）、MappingOrigin（映射出处）、定本；Connection（连接）、Account（账号）、Realm。每个词只指一样东西，代码、日志、错误消息与文档都不另起同义词。Generation 只用于设计与代码：对模型来说，它最先唤起的是文本生成，所以给主人与 Agent 的文字按登记称呼代码（"registration 12"、"factory code"）。
 
 扩展只有两种形态：
 
@@ -114,7 +114,7 @@ Agent 拥有完整的系统权限，可以用 shell 删除任何文件；不设�
 | 记忆及其索引 | 记忆的归属者（宿主）；索引是派生物 | 调用 |
 | 由 Log 派生的索引 | Observer actor，持有 Log 游标 | 事件 |
 | 代际、健康与接线 | 注册表，唯一的提交者 | 提交 |
-| 定时 | Scheduler；多节点时只在持有定时租约的节点上运行 | 提交 |
+| 定时 | Session actor；Scheduler 只读它，产出提醒 | Round |
 | Binding、租约、期望状态 | 控制平面；单节点时就是本机 SQLite | 提交 |
 
 路由只有五条规则：
