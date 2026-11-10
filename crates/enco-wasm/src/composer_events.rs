@@ -21,14 +21,11 @@ pub(super) fn datetime(time: DateTime<Utc>) -> Result<types::Datetime, Failure> 
     })
 }
 
-/// What a plugin runs after a rollback, as composers see it; native code never replaces one.
-fn plugin_code(code: &CodeRef) -> Result<wire::PluginCode, Failure> {
+/// What a plugin runs after a rollback, as composers see it.
+fn plugin_code(code: PluginCode) -> wire::PluginCode {
     match code {
-        CodeRef::Generation { id } => Ok(wire::PluginCode::Registration(id.registration.0)),
-        CodeRef::Factory { .. } => Ok(wire::PluginCode::Factory),
-        CodeRef::Native { name, .. } => Err(crate::convert::bad(format!(
-            "native {name} recorded as a plugin's rollback target"
-        ))),
+        PluginCode::Generation { registration } => wire::PluginCode::Registration(registration.0),
+        PluginCode::Factory { .. } => wire::PluginCode::Factory,
     }
 }
 
@@ -132,7 +129,7 @@ fn event_body(
         } => wire::EventBody::PluginRolledBack(wire::Rollback {
             plugin: plugin.to_string(),
             failed: from.registration.0,
-            replacement: to.as_ref().map(plugin_code).transpose()?,
+            replacement: to.map(plugin_code),
             failure: crate::convert::failure_record(fault),
             text: text.clone(),
         }),

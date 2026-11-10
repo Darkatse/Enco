@@ -1,6 +1,6 @@
 use crate::compose_root::Application;
 use async_trait::async_trait;
-use enco_core::{CodeRef, Failure, Outcome, ToolSpec, code};
+use enco_core::{Failure, NativeCode, Outcome, ToolSpec, code};
 use enco_host::development::Failed;
 use enco_kernel::{CallContext, KernelError, Tool};
 use serde_json::{Map, Value};
@@ -76,8 +76,8 @@ pub(crate) struct StatusTool {
 
 #[async_trait]
 impl Tool for StatusTool {
-    fn code(&self) -> CodeRef {
-        CodeRef::Native {
+    fn code(&self) -> NativeCode {
+        NativeCode {
             name: "application".into(),
             version: env!("ENCO_VERSION").into(),
         }

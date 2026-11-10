@@ -55,13 +55,10 @@ impl Kernel {
             reason,
         };
         let plan = self.deps.store.plan(hash).await?;
-        let target = provider
-            .plugin()
-            .ok_or_else(|| invalid(format!("Provider code {provider} belongs to no plugin")))?;
         let request = plan::resolve(
             &plan,
             &transcript::project(&transcript::conversation(&entries[..index])),
-            target,
+            provider.plugin,
         )
         .map_err(|error| invalid(error.to_string()))?;
         let result = entries[index + 1..]
@@ -77,8 +74,8 @@ impl Kernel {
         Ok(Inspection {
             attempt: *attempt,
             purpose: *purpose,
-            composer: composer.clone(),
-            provider: provider.clone(),
+            composer: *composer,
+            provider: *provider,
             settings: settings.clone(),
             request,
             plan,

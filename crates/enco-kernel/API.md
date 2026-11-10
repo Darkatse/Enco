@@ -172,7 +172,7 @@ Session execution through explicit ports.
 - trait `Provider` — Completion boundary. Implementations own timeouts and per-invocation state.
 - trait `Runtime` — Compile and describe component bytes without knowing registry identities or routing.
 - trait `Store` — Persistence boundary; only the owning actor may commit its state.
-- trait `Tool` — An executable capability; dispatch is independent of tool identity.
+- trait `Tool` — A capability the host implements; plugins' tools reach dispatch through their exports.
 - trait `Tools` — A plugin's tools interface, independent of the registry-assigned code identity.
 - fn `builtin_tool_specs` — Native declarations available before their stateful handlers are constructed.
 - fn `parse_table` — Parse one owner's table without interpreting other tables.
@@ -269,8 +269,7 @@ impl Default for AcceptedIntent
 
 ```rust
 pub struct Activation {
-    pub code: CodeRef,
-    pub registration: Option<RegistrationId>,
+    pub reference: PluginActivation,
     pub artifact: ContentHash,
     pub settings: PluginSettings,
     pub origin: Option<Origin>,
@@ -281,8 +280,8 @@ pub struct Activation {
 
 One selected code and where it came from; the running and registered layers share it.
 
-- `code` — The selected code: a generation, or factory code with empty settings.
-- `registration` — Registration that selected it; absent for the host's factory default.
+- `reference` — The selected code, a generation or factory code with empty settings, and the
+  registration that selected it; factory code no registration chose has none.
 - `artifact` — The component bytes it runs.
 - `settings` — The settings it runs with; factory code runs with empty settings.
 - `origin` — What the generation brought, absent for factory code.
@@ -1297,14 +1296,14 @@ impl Debug for Child
 
 ```rust
 pub struct CodeProvenance {
-    pub code: CodeRef,
+    pub code: PluginCode,
     pub source: CodeSource,
 }
 ```
 
 Where code came from; settings-only generations follow the code they reuse.
 
-- `code` — The code that supplied the bytes: a generation or factory code.
+- `code` — The plugin's code that supplied the bytes: a generation or factory code.
 - `source` — How that code entered the registry.
 
 Implements:
@@ -1392,8 +1391,6 @@ Result of checking and committing a Session owner's transaction.
 pub enum CommitRejection {
     Halted,
     Archived(SessionName),
-    MissingProfile(SessionName),
-    ChildExists(SessionName),
     ProfileMismatch {
         current: ProfileName,
         requested: ProfileName,
@@ -1410,8 +1407,6 @@ A normal tool precondition failure, distinct from a storage failure.
 
 - `Halted` — The sending Session has an unconsumed halt.
 - `Archived` — The recipient no longer accepts inputs.
-- `MissingProfile` — Creating a new child requires a profile.
-- `ChildExists` — Another creation occupied this name before commit.
 - `ProfileMismatch` — The supplied profile disagrees with the existing child's profile.
   - `current` — Existing profile.
   - `requested` — Supplied profile.
@@ -2118,7 +2113,6 @@ impl Clone for Endpoints
 
 ```rust
 pub struct Export<T: ?Sized> {
-    pub plugin: PluginId,
     pub code: CodeRef,
     pub adapter: std::sync::Arc<T>,
 }
@@ -2126,8 +2120,7 @@ pub struct Export<T: ?Sized> {
 
 An invocation's immutable association between code and registry identity.
 
-- `plugin` — Plugin owning the code.
-- `code` — Exact code used for this invocation: a generation or factory code.
+- `code` — Exact code used for this invocation, a generation or factory code, and its plugin.
 - `adapter` — Compiled adapter retained until this invocation ends.
 
 ## struct `Exports`
@@ -2223,7 +2216,6 @@ impl Clone for FactoryPlugin
 ```rust
 pub struct FactoryStatus {
     pub name: PluginName,
-    pub code: CodeRef,
     pub artifact: ContentHash,
     pub follow: bool,
 }
@@ -2232,8 +2224,7 @@ pub struct FactoryStatus {
 Current host-owned recovery code and whether registered intent needs to follow it.
 
 - `name` — Name reserved by the host.
-- `code` — This host's factory code.
-- `artifact` — Content address of the embedded code.
+- `artifact` — Content address of this host's factory code.
 - `follow` — Registered intent follows factory code and differs from this host's implementation.
 
 Implements:
@@ -3807,7 +3798,6 @@ impl Serialize for RegisteredPlugin
 pub struct RegisteredSource {
     pub intent: CodeIntent,
     pub registration: RegistrationId,
-    pub code: CodeRef,
     pub artifact: ContentHash,
 }
 ```
@@ -3816,7 +3806,6 @@ An explicitly registered code choice, independent of mechanical recovery.
 
 - `intent` — Directory or host factory code.
 - `registration` — Accepted activation, including following factory code.
-- `code` — Code selected by that activation.
 - `artifact` — Artifact used to compare newly built code.
 
 ### `RegisteredSource::source`
@@ -4593,7 +4582,7 @@ impl Debug for ScopeError
 
 ```rust
 pub struct SelectedCode {
-    pub code: CodeRef,
+    pub code: PluginCode,
     pub health: Option<Health>,
     pub active: bool,
 }
@@ -4637,8 +4626,6 @@ pub enum SessionDeliveryKind {
     Boundary,
     Message,
     Delegation {
-        name: SessionName,
-        create: Option<Box<Creation>>,
         profile: Option<ProfileName>,
         working_dir: Option<WorkingDir>,
     },
@@ -4649,10 +4636,9 @@ Meaning of a cross-Session write within its owning Session's commit.
 
 - `Boundary` — A Round's reply or a Run's end; when a halt or archival blocks it, the facts still commit.
 - `Message` — A message's effect is delivery itself; rejection leaves the entire commit unwritten.
-- `Delegation` — A delegation's effect, with optional creation and assertions about an existing child.
-  - `name` — Target child's full name.
-  - `create` — The new child's creation record, also in the parent's Log; absent when addressing an
-    existing child.
+- `Delegation` — A delegation's message; rejection leaves the entire commit unwritten.
+
+  The child exists, or the settlement in the same commit creates it from its creation record.
   - `profile` — Supplied profile must match an existing child's effective profile.
   - `working_dir` — Supplied directory must match an existing child's effective directory.
 
@@ -5711,6 +5697,11 @@ async fn commit(&self, session: SessionId, commit: Commit) -> Result<CommitOutco
 
 Atomically append facts and consume their Inbox inputs after checking ownership and positions.
 
+A halt still waiting once the inputs are consumed rejects, as `Halted`, a commit that creates
+a child or sends a message or delegation, and drops its boundaries. Otherwise a child a fact
+creates gets its row from that creation record before any delivery, so a delegation's
+message reaches it in the same commit.
+
 ### `Store::plan`
 
 ```rust
@@ -5899,7 +5890,7 @@ Read evidence and verify it matches its address.
 pub trait Tool: Send + Sync
 ```
 
-An executable capability; dispatch is independent of tool identity.
+A capability the host implements; plugins' tools reach dispatch through their exports.
 
 ### `Tool::spec`
 
@@ -5912,10 +5903,10 @@ Model-facing contract, frozen into the Round's plan.
 ### `Tool::code`
 
 ```rust
-fn code(&self) -> CodeRef
+fn code(&self) -> NativeCode
 ```
 
-Code implementing the invocation.
+The host code implementing the invocation.
 
 ### `Tool::call`
 

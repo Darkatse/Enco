@@ -124,6 +124,21 @@ pub fn running_activation(plugin: &serde_json::Value) -> &serde_json::Value {
     &plugin["running"]["running"]["activation"]
 }
 
+/// The plugin's code an activation in a status selects.
+pub fn activation_code(activation: &serde_json::Value) -> PluginCode {
+    serde_json::from_value::<PluginActivation>(activation["reference"].clone())
+        .unwrap()
+        .code()
+}
+
+/// The code a plugin runs, named with its plugin, from its status.
+pub fn running_code(plugin: &serde_json::Value) -> CodeRef {
+    CodeRef {
+        plugin: serde_json::from_value(plugin["running"]["id"].clone()).unwrap(),
+        code: activation_code(running_activation(plugin)),
+    }
+}
+
 pub async fn finish(client: &mut client::Client) -> Vec<Entry> {
     finish_with_timeout(client, Duration::from_secs(30)).await
 }

@@ -1,6 +1,6 @@
 //! Accepted changes and the runtime references they own.
 use crate::{
-    CallId, CodeRef, ContentHash, DateTime, PluginId, PluginName, RegistrationId, SessionId, Utc,
+    CallId, ContentHash, DateTime, PluginCode, PluginId, PluginName, RegistrationId, SessionId, Utc,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -156,13 +156,28 @@ pub struct RegisteredName {
     pub name: Option<PluginName>,
 }
 
-/// One accepted code activation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegisteredCode {
-    /// Code activated by this change: the generation it brought, or factory code it followed.
-    pub code: CodeRef,
-    /// Code intent accepted here; a settings change leaves it unchanged.
-    pub intent: Option<CodeIntent>,
+/// The code one registration activated for a plugin, named relative to both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RegisteredCode {
+    /// The generation this registration brought; its origin says where its code came from.
+    Generation,
+    /// A host's factory code run as itself, with empty settings: the registration chose to
+    /// follow it.
+    Factory {
+        /// Content address of the embedded component.
+        artifact: ContentHash,
+    },
+}
+
+impl RegisteredCode {
+    /// The plugin's code this names, given the registration that activated it.
+    pub fn code(self, registration: RegistrationId) -> PluginCode {
+        match self {
+            Self::Generation => PluginCode::Generation { registration },
+            Self::Factory { artifact } => PluginCode::Factory { artifact },
+        }
+    }
 }
 
 /// The owner's choice of code source, independent of the resulting component bytes.
@@ -178,6 +193,20 @@ pub enum CodeIntent {
     Factory,
 }
 
+impl CodeIntent {
+    /// The code intent a registration chose for a plugin; new settings choose none.
+    ///
+    /// `brought` is the origin of the generation the registration brought for it, absent when it
+    /// activated factory code itself, which is choosing to follow factory code.
+    pub fn chosen(brought: Option<&crate::Origin>) -> Option<Self> {
+        match brought {
+            None => Some(Self::Factory),
+            Some(crate::Origin::Code { intent }) => Some(*intent),
+            Some(crate::Origin::Settings { .. }) => None,
+        }
+    }
+}
+
 /// One node's mutable references for a plugin, owned exclusively by the registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginRecord {
@@ -191,11 +220,51 @@ pub struct PluginRecord {
     pub rollback_target: Option<PluginActivation>,
 }
 
-/// A current or retained code reference, distinct from the generation's creation provenance.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PluginActivation {
-    /// Target code: a generation, or factory code with empty settings.
-    pub code: CodeRef,
-    /// Registration which wrote this reference; absent only for direct factory recovery.
-    pub registration: Option<RegistrationId>,
+/// A plugin's current or retained code on this node, with the registration that wrote it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PluginActivation {
+    /// The generation a registration brought, written by that registration.
+    Generation {
+        /// The registration that brought the generation and wrote this reference.
+        registration: RegistrationId,
+    },
+    /// A host's factory code, run with empty settings; a rollback target may keep an earlier
+    /// host's.
+    Factory {
+        /// Content address of the embedded component.
+        artifact: ContentHash,
+        /// The registration that chose it; absent when no registration did, as when mechanical
+        /// recovery reached it.
+        registration: Option<RegistrationId>,
+    },
+}
+
+impl PluginActivation {
+    /// The reference a registration writes when it activates `code`.
+    pub fn registered(registration: RegistrationId, code: RegisteredCode) -> Self {
+        match code {
+            RegisteredCode::Generation => Self::Generation { registration },
+            RegisteredCode::Factory { artifact } => Self::Factory {
+                artifact,
+                registration: Some(registration),
+            },
+        }
+    }
+
+    /// The plugin's code it names.
+    pub fn code(self) -> PluginCode {
+        match self {
+            Self::Generation { registration } => PluginCode::Generation { registration },
+            Self::Factory { artifact, .. } => PluginCode::Factory { artifact },
+        }
+    }
+
+    /// The registration that wrote it; absent only for factory code reached by recovery.
+    pub fn registration(self) -> Option<RegistrationId> {
+        match self {
+            Self::Generation { registration } => Some(registration),
+            Self::Factory { registration, .. } => registration,
+        }
+    }
 }

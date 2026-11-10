@@ -152,7 +152,7 @@ pub struct DeliveryStatus {
 
 impl Kernel {
     /// Bind capabilities and start unarchived Sessions, plus archived ones not yet quiescent.
-    pub async fn start(mut deps: KernelDeps) -> Result<Self, KernelError> {
+    pub async fn start(deps: KernelDeps) -> Result<Self, KernelError> {
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let subtrees = Arc::new(crate::subtree::Subtrees {
             store: deps.store.clone(),
@@ -160,23 +160,10 @@ impl Kernel {
             sessions: sessions.clone(),
             deps: std::sync::OnceLock::new(),
         });
-        deps.tools.extend(
-            crate::builtin::tools(&subtrees)
-                .map_err(|error| KernelError::Config(format!("tool declaration: {error}")))?,
-        );
-        let declared: std::collections::BTreeSet<_> =
-            deps.registry.host_tool_names().iter().cloned().collect();
-        let actual: std::collections::BTreeSet<_> =
-            deps.tools.iter().map(|tool| tool.spec().name).collect();
-        if declared != actual {
-            return Err(KernelError::Config(format!(
-                "host tool declarations differ from handlers: missing handlers {:?}; undeclared handlers {:?}",
-                declared.difference(&actual).collect::<Vec<_>>(),
-                actual.difference(&declared).collect::<Vec<_>>()
-            )));
-        }
+        let builtins = crate::builtin::tools(&subtrees)
+            .map_err(|error| KernelError::Config(format!("tool declaration: {error}")))?;
         let node = deps.store.node().await?;
-        let snapshot = Arc::new(Snapshot::new(node.id, &deps)?);
+        let snapshot = Arc::new(Snapshot::new(node.id, &deps, builtins)?);
         let kernel = Self {
             scheduler: Mutex::new(None),
             deps: Arc::new(SessionDeps {

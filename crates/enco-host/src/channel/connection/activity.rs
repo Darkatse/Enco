@@ -422,7 +422,7 @@ impl Connection {
         }
         let adapter = self.adapter.clone();
         let kernel = self.kernel.clone();
-        let code = self.code.clone();
+        let code = self.code;
         self.activities.spawn(async move {
             let result = health::call(&kernel, &code, async {
                 match &request.operation {

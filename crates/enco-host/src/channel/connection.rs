@@ -269,7 +269,7 @@ impl Connection {
         let protocol = self.state.protocol.clone();
         let stop = self.stop.clone();
         let kernel = self.kernel.clone();
-        let code = self.code.clone();
+        let code = self.code;
         self.readers.spawn(async move {
             let pending = readings.clone();
             let result = health::call(
@@ -292,7 +292,7 @@ impl Connection {
             adapter: self.adapter.clone(),
             kernel: self.kernel.clone(),
             settings: self.settings.clone(),
-            code: self.code.clone(),
+            code: self.code,
             clock: self.clock.clone(),
         }
         .prepare(

@@ -21,13 +21,14 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `ChildState` — Child facts computed from committed history followed by accepted, unconsumed inputs.
 - struct `ChildStateFold` — Folds a child's history, newest first, into its `ChildState`.
 - enum `CodeIntent` — The owner's choice of code source, independent of the resulting component bytes.
-- enum `CodeRef` — Identifies the exact code used by an invocation, or that a plugin runs.
+- struct `CodeRef` — A plugin's code, named across plugins: the exact code an invocation used or a plugin runs.
 - enum `CommandOn` — What a command acts on, which decides when it takes effect.
 - struct `ConfigGeneration` — An immutable registered configuration document; its registration is its identity.
 - struct `ContentHash` — BLAKE3 address of immutable bytes, encoded as lowercase hexadecimal.
 - struct `ContextPlan` — The complete request plan, recorded by content address before sending.
 - struct `Creation` — What the authority over a Session's name records when it creates the Session: its identity and where it starts.
 - struct `Delegated` — Child Session delegation committed with a `session_send` settlement.
+- enum `DelegationTarget` — The child Session a delegation addressed.
 - enum `Deliverable` — What a Session hands to its reply destination at a delivery boundary.
 - struct `Delivery` — A logical channel delivery referencing its original Log fact.
 - struct `DeliveryProjection` — Folds a Session's Log, in order, into what it hands to its reply destination.
@@ -71,6 +72,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `MemoryId` — Identity of an editable memory.
 - struct `Message` — Provider-independent message; this shape is part of the Log format.
 - enum `Modality` — Non-text input accepted by a completion endpoint.
+- struct `NativeCode` — Code linked into the host binary.
 - struct `NodeId` — Persistent identity of an Enco installation.
 - struct `Occurrence` — An occurrence that reached the Session; the next one is derived rather than stored.
 - struct `Omission` — A visible explanation of content excluded from this request.
@@ -80,7 +82,8 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `Overflow` — A service's refusal of a request larger than its model accepts, with the numbers it gave.
 - enum `Part` — Typed content of a canonical message.
 - enum `PlanItem` — Inline content or a reference to an immutable canonical message.
-- struct `PluginActivation` — A current or retained code reference, distinct from the generation's creation provenance.
+- enum `PluginActivation` — A plugin's current or retained code on this node, with the registration that wrote it.
+- enum `PluginCode` — A plugin's code, named within the plugin; WIT calls it `plugin-code`.
 - struct `PluginId` — Persistent identity assigned when a plugin name is registered.
 - struct `PluginName` — A validated directory and routing name for one plugin.
 - struct `PluginRecord` — One node's mutable references for a plugin, owned exclusively by the registry.
@@ -92,7 +95,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - enum `Quoted` — Quoted content, or why the protocol could not supply it.
 - struct `QuotedMessage` — One message inside a reply or forward, with the identity facts recorded at acceptance.
 - struct `Reason` — A nonempty, bounded line explaining an intentional change.
-- struct `RegisteredCode` — One accepted code activation.
+- enum `RegisteredCode` — The code one registration activated for a plugin, named relative to both.
 - struct `RegisteredName` — One accepted name change.
 - struct `RegistrationId` — Registry-global registration number; one accepted change may contain several generations.
 - struct `RegistrationRecord` — One accepted external change, also the unit of owner rollback.
@@ -119,6 +122,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `Source` — A source an inline message renders, named and hashed by the composer that wrote it.
 - enum `StopReason` — Provider-reported completion boundary.
 - struct `ToolCall` — A proposed invocation; arguments are normalized only when dispatched.
+- enum `ToolCode` — The code behind a tool call: a plugin's, or the host's own.
 - struct `ToolResult` — Model-facing settlement linked to the original provider call ID.
 - struct `ToolSpec` — A model-facing tool contract; its name is unique within a Round snapshot.
 - struct `Unviewable` — Part of a message's content kept only as a description, such as a location or an attachment that could not be fetched.
@@ -144,7 +148,7 @@ Re-exports `chrono::DateTime`, `chrono::FixedOffset`, `chrono::Utc`, `chrono_tz:
 ```rust
 pub struct ActiveCode {
     pub configuration: crate::RegistrationId,
-    pub plugins: std::collections::BTreeMap<crate::PluginId, crate::CodeRef>,
+    pub plugins: std::collections::BTreeMap<crate::PluginId, crate::PluginCode>,
 }
 ```
 
@@ -632,6 +636,17 @@ The owner's choice of code source, independent of the resulting component bytes.
   - `source` — Content-addressed source tree owned by the store.
 - `Factory` — Follow the implementation supplied by the host.
 
+### `CodeIntent::chosen`
+
+```rust
+pub fn chosen(brought: Option<&crate::Origin>) -> Option<Self>
+```
+
+The code intent a registration chose for a plugin; new settings choose none.
+
+`brought` is the origin of the generation the registration brought for it, absent when it
+activated factory code itself, which is choosing to follow factory code.
+
 Implements:
 
 ```rust
@@ -644,57 +659,35 @@ impl PartialEq for CodeIntent
 impl Serialize for CodeIntent
 ```
 
-## enum `CodeRef`
+## struct `CodeRef`
 
 `src/capability.rs`
 
 ```rust
-pub enum CodeRef {
-    Generation {
-        id: crate::GenerationId,
-    },
-    Factory {
-        plugin: crate::PluginId,
-        artifact: crate::ContentHash,
-    },
-    Native {
-        name: String,
-        version: String,
-    },
+pub struct CodeRef {
+    pub plugin: crate::PluginId,
+    pub code: PluginCode,
 }
 ```
 
-Identifies the exact code used by an invocation, or that a plugin runs.
+A plugin's code, named across plugins: the exact code an invocation used or a plugin runs.
 
-- `Generation` — Code and settings that one registration brought for a plugin.
-  - `id` — The registration and plugin that identify it.
-- `Factory` — Code shipped with a host, run with empty settings; it is host content, never registered.
-  - `plugin` — Plugin the host reserves this code for.
-  - `artifact` — Content address of the embedded component; hosts with the same bytes agree on it.
-- `Native` — Code linked into the host binary.
-  - `name` — Identity of the linked native capability or policy.
-  - `version` — Version of the linked native crate.
-
-### `CodeRef::plugin`
-
-```rust
-pub fn plugin(&self) -> Option<PluginId>
-```
-
-The plugin this code belongs to; native code belongs to none.
+- `plugin` — The plugin the code belongs to.
+- `code` — Which of the plugin's code.
 
 ### `CodeRef::generation`
 
 ```rust
-pub fn generation(&self) -> Option<GenerationId>
+pub fn generation(self) -> Option<GenerationId>
 ```
 
-The registered generation, absent for host content.
+The registered generation this names, absent for factory code.
 
 Implements:
 
 ```rust
 impl Clone for CodeRef
+impl Copy for CodeRef
 impl Debug for CodeRef
 impl<'de> Deserialize<'de> for CodeRef
 impl Display for CodeRef
@@ -880,17 +873,14 @@ impl Serialize for Creation
 
 ```rust
 pub struct Delegated {
-    pub session: crate::SessionRef,
-    pub creation: Option<crate::Creation>,
+    pub target: DelegationTarget,
     pub event: crate::EventId,
 }
 ```
 
 Child Session delegation committed with a `session_send` settlement.
 
-- `session` — Target child Session identity and full name.
-- `creation` — The child's creation record, when this call created it; the parent's Log is the
-  authority over its children's names.
+- `target` — The child the message went to.
 - `event` — Event accepted into the child Session's Inbox.
 
 Implements:
@@ -901,6 +891,41 @@ impl Debug for Delegated
 impl<'de> Deserialize<'de> for Delegated
 impl PartialEq for Delegated
 impl Serialize for Delegated
+```
+
+## enum `DelegationTarget`
+
+`src/entry.rs`
+
+```rust
+pub enum DelegationTarget {
+    Existing(crate::SessionRef),
+    Created(crate::Creation),
+}
+```
+
+The child Session a delegation addressed.
+
+- `Existing` — A child that already existed.
+- `Created` — A child this call created, by its creation record; the parent's Log is the authority over
+  its children's names, and the child's row starts from this record.
+
+### `DelegationTarget::session`
+
+```rust
+pub fn session(&self) -> crate::SessionRef
+```
+
+The child's identity and full name.
+
+Implements:
+
+```rust
+impl Clone for DelegationTarget
+impl Debug for DelegationTarget
+impl<'de> Deserialize<'de> for DelegationTarget
+impl PartialEq for DelegationTarget
+impl Serialize for DelegationTarget
 ```
 
 ## enum `Deliverable`
@@ -1241,7 +1266,7 @@ pub enum EntryBody {
         round: crate::RoundId,
         call: crate::CallId,
         capability: crate::CapabilityId,
-        code: crate::CodeRef,
+        code: crate::ToolCode,
         effect: crate::Effect,
     },
     ToolCallSettled {
@@ -1321,6 +1346,17 @@ Facts accepted by the Session owner.
   - `upto` — Inclusive Log position hidden by the summary.
   - `summary` — Model-generated replacement for the summarized history.
   - `attempt` — Provider attempt associated with this fact.
+
+### `EntryBody::created_child`
+
+```rust
+pub fn created_child(&self) -> Option<&crate::Creation>
+```
+
+The child Session this fact creates: the creation record of a delegation that made it.
+
+The child's row starts from this record, both when the parent commits it and when the
+rows are rebuilt from the facts.
 
 ### `EntryBody::canonical_message`
 
@@ -2543,6 +2579,33 @@ impl PartialOrd for Modality
 impl Serialize for Modality
 ```
 
+## struct `NativeCode`
+
+`src/capability.rs`
+
+```rust
+pub struct NativeCode {
+    pub name: String,
+    pub version: String,
+}
+```
+
+Code linked into the host binary.
+
+- `name` — Identity of the linked native capability.
+- `version` — Version of the linked native crate.
+
+Implements:
+
+```rust
+impl Clone for NativeCode
+impl Debug for NativeCode
+impl<'de> Deserialize<'de> for NativeCode
+impl Eq for NativeCode
+impl PartialEq for NativeCode
+impl Serialize for NativeCode
+```
+
 ## struct `NodeId`
 
 `src/ids.rs`
@@ -2639,19 +2702,22 @@ impl Serialize for Omission
 
 ```rust
 pub enum Origin {
-    Code,
+    Code {
+        intent: crate::CodeIntent,
+    },
     Settings {
-        based_on: crate::CodeRef,
+        based_on: crate::PluginCode,
     },
 }
 ```
 
 Where a generation's code came from.
 
-- `Code` — The registration's code intent supplied it: a built source directory, or the host's
-  factory code with non-empty settings.
+- `Code` — The owner's code intent supplied it: a built source directory, or the host's factory code
+  with non-empty settings.
+  - `intent` — The code source the registration chose.
 - `Settings` — New settings paired with the code that ran when they were registered.
-  - `based_on` — The code reused, a generation or factory code.
+  - `based_on` — The plugin's code reused, a generation or factory code.
 
 Implements:
 
@@ -2854,31 +2920,114 @@ impl PartialEq for PlanItem
 impl Serialize for PlanItem
 ```
 
-## struct `PluginActivation`
+## enum `PluginActivation`
 
 `src/registration.rs`
 
 ```rust
-pub struct PluginActivation {
-    pub code: crate::CodeRef,
-    pub registration: Option<crate::RegistrationId>,
+pub enum PluginActivation {
+    Generation {
+        registration: crate::RegistrationId,
+    },
+    Factory {
+        artifact: crate::ContentHash,
+        registration: Option<crate::RegistrationId>,
+    },
 }
 ```
 
-A current or retained code reference, distinct from the generation's creation provenance.
+A plugin's current or retained code on this node, with the registration that wrote it.
 
-- `code` — Target code: a generation, or factory code with empty settings.
-- `registration` — Registration which wrote this reference; absent only for direct factory recovery.
+- `Generation` — The generation a registration brought, written by that registration.
+  - `registration` — The registration that brought the generation and wrote this reference.
+- `Factory` — A host's factory code, run with empty settings; a rollback target may keep an earlier
+  host's.
+  - `artifact` — Content address of the embedded component.
+  - `registration` — The registration that chose it; absent when no registration did, as when mechanical
+    recovery reached it.
+
+### `PluginActivation::registered`
+
+```rust
+pub fn registered(registration: RegistrationId, code: RegisteredCode) -> Self
+```
+
+The reference a registration writes when it activates `code`.
+
+### `PluginActivation::code`
+
+```rust
+pub fn code(self) -> PluginCode
+```
+
+The plugin's code it names.
+
+### `PluginActivation::registration`
+
+```rust
+pub fn registration(self) -> Option<RegistrationId>
+```
+
+The registration that wrote it; absent only for factory code reached by recovery.
 
 Implements:
 
 ```rust
 impl Clone for PluginActivation
+impl Copy for PluginActivation
 impl Debug for PluginActivation
 impl<'de> Deserialize<'de> for PluginActivation
 impl Eq for PluginActivation
 impl PartialEq for PluginActivation
 impl Serialize for PluginActivation
+```
+
+## enum `PluginCode`
+
+`src/capability.rs`
+
+```rust
+pub enum PluginCode {
+    Generation {
+        registration: crate::RegistrationId,
+    },
+    Factory {
+        artifact: crate::ContentHash,
+    },
+}
+```
+
+A plugin's code, named within the plugin; WIT calls it `plugin-code`.
+
+Records that already belong to one plugin hold this; `CodeRef` adds the plugin.
+
+- `Generation` — The code and settings one registration brought for the plugin.
+  - `registration` — The registration that brought it.
+- `Factory` — Code shipped with a host, run with empty settings; it is host content, never registered.
+  - `artifact` — Content address of the embedded component; hosts with the same bytes agree on it.
+
+### `PluginCode::generation`
+
+```rust
+pub fn generation(self, plugin: PluginId) -> Option<GenerationId>
+```
+
+The registered generation of `plugin` this names, absent for factory code.
+
+Implements:
+
+```rust
+impl Clone for PluginCode
+impl Copy for PluginCode
+impl Debug for PluginCode
+impl<'de> Deserialize<'de> for PluginCode
+impl Display for PluginCode
+impl Eq for PluginCode
+impl Hash for PluginCode
+impl Ord for PluginCode
+impl PartialEq for PluginCode
+impl PartialOrd for PluginCode
+impl Serialize for PluginCode
 ```
 
 ## struct `PluginId`
@@ -3272,26 +3421,39 @@ impl PartialEq for Reason
 impl Serialize for Reason
 ```
 
-## struct `RegisteredCode`
+## enum `RegisteredCode`
 
 `src/registration.rs`
 
 ```rust
-pub struct RegisteredCode {
-    pub code: crate::CodeRef,
-    pub intent: Option<CodeIntent>,
+pub enum RegisteredCode {
+    Generation,
+    Factory {
+        artifact: crate::ContentHash,
+    },
 }
 ```
 
-One accepted code activation.
+The code one registration activated for a plugin, named relative to both.
 
-- `code` — Code activated by this change: the generation it brought, or factory code it followed.
-- `intent` — Code intent accepted here; a settings change leaves it unchanged.
+- `Generation` — The generation this registration brought; its origin says where its code came from.
+- `Factory` — A host's factory code run as itself, with empty settings: the registration chose to
+  follow it.
+  - `artifact` — Content address of the embedded component.
+
+### `RegisteredCode::code`
+
+```rust
+pub fn code(self, registration: RegistrationId) -> PluginCode
+```
+
+The plugin's code this names, given the registration that activated it.
 
 Implements:
 
 ```rust
 impl Clone for RegisteredCode
+impl Copy for RegisteredCode
 impl Debug for RegisteredCode
 impl<'de> Deserialize<'de> for RegisteredCode
 impl Eq for RegisteredCode
@@ -3459,7 +3621,7 @@ impl Serialize for Role
 pub struct RolledBack {
     pub plugin: crate::PluginName,
     pub from: crate::GenerationId,
-    pub to: Option<crate::CodeRef>,
+    pub to: Option<crate::PluginCode>,
     pub failure: crate::Failure,
 }
 ```
@@ -4289,6 +4451,33 @@ impl Debug for ToolCall
 impl<'de> Deserialize<'de> for ToolCall
 impl PartialEq for ToolCall
 impl Serialize for ToolCall
+```
+
+## enum `ToolCode`
+
+`src/capability.rs`
+
+```rust
+pub enum ToolCode {
+    Plugin(CodeRef),
+    Native(NativeCode),
+}
+```
+
+The code behind a tool call: a plugin's, or the host's own.
+
+- `Plugin` — A plugin's exported tool.
+- `Native` — A tool linked into the host binary.
+
+Implements:
+
+```rust
+impl Clone for ToolCode
+impl Debug for ToolCode
+impl<'de> Deserialize<'de> for ToolCode
+impl Eq for ToolCode
+impl PartialEq for ToolCode
+impl Serialize for ToolCode
 ```
 
 ## struct `ToolResult`

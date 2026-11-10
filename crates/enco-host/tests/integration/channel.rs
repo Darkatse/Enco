@@ -523,15 +523,14 @@ fn start_with(
         kernel.clone(),
         adapter.clone(),
         settings,
-        kernel
+        *kernel
             .registry()
             .view()
             .exports
             .active()
             .find(|active| active.name.as_ref() == "fixture")
             .unwrap()
-            .code
-            .clone(),
+            .code,
         Arc::new(enco_host::SystemClock),
         host_version(),
     )

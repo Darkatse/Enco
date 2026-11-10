@@ -116,7 +116,7 @@ async fn wasm_tools_are_offered_as_declared_use_origin_bound_credentials_and_rep
     }).mount(&services.model).await;
     let document = services.document(&["exa", "tinyfish"]);
     let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
-    let code: CodeRef = serde_json::from_value(web_status(&daemon).await["code"].clone()).unwrap();
+    let code = ToolCode::Plugin(running_code(&node_status(&daemon).await["plugins"]["web"]));
     let log = send(&daemon).await;
     assert_eq!(log.iter().filter(|entry| matches!(&entry.body, EntryBody::ToolCallStarted { code: started, .. } if *started == code)).count(), 3);
     let results: Vec<_> = log
@@ -262,8 +262,8 @@ async fn missing_credentials_reject_apply_but_only_exclude_the_plugin_on_restart
         .unwrap();
     send(&daemon).await;
     let applied = web_status(&daemon).await;
-    assert_ne!(applied["code"], before["code"]);
-    check_registered_web_settings(&daemon, &applied["code"]).await;
+    assert_ne!(activation_code(&applied), activation_code(&before));
+    check_registered_web_settings(&daemon, activation_code(&applied)).await;
     daemon.stop().await;
     daemon.restart_without(&["ENCO_TEST_API_KEY"]).await;
     let status = node_status(&daemon).await;
@@ -308,7 +308,7 @@ async fn missing_credentials_reject_apply_but_only_exclude_the_plugin_on_restart
     daemon.stop().await;
 }
 
-async fn check_registered_web_settings(daemon: &Daemon, code: &Value) {
+async fn check_registered_web_settings(daemon: &Daemon, code: PluginCode) {
     let status = node_status(daemon).await;
     let changes = status["recent_registrations"][0]["changes"]
         .as_array()
@@ -316,7 +316,7 @@ async fn check_registered_web_settings(daemon: &Daemon, code: &Value) {
     assert_eq!(changes.len(), 2);
     assert!(changes.iter().any(|change| change["kind"] == "settings"
         && change["name"] == "web"
-        && change["selected"]["code"] == *code));
+        && change["selected"]["code"] == json!(code)));
     assert!(
         changes
             .iter()

@@ -396,21 +396,13 @@ fn recorded_creation(connection: &Connection, row: &SessionRecord) -> Result<Cre
         return root(connection, row.id)?
             .ok_or_else(|| backend(format!("root {} is not in the root directory", row.name)));
     };
-    let mut creations = log::log(connection, parent.id, None)?
-        .into_iter()
-        .filter_map(|entry| match entry.body {
-            EntryBody::ToolCallSettled {
-                delegated:
-                    Some(Delegated {
-                        creation: Some(creation),
-                        ..
-                    }),
-                ..
-            } if creation.id == row.id => Some(creation),
-            _ => None,
-        });
+    let log = log::log(connection, parent.id, None)?;
+    let mut creations = log
+        .iter()
+        .filter_map(|entry| entry.body.created_child())
+        .filter(|creation| creation.id == row.id);
     match (creations.next(), creations.next()) {
-        (Some(creation), None) => Ok(creation),
+        (Some(creation), None) => Ok(creation.clone()),
         (found, _) => Err(backend(format!(
             "Session {}: {} creation records in its parent's Log, not one",
             row.name,

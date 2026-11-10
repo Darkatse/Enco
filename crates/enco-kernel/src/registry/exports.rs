@@ -5,9 +5,7 @@ use state::State;
 
 /// An invocation's immutable association between code and registry identity.
 pub struct Export<T: ?Sized> {
-    /// Plugin owning the code.
-    pub plugin: PluginId,
-    /// Exact code used for this invocation: a generation or factory code.
+    /// Exact code used for this invocation, a generation or factory code, and its plugin.
     pub code: CodeRef,
     /// Compiled adapter retained until this invocation ends.
     pub adapter: Arc<T>,
@@ -22,7 +20,6 @@ pub struct BoundComposer {
 }
 
 struct LoadedCode {
-    plugin: PluginId,
     code: CodeRef,
     source: CodeSource,
     loaded: Result<Loaded, Vec<Cause>>,
@@ -60,8 +57,8 @@ pub(crate) struct Failed<'a> {
     pub from: GenerationId,
     /// The fault that marked the generation failed.
     pub failure: &'a Failure,
-    /// What runs instead, absent when nothing can run.
-    pub current: Option<&'a CodeRef>,
+    /// What its plugin runs instead, absent when nothing can run.
+    pub current: Option<PluginCode>,
 }
 
 impl Exports {
@@ -76,8 +73,8 @@ impl Exports {
             .plugins
             .values()
             .filter_map(|routes| routes.active.as_ref())
-            .find(|active| active.plugin == generation.plugin)
-            .map(|active| &active.code);
+            .find(|active| active.code.plugin == generation.plugin)
+            .map(|active| active.code.code);
         Some(Failed {
             from: generation,
             failure,
@@ -97,8 +94,7 @@ impl Exports {
                         name,
                         spec.clone(),
                         Export {
-                            plugin: active.plugin,
-                            code: active.code.clone(),
+                            code: active.code,
                             adapter: exported.adapter.clone(),
                         },
                     )
@@ -125,9 +121,9 @@ impl Exports {
     pub(super) fn loaded(
         &self,
         plugin: &PluginName,
-    ) -> Option<Result<(&CodeRef, &Loaded), &[Cause]>> {
+    ) -> Option<Result<(CodeRef, &Loaded), &[Cause]>> {
         self.selected(plugin, false)
-            .map(|selected| selected.map(|(selected, loaded)| (&selected.code, loaded)))
+            .map(|selected| selected.map(|(selected, loaded)| (selected.code, loaded)))
     }
 
     pub(super) fn check_use(&self, usage: &Use) -> Result<(), Vec<Cause>> {
@@ -151,8 +147,7 @@ impl Exports {
             retryable: false,
         })?;
         Ok(Export {
-            plugin: selected.plugin,
-            code: selected.code.clone(),
+            code: selected.code,
             adapter,
         })
     }
@@ -209,8 +204,7 @@ impl Exports {
             })?;
         Ok(BoundComposer {
             export: Export {
-                plugin: selected.plugin,
-                code: selected.code.clone(),
+                code: selected.code,
                 adapter,
             },
             options,
@@ -253,18 +247,17 @@ impl Exports {
         };
         let adapter = endpoint.export(loaded, adapter(loaded), interface)?;
         Ok(Export {
-            plugin: selected.plugin,
-            code: selected.code.clone(),
+            code: selected.code,
             adapter,
         })
     }
 
     /// The code every running plugin uses, by identity.
-    pub(super) fn active_code(&self) -> BTreeMap<PluginId, CodeRef> {
+    pub(super) fn active_code(&self) -> BTreeMap<PluginId, PluginCode> {
         self.plugins
             .values()
             .filter_map(|routes| routes.active.as_ref())
-            .map(|active| (active.plugin, active.code.clone()))
+            .map(|active| (active.code.plugin, active.code.code))
             .collect()
     }
 
@@ -308,17 +301,15 @@ impl State {
         for (name, plugin) in names {
             let active = match self.active(plugin).zip(admission.result(&name)) {
                 Some((code, loaded)) => Some(LoadedCode {
-                    plugin,
                     source: self.provenance(code)?.source,
-                    code: code.clone(),
+                    code,
                     loaded,
                 }),
                 None => None,
             };
-            let factory = self.factory.get(&plugin).and_then(|code| {
-                self.loaded.get(code).map(|loaded| LoadedCode {
-                    plugin,
-                    code: code.clone(),
+            let factory = self.factory_code(plugin).and_then(|code| {
+                self.loaded.get(&code).map(|loaded| LoadedCode {
+                    code,
                     source: CodeSource::Factory,
                     loaded: Ok(loaded.clone()),
                 })

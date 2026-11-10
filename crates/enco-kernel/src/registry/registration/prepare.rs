@@ -2,13 +2,15 @@ use super::super::configuration::Declaration;
 use super::*;
 use std::borrow::Cow;
 
-pub(in crate::registry) struct Plan {
+/// A registration checked against one state; `L` is what loading new code produced, nothing
+/// until it is prepared.
+pub(in crate::registry) struct Plan<L = ()> {
     pub expected: Expected,
     pub initiator: Initiator,
     pub configuration: Option<ConfigurationSource>,
     pub declaration: Declaration,
     pub previous_uses: Vec<Use>,
-    pub plugins: BTreeMap<PluginId, PlannedPlugin>,
+    pub plugins: BTreeMap<PluginId, Action<L>>,
 }
 
 pub(in crate::registry) struct Content {
@@ -18,35 +20,56 @@ pub(in crate::registry) struct Content {
     pub origin: Origin,
 }
 
-pub(in crate::registry) struct PlannedPlugin {
-    pub name: Option<PluginName>,
-    pub action: Action,
-    pub intent: Option<CodeIntent>,
-}
-
-pub(in crate::registry) enum Action {
-    /// Content the host does not have, which brings a generation.
-    Code(Content),
-    /// This host's factory code with empty settings, which brings none.
-    Factory(CodeRef, Box<Loaded>),
+/// What a registration does to one plugin.
+pub(in crate::registry) enum Action<L> {
+    /// Content the host does not have, under `name`, which brings a generation.
+    Code {
+        name: PluginName,
+        content: Content,
+        loaded: L,
+    },
+    /// This host's factory code run as itself under `name`, which brings none.
+    Factory {
+        name: PluginName,
+        artifact: ContentHash,
+        loaded: Box<Loaded>,
+    },
+    /// Removes the plugin and releases its name.
     Remove,
-    Rename,
+    /// Gives the plugin another name.
+    Rename { to: PluginName },
 }
 
+impl<L> Action<L> {
+    /// The plugin's name after the registration; absent once removed.
+    pub fn name(&self) -> Option<&PluginName> {
+        match self {
+            Self::Code { name, .. } | Self::Factory { name, .. } | Self::Rename { to: name } => {
+                Some(name)
+            }
+            Self::Remove => None,
+        }
+    }
+}
+
+/// A plan whose new code is loaded and probed.
 pub(in crate::registry) struct Prepared {
-    pub plan: Plan,
-    pub loaded: BTreeMap<PluginId, Loaded>,
+    pub plan: Plan<Box<Loaded>>,
     pub probes: Vec<Probe>,
 }
 
 impl Prepared {
+    /// The code this registration gives the plugin named `name`.
     pub fn loaded_for(&self, name: &PluginName) -> Option<&Loaded> {
-        let (id, _) = self
-            .plan
-            .plugins
-            .iter()
-            .find(|(_, plugin)| plugin.name.as_ref() == Some(name))?;
-        self.loaded.get(id)
+        self.plan.plugins.values().find_map(|action| match action {
+            Action::Code {
+                name: to, loaded, ..
+            }
+            | Action::Factory {
+                name: to, loaded, ..
+            } if to == name => Some(loaded.as_ref()),
+            _ => None,
+        })
     }
 }
 
@@ -96,11 +119,6 @@ async fn plan_plugin(
     let factory = deps.factory.iter().find(|factory| factory.name == name);
     let existing = identities.get(&name).copied();
     let id = existing.unwrap_or_default();
-    let intent = match &change {
-        PluginChange::Code { source, .. } => Some(CodeIntent::Directory { source: *source }),
-        PluginChange::Factory => Some(CodeIntent::Factory),
-        _ => None,
-    };
     let settings = plan
         .declaration
         .plugins
@@ -108,23 +126,36 @@ async fn plan_plugin(
         .cloned()
         .unwrap_or_default();
     let action = match change {
-        PluginChange::Code { artifact, .. } => Action::Code(Content {
-            bytes: Cow::Owned(match artifact {
-                ArtifactSource::Bytes(bytes) => bytes,
-                ArtifactSource::Stored(hash) => deps.store.artifact(&hash).await?,
-            }),
-            settings,
-            origin: Origin::Code,
-        }),
+        PluginChange::Code { source, artifact } => Action::Code {
+            name,
+            content: Content {
+                bytes: Cow::Owned(match artifact {
+                    ArtifactSource::Bytes(bytes) => bytes,
+                    ArtifactSource::Stored(hash) => deps.store.artifact(&hash).await?,
+                }),
+                settings,
+                origin: Origin::Code {
+                    intent: CodeIntent::Directory { source },
+                },
+            },
+            loaded: (),
+        },
         PluginChange::Factory => {
             let factory = factory.ok_or_else(|| RegistryError::NotFactory(name.clone()))?;
-            factory_itself(state, factory, &settings).unwrap_or_else(|| {
-                Action::Code(Content {
-                    bytes: Cow::Borrowed(factory.artifact),
-                    settings,
-                    origin: Origin::Code,
-                })
-            })
+            match factory_itself(state, factory, &settings) {
+                Some(action) => action,
+                None => Action::Code {
+                    name,
+                    content: Content {
+                        bytes: Cow::Borrowed(factory.artifact),
+                        settings,
+                        origin: Origin::Code {
+                            intent: CodeIntent::Factory,
+                        },
+                    },
+                    loaded: (),
+                },
+            }
         }
         PluginChange::Remove if factory.is_some() => {
             return Err(RegistryError::FactoryRemoval(name));
@@ -137,26 +168,10 @@ async fn plan_plugin(
         }
         PluginChange::Rename(to) => {
             check_rename(deps, state, identities, current, &name, &to)?;
-            plan.plugins.insert(
-                id,
-                PlannedPlugin {
-                    name: Some(to),
-                    action: Action::Rename,
-                    intent: None,
-                },
-            );
-            return Ok(());
+            Action::Rename { to }
         }
     };
-    let name = (!matches!(action, Action::Remove)).then_some(name);
-    plan.plugins.insert(
-        id,
-        PlannedPlugin {
-            name,
-            action,
-            intent,
-        },
-    );
+    plan.plugins.insert(id, action);
     Ok(())
 }
 
@@ -233,7 +248,7 @@ async fn plan_settings(
             .or_else(|| {
                 plan.plugins
                     .iter()
-                    .find_map(|(id, plugin)| (plugin.name.as_ref() == Some(name)).then_some(*id))
+                    .find_map(|(id, action)| (action.name() == Some(name)).then_some(*id))
             })
             .ok_or_else(|| {
                 rejected(Cause::SettingsWithoutPlugin {
@@ -249,38 +264,34 @@ async fn plan_settings(
             .get(name)
             .cloned()
             .unwrap_or_default();
-        let Some(based_on) = state.active(id).cloned() else {
+        let Some(based_on) = state.active(id) else {
             return Err(rejected(Cause::SettingsWithoutCode {
                 plugin: name.clone(),
             }));
         };
         // A plugin following factory code runs it as itself once its settings are emptied.
-        let follows_factory = state.provenance(&based_on)?.source == CodeSource::Factory;
+        let follows_factory = state.provenance(based_on)?.source == CodeSource::Factory;
         let itself = deps
             .factory
             .iter()
             .find(|factory| factory.id == id)
             .filter(|_| follows_factory)
             .and_then(|factory| factory_itself(state, factory, &selected));
-        let (intent, action) = match itself {
-            Some(action) => (Some(CodeIntent::Factory), action),
-            None => (
-                None,
-                Action::Code(Content {
-                    bytes: artifact(deps, &state.artifact(&based_on)?).await?,
+        let action = match itself {
+            Some(action) => action,
+            None => Action::Code {
+                name: name.clone(),
+                content: Content {
+                    bytes: artifact(deps, &state.artifact(based_on)?).await?,
                     settings: selected,
-                    origin: Origin::Settings { based_on },
-                }),
-            ),
-        };
-        plan.plugins.insert(
-            id,
-            PlannedPlugin {
-                name: Some(name.clone()),
-                intent,
-                action,
+                    origin: Origin::Settings {
+                        based_on: based_on.code,
+                    },
+                },
+                loaded: (),
             },
-        );
+        };
+        plan.plugins.insert(id, action);
     }
     Ok(())
 }
@@ -291,11 +302,18 @@ fn factory_itself(
     state: &State,
     factory: &FactoryPlugin,
     settings: &PluginSettings,
-) -> Option<Action> {
+) -> Option<Action<()>> {
     (*settings == PluginSettings::default()).then(|| {
-        let code = state.factory[&factory.id].clone();
-        let loaded = state.loaded[&code].clone();
-        Action::Factory(code, Box::new(loaded))
+        let artifact = state.factory[&factory.id];
+        let code = CodeRef {
+            plugin: factory.id,
+            code: PluginCode::Factory { artifact },
+        };
+        Action::Factory {
+            name: factory.name.clone(),
+            artifact,
+            loaded: Box::new(state.loaded[&code].clone()),
+        }
     })
 }
 
@@ -314,24 +332,52 @@ pub(in crate::registry) async fn artifact(
     }
 }
 
+/// Load and probe every candidate outside the registry lock; any failure rejects the whole
+/// registration with every cause found.
 pub(in crate::registry) async fn prepare(
     deps: &RegistryDeps,
     plan: Plan,
 ) -> Result<Prepared, RegistryError> {
-    let mut loaded = BTreeMap::new();
+    let Plan {
+        expected,
+        initiator,
+        configuration,
+        declaration,
+        previous_uses,
+        plugins,
+    } = plan;
+    let mut prepared = BTreeMap::new();
     let mut causes = Vec::new();
-    for (id, plugin) in &plan.plugins {
-        let (Some(name), Some(candidate)) = (&plugin.name, plugin.candidate()) else {
-            continue;
-        };
-        let result = match &plugin.action {
-            Action::Code(content) => load(deps.runtime.as_ref(), content, name, candidate).await,
-            Action::Factory(_, existing) => probe(existing.as_ref().clone(), name, candidate).await,
-            Action::Remove | Action::Rename => continue,
+    for (id, action) in plugins {
+        let result = match action {
+            Action::Code {
+                name,
+                content,
+                loaded: (),
+            } => load(deps.runtime.as_ref(), &content, &name)
+                .await
+                .map(|loaded| Action::Code {
+                    name,
+                    content,
+                    loaded: Box::new(loaded),
+                }),
+            Action::Factory {
+                name,
+                artifact,
+                loaded,
+            } => probe(*loaded, &name, Proposed::Factory)
+                .await
+                .map(|loaded| Action::Factory {
+                    name,
+                    artifact,
+                    loaded: Box::new(loaded),
+                }),
+            Action::Remove => Ok(Action::Remove),
+            Action::Rename { to } => Ok(Action::Rename { to }),
         };
         match result {
-            Ok(value) => {
-                loaded.insert(*id, value);
+            Ok(action) => {
+                prepared.insert(id, action);
             }
             Err(cause) => causes.push(cause),
         }
@@ -340,24 +386,28 @@ pub(in crate::registry) async fn prepare(
         return Err(RegistryError::Rejected(causes));
     }
     Ok(Prepared {
-        plan,
-        loaded,
+        plan: Plan {
+            expected,
+            initiator,
+            configuration,
+            declaration,
+            previous_uses,
+            plugins: prepared,
+        },
         probes: Vec::new(),
     })
 }
 
-impl PlannedPlugin {
-    /// What the candidate changes, which decides the part a load failure concerns.
-    fn candidate(&self) -> Option<Proposed> {
-        match &self.action {
-            Action::Factory(..) => Some(Proposed::Factory),
-            Action::Code(content) => Some(match (self.intent, &content.origin) {
-                (Some(CodeIntent::Factory), _) => Proposed::Factory,
-                (_, Origin::Settings { .. }) => Proposed::Settings,
-                (Some(CodeIntent::Directory { .. }) | None, _) => Proposed::Code,
-            }),
-            Action::Remove | Action::Rename => None,
-        }
+/// What new content changes, which decides the part a load failure concerns.
+fn proposed(origin: &Origin) -> Proposed {
+    match origin {
+        Origin::Code {
+            intent: CodeIntent::Directory { .. },
+        } => Proposed::Code,
+        Origin::Code {
+            intent: CodeIntent::Factory,
+        } => Proposed::Factory,
+        Origin::Settings { .. } => Proposed::Settings,
     }
 }
 
@@ -365,8 +415,8 @@ async fn load(
     runtime: &dyn Runtime,
     content: &Content,
     name: &PluginName,
-    candidate: Proposed,
 ) -> Result<Loaded, Cause> {
+    let candidate = proposed(&content.origin);
     let rejected = |error| Cause::Load {
         plugin: name.clone(),
         candidate,

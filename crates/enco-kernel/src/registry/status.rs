@@ -188,13 +188,11 @@ fn plugin_status(
     plugin: &PluginRecord,
     registered: Option<(&PluginName, &RegisteredPlugin)>,
 ) -> Result<PluginStatus, RegistryError> {
-    let running = match state.running_name(plugin.id) {
+    // A running name implies active code.
+    let running = match plugin.active.zip(state.running_name(plugin.id)) {
         None => Running::Stopped,
-        Some(name) => {
-            let reference = plugin.active.as_ref().ok_or_else(|| {
-                RegistryError::Intent(format!("running plugin {name} has no active code"))
-            })?;
-            let activation = state.activation(reference)?;
+        Some((reference, name)) => {
+            let activation = state.activation(plugin.id, reference)?;
             match view.exports.loaded(name) {
                 Some(Ok(_)) => Running::Serving {
                     name: name.clone(),
@@ -251,12 +249,17 @@ fn plugin_status(
         name,
         summary: running
             .activation()
-            .and_then(|activation| state.loaded.get(&activation.code))
+            .and_then(|activation| {
+                state.loaded.get(&CodeRef {
+                    plugin: plugin.id,
+                    code: activation.reference.code(),
+                })
+            })
             .map(|loaded| loaded.summary.clone()),
         users: running
             .name()
             .map_or_else(Vec::new, |name| users(&view.config.uses, name)),
-        rollback_target: plugin.rollback_target.clone(),
+        rollback_target: plugin.rollback_target,
         standing,
         running,
     })

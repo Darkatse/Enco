@@ -1,4 +1,4 @@
-use super::prepare::{Action, Content, Prepared};
+use super::prepare::{Action, Prepared};
 use super::*;
 use crate::Replaced;
 
@@ -19,14 +19,14 @@ pub(in crate::registry) async fn accept(
     if prepared.plan.configuration.is_some() {
         configuration::check_profiles(deps, &prepared.plan.declaration.kernel).await?;
     }
-    let identified = Identified::new(deps, state, &prepared)?;
+    let identified = Identified::new(deps, state, &prepared);
     let before = admission::evaluate(state.contents(), &deps.host_tool_names);
     let after = admission::evaluate(contents(state, &identified)?, &deps.host_tool_names);
     let names: Vec<_> = prepared
         .plan
         .plugins
         .values()
-        .filter_map(|plugin| plugin.name.clone())
+        .filter_map(|action| action.name().cloned())
         .collect();
     after.accept_change(
         &before,
@@ -69,7 +69,7 @@ pub(in crate::registry) async fn accept(
 }
 
 impl Identified {
-    fn new(deps: &RegistryDeps, state: &State, prepared: &Prepared) -> Result<Self, RegistryError> {
+    fn new(deps: &RegistryDeps, state: &State, prepared: &Prepared) -> Self {
         let registration = RegistrationRecord {
             id: prepared.plan.expected.next,
             initiator: prepared.plan.initiator.clone(),
@@ -87,7 +87,7 @@ impl Identified {
             },
             loaded: BTreeMap::new(),
         };
-        for (id, pending) in &prepared.plan.plugins {
+        for (id, action) in &prepared.plan.plugins {
             let mut plugin = state
                 .node
                 .plugins
@@ -95,32 +95,18 @@ impl Identified {
                 .cloned()
                 .unwrap_or_else(|| empty_plugin(*id));
             let previous = plugin.named_by;
-            identified.update_plugin(
-                state,
-                &mut plugin,
-                &pending.action,
-                prepared.loaded.get(id),
-            )?;
-            let registration = identified.write.registration.id;
-            if plugin.named_by == Some(registration) {
+            let activated = identified.update_plugin(state, &mut plugin, action);
+            if plugin.named_by == Some(identified.write.registration.id) {
                 identified.write.registration.names.insert(
                     *id,
                     RegisteredName {
-                        name: pending.name.clone(),
+                        name: action.name().cloned(),
                     },
                 );
                 identified.write.replaced.names.insert(*id, previous);
             }
-            if let Some(active) = &plugin.active
-                && active.registration == Some(registration)
-            {
-                identified.write.registration.code.insert(
-                    *id,
-                    RegisteredCode {
-                        code: active.code.clone(),
-                        intent: pending.intent,
-                    },
-                );
+            if let Some(code) = activated {
+                identified.write.registration.code.insert(*id, code);
             }
             identified.write.plugins.push(plugin);
         }
@@ -132,68 +118,66 @@ impl Identified {
             });
             identified.write.replaced.configuration = state.node.configuration;
         }
-        Ok(identified)
+        identified
     }
 
+    /// Apply one action to the plugin's references; the code it activates, if any.
+    ///
     /// A registration brings at most one generation per plugin, so the pair is its identity.
-    fn add_generation(&mut self, plugin: PluginId, content: &Content, loaded: &Loaded) -> CodeRef {
-        let id = GenerationId {
-            registration: self.write.registration.id,
-            plugin,
-        };
-        self.write.generations.push(GenerationRecord {
-            id,
-            artifact: ContentHash::of(&content.bytes),
-            settings: content.settings.clone(),
-            origin: content.origin.clone(),
-        });
-        let code = CodeRef::from(id);
-        self.loaded.insert(code.clone(), loaded.clone());
-        code
-    }
-
     fn update_plugin(
         &mut self,
         state: &State,
         plugin: &mut PluginRecord,
-        action: &Action,
-        loaded: Option<&Loaded>,
-    ) -> Result<(), RegistryError> {
+        action: &Action<Box<Loaded>>,
+    ) -> Option<RegisteredCode> {
         let registration = self.write.registration.id;
-        let code = match action {
-            Action::Code(content) => {
-                let loaded = loaded.ok_or_else(|| {
-                    RegistryError::Intent(format!(
-                        "code candidate for {} was not loaded",
-                        plugin.id
-                    ))
-                })?;
-                self.add_generation(plugin.id, content, loaded)
+        let (code, loaded) = match action {
+            Action::Code {
+                content, loaded, ..
+            } => {
+                self.write.generations.push(GenerationRecord {
+                    id: GenerationId {
+                        registration,
+                        plugin: plugin.id,
+                    },
+                    artifact: ContentHash::of(&content.bytes),
+                    settings: content.settings.clone(),
+                    origin: content.origin.clone(),
+                });
+                (RegisteredCode::Generation, loaded)
             }
-            Action::Factory(code, loaded) => {
-                self.loaded.insert(code.clone(), loaded.as_ref().clone());
-                code.clone()
-            }
+            Action::Factory {
+                artifact, loaded, ..
+            } => (
+                RegisteredCode::Factory {
+                    artifact: *artifact,
+                },
+                loaded,
+            ),
             Action::Remove => {
                 plugin.rollback_target = next_rollback(state, plugin);
                 plugin.active = None;
                 plugin.named_by = Some(registration);
-                return Ok(());
+                return None;
             }
-            Action::Rename => {
+            Action::Rename { .. } => {
                 plugin.named_by = Some(registration);
-                return Ok(());
+                return None;
             }
         };
+        self.loaded.insert(
+            CodeRef {
+                plugin: plugin.id,
+                code: code.code(registration),
+            },
+            loaded.as_ref().clone(),
+        );
         plugin.rollback_target = next_rollback(state, plugin);
         if plugin.active.is_none() {
             plugin.named_by = Some(registration);
         }
-        plugin.active = Some(PluginActivation {
-            code,
-            registration: Some(registration),
-        });
-        Ok(())
+        plugin.active = Some(PluginActivation::registered(registration, code));
+        Some(code)
     }
 }
 
@@ -228,10 +212,14 @@ fn contents(
                 plugin.id
             )));
         };
+        let code = CodeRef {
+            plugin: plugin.id,
+            code: active.code(),
+        };
         let loaded = identified
             .loaded
-            .get(&active.code)
-            .or(state.loaded.get(&active.code))
+            .get(&code)
+            .or(state.loaded.get(&code))
             .cloned();
         if contents.insert(name.clone(), loaded).is_some() {
             return Err(rejected(Cause::NameTaken { name: name.clone() }));
@@ -249,8 +237,8 @@ async fn persist(
 ) -> Result<(), RegistryError> {
     let result: Result<(), RegistryError> = async {
         factory::retain(deps, &write.plugins).await?;
-        for plugin in prepared.plan.plugins.values() {
-            if let Action::Code(content) = &plugin.action {
+        for action in prepared.plan.plugins.values() {
+            if let Action::Code { content, .. } = action {
                 deps.store.put_artifact(&content.bytes).await?;
             }
         }

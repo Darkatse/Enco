@@ -9,7 +9,7 @@ impl Connection {
         let receipts = std::mem::take(&mut self.receipts);
         let adapter = self.adapter.clone();
         let kernel = self.kernel.clone();
-        let code = self.code.clone();
+        let code = self.code;
         let stop = self.stop.clone();
         let pacing = self.pacing.clone();
         self.replies.spawn(async move {
@@ -27,7 +27,7 @@ impl Connection {
                         }
                     }
                     Receipt::Say { target, text } => {
-                        let sent = transport::send(adapter.clone(), kernel.clone(), code.clone(), target, Outgoing { text, file: None }, stop.clone(), pacing.clone()).await?;
+                        let sent = transport::send(adapter.clone(), kernel.clone(), code, target, Outgoing { text, file: None }, stop.clone(), pacing.clone()).await?;
                         if let Some(error) = sent.fatal { return Err(ChannelCallError::from(error).into()); }
                         if !matches!(sent.outcome, Settlement::Ok) { tracing::warn!(outcome = ?sent.outcome, "command receipt was not delivered"); }
                     }

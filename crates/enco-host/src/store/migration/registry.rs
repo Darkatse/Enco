@@ -2,6 +2,7 @@
 //!
 //! Every old generation number resolves to the code or configuration it names, and the rows are
 //! written again in the version 24 tables.
+use super::super::registry::{columns, reference};
 use super::super::{backend, rows, signed};
 use crate::sqlite::optional_unsigned;
 use enco_core::*;
@@ -191,16 +192,41 @@ impl Registry {
     /// or factory code by its artifact.
     pub fn code(&self, id: u64) -> Result<CodeRef, StoreError> {
         let generation = self.generations.get(&id).ok_or_else(|| unknown(id))?;
-        Ok(match generation.registration {
-            Some(registration) => CodeRef::from(GenerationId {
-                registration: RegistrationId(registration),
-                plugin: generation.plugin,
-            }),
-            None => CodeRef::Factory {
-                plugin: generation.plugin,
-                artifact: generation.artifact,
+        Ok(CodeRef {
+            plugin: generation.plugin,
+            code: match generation.registration {
+                Some(registration) => PluginCode::Generation {
+                    registration: RegistrationId(registration),
+                },
+                None => PluginCode::Factory {
+                    artifact: generation.artifact,
+                },
             },
         })
+    }
+
+    /// The code an old generation number names, which must be `plugin`'s.
+    pub fn plugin_code(&self, plugin: PluginId, id: u64) -> Result<PluginCode, StoreError> {
+        let code = self.code(id)?;
+        if code.plugin != plugin {
+            return Err(backend(format!(
+                "plugin {plugin} cannot run generation {id} of plugin {}",
+                code.plugin
+            )));
+        }
+        Ok(code.code)
+    }
+
+    /// What a registration activated for a plugin.
+    fn activated(&self, registration: u64, plugin: PluginId) -> Result<&Code, StoreError> {
+        self.code
+            .iter()
+            .find(|code| code.registration == registration && code.plugin == plugin)
+            .ok_or_else(|| {
+                backend(format!(
+                    "registration {registration} activated no code for plugin {plugin}"
+                ))
+            })
     }
 
     /// A rolled-back trial: always a generation a registration brought.
@@ -225,10 +251,10 @@ impl Registry {
                 continue;
             }
             let code = self.code(*id)?;
-            let plugin = code.plugin().ok_or_else(|| unknown(*id))?;
-            if plugins.insert(plugin, code).is_some() {
+            if plugins.insert(code.plugin, code.code).is_some() {
                 return Err(backend(format!(
-                    "two active generations of plugin {plugin}"
+                    "two active generations of plugin {}",
+                    code.plugin
                 )));
             }
         }
@@ -244,18 +270,38 @@ impl Registry {
             let Some(registration) = generation.registration else {
                 continue;
             };
-            let (based_on_generation, based_on_factory) =
-                self.columns(generation.plugin, generation.based_on)?;
+            // Code a registration brought came from its code intent; settings, from the code they
+            // reuse, with no intent.
+            let activated = self.activated(registration, generation.plugin)?;
+            let (intent, source, (based_on_generation, based_on_factory)) =
+                match (generation.based_on, &activated.intent) {
+                    (Some(based_on), None) => (
+                        None,
+                        None,
+                        columns(self.plugin_code(generation.plugin, based_on)?)?,
+                    ),
+                    (None, Some(intent)) => (Some(intent), activated.source.as_ref(), (None, None)),
+                    (Some(_), Some(_)) | (None, None) => {
+                        return Err(backend(format!(
+                            "registration {registration} records an intent that disagrees with \
+                             where the code of plugin {} came from",
+                            generation.plugin
+                        )));
+                    }
+                };
             let (registration, plugin) = (signed(registration)?, generation.plugin.to_string());
             connection
                 .execute(
-                    "INSERT INTO plugin_generations(registration,plugin_id,artifact,settings,based_on_generation,based_on_factory)
-                     VALUES (?,?,?,?,?,?)",
+                    "INSERT INTO plugin_generations(registration,plugin_id,artifact,settings,intent,
+                         source,based_on_generation,based_on_factory)
+                     VALUES (?,?,?,?,?,?,?,?)",
                     params![
                         registration,
                         plugin,
                         generation.artifact.to_string(),
                         generation.settings,
+                        intent,
+                        source,
                         based_on_generation,
                         based_on_factory
                     ],
@@ -271,31 +317,25 @@ impl Registry {
         }
         self.write_names(connection)?;
         for code in &self.code {
-            let factory = match self.code(code.generation)? {
-                CodeRef::Generation { id }
-                    if id.registration.0 == code.registration && id.plugin == code.plugin =>
-                {
+            let factory = match self.plugin_code(code.plugin, code.generation)? {
+                PluginCode::Generation { registration } if registration.0 == code.registration => {
                     None
                 }
-                CodeRef::Factory { artifact, .. } => Some(artifact.to_string()),
+                PluginCode::Factory { artifact } if code.intent.as_deref() == Some("factory") => {
+                    Some(artifact.to_string())
+                }
                 other => {
                     return Err(backend(format!(
-                        "registration {} activated {other:?}, which it did not bring",
-                        code.registration
+                        "registration {} activated {other:?} with intent {:?}, which it did not \
+                         bring or follow",
+                        code.registration, code.intent
                     )));
                 }
             };
             connection
                 .execute(
-                    "INSERT INTO registration_code(registration,plugin_id,factory,intent,source)
-                     VALUES (?,?,?,?,?)",
-                    params![
-                        signed(code.registration)?,
-                        code.plugin.to_string(),
-                        factory,
-                        code.intent,
-                        code.source
-                    ],
+                    "INSERT INTO registration_code(registration,plugin_id,factory) VALUES (?,?,?)",
+                    params![signed(code.registration)?, code.plugin.to_string(), factory],
                 )
                 .map_err(backend)?;
         }
@@ -303,26 +343,44 @@ impl Registry {
         self.write_plugins(connection)
     }
 
-    /// Two columns naming a plugin's code: a generation's registration or factory code's
-    /// artifact.
-    fn columns(
+    /// A version 23 reference: the code it names, and the registration that wrote it, which
+    /// activated that code.
+    fn reference(
         &self,
         plugin: PluginId,
-        id: Option<u64>,
-    ) -> Result<(Option<i64>, Option<String>), StoreError> {
-        let Some(id) = id else {
-            return Ok((None, None));
+        (generation, by): Reference,
+    ) -> Result<Option<PluginActivation>, StoreError> {
+        let Some(generation) = generation else {
+            return match by {
+                None => Ok(None),
+                Some(by) => Err(backend(format!(
+                    "registration {by} wrote a reference without code for plugin {plugin}"
+                ))),
+            };
         };
-        match self.code(id)? {
-            CodeRef::Generation { id } if id.plugin == plugin => {
-                Ok((Some(signed(id.registration.0)?), None))
+        let code = self.plugin_code(plugin, generation)?;
+        let activation = match code {
+            PluginCode::Generation { registration } if by == Some(registration.0) => {
+                PluginActivation::Generation { registration }
             }
-            CodeRef::Factory {
-                plugin: owner,
+            PluginCode::Factory { artifact } => PluginActivation::Factory {
                 artifact,
-            } if owner == plugin => Ok((None, Some(artifact.to_string()))),
-            other => Err(backend(format!("plugin {plugin} cannot run {other:?}"))),
+                registration: by.map(RegistrationId),
+            },
+            PluginCode::Generation { .. } => {
+                return Err(backend(format!(
+                    "plugin {plugin} runs {code}, which registration {by:?} did not bring"
+                )));
+            }
+        };
+        if let Some(by) = by
+            && self.plugin_code(plugin, self.activated(by, plugin)?.generation)? != code
+        {
+            return Err(backend(format!(
+                "registration {by} wrote a reference to {code} of plugin {plugin}, which it did not activate"
+            )));
         }
+        Ok(Some(activation))
     }
 
     fn write_names(&self, connection: &Connection) -> Result<(), StoreError> {
@@ -381,22 +439,21 @@ impl Registry {
 
     fn write_plugins(&self, connection: &Connection) -> Result<(), StoreError> {
         for plugin in &self.plugins {
-            let (active, active_factory) = self.columns(plugin.id, plugin.active.0)?;
-            let (rollback, rollback_factory) = self.columns(plugin.id, plugin.rollback.0)?;
+            let (active_by, active_factory) = reference(self.reference(plugin.id, plugin.active)?)?;
+            let (rollback_by, rollback_factory) =
+                reference(self.reference(plugin.id, plugin.rollback)?)?;
             connection
                 .execute(
-                    "INSERT INTO plugins(id,named_by,active,active_factory,active_by,
-                         rollback_target,rollback_factory,rollback_by)
-                     VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO plugins(id,named_by,active_by,active_factory,rollback_by,
+                         rollback_factory)
+                     VALUES (?,?,?,?,?,?)",
                     params![
                         plugin.id.to_string(),
                         plugin.named_by.map(signed).transpose()?,
-                        active,
+                        active_by,
                         active_factory,
-                        plugin.active.1.map(signed).transpose()?,
-                        rollback,
-                        rollback_factory,
-                        plugin.rollback.1.map(signed).transpose()?
+                        rollback_by,
+                        rollback_factory
                     ],
                 )
                 .map_err(backend)?;

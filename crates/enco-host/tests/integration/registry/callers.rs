@@ -140,7 +140,7 @@ async fn attempts_use_the_factory_in_safe_mode_and_the_trial_otherwise_with_prof
     callers.factory.script([reply("safe mode")]);
     callers.provider.script([reply("active")]);
     for (safe, expected) in [
-        (true, callers.factory_id.clone()),
+        (true, callers.factory_id),
         (false, CodeRef::from(callers.trial)),
     ] {
         callers.node.kernel.set_safe_mode(safe).await.unwrap();
@@ -282,7 +282,7 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
                 plan,
                 ref provider,
                 ..
-            } => Some((attempt, round, plan, provider.clone())),
+            } => Some((attempt, round, plan, *provider)),
             _ => None,
         })
         .collect();

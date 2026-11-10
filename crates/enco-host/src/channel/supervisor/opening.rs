@@ -32,7 +32,7 @@ impl Opening {
         stop: CancellationToken,
     ) -> Arc<Self> {
         let opening = Arc::new(Self {
-            code: export.code.clone(),
+            code: export.code,
             retrying: Mutex::new(None),
             stop,
         });
@@ -58,9 +58,7 @@ impl Opening {
     ) -> Result<Option<Arc<dyn Adapter>>, ChannelError> {
         let mut backoff = ChannelBackoff::default();
         loop {
-            let opened = export
-                .adapter
-                .open(settings, export.code.clone(), store.clone());
+            let opened = export.adapter.open(settings, export.code, store.clone());
             let error = tokio::select! {
                 biased;
                 () = self.stop.cancelled() => return Ok(None),

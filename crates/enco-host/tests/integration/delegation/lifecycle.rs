@@ -197,8 +197,8 @@ struct UntilCancelled(tokio::sync::Notify);
 
 #[async_trait]
 impl Tool for UntilCancelled {
-    fn code(&self) -> CodeRef {
-        CodeRef::Native {
+    fn code(&self) -> NativeCode {
+        NativeCode {
             name: "until-cancelled".into(),
             version: "test".into(),
         }
@@ -267,6 +267,33 @@ async fn a_halt_fails_a_delegation_that_settles_after_it_and_creates_no_child() 
             ..
         }
     )));
+    h.kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_delegation_without_a_child_or_a_profile_fails_and_creates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Harness::new(dir.path(), |_| {}).await;
+    let (parent, mut rx) = start(&h).await;
+    h.next("fixture")
+        .await
+        .respond(calls(vec![send("research", "task", None)]));
+    h.next("fixture").await.respond(reply("no child"));
+    finish(&mut rx).await;
+    let entries = h.kernel.log(parent, None).await.unwrap();
+    assert!(entries.iter().any(|entry| matches!(
+        &entry.body,
+        EntryBody::ToolCallSettled {
+            outcome: Settlement::Failed { failure },
+            delegated: None,
+            ..
+        } if failure.message
+            == "child Session `research` does not exist; pass `profile` to create it"
+    )));
+    assert!(matches!(
+        h.kernel.find_session("main/research").await,
+        Err(KernelError::Lookup(SessionLookupError::Unknown(_)))
+    ));
     h.kernel.shutdown().await.unwrap();
 }
 

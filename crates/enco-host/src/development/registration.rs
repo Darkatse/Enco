@@ -3,7 +3,7 @@ use super::{
     Applied, Development, DevelopmentError, Failed, Operation, check_cancelled,
     intent::{Change, Prepared},
 };
-use enco_core::Initiator;
+use enco_core::{CodeIntent, Initiator};
 use enco_kernel::{
     ConfigurationSource, PluginChange, Registered, RegisteredIntent, RegistrationRequest, Registry,
     RegistryDeps, RegistryError, Store,
@@ -119,8 +119,14 @@ impl Development {
         let registered = registry.register(request).await?;
         {
             let mut rejections = self.follow_rejections.write().await;
-            for (id, plugin) in &registered.registration.code {
-                if plugin.intent.is_some() {
+            for id in registered.registration.code.keys() {
+                // Code chosen by intent, not new settings for running code, ends a declined follow.
+                let brought = registered
+                    .generations
+                    .iter()
+                    .find(|generation| generation.id.plugin == *id)
+                    .map(|generation| &generation.origin);
+                if CodeIntent::chosen(brought).is_some() {
                     rejections.remove(id);
                 }
             }

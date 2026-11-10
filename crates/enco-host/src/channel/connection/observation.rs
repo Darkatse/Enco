@@ -58,7 +58,7 @@ impl Connection {
                     ..
                 } = &entry.body
                 {
-                    children.push(delegated.session.clone());
+                    children.push(delegated.target.session());
                 }
                 observation.apply(entry);
             }

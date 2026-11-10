@@ -66,9 +66,10 @@ pub(crate) async fn export(enco: &Enco, directory: &Path, forbidden: &[&Path]) -
             match plugin.running {
                 Running::Serving { name, activation }
                 | Running::Unavailable { name, activation } => {
-                    if let Some(code) = activation.code.name() {
-                        snapshot.metrics.running_code.insert(name, code);
-                    }
+                    snapshot
+                        .metrics
+                        .running_code
+                        .insert(name, activation.reference.name());
                 }
                 Running::Stopped => {}
             }

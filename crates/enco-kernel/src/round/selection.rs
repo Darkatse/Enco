@@ -14,7 +14,7 @@ impl Choice<'_> {
     pub fn combination(&self) -> Combination {
         Combination {
             settings: self.endpoint.endpoint.settings.clone(),
-            provider: self.export.code.clone(),
+            provider: self.export.code,
         }
     }
 }

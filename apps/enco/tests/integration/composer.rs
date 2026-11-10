@@ -3,7 +3,9 @@ use crate::{
     protocol::{Command, Output},
     support::{self, *},
 };
-use enco_core::{CodeRef, Entry, EntryBody, EventId, Health, RoundEnd, RunEnd, Settlement, code};
+use enco_core::{
+    CodeRef, Entry, EntryBody, EventId, Health, PluginCode, RoundEnd, RunEnd, Settlement, code,
+};
 use serde_json::{Value, json};
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
 
@@ -181,14 +183,14 @@ async fn source_composer_runs_with_profile_options_and_factory_recovers_a_bad_tr
     apply(&daemon).await;
     let registered = status(&daemon).await;
     assert!(registered["plugins"]["custom"]["registered"]["factory"].is_null());
-    let good: CodeRef = serde_json::from_value(
-        running_activation(&registered["plugins"]["custom"])["code"].clone(),
-    )
-    .unwrap();
-    let factory: CodeRef = serde_json::from_value(
-        registered["plugins"]["composer"]["registered"]["factory"]["code"].clone(),
-    )
-    .unwrap();
+    let good = running_code(&registered["plugins"]["custom"]);
+    let composer = &registered["plugins"]["composer"]["registered"];
+    let factory = CodeRef {
+        plugin: serde_json::from_value(composer["id"].clone()).unwrap(),
+        code: PluginCode::Factory {
+            artifact: serde_json::from_value(composer["factory"]["artifact"].clone()).unwrap(),
+        },
+    };
     assert_profile_composer(&daemon, &server, &good).await;
     std::fs::write(
         &file,
@@ -200,8 +202,8 @@ async fn source_composer_runs_with_profile_options_and_factory_recovers_a_bad_tr
     .unwrap();
     apply(&daemon).await;
     let trial = status(&daemon).await;
-    let bad = running_activation(&trial["plugins"]["custom"])["code"].clone();
-    assert_ne!(bad, json!(good));
+    let bad = running_code(&trial["plugins"]["custom"]);
+    assert_ne!(bad, good);
     assert_factory_recovery(&daemon, factory, good, bad).await;
     daemon.stop().await;
 }
@@ -239,7 +241,7 @@ async fn assert_profile_composer(daemon: &Daemon, server: &MockServer, good: &Co
     }));
 }
 
-async fn assert_factory_recovery(daemon: &Daemon, factory: CodeRef, good: CodeRef, bad: Value) {
+async fn assert_factory_recovery(daemon: &Daemon, factory: CodeRef, good: CodeRef, bad: CodeRef) {
     let log = send(daemon, "recovery", "recover through factory").await;
     assert!(log.iter().any(|entry| matches!(&entry.body,
         EntryBody::RoundEnded { end: RoundEnd::Failed { failure, .. }, .. } if failure.code == code::PLUGIN_CONTRACT)));
@@ -298,11 +300,8 @@ async fn assert_factory_recovery(daemon: &Daemon, factory: CodeRef, good: CodeRe
             .any(|(_, tool)| tool.name == *name)
     }));
     let restored = status(daemon).await;
-    assert_eq!(
-        running_activation(&restored["plugins"]["custom"])["code"],
-        json!(good)
-    );
+    assert_eq!(running_code(&restored["plugins"]["custom"]), good);
     let registered = &restored["plugins"]["custom"]["registered"]["activation"];
-    assert_eq!(registered["code"], bad);
+    assert_eq!(activation_code(registered), bad.code);
     assert_eq!(registered["health"]["status"], "failed");
 }

@@ -11,7 +11,7 @@ pub(super) struct State {
     /// Compiled code for every retained reference and this host's factory code.
     pub loaded: BTreeMap<CodeRef, Loaded>,
     /// This host's factory code, by the plugin it is reserved for.
-    pub factory: BTreeMap<PluginId, CodeRef>,
+    pub factory: BTreeMap<PluginId, ContentHash>,
     pub trial_successes: BTreeMap<GenerationId, u32>,
 }
 
@@ -119,103 +119,103 @@ impl State {
             .ok_or(RegistryError::UnknownGeneration(id))
     }
 
-    /// The artifact a reference runs; only plugin code has one.
-    pub fn artifact(&self, code: &CodeRef) -> Result<ContentHash, RegistryError> {
-        match code {
-            CodeRef::Generation { id } => Ok(self.generation(*id)?.artifact),
-            CodeRef::Factory { artifact, .. } => Ok(*artifact),
-            CodeRef::Native { name, .. } => Err(RegistryError::Intent(format!(
-                "native capability {name} is not plugin code"
-            ))),
+    /// The artifact a plugin's code runs.
+    pub fn artifact(&self, code: CodeRef) -> Result<ContentHash, RegistryError> {
+        match code.code {
+            PluginCode::Generation { registration } => Ok(self
+                .generation(GenerationId {
+                    registration,
+                    plugin: code.plugin,
+                })?
+                .artifact),
+            PluginCode::Factory { artifact } => Ok(artifact),
         }
     }
 
-    /// The bytes and settings a reference runs: factory code runs with empty settings.
-    pub fn content(&self, code: &CodeRef) -> Result<(ContentHash, PluginSettings), RegistryError> {
-        let settings = match code {
-            CodeRef::Generation { id } => self.generation(*id)?.settings.clone(),
-            CodeRef::Factory { .. } | CodeRef::Native { .. } => PluginSettings::default(),
-        };
-        Ok((self.artifact(code)?, settings))
+    /// The bytes and settings a plugin's code runs: factory code runs with empty settings.
+    pub fn content(&self, code: CodeRef) -> Result<(ContentHash, PluginSettings), RegistryError> {
+        match code.code {
+            PluginCode::Generation { registration } => {
+                let record = self.generation(GenerationId {
+                    registration,
+                    plugin: code.plugin,
+                })?;
+                Ok((record.artifact, record.settings.clone()))
+            }
+            PluginCode::Factory { artifact } => Ok((artifact, PluginSettings::default())),
+        }
     }
 
     /// A generation's standing on this node; factory code is never on trial.
-    pub fn health(&self, code: &CodeRef) -> Option<&Health> {
+    pub fn health(&self, code: CodeRef) -> Option<&Health> {
         self.node.health.get(&code.generation()?)
     }
 
-    /// The one derivation of where a reference's code came from, for both layers: settings
-    /// follow the code they reuse.
-    pub fn provenance(&self, code: &CodeRef) -> Result<CodeProvenance, RegistryError> {
-        let mut code = code.clone();
+    /// The one derivation of where a plugin's code came from, for both layers: settings follow
+    /// the code they reuse.
+    pub fn provenance(&self, code: CodeRef) -> Result<CodeProvenance, RegistryError> {
+        let mut code = code;
         loop {
-            let id = match &code {
-                CodeRef::Generation { id } => *id,
-                CodeRef::Factory { .. } => {
-                    return Ok(CodeProvenance {
-                        code,
-                        source: CodeSource::Factory,
-                    });
-                }
-                CodeRef::Native { name, .. } => {
-                    return Err(RegistryError::Intent(format!(
-                        "native capability {name} is not plugin code"
-                    )));
-                }
+            let Some(id) = code.generation() else {
+                return Ok(CodeProvenance {
+                    code: code.code,
+                    source: CodeSource::Factory,
+                });
             };
-            match &self.generation(id)?.origin {
-                Origin::Settings { based_on } => code = based_on.clone(),
-                Origin::Code => {
-                    // The registration that brings code always records its intent.
-                    let source = match self
-                        .intent
-                        .registrations
-                        .get(&id.registration)
-                        .and_then(|registration| registration.code.get(&id.plugin))
-                        .and_then(|registered| registered.intent)
-                    {
-                        Some(CodeIntent::Directory { source }) => CodeSource::Directory {
-                            registration: id.registration,
-                            source,
-                        },
-                        Some(CodeIntent::Factory) => CodeSource::Factory,
-                        None => {
-                            return Err(RegistryError::Intent(format!(
-                                "{id} brings code without a code intent"
-                            )));
-                        }
-                    };
-                    return Ok(CodeProvenance { code, source });
+            let source = match &self.generation(id)?.origin {
+                Origin::Settings { based_on } => {
+                    code.code = *based_on;
+                    continue;
                 }
-            }
+                Origin::Code {
+                    intent: CodeIntent::Directory { source },
+                } => CodeSource::Directory {
+                    registration: id.registration,
+                    source: *source,
+                },
+                Origin::Code {
+                    intent: CodeIntent::Factory,
+                } => CodeSource::Factory,
+            };
+            return Ok(CodeProvenance {
+                code: code.code,
+                source,
+            });
         }
     }
 
-    pub fn activation(&self, reference: &PluginActivation) -> Result<Activation, RegistryError> {
-        let (artifact, settings) = self.content(&reference.code)?;
-        let origin = reference
-            .code
+    /// A plugin's reference with everything status shows about it.
+    pub fn activation(
+        &self,
+        plugin: PluginId,
+        reference: PluginActivation,
+    ) -> Result<Activation, RegistryError> {
+        let code = CodeRef {
+            plugin,
+            code: reference.code(),
+        };
+        let (artifact, settings) = self.content(code)?;
+        let origin = code
             .generation()
             .map(|id| self.generation(id).map(|record| record.origin.clone()))
             .transpose()?;
         Ok(Activation {
-            provenance: self.provenance(&reference.code)?,
-            health: self.health(&reference.code).cloned(),
+            provenance: self.provenance(code)?,
+            health: self.health(code).cloned(),
             artifact,
             settings,
             origin,
-            code: reference.code.clone(),
-            registration: reference.registration,
+            reference,
         })
     }
 
-    pub fn active(&self, plugin: PluginId) -> Option<&CodeRef> {
-        self.node
-            .plugins
-            .get(&plugin)?
-            .active
-            .as_ref()
-            .map(|active| &active.code)
+    /// The code a plugin runs on this node.
+    pub fn active(&self, plugin: PluginId) -> Option<CodeRef> {
+        let active = self.node.plugins.get(&plugin)?.active?;
+        Some(CodeRef {
+            plugin,
+            code: active.code(),
+        })
     }
 
     pub fn contents(&self) -> BTreeMap<PluginName, Option<Loaded>> {
@@ -224,7 +224,7 @@ impl State {
             .map(|(name, id)| {
                 let loaded = self
                     .active(id)
-                    .and_then(|code| self.loaded.get(code))
+                    .and_then(|code| self.loaded.get(&code))
                     .cloned();
                 (name, loaded)
             })
@@ -285,13 +285,16 @@ impl State {
     }
 
     /// Code every reference on this node retains: current and rollback targets.
-    fn referenced(&self) -> impl Iterator<Item = &CodeRef> {
-        self.node
-            .plugins
-            .values()
-            .flat_map(|plugin| [&plugin.active, &plugin.rollback_target])
-            .flatten()
-            .map(|reference| &reference.code)
+    pub fn referenced(&self) -> impl Iterator<Item = CodeRef> {
+        self.node.plugins.values().flat_map(|plugin| {
+            [plugin.active, plugin.rollback_target]
+                .into_iter()
+                .flatten()
+                .map(|reference| CodeRef {
+                    plugin: plugin.id,
+                    code: reference.code(),
+                })
+        })
     }
 
     /// The artifacts every reference on this node runs, which artifact cleanup keeps.
@@ -304,18 +307,31 @@ impl State {
     pub fn release(&mut self) {
         let retained: BTreeSet<_> = self
             .referenced()
-            .chain(self.factory.values())
-            .cloned()
+            .chain(self.factory.iter().map(|(plugin, artifact)| CodeRef {
+                plugin: *plugin,
+                code: PluginCode::Factory {
+                    artifact: *artifact,
+                },
+            }))
             .collect();
         self.loaded.retain(|code, _| retained.contains(code));
         let trials: BTreeSet<_> = self
             .node
             .plugins
-            .values()
-            .filter_map(|plugin| plugin.active.as_ref()?.code.generation())
+            .keys()
+            .filter_map(|plugin| self.active(*plugin)?.generation())
             .filter(|id| self.node.health.get(id) == Some(&Health::Trial))
             .collect();
         self.trial_successes.retain(|id, _| trials.contains(id));
+    }
+
+    /// This host's factory code for `plugin`, when the host reserves one.
+    pub fn factory_code(&self, plugin: PluginId) -> Option<CodeRef> {
+        let artifact = *self.factory.get(&plugin)?;
+        Some(CodeRef {
+            plugin,
+            code: PluginCode::Factory { artifact },
+        })
     }
 
     pub fn view(

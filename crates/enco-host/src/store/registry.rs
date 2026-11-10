@@ -9,46 +9,57 @@ mod read;
 pub(super) use read::read;
 
 /// A plugin's code as two columns: a generation's registration, or factory code's artifact.
-fn columns(plugin: PluginId, code: &CodeRef) -> Result<(Option<i64>, Option<String>), StoreError> {
+pub(super) fn columns(code: PluginCode) -> Result<(Option<i64>, Option<String>), StoreError> {
     match code {
-        CodeRef::Generation { id } if id.plugin == plugin => {
-            Ok((Some(signed(id.registration.0)?), None))
-        }
-        CodeRef::Factory {
-            plugin: owner,
-            artifact,
-        } if *owner == plugin => Ok((None, Some(artifact.to_string()))),
-        other => Err(backend(format!("plugin {plugin} cannot run {other:?}"))),
+        PluginCode::Generation { registration } => Ok((Some(signed(registration.0)?), None)),
+        PluginCode::Factory { artifact } => Ok((None, Some(artifact.to_string()))),
     }
 }
 
-/// The code two columns name for a plugin, absent when both are empty.
-fn code(row: &Row<'_>, plugin: PluginId, column: usize) -> rusqlite::Result<Option<CodeRef>> {
+/// The plugin's code two columns name, absent when both are empty.
+fn code(row: &Row<'_>, column: usize) -> rusqlite::Result<Option<PluginCode>> {
     let generation = optional_unsigned(row, column)?;
     let factory: Option<ContentHash> = optional_text(row, column + 1)?;
     Ok(match (generation, factory) {
-        (Some(registration), _) => Some(CodeRef::from(GenerationId {
+        (Some(registration), _) => Some(PluginCode::Generation {
             registration: RegistrationId(registration),
-            plugin,
-        })),
-        (None, Some(artifact)) => Some(CodeRef::Factory { plugin, artifact }),
+        }),
+        (None, Some(artifact)) => Some(PluginCode::Factory { artifact }),
         (None, None) => None,
     })
 }
 
-/// A reference as three columns: its code, then the registration that wrote it.
-fn activation(
-    row: &Row<'_>,
-    plugin: PluginId,
-    column: usize,
-) -> rusqlite::Result<Option<PluginActivation>> {
-    let Some(code) = code(row, plugin, column)? else {
-        return Ok(None);
-    };
-    Ok(Some(PluginActivation {
-        code,
-        registration: optional_unsigned(row, column + 2)?.map(RegistrationId),
-    }))
+/// A reference as two columns: the registration that wrote it, and factory code's artifact.
+pub(super) fn reference(
+    activation: Option<PluginActivation>,
+) -> Result<(Option<i64>, Option<String>), StoreError> {
+    Ok(match activation {
+        None => (None, None),
+        Some(PluginActivation::Generation { registration }) => {
+            (Some(signed(registration.0)?), None)
+        }
+        Some(PluginActivation::Factory {
+            artifact,
+            registration,
+        }) => (
+            registration.map(|id| signed(id.0)).transpose()?,
+            Some(artifact.to_string()),
+        ),
+    })
+}
+
+/// The reference two columns name, absent when both are empty.
+fn activation(row: &Row<'_>, column: usize) -> rusqlite::Result<Option<PluginActivation>> {
+    let registration = optional_unsigned(row, column)?.map(RegistrationId);
+    let factory: Option<ContentHash> = optional_text(row, column + 1)?;
+    Ok(match (registration, factory) {
+        (None, None) => None,
+        (Some(registration), None) => Some(PluginActivation::Generation { registration }),
+        (registration, Some(artifact)) => Some(PluginActivation::Factory {
+            artifact,
+            registration,
+        }),
+    })
 }
 
 pub(super) fn register(
@@ -85,31 +96,15 @@ pub(super) fn register(
     }
     names(&tx, write)?;
     for (plugin, registered) in &record.code {
-        // A registration activates the generation it brought, or factory code.
-        let factory = match &registered.code {
-            CodeRef::Generation { id } if id.registration == record.id && id.plugin == *plugin => {
-                None
-            }
-            CodeRef::Factory {
-                plugin: owner,
-                artifact,
-            } if owner == plugin => Some(artifact.to_string()),
-            other => {
-                return Err(backend(format!(
-                    "registration {} cannot activate {other:?} for {plugin}",
-                    record.id
-                )));
-            }
-        };
-        let (intent, source) = match registered.intent {
-            Some(CodeIntent::Directory { source }) => (Some("directory"), Some(source.to_string())),
-            Some(CodeIntent::Factory) => (Some("factory"), None),
-            None => (None, None),
+        let factory = match registered {
+            RegisteredCode::Generation => None,
+            RegisteredCode::Factory { artifact } => Some(artifact.to_string()),
         };
         tx.execute(
-            "INSERT INTO registration_code(registration,plugin_id,factory,intent,source) VALUES (?,?,?,?,?)",
-            params![registration, plugin.to_string(), factory, intent, source],
-        ).map_err(backend)?;
+            "INSERT INTO registration_code(registration,plugin_id,factory) VALUES (?,?,?)",
+            params![registration, plugin.to_string(), factory],
+        )
+        .map_err(backend)?;
     }
     for generation in &write.generations {
         insert_generation(&tx, generation)?;
@@ -172,9 +167,14 @@ fn names(connection: &Connection, write: &RegistrationWrite) -> Result<(), Store
 
 /// Content is intent; its trial on this node is the node's fact, written with it.
 fn insert_generation(connection: &Connection, record: &GenerationRecord) -> Result<(), StoreError> {
-    let (based_on_generation, based_on_factory) = match &record.origin {
-        Origin::Code => (None, None),
-        Origin::Settings { based_on } => columns(record.id.plugin, based_on)?,
+    let (intent, source, (based_on_generation, based_on_factory)) = match &record.origin {
+        Origin::Code {
+            intent: CodeIntent::Directory { source },
+        } => (Some("directory"), Some(source.to_string()), (None, None)),
+        Origin::Code {
+            intent: CodeIntent::Factory,
+        } => (Some("factory"), None, (None, None)),
+        Origin::Settings { based_on } => (None, None, columns(*based_on)?),
     };
     let key = params![
         signed(record.id.registration.0)?,
@@ -182,13 +182,16 @@ fn insert_generation(connection: &Connection, record: &GenerationRecord) -> Resu
     ];
     connection
         .execute(
-            "INSERT INTO plugin_generations(registration,plugin_id,artifact,settings,based_on_generation,based_on_factory)
-             VALUES (?,?,?,?,?,?)",
+            "INSERT INTO plugin_generations(registration,plugin_id,artifact,settings,intent,source,
+                 based_on_generation,based_on_factory)
+             VALUES (?,?,?,?,?,?,?,?)",
             params![
                 signed(record.id.registration.0)?,
                 record.id.plugin.to_string(),
                 record.artifact.to_string(),
                 encode(&record.settings)?,
+                intent,
+                source,
                 based_on_generation,
                 based_on_factory
             ],
@@ -276,29 +279,19 @@ fn references(
     config: Option<RegistrationId>,
 ) -> Result<(), StoreError> {
     for plugin in plugins {
-        let reference = |activation: &Option<PluginActivation>| -> Result<_, StoreError> {
-            let Some(activation) = activation else {
-                return Ok((None, None, None));
-            };
-            let (generation, factory) = columns(plugin.id, &activation.code)?;
-            let by = activation.registration.map(|id| signed(id.0)).transpose()?;
-            Ok((generation, factory, by))
-        };
-        let (active, active_factory, active_by) = reference(&plugin.active)?;
-        let (rollback, rollback_factory, rollback_by) = reference(&plugin.rollback_target)?;
+        let (active_by, active_factory) = reference(plugin.active)?;
+        let (rollback_by, rollback_factory) = reference(plugin.rollback_target)?;
         let changed = connection
             .execute(
-                "UPDATE plugins SET named_by=?,active=?,active_factory=?,active_by=?,
-                     rollback_target=?,rollback_factory=?,rollback_by=?
+                "UPDATE plugins SET named_by=?,active_by=?,active_factory=?,rollback_by=?,
+                     rollback_factory=?
                  WHERE id=?",
                 params![
                     plugin.named_by.map(|id| signed(id.0)).transpose()?,
-                    active,
-                    active_factory,
                     active_by,
-                    rollback,
-                    rollback_factory,
+                    active_factory,
                     rollback_by,
+                    rollback_factory,
                     plugin.id.to_string()
                 ],
             )
@@ -321,7 +314,7 @@ fn references(
         .query_row(
             "SELECT n.name FROM plugins p
          JOIN registration_names n ON n.registration=p.named_by AND n.plugin_id=p.id
-         WHERE (p.active IS NOT NULL OR p.active_factory IS NOT NULL) AND n.name IS NOT NULL
+         WHERE (p.active_by IS NOT NULL OR p.active_factory IS NOT NULL) AND n.name IS NOT NULL
          GROUP BY n.name HAVING COUNT(*)>1 LIMIT 1",
             [],
             |row| row.get(0),

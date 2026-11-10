@@ -123,7 +123,7 @@ impl Transport {
     async fn record(&self, export: &str, arguments: Value) -> Result<MappingOrigin, StoreError> {
         mapping::record(
             self.store.as_ref(),
-            self.code.clone(),
+            self.code,
             format!("channel.{export}"),
             arguments,
         )

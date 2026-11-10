@@ -282,7 +282,10 @@ pub(super) fn record_root(connection: &Connection, creation: &Creation) -> Resul
     Ok(())
 }
 
-/// A child's row, from the creation record its parent's commit writes in the same transaction.
+/// A child's row, from the creation record its parent's commit appends in the same transaction.
+///
+/// The parent must have no halt waiting. It is then unarchived and its actor alone names its
+/// children, in call order, so the name is free; the unique index on unarchived names holds it.
 pub(super) fn create_child(tx: &Transaction<'_>, creation: &Creation) -> Result<(), StoreError> {
     materialize(tx, &SessionRecord::created(creation))
 }

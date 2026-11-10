@@ -87,15 +87,15 @@ impl SessionActor {
                 attempt,
                 purpose: planned.kind.purpose(),
                 plan: planned.plan.hash(),
-                composer: planned.composer.clone(),
-                provider: export.code.clone(),
+                composer: planned.composer,
+                provider: export.code,
                 settings: endpoint.settings.clone(),
             }],
             Some(planned.plan.clone()),
         )
         .await?;
         let record = Recording {
-            code: export.code.clone(),
+            code: export.code,
             store: self.deps.store.clone(),
         };
         let Answered { result, origin } = tokio::select! {

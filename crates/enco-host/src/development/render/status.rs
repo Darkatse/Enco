@@ -7,7 +7,7 @@ use crate::{
     development::PluginUnit,
     status::{CallStep, Status, Step},
 };
-use enco_core::{IntentPath, Settlement, Tz};
+use enco_core::{IntentPath, PluginCode, Settlement, Tz};
 use enco_kernel::{Activation, CodeSource, Running};
 
 impl Status {
@@ -95,8 +95,10 @@ fn registered(plugin: &PluginUnit) -> String {
 ///
 /// Its standing on this node follows; a generation that pairs settings with factory code says so.
 fn selected(activation: &Activation) -> String {
-    let mut text = activation.code.to_string();
-    if activation.code.generation().is_some() && activation.provenance.source == CodeSource::Factory
+    let code = activation.reference.code();
+    let mut text = code.to_string();
+    if matches!(code, PluginCode::Generation { .. })
+        && activation.provenance.source == CodeSource::Factory
     {
         text.push_str(" · factory code");
     }

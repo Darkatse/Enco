@@ -278,9 +278,9 @@ async fn evidence_is_isolated_and_regrading_uses_the_saved_trial() {
         "{output}"
     );
     let plugins = read(&trial_dir.join("snapshot/status.json"))["plugins"].clone();
-    let active = &plugins["openai-compatible"]["running"]["running"]["activation"]["code"];
+    let active = &plugins["openai-compatible"]["running"]["running"]["activation"]["reference"];
     let running = match active["kind"].as_str() {
-        Some("generation") => format!("registration {}", active["id"]["registration"]),
+        Some("generation") => format!("registration {}", active["registration"]),
         Some("factory") => "factory code".into(),
         kind => panic!("unexpected code kind {kind:?}"),
     };
@@ -513,7 +513,11 @@ async fn source_fixture_is_registered_offline_before_serving() {
     let status = read(&trial.join("snapshot/status.json"));
     let running = &status["plugins"]["fixture"]["running"]["running"]["activation"];
     assert_eq!(running["origin"], "code");
-    assert_eq!(running["registration"], status["configuration"]["running"]);
+    let reference = &running["reference"];
+    assert_eq!(
+        reference["registration"],
+        status["configuration"]["running"]
+    );
     assert!(!trial.join("home/.cargo").exists());
     assert!(trial.join("home/.enco/plugins/fixture/README.md").is_file());
     assert_eq!(
@@ -527,10 +531,9 @@ async fn source_fixture_is_registered_offline_before_serving() {
     // The snapshot attributes the call to the code that ran it, named by the registration the
     // complete history shows selecting it.
     let calls = read(&trial.join("snapshot/tool-calls.json"));
-    let code = &running["code"];
     assert_eq!(
         calls[0]["plugin_code"],
-        format!("registration {}", code["id"]["registration"]),
+        format!("registration {}", reference["registration"]),
         "{calls:#}"
     );
     let history = read(&trial.join("snapshot/history.json"));
@@ -540,7 +543,10 @@ async fn source_fixture_is_registered_offline_before_serving() {
             .unwrap()
             .iter()
             .flat_map(|registration| registration["changes"].as_array().unwrap())
-            .any(|change| change["name"] == "fixture" && change["selected"]["code"] == *code),
+            .any(|change| {
+                change["name"] == "fixture"
+                    && change["selected"]["code"]["registration"] == reference["registration"]
+            }),
         "{history:#}"
     );
     evaluation.finish().await;

@@ -84,7 +84,7 @@ fn attempts(entries: &[Entry]) -> Vec<(CodeRef, &str, ContentHash)> {
                 settings,
                 plan,
                 ..
-            } => Some((provider.clone(), settings.model.as_str(), *plan)),
+            } => Some((*provider, settings.model.as_str(), *plan)),
             _ => None,
         })
         .collect()
@@ -252,7 +252,7 @@ async fn automatic_safe_mode_tracks_repair_and_starts_each_run_afresh() {
             })
             .unwrap();
         let running: Vec<_> = failed.plugins.values().collect();
-        assert!(running.contains(&&broken) && !running.contains(&&original));
+        assert!(running.contains(&&broken.code) && !running.contains(&&original.code));
         let next = send(&kernel, "new work").await;
         assert_eq!(
             modes(&next),
@@ -297,16 +297,9 @@ async fn a_third_attempt_rollback_grants_the_new_generation_its_own_allowance() 
     assert_eq!(
         attempts[..6]
             .iter()
-            .map(|(code, _, _)| code.clone())
+            .map(|(code, _, _)| *code)
             .collect::<Vec<_>>(),
-        [
-            broken.clone(),
-            broken.clone(),
-            broken.clone(),
-            original.clone(),
-            original.clone(),
-            original.clone()
-        ]
+        [broken, broken, broken, original, original, original]
     );
     assert!(
         attempts[..6]
@@ -347,9 +340,9 @@ async fn failed_round_records_the_generations_after_rollback_and_does_not_retry_
     assert_eq!(
         attempts(&log)
             .iter()
-            .map(|(code, _, _)| code.clone())
+            .map(|(code, _, _)| *code)
             .collect::<Vec<_>>(),
-        [broken.clone(), original.clone()]
+        [broken, original]
     );
     for active in log.iter().filter_map(|entry| match &entry.body {
         EntryBody::RoundEnded {
@@ -359,7 +352,7 @@ async fn failed_round_records_the_generations_after_rollback_and_does_not_retry_
         _ => None,
     }) {
         let running: Vec<_> = active.plugins.values().collect();
-        assert!(running.contains(&&original) && !running.contains(&&broken));
+        assert!(running.contains(&&original.code) && !running.contains(&&broken.code));
     }
     assert_eq!(factory.requests.lock().unwrap().len(), 1);
     kernel.shutdown().await.unwrap();

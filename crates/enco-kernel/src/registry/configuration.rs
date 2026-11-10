@@ -279,15 +279,10 @@ impl Registry {
         commit: crate::Commit,
     ) -> Result<crate::CommitOutcome, StoreError> {
         let mut creates = commit
-            .deliveries
+            .entries
             .iter()
-            .filter_map(|delivery| match &delivery.kind {
-                crate::SessionDeliveryKind::Delegation {
-                    create: Some(child),
-                    ..
-                } => Some(&child.profile),
-                _ => None,
-            });
+            .filter_map(|entry| entry.body.created_child())
+            .map(|child| &child.profile);
         let Some(first) = creates.next() else {
             return self.deps.store.commit(session, commit).await;
         };

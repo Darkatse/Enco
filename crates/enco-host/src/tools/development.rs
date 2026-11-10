@@ -45,7 +45,7 @@ struct DevelopmentHandler {
 
 #[async_trait]
 impl Tool for DevelopmentHandler {
-    fn code(&self) -> CodeRef {
+    fn code(&self) -> NativeCode {
         super::code()
     }
     fn spec(&self) -> ToolSpec {

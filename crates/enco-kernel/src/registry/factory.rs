@@ -26,19 +26,17 @@ pub(super) async fn load(deps: &RegistryDeps, state: &mut State) -> Result<(), R
                     error,
                 })
             })?;
-        let code = code(factory);
-        state.factory.insert(factory.id, code.clone());
-        state.loaded.insert(code, loaded);
+        let artifact = ContentHash::of(factory.artifact);
+        state.factory.insert(factory.id, artifact);
+        state.loaded.insert(
+            CodeRef {
+                plugin: factory.id,
+                code: PluginCode::Factory { artifact },
+            },
+            loaded,
+        );
     }
     Ok(())
-}
-
-/// The reference to a factory plugin's embedded code.
-pub(super) fn code(factory: &FactoryPlugin) -> CodeRef {
-    CodeRef::Factory {
-        plugin: factory.id,
-        artifact: ContentHash::of(factory.artifact),
-    }
 }
 
 /// Embedded bytes a reference names as factory code are written as a file for a later host.
@@ -52,11 +50,9 @@ pub(super) async fn retain(
         let hash = ContentHash::of(factory.artifact);
         let referenced = plugins
             .iter()
-            .flat_map(|plugin| [&plugin.active, &plugin.rollback_target])
+            .flat_map(|plugin| [plugin.active, plugin.rollback_target])
             .flatten()
-            .any(|reference| {
-                matches!(reference.code, CodeRef::Factory { artifact, .. } if artifact == hash)
-            });
+            .any(|reference| reference.code() == PluginCode::Factory { artifact: hash });
         if referenced {
             deps.store.put_artifact(factory.artifact).await?;
         }

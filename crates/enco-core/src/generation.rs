@@ -1,4 +1,7 @@
-use crate::{CodeRef, ContentHash, Failure, GenerationId, PluginId, PluginName, RegistrationId};
+use crate::{
+    CodeIntent, ContentHash, Failure, GenerationId, PluginCode, PluginId, PluginName,
+    RegistrationId,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -42,13 +45,16 @@ impl Default for PluginSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "origin", rename_all = "snake_case")]
 pub enum Origin {
-    /// The registration's code intent supplied it: a built source directory, or the host's
-    /// factory code with non-empty settings.
-    Code,
+    /// The owner's code intent supplied it: a built source directory, or the host's factory code
+    /// with non-empty settings.
+    Code {
+        /// The code source the registration chose.
+        intent: CodeIntent,
+    },
     /// New settings paired with the code that ran when they were registered.
     Settings {
-        /// The code reused, a generation or factory code.
-        based_on: CodeRef,
+        /// The plugin's code reused, a generation or factory code.
+        based_on: PluginCode,
     },
 }
 
@@ -85,7 +91,7 @@ pub struct RolledBack {
     /// The generation that failed on trial.
     pub from: GenerationId,
     /// What runs instead: an earlier generation or factory code; absent when nothing can run.
-    pub to: Option<CodeRef>,
+    pub to: Option<PluginCode>,
     /// Plugin fault which triggered recovery.
     pub failure: Failure,
 }
@@ -111,5 +117,5 @@ pub struct ActiveCode {
     /// Registration of the active configuration.
     pub configuration: RegistrationId,
     /// Code each running plugin uses.
-    pub plugins: BTreeMap<PluginId, CodeRef>,
+    pub plugins: BTreeMap<PluginId, PluginCode>,
 }

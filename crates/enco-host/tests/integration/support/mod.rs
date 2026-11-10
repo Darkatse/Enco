@@ -161,6 +161,14 @@ pub fn running_activation(plugin: &PluginStatus) -> Option<&Activation> {
     plugin.running.activation()
 }
 
+/// The code a plugin runs, named with its plugin.
+pub fn running_code(plugin: &PluginStatus) -> Option<CodeRef> {
+    Some(CodeRef {
+        plugin: plugin.id,
+        code: running_activation(plugin)?.reference.code(),
+    })
+}
+
 pub fn store_paths(root: &Path) -> StorePaths {
     StorePaths {
         db: root.join("enco.db"),
@@ -576,8 +584,8 @@ struct TestStatus(Arc<Registry>);
 
 #[async_trait]
 impl Tool for TestStatus {
-    fn code(&self) -> CodeRef {
-        CodeRef::Native {
+    fn code(&self) -> NativeCode {
+        NativeCode {
             name: "test-status".into(),
             version: "1".into(),
         }

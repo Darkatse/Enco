@@ -1,6 +1,6 @@
 //! Reconstruct typed registry facts from their durable rows.
 use super::{activation, backend, code};
-use crate::sqlite::optional_unsigned;
+use crate::sqlite::{optional_text, optional_unsigned};
 use crate::store::rows;
 use enco_core::*;
 use enco_kernel::{AcceptedIntent, NodeState, RegistryState, Replaced, StoreError};
@@ -14,14 +14,13 @@ pub(in crate::store) fn read(connection: &Connection) -> Result<RegistryState, S
         intent: AcceptedIntent {
             generations: query(
                 connection,
-                "SELECT registration, plugin_id, artifact, settings,
+                "SELECT registration, plugin_id, artifact, settings, intent, source,
                         based_on_generation, based_on_factory
                  FROM plugin_generations ORDER BY registration, plugin_id",
                 |row| {
-                    let plugin = rows::text(row, 1)?;
                     let id = GenerationId {
                         registration: RegistrationId(rows::unsigned(row, 0)?),
-                        plugin,
+                        plugin: rows::text(row, 1)?,
                     };
                     Ok((
                         id,
@@ -29,9 +28,17 @@ pub(in crate::store) fn read(connection: &Connection) -> Result<RegistryState, S
                             id,
                             artifact: rows::text(row, 2)?,
                             settings: rows::document(row, 3)?,
-                            origin: match code(row, plugin, 4)? {
-                                None => Origin::Code,
+                            origin: match code(row, 6)? {
                                 Some(based_on) => Origin::Settings { based_on },
+                                None => Origin::Code {
+                                    intent: match row.get::<_, String>(4)?.as_str() {
+                                        "directory" => CodeIntent::Directory {
+                                            source: rows::text(row, 5)?,
+                                        },
+                                        "factory" => CodeIntent::Factory,
+                                        kind => return Err(invalid_kind(4, kind)),
+                                    },
+                                },
                             },
                         },
                     ))
@@ -103,8 +110,7 @@ fn node(
     Ok(NodeState {
         plugins: query(
             connection,
-            "SELECT id, named_by, active, active_factory, active_by,
-                    rollback_target, rollback_factory, rollback_by
+            "SELECT id, named_by, active_by, active_factory, rollback_by, rollback_factory
              FROM plugins",
             |row| {
                 let id = rows::text(row, 0)?;
@@ -113,8 +119,8 @@ fn node(
                     PluginRecord {
                         id,
                         named_by: optional_unsigned(row, 1)?.map(RegistrationId),
-                        active: activation(row, id, 2)?,
-                        rollback_target: activation(row, id, 5)?,
+                        active: activation(row, 2)?,
+                        rollback_target: activation(row, 4)?,
                     },
                 ))
             },
@@ -191,23 +197,14 @@ fn registrations(
     }
     let code = query::<_, Vec<_>>(
         connection,
-        "SELECT registration,plugin_id,generation,factory,intent,source
-         FROM registration_code ORDER BY registration",
+        "SELECT registration,plugin_id,factory FROM registration_code ORDER BY registration",
         |row| {
-            let plugin = rows::text(row, 1)?;
             Ok((
                 RegistrationId(rows::unsigned(row, 0)?),
-                plugin,
-                RegisteredCode {
-                    code: code(row, plugin, 2)?.ok_or_else(|| invalid_kind(2, "no code"))?,
-                    intent: match row.get::<_, Option<String>>(4)?.as_deref() {
-                        Some("directory") => Some(CodeIntent::Directory {
-                            source: rows::text(row, 5)?,
-                        }),
-                        Some("factory") => Some(CodeIntent::Factory),
-                        None => None,
-                        Some(kind) => return Err(invalid_kind(4, kind)),
-                    },
+                rows::text(row, 1)?,
+                match optional_text(row, 2)? {
+                    None => RegisteredCode::Generation,
+                    Some(artifact) => RegisteredCode::Factory { artifact },
                 },
             ))
         },

@@ -98,20 +98,25 @@ impl SessionActor {
                 },
                 Err(failure) => Executed::outcome(Outcome::Failed { failure }),
             },
-            Execution::Delegation(request) => {
-                let (fact, delivery) = self.delegation(request).await?;
-                let short = fact.session.name.short_name();
-                let value = if fact.creation.is_some() {
-                    format!("Created child Session `{short}` and sent it the message.")
-                } else {
-                    format!("Sent the message to `{short}`.")
-                };
-                Executed {
-                    delegated: Some(fact),
-                    deliveries: vec![delivery],
-                    ..Executed::outcome(ok(value.into()))
+            Execution::Delegation(request) => match self.delegation(request).await? {
+                Ok((fact, delivery)) => {
+                    let value = match &fact.target {
+                        DelegationTarget::Created(creation) => format!(
+                            "Created child Session `{}` and sent it the message.",
+                            creation.name.short_name()
+                        ),
+                        DelegationTarget::Existing(child) => {
+                            format!("Sent the message to `{}`.", child.name.short_name())
+                        }
+                    };
+                    Executed {
+                        delegated: Some(fact),
+                        deliveries: vec![delivery],
+                        ..Executed::outcome(ok(value.into()))
+                    }
                 }
-            }
+                Err(failure) => Executed::outcome(Outcome::Failed { failure }),
+            },
         })
     }
 

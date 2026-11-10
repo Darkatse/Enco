@@ -5,9 +5,9 @@ use delegation::DelegationRequest;
 use schedule::ScheduleRequest;
 
 use crate::{
-    builtin::{BuiltinCall, REPLY_SKIP},
+    builtin::{ActorCall, REPLY_SKIP, REPLY_SKIPPED},
     session::SessionActor,
-    snapshot::{Snapshot, ToolSource},
+    snapshot::{Handler, Snapshot, SnapshotTool},
     *,
 };
 use enco_core::*;
@@ -107,7 +107,7 @@ impl SessionActor {
                 round,
                 call: calls[*index].id,
                 capability: tool.id.clone(),
-                code: tool.code.clone(),
+                code: tool.code(),
                 effect: tool.spec.effect,
             })
             .collect();
@@ -116,12 +116,12 @@ impl SessionActor {
         }
         let batch_cancel = token.child_token();
         let mut tasks = tokio::task::JoinSet::new();
-        let now = self.deps.clock.now();
+        let parsing = ParseContext {
+            name: self.session.name.clone(),
+            now: self.deps.clock.now(),
+            timezone,
+        };
         for (index, tool, args) in ready {
-            let code = tool.code.clone();
-            let builtin = tool.builtin();
-            let name = self.session.name.clone();
-            let tool = tool.tool.clone();
             let ctx = CallContext {
                 session: self.session.id,
                 working_dir: self.session.working_dir.clone(),
@@ -129,23 +129,16 @@ impl SessionActor {
                 cancel: batch_cancel.child_token(),
                 result_budget: limits::TOOL_RESULT_INLINE_BYTES,
             };
+            let execution = execute(
+                tool.handler.clone(),
+                tool.spec.clone(),
+                args,
+                ctx,
+                parsing.clone(),
+            );
             tasks.spawn(async move {
-                let parsed = match builtin {
-                    Some(BuiltinCall::SessionSend) => {
-                        DelegationRequest::parse(args, &name, &ctx.working_dir)
-                            .map(Execution::Delegation)
-                    }
-                    Some(BuiltinCall::Schedule(call)) => {
-                        ScheduleRequest::parse(call, args, ctx.session, now, timezone)
-                            .map(Execution::Schedule)
-                    }
-                    Some(BuiltinCall::ReplySkip) | None => {
-                        Ok(Execution::Result(tool.call(ctx, args).await))
-                    }
-                };
-                let execution =
-                    parsed.unwrap_or_else(|failure| Execution::Result(Outcome::Failed { failure }));
-                (index, Some(code), execution)
+                let (verdict, execution) = execution.await;
+                (index, verdict, execution)
             });
         }
         let mut stopped = None;
@@ -162,16 +155,9 @@ impl SessionActor {
             return Err(crate::run::RoundError::Stopped(error));
         }
         outcomes.sort_unstable_by_key(|(index, _, _)| *index);
-        for (index, code, outcome) in outcomes {
-            let verdict = match &outcome {
-                Execution::Delegation(..) | Execution::Schedule(..) => Verdict::Ok,
-                Execution::Result(Outcome::Ok { .. }) => Verdict::Ok,
-                Execution::Result(Outcome::Failed { failure } | Outcome::Unknown { failure }) => {
-                    Verdict::Failed(failure.clone())
-                }
-            };
+        for (index, verdict, outcome) in outcomes {
             self.settle(calls[index].id, outcome).await?;
-            if let Some(code) = code {
+            if let Some((code, verdict)) = verdict {
                 self.deps
                     .registry
                     .report(&code, verdict, Some(self.session.id))
@@ -192,9 +178,9 @@ impl SessionActor {
         match calls {
             [] => RoundEnd::Replied,
             [call]
-                if disclosed(snapshot, plan, call)
-                    .is_some_and(|tool| tool.builtin() == Some(BuiltinCall::ReplySkip))
-                    && self.settled_ok(call.id) =>
+                if disclosed(snapshot, plan, call).is_some_and(|tool| {
+                    matches!(tool.handler, Handler::Actor(ActorCall::ReplySkip))
+                }) && self.settled_ok(call.id) =>
             {
                 RoundEnd::ReplySkipped
             }
@@ -219,6 +205,57 @@ impl SessionActor {
     }
 }
 
+/// What an actor call's arguments are parsed against: the Session's name, the time its batch
+/// started and the time zone its Round sampled.
+#[derive(Clone)]
+struct ParseContext {
+    name: SessionName,
+    now: DateTime<Utc>,
+    timezone: Tz,
+}
+
+/// Run one ready call: an actor call only parses its arguments, a host or plugin tool runs.
+///
+/// Only plugin code is on trial, so only a plugin's outcome is also a verdict on its code.
+async fn execute(
+    handler: Handler,
+    spec: ToolSpec,
+    args: serde_json::Map<String, serde_json::Value>,
+    ctx: CallContext,
+    parsing: ParseContext,
+) -> (Option<(CodeRef, Verdict)>, Execution) {
+    let parsed = match handler {
+        Handler::Actor(ActorCall::SessionSend) => {
+            DelegationRequest::parse(args, &parsing.name, &ctx.working_dir)
+                .map(Execution::Delegation)
+        }
+        Handler::Actor(ActorCall::Schedule(call)) => {
+            ScheduleRequest::parse(call, args, ctx.session, parsing.now, parsing.timezone)
+                .map(Execution::Schedule)
+        }
+        Handler::Actor(ActorCall::ReplySkip) => Ok(Execution::Result(Outcome::Ok {
+            value: REPLY_SKIPPED.into(),
+            images: Vec::new(),
+            outgoing: None,
+        })),
+        Handler::Host(tool) => Ok(Execution::Result(tool.call(ctx, args).await)),
+        Handler::Plugin { code, tools, .. } => {
+            let outcome = tools.call(ctx, &spec, args).await;
+            let verdict = match &outcome {
+                Outcome::Ok { .. } => Verdict::Ok,
+                Outcome::Failed { failure } | Outcome::Unknown { failure } => {
+                    Verdict::Failed(failure.clone())
+                }
+            };
+            return (Some((code, verdict)), Execution::Result(outcome));
+        }
+    };
+    (
+        None,
+        parsed.unwrap_or_else(|failure| Execution::Result(Outcome::Failed { failure })),
+    )
+}
+
 /// One batch of a reply's calls, with what the whole reply shares.
 #[derive(Clone, Copy)]
 struct Batch<'a> {
@@ -234,7 +271,7 @@ fn disclosed<'a>(
     snapshot: &'a Snapshot,
     plan: &ContextPlan,
     call: &ToolCall,
-) -> Option<&'a crate::snapshot::SnapshotTool> {
+) -> Option<&'a SnapshotTool> {
     let (id, _) = plan.tools.iter().find(|(_, spec)| spec.name == call.name)?;
     snapshot.tools.iter().find(|tool| tool.id == *id)
 }
@@ -246,13 +283,7 @@ fn prepare<'a>(
     skip: &Result<(), Failure>,
     token: &CancellationToken,
     exports: &Exports,
-) -> Result<
-    (
-        &'a crate::snapshot::SnapshotTool,
-        serde_json::Map<String, serde_json::Value>,
-    ),
-    Failure,
-> {
+) -> Result<(&'a SnapshotTool, serde_json::Map<String, serde_json::Value>), Failure> {
     let failure = |code: &str, message: String| Failure {
         code: code.into(),
         message,
@@ -270,8 +301,8 @@ fn prepare<'a>(
             format!("tool `{}` is not available in this Round", call.name),
         )
     })?;
-    if let ToolSource::Plugin(name) = &tool.source
-        && let Some(failed) = exports.failed(&tool.code)
+    if let Handler::Plugin { name, code, .. } = &tool.handler
+        && let Some(failed) = exports.failed(code)
     {
         return Err(failure(
             code::PLUGIN_ROLLED_BACK,
@@ -296,7 +327,7 @@ fn prepare<'a>(
             format!("invalid arguments for `{}`: {error}", call.name),
         )
     })?;
-    if tool.builtin() == Some(BuiltinCall::ReplySkip) {
+    if matches!(tool.handler, Handler::Actor(ActorCall::ReplySkip)) {
         skip.clone()?;
     }
     Ok((tool, args))

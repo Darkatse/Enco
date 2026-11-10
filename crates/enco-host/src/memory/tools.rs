@@ -124,8 +124,8 @@ pub fn memory_tools(memories: Arc<Memories>) -> Result<Vec<Arc<dyn Tool>>, Schem
 
 #[async_trait]
 impl Tool for MemoryTool {
-    fn code(&self) -> CodeRef {
-        CodeRef::Native {
+    fn code(&self) -> NativeCode {
+        NativeCode {
             name: "host-memory".into(),
             version: env!("CARGO_PKG_VERSION").into(),
         }

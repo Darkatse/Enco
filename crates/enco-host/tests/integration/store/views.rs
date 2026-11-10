@@ -81,7 +81,7 @@ impl Facts {
                     EntryBody::ToolCallSettled {
                         delegated:
                             Some(Delegated {
-                                creation: Some(creation),
+                                target: DelegationTarget::Created(creation),
                                 ..
                             }),
                         ..
@@ -262,11 +262,7 @@ async fn delegate(main: &Actor<'_>, parent: &SessionRecord) -> SessionId {
         images: Vec::new(),
         outgoing: None,
         delegated: Some(Delegated {
-            session: SessionRef {
-                id: creation.id,
-                name: creation.name.clone(),
-            },
-            creation: Some(creation.clone()),
+            target: DelegationTarget::Created(creation.clone()),
             event: task.id,
         }),
         schedule: None,
@@ -276,8 +272,6 @@ async fn delegate(main: &Actor<'_>, parent: &SessionRecord) -> SessionId {
         vec![SessionDelivery {
             event: task,
             kind: SessionDeliveryKind::Delegation {
-                name: creation.name.clone(),
-                create: Some(Box::new(creation.clone())),
                 profile: None,
                 working_dir: None,
             },

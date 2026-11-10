@@ -188,7 +188,7 @@ async fn configuration_changes_tools_at_the_next_round_and_rewind_restores_setti
             _ => None,
         })
         .collect();
-    assert_eq!(bound, [old.clone(), old, new]);
+    assert_eq!(bound, [old, old, new].map(ToolCode::Plugin));
     let outputs: Vec<_> = log
         .iter()
         .filter_map(|entry| match &entry.body {
@@ -317,7 +317,7 @@ async fn failed_code_with_nothing_earlier_stops_later_calls_all_the_same() {
     assert_eq!(
         log.iter()
             .filter(|entry| matches!(&entry.body,
-                EntryBody::ToolCallStarted { code: CodeRef::Generation { id }, .. } if *id == broken
+                EntryBody::ToolCallStarted { code: ToolCode::Plugin(code), .. } if *code == CodeRef::from(broken)
             ))
             .count(),
         1
@@ -394,7 +394,7 @@ async fn failed_bound_code_stops_later_calls_until_the_next_round() {
     assert_eq!(
         log.iter()
             .filter(|entry| matches!(&entry.body,
-                EntryBody::ToolCallStarted { code: CodeRef::Generation { id }, .. } if *id == broken
+                EntryBody::ToolCallStarted { code: ToolCode::Plugin(code), .. } if *code == CodeRef::from(broken)
             ))
             .count(),
         1
@@ -694,7 +694,7 @@ async fn mechanical_rollback_excludes_both_conflicts_and_keeps_native_tools_runn
         assert!(matches!(causes.as_slice(),
             [Cause::ToolConflict { tool, with: ToolOwner::Plugins(others), .. }]
             if tool == "shared_read" && others.iter().map(PluginName::as_str).eq([other])));
-        assert_eq!(activation.code, CodeRef::from(generation));
+        assert_eq!(activation.reference.code(), CodeRef::from(generation).code);
     }
     let kernel =
         Kernel::start(kernel_deps(root.path(), store, registry, None, Some(development)).await)

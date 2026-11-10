@@ -42,14 +42,16 @@ fn attempt(seq: u64, hash: ContentHash) -> Entry {
             attempt: AttemptId::new(),
             purpose: AttemptPurpose::Reply,
             plan: hash,
-            composer: CodeRef::Native {
-                name: "composer".into(),
-                version: "1".into(),
+            composer: CodeRef {
+                plugin: PluginId::new(),
+                code: PluginCode::Factory {
+                    artifact: ContentHash::of(b"composer"),
+                },
             },
-            provider: CodeRef::Native {
-                name: "provider".into(),
-                version: "2".into(),
-            },
+            provider: CodeRef::from(GenerationId {
+                registration: RegistrationId(2),
+                plugin: PluginId::new(),
+            }),
             settings: ProviderSettings {
                 base_url: "https://example.test".parse().unwrap(),
                 model: "fixture".into(),

@@ -2,13 +2,13 @@ use async_trait::async_trait;
 use enco_core::*;
 use tokio_util::sync::CancellationToken;
 
-/// An executable capability; dispatch is independent of tool identity.
+/// A capability the host implements; plugins' tools reach dispatch through their exports.
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// Model-facing contract, frozen into the Round's plan.
     fn spec(&self) -> ToolSpec;
-    /// Code implementing the invocation.
-    fn code(&self) -> CodeRef;
+    /// The host code implementing the invocation.
+    fn code(&self) -> NativeCode;
     /// Execute a call whose disclosure and arguments dispatch has already checked.
     ///
     /// The arguments fit the tool's schema, with optional properties given as null removed.

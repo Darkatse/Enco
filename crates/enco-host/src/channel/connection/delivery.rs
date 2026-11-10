@@ -104,7 +104,7 @@ impl Connection {
         tokio::spawn(transport::send(
             self.adapter.clone(),
             self.kernel.clone(),
-            self.code.clone(),
+            self.code,
             target,
             message,
             self.stop.clone(),

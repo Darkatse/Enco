@@ -367,7 +367,7 @@ pub(crate) fn project(entries: &[&Entry]) -> Transcript {
                 let info = attempts.get(attempt);
                 (
                     info.map(|(purpose, _)| *purpose),
-                    info.map(|(_, provider)| (*provider).clone()),
+                    info.map(|(_, provider)| *(*provider)),
                     None,
                 )
             }

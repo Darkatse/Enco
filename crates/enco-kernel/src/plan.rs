@@ -102,7 +102,7 @@ pub(crate) fn resolve(
         messages: messages(plan, transcript)?
             .into_iter()
             .map(|(message, provider)| {
-                let own_extensions = provider.as_ref().and_then(CodeRef::plugin) == Some(target);
+                let own_extensions = provider.is_some_and(|code| code.plugin == target);
                 Message {
                     role: message.role,
                     parts: message
@@ -161,7 +161,7 @@ fn messages(
                         .collect(),
                 };
                 if !message.parts.is_empty() {
-                    messages.push((message, item.provider.clone()));
+                    messages.push((message, item.provider));
                 }
             }
         }

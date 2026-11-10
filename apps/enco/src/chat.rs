@@ -121,7 +121,7 @@ fn render(
                 Settlement::Unknown { failure } => println!("  ← unknown: {}", failure.code),
             }
             if let Some(delegated) = delegated {
-                println!("  ↪ delegated to {}", delegated.session.name);
+                println!("  ↪ delegated to {}", delegated.target.session().name);
             }
             if let Some(outgoing) = outgoing {
                 println!("{}", outgoing_text(paths, &outgoing));

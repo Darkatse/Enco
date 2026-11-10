@@ -99,7 +99,7 @@ impl Registry {
             let outcome = match probe::call(loaded, endpoint, need).await {
                 Ok(result) => {
                     if let Some(code) = code {
-                        self.report(code, result.verdict, None).await?;
+                        self.report(&code, result.verdict, None).await?;
                     }
                     result.outcome
                 }
@@ -134,16 +134,12 @@ fn empty_plugin(id: PluginId) -> PluginRecord {
 /// The code being replaced becomes the rollback target only when it may serve as one: factory
 /// code always, a generation once healthy on this node.
 fn next_rollback(state: &State, plugin: &PluginRecord) -> Option<PluginActivation> {
-    match &plugin.active {
-        Some(active)
-            if match &active.code {
-                CodeRef::Factory { .. } => true,
-                code @ CodeRef::Generation { .. } => state.health(code) == Some(&Health::Healthy),
-                CodeRef::Native { .. } => false,
-            } =>
-        {
-            Some(active.clone())
-        }
-        _ => plugin.rollback_target.clone(),
+    let serves = |active: PluginActivation| match active.code().generation(plugin.id) {
+        None => true,
+        Some(id) => state.node.health.get(&id) == Some(&Health::Healthy),
+    };
+    match plugin.active {
+        Some(active) if serves(active) => Some(active),
+        _ => plugin.rollback_target,
     }
 }

@@ -7,7 +7,8 @@ mod sdk;
 use crate::support;
 
 use enco_core::{
-    CallId, Entry, EntryBody, EventId, Health, Outcome, PluginSettings, SessionId, Settlement, code,
+    CallId, CodeRef, Entry, EntryBody, EventId, GenerationId, Health, Outcome, PluginSettings,
+    SessionId, Settlement, code,
 };
 use enco_host::{SqliteStore, StorePaths};
 use enco_kernel::{CallContext, Runtime, Store};
@@ -15,7 +16,9 @@ use enco_wasm::WasmRuntime;
 use protocol::Command;
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
-use support::{Daemon, embeddings, finish, response, running_activation, tool_message};
+use support::{
+    Daemon, embeddings, finish, response, running_activation, running_code, tool_message,
+};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument::WithSubscriber;
@@ -305,7 +308,7 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
     write_config(&daemon, &document);
     let config_bytes = write_owner_files(&home);
     let first = acceptance::register_with_agent(&daemon).await;
-    let first_code = running_alpha(&daemon, &first).await;
+    let (first_code, first_alpha) = running_alpha(&daemon, &first).await;
     let registration = serde_json::from_value(first["id"].clone()).unwrap();
     check_readme(&readme);
     check_build_rejection(&daemon, &document).await;
@@ -351,10 +354,7 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
     assert_eq!(restored["builds"][0]["reused"], true);
     let restored_code = &restored["registered"]["generations"][0];
     assert_eq!(restored_code["artifact"], first_code["artifact"]);
-    assert_eq!(
-        restored_code["id"]["plugin"],
-        first_code["code"]["id"]["plugin"]
-    );
+    assert_eq!(restored_code["id"]["plugin"], json!(first_alpha.plugin));
     assert_eq!(
         restored_code["settings"]["config"],
         json!({"label":"value"})
@@ -367,18 +367,16 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
         json!({"standing": "registered", "differences": []})
     );
     check_rollback_does_not_replay_intent(&daemon).await;
-    check_rename(
-        &mut daemon,
-        &mut document,
-        &first_code["code"]["id"]["plugin"],
-    )
-    .await;
+    check_rename(&mut daemon, &mut document, &json!(first_alpha.plugin)).await;
     daemon.stop().await;
 }
 
-/// What alpha runs after `registration`, which selected that code for it.
-async fn running_alpha(daemon: &Daemon, registration: &Value) -> Value {
-    let running = running_activation(&use_source(daemon).await["plugins"]["alpha"]).clone();
+/// What alpha runs after `registration`, which selected that code for it: the activation, and
+/// the code named with its plugin.
+async fn running_alpha(daemon: &Daemon, registration: &Value) -> (Value, CodeRef) {
+    let status = use_source(daemon).await;
+    let alpha = &status["plugins"]["alpha"];
+    let code = running_code(alpha);
     assert!(
         registration["changes"]
             .as_array()
@@ -386,9 +384,9 @@ async fn running_alpha(daemon: &Daemon, registration: &Value) -> Value {
             .iter()
             .any(|change| change["kind"] == "code"
                 && change["name"] == "alpha"
-                && change["selected"]["code"] == running["code"])
+                && change["selected"]["code"] == json!(code.code))
     );
-    running
+    (running_activation(alpha).clone(), code)
 }
 
 fn check_readme(readme: &Path) {
@@ -485,9 +483,11 @@ async fn check_rename(daemon: &mut Daemon, document: &mut Value, identity: &Valu
                 && change["from"] == "alpha")
     );
     assert_eq!(&status["plugins"]["beta"]["running"]["id"], identity);
+    let generation: GenerationId =
+        serde_json::from_value(settings["registered"]["generations"][0]["id"].clone()).unwrap();
     assert_eq!(
-        running_activation(&status["plugins"]["beta"])["code"]["id"],
-        settings["registered"]["generations"][0]["id"]
+        running_code(&status["plugins"]["beta"]),
+        CodeRef::from(generation)
     );
     assert_eq!(
         status["plugins"]["beta"]["home"]["code"]["state"],
@@ -575,7 +575,10 @@ async fn first_start_registers_a_source_provider_with_the_configuration_that_use
     let running = running_activation(&status["plugins"]["local"]);
     assert_eq!(running["origin"], "code");
     assert_eq!(status["recent_registrations"].as_array().unwrap().len(), 1);
-    assert_eq!(running["registration"], status["configuration"]["running"]);
+    assert_eq!(
+        running["reference"]["registration"],
+        status["configuration"]["running"]
+    );
     assert!(
         status["configuration"]["unavailable_uses"]
             .as_array()

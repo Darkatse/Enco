@@ -235,7 +235,7 @@ impl History {
                 node: NodeId::new(),
                 name: call.name,
             },
-            code: CodeRef::Generation { id: generation(1) },
+            code: ToolCode::Plugin(code(1)),
             effect: Effect::ReadOnly,
         });
         if settled {

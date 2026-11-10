@@ -53,7 +53,7 @@ pub enum PluginChangeKind {
 #[derive(Clone, serde::Serialize)]
 pub struct SelectedCode {
     /// The generation it brought, or factory code it followed.
-    pub code: CodeRef,
+    pub code: PluginCode,
     /// Its standing on this node, absent for factory code, which is never on trial.
     pub health: Option<Health>,
     /// Whether its plugin still runs it; a trial generation that does not was never promoted.
@@ -296,7 +296,7 @@ impl State {
                 }
             }
         }
-        for (id, code) in &record.code {
+        for (id, registered) in &record.code {
             let name = record
                 .names
                 .get(id)
@@ -308,45 +308,36 @@ impl State {
                         record.id
                     ))
                 })?;
-            let origin = match code.code.generation() {
-                Some(generation) => Some(
+            let code = CodeRef {
+                plugin: *id,
+                code: registered.code(record.id),
+            };
+            let origin = code
+                .generation()
+                .map(|generation| {
                     pending
                         .iter()
                         .find(|pending| pending.id == generation)
                         .or_else(|| self.intent.generations.get(&generation))
-                        .ok_or(RegistryError::UnknownGeneration(generation))?
-                        .origin
-                        .clone(),
-                ),
-                None => None,
-            };
-            let active = candidate
-                || self
-                    .node
-                    .plugins
-                    .get(id)
-                    .and_then(|plugin| plugin.active.as_ref())
-                    .is_some_and(|active| active.code == code.code);
+                        .map(|record| &record.origin)
+                        .ok_or(RegistryError::UnknownGeneration(generation))
+                })
+                .transpose()?;
+            let active = candidate || self.active(*id) == Some(code);
             // A candidate's generations start on trial; existing ones stand as recorded.
-            let health = match (&code.code, candidate) {
-                (CodeRef::Generation { .. }, true) => Some(Health::Trial),
-                (code, _) => self.health(code).cloned(),
+            let health = match (code.generation(), candidate) {
+                (Some(_), true) => Some(Health::Trial),
+                _ => self.health(code).cloned(),
             };
             let selected = Box::new(SelectedCode {
-                code: code.code.clone(),
+                code: code.code,
                 health,
                 active,
             });
-            let change = match (code.intent, origin) {
-                (Some(CodeIntent::Directory { .. }), _) => PluginChangeKind::Code { selected },
-                (Some(CodeIntent::Factory), _) => PluginChangeKind::Factory { selected },
-                (None, Some(Origin::Settings { .. })) => PluginChangeKind::Settings { selected },
-                (None, Some(Origin::Code) | None) => {
-                    return Err(RegistryError::Intent(format!(
-                        "registration {} selects {} for {id} without code intent",
-                        record.id, code.code
-                    )));
-                }
+            let change = match CodeIntent::chosen(origin) {
+                Some(CodeIntent::Directory { .. }) => PluginChangeKind::Code { selected },
+                Some(CodeIntent::Factory) => PluginChangeKind::Factory { selected },
+                None => PluginChangeKind::Settings { selected },
             };
             changes.push(UnitChange::Plugin { name, change });
         }

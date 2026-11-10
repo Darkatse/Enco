@@ -47,8 +47,8 @@ struct GatedTool {
 
 #[async_trait]
 impl Tool for GatedTool {
-    fn code(&self) -> CodeRef {
-        CodeRef::Native {
+    fn code(&self) -> NativeCode {
+        NativeCode {
             name: "gated-tool".into(),
             version: "test".into(),
         }

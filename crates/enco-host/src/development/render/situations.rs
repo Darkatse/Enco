@@ -1,7 +1,7 @@
 //! One template per situation: a bold "path — situation" line, then one sentence per fact.
-use super::{causes::causes, code, location, path, registration_of};
+use super::{causes::causes, code, location, path};
 use crate::status::{AttentionKind, Divergence, GenerationFailure, StopCause};
-use enco_core::{IntentPath, PluginActivation};
+use enco_core::{IntentPath, PluginActivation, PluginCode};
 
 pub(super) fn facts(kind: &AttentionKind<'_>) -> String {
     match kind {
@@ -113,7 +113,7 @@ fn follow_rejected(
         causes(rejected)
     );
     if let Some(running) = running {
-        out.push_str(&format!(" It keeps running {}.", running.code));
+        out.push_str(&format!(" It keeps running {}.", running.code()));
     }
     out.push_str(" Every registration retries the update.");
     out
@@ -156,7 +156,7 @@ fn rolled_back(
     format!(
         "**{} — rolled back to {}.** {} failed: {}. {consequence}",
         path(target),
-        running.code,
+        running.code(),
         failed(registered, cause),
         cause.failure().message,
     )
@@ -164,7 +164,7 @@ fn rolled_back(
 
 /// What a failed generation brought, as the subject of a sentence.
 fn failed(registered: &PluginActivation, cause: &GenerationFailure<'_>) -> String {
-    let registration = registration_of(registered).map_or_else(
+    let registration = registered.registration().map_or_else(
         || "The registered code".into(),
         |id| format!("Registration {id}"),
     );
@@ -193,7 +193,7 @@ fn diverged(target: &IntentPath, divergence: &Divergence<'_>) -> String {
         } => format!(
             "**{} — runs {}, not the registered {}.** Registering the same source again changes nothing.",
             path(target),
-            running.code,
+            running.code(),
             short(registered)
         ),
         Divergence::Settings {
@@ -202,7 +202,7 @@ fn diverged(target: &IntentPath, divergence: &Divergence<'_>) -> String {
         } => format!(
             "**{} — runs {}, not the registered {}.** Their settings differ.",
             path(target),
-            running.code,
+            running.code(),
             short(registered)
         ),
         Divergence::Unregistered {
@@ -211,16 +211,16 @@ fn diverged(target: &IntentPath, divergence: &Divergence<'_>) -> String {
         } => format!(
             "**{} — runs but is not registered.** Registration {removed_by} removed it; it runs {} again.",
             path(target),
-            running.code
+            running.code()
         ),
     }
 }
 
 /// Registered code after "the registered": its number, or factory code.
 fn short(registered: &PluginActivation) -> String {
-    match registered.code.generation() {
-        Some(id) => id.registration.to_string(),
-        None => registered.code.to_string(),
+    match registered.code() {
+        PluginCode::Generation { registration } => registration.to_string(),
+        code @ PluginCode::Factory { .. } => code.to_string(),
     }
 }
 
@@ -236,10 +236,10 @@ fn stopped(target: &IntentPath, cause: &StopCause<'_>) -> String {
             causes: unavailable,
         } => format!(
             "This host cannot run {}: {}.",
-            selected.code,
+            selected.code(),
             causes(unavailable)
         ),
-        StopCause::NotRunning { registered } => match registered.registration {
+        StopCause::NotRunning { registered } => match registered.registration() {
             Some(registration) => format!(
                 "Registration {registration} registered it, but nothing runs. Registering the same source again changes nothing."
             ),

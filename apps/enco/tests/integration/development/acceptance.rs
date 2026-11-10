@@ -202,8 +202,11 @@ pub(super) async fn register_with_agent(daemon: &Daemon) -> Value {
         .iter()
         .find(|change| change["kind"] == "code" && change["name"] == "alpha")
         .unwrap()["selected"]["code"];
-    let running = &status["plugins"]["alpha"]["running"]["running"]["activation"];
-    assert_eq!(running["code"], *alpha);
+    assert_eq!(
+        json!(running_code(&status["plugins"]["alpha"]).code),
+        *alpha
+    );
+    let running = running_activation(&status["plugins"]["alpha"]);
     assert_eq!(record.1, running["artifact"].as_str().unwrap());
     assert!(record.2.contains("rustc ") && record.2.contains("host:"));
     registered

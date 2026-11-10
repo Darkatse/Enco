@@ -1,5 +1,5 @@
 //! What runs, against what is registered: one situation per layer that differs.
-use super::{compare, fix_source, reference, repairs};
+use super::{compare, fix_source, repairs};
 use crate::development::{PluginUnit, RewindArguments};
 use crate::status::{
     Attention, AttentionKind, CallStep, Divergence, FixTarget, GenerationFailure, OwnerAction,
@@ -28,7 +28,7 @@ pub(super) fn runtime<'a>(
             kind: AttentionKind::Stopped {
                 path: IntentPath::Plugin(name.clone()),
                 cause: StopCause::Unavailable {
-                    selected: reference(activation),
+                    selected: activation.reference,
                     causes,
                 },
             },
@@ -61,11 +61,11 @@ fn rolled_back<'a>(
     plugin: &'a RegisteredPlugin,
 ) -> Option<Attention<'a>> {
     let registered = &plugin.activation;
-    if registered.code == running.code {
+    if registered.reference.code() == running.reference.code() {
         return None;
     }
     let cause = failure(registered)?;
-    let (current, selected) = (reference(running), reference(registered));
+    let (current, selected) = (running.reference, registered.reference);
     let next = match cause {
         GenerationFailure::Code { .. } => Steps {
             first: fix_source(name),
@@ -95,8 +95,8 @@ fn diverged<'a>(
     registered: &'a RegisteredPlugin,
     out: &mut Vec<Attention<'a>>,
 ) {
-    let current = reference(running);
-    let selected = reference(&registered.activation);
+    let current = running.reference;
+    let selected = registered.activation.reference;
     for difference in differences {
         let (divergence, next) = match difference {
             Difference::Name { running: actual } => {
@@ -122,8 +122,8 @@ fn diverged<'a>(
             }
             Difference::Code => (
                 Divergence::Code {
-                    running: current.clone(),
-                    registered: selected.clone(),
+                    running: current,
+                    registered: selected,
                 },
                 match keep_running(name, running, registered) {
                     Some(keep) => Steps {
@@ -135,8 +135,8 @@ fn diverged<'a>(
             ),
             Difference::Settings => (
                 Divergence::Settings {
-                    running: current.clone(),
-                    registered: selected.clone(),
+                    running: current,
+                    registered: selected,
                 },
                 settings_steps(name, &current, &selected),
             ),
@@ -156,8 +156,8 @@ fn unregistered<'a>(
     running: &Activation,
     removed_by: RegistrationId,
 ) -> Attention<'a> {
-    let current = reference(running);
-    let next = Steps::sequence(vec![compare(current.registration, removed_by)]);
+    let current = running.reference;
+    let next = Steps::sequence(vec![compare(current.registration(), removed_by)]);
     Attention {
         kind: AttentionKind::Diverged {
             path: IntentPath::Plugin(name.clone()),
@@ -184,7 +184,7 @@ fn stopped<'a>(name: &PluginName, registered: &'a Activation) -> Attention<'a> {
             };
             (
                 StopCause::Failed {
-                    registered: reference(registered),
+                    registered: registered.reference,
                     cause,
                 },
                 Steps::sequence(steps),
@@ -192,7 +192,7 @@ fn stopped<'a>(name: &PluginName, registered: &'a Activation) -> Attention<'a> {
         }
         None => (
             StopCause::NotRunning {
-                registered: reference(registered),
+                registered: registered.reference,
             },
             Steps::sequence(fix_source(name)),
         ),
@@ -247,8 +247,8 @@ fn settings_steps(
     registered: &PluginActivation,
 ) -> Steps {
     let mut steps = Vec::new();
-    if let Some(to) = registered.registration {
-        steps.push(compare(running.registration, to));
+    if let Some(to) = registered.registration() {
+        steps.push(compare(running.registration(), to));
     }
     steps.extend([
         Step::Fix(FixTarget::PluginSettings { name: name.clone() }),

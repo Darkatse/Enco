@@ -79,7 +79,7 @@ pub enum EntryBody {
         /// Node-qualified capability bound to the call.
         capability: CapabilityId,
         /// Implementation bound to this invocation.
-        code: CodeRef,
+        code: crate::ToolCode,
         /// Mutation semantics used when recovering an unsettled call.
         effect: Effect,
     },
@@ -132,13 +132,34 @@ pub enum EntryBody {
 /// Child Session delegation committed with a `session_send` settlement.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Delegated {
-    /// Target child Session identity and full name.
-    pub session: crate::SessionRef,
-    /// The child's creation record, when this call created it; the parent's Log is the
-    /// authority over its children's names.
-    pub creation: Option<crate::Creation>,
+    /// The child the message went to.
+    pub target: DelegationTarget,
     /// Event accepted into the child Session's Inbox.
     pub event: crate::EventId,
+}
+
+/// The child Session a delegation addressed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DelegationTarget {
+    /// A child that already existed.
+    Existing(crate::SessionRef),
+    /// A child this call created, by its creation record; the parent's Log is the authority over
+    /// its children's names, and the child's row starts from this record.
+    Created(crate::Creation),
+}
+
+impl DelegationTarget {
+    /// The child's identity and full name.
+    pub fn session(&self) -> crate::SessionRef {
+        match self {
+            Self::Existing(session) => session.clone(),
+            Self::Created(creation) => crate::SessionRef {
+                id: creation.id,
+                name: creation.name.clone(),
+            },
+        }
+    }
 }
 
 /// Whether the model is replying or summarizing prior rounds.
@@ -278,6 +299,24 @@ pub enum RunEnd {
 }
 
 impl EntryBody {
+    /// The child Session this fact creates: the creation record of a delegation that made it.
+    ///
+    /// The child's row starts from this record, both when the parent commits it and when the
+    /// rows are rebuilt from the facts.
+    pub fn created_child(&self) -> Option<&crate::Creation> {
+        match self {
+            Self::ToolCallSettled {
+                delegated:
+                    Some(Delegated {
+                        target: DelegationTarget::Created(creation),
+                        ..
+                    }),
+                ..
+            } => Some(creation),
+            _ => None,
+        }
+    }
+
     /// Resolve a durable entry's model-facing form using its recorded associations.
     /// This mapping is part of the persistent format, not composer policy.
     pub fn canonical_message(

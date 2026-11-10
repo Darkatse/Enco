@@ -9,7 +9,7 @@ use super::{HomeComparison, Invocation, SettingsComparison};
 use crate::status::{CallStep, FixTarget, OwnerAction, Step, Steps};
 pub use actions::registration_document;
 pub(super) use causes::causes;
-use enco_core::{Health, Initiator, IntentPath, PluginActivation, RegistrationId, SessionRef};
+use enco_core::{Health, Initiator, IntentPath, SessionRef};
 pub(super) use errors::failure;
 
 fn caller(initiator: &Initiator<SessionRef>) -> String {
@@ -59,16 +59,6 @@ fn health(health: &Health) -> &'static str {
         Health::Healthy => "healthy",
         Health::Failed { .. } => "failed",
     }
-}
-
-/// The registration a reference's content came from: the one that brought a generation, or the
-/// one that selected factory code.
-fn registration_of(reference: &PluginActivation) -> Option<RegistrationId> {
-    reference
-        .code
-        .generation()
-        .map(|id| id.registration)
-        .or(reference.registration)
 }
 
 fn comparison(comparison: &HomeComparison) -> &'static str {

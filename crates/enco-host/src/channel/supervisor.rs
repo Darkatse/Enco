@@ -233,7 +233,7 @@ impl Supervision {
                         self.kernel.clone(),
                         adapter,
                         settings,
-                        opening.code.clone(),
+                        opening.code,
                         self.clock.clone(),
                         self.build.clone(),
                     ))),

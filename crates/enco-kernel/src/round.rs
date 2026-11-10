@@ -254,7 +254,7 @@ impl SessionActor {
         transcript: &Transcript,
         choice: &Choice<'_>,
     ) -> Result<PlannedAttempt, RoundError> {
-        let request = crate::plan::resolve(&plan, transcript, choice.export.plugin)
+        let request = crate::plan::resolve(&plan, transcript, choice.export.code.plugin)
             .map_err(|error| failed(code::PLAN_INVALID, error.to_string()))?;
         let request = crate::image::resolve(request, self.deps.store.as_ref())
             .await
@@ -297,7 +297,7 @@ impl SessionActor {
             .report(&bound.export.code, verdict, Some(self.session.id))
             .await?;
         checked
-            .map(|(plan, kind)| (plan, kind, bound.export.code.clone()))
+            .map(|(plan, kind)| (plan, kind, bound.export.code))
             .map_err(|mut failure| {
                 if failure.code == code::CONTEXT_OVERFLOW
                     && input.compaction.is_none()

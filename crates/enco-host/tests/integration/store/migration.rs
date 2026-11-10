@@ -17,6 +17,12 @@ fn gid(registration: u64, plugin: PluginId) -> GenerationId {
     }
 }
 
+fn factory(name: &str) -> PluginCode {
+    PluginCode::Factory {
+        artifact: artifact(name),
+    }
+}
+
 /// The copies of the database taken before upgrading it.
 fn copies(root: &Path) -> Vec<std::path::PathBuf> {
     std::fs::read_dir(root)
@@ -58,10 +64,6 @@ async fn the_upgraded_registry_names_code_by_registration_or_as_factory_code() {
         chat,
         tool,
     } = old.plugins;
-    let factory = |plugin, name| CodeRef::Factory {
-        plugin,
-        artifact: artifact(name),
-    };
     let registry = store.registry().await.unwrap();
     let mut brought = vec![gid(1, chat), gid(2, chat), gid(2, tool)];
     brought.sort();
@@ -77,31 +79,35 @@ async fn the_upgraded_registry_names_code_by_registration_or_as_factory_code() {
     assert_eq!(
         registry.intent.generations[&gid(2, tool)].origin,
         Origin::Settings {
-            based_on: factory(tool, "tool factory")
+            based_on: factory("tool factory")
         }
     );
     assert_eq!(
-        registry.intent.registrations[&RegistrationId(1)].code[&composer].code,
-        factory(composer, "composer factory")
+        registry.intent.registrations[&RegistrationId(1)].code[&composer],
+        RegisteredCode::Factory {
+            artifact: artifact("composer factory")
+        }
     );
     let reference = |plugin: PluginId, rollback: bool| {
         let record = &registry.node.plugins[&plugin];
-        let activation = if rollback {
-            &record.rollback_target
+        if rollback {
+            record.rollback_target
         } else {
-            &record.active
-        };
-        activation
-            .as_ref()
-            .map(|activation| (activation.code.clone(), activation.registration))
+            record.active
+        }
     };
     assert_eq!(
         reference(chat, false),
-        Some((generation(1, chat), Some(RegistrationId(1))))
+        Some(PluginActivation::Generation {
+            registration: RegistrationId(1)
+        })
     );
     assert_eq!(
         reference(tool, true),
-        Some((factory(tool, "tool factory"), Some(RegistrationId(1))))
+        Some(PluginActivation::Factory {
+            artifact: artifact("tool factory"),
+            registration: Some(RegistrationId(1))
+        })
     );
     assert_eq!(
         registry.node.health[&gid(2, chat)],
@@ -128,18 +134,20 @@ async fn upgraded_logs_and_inboxes_name_the_same_code() {
         chat,
         tool,
     } = old.plugins;
-    let factory = |plugin, name| CodeRef::Factory {
-        plugin,
-        artifact: artifact(name),
-    };
     let log = store.log(old.main, None).await.unwrap();
     let (composed_by, provided_by) = find(&log, |body| match body {
         EntryBody::AttemptStarted {
             composer, provider, ..
-        } => Some((composer.clone(), provider.clone())),
+        } => Some((*composer, *provider)),
         _ => None,
     });
-    assert_eq!(composed_by, factory(composer, "composer factory"));
+    assert_eq!(
+        composed_by,
+        CodeRef {
+            plugin: composer,
+            code: factory("composer factory")
+        }
+    );
     assert_eq!(provided_by, generation(1, chat));
     let ran = find(&log, |body| match body {
         EntryBody::ToolCallStarted {
@@ -147,7 +155,7 @@ async fn upgraded_logs_and_inboxes_name_the_same_code() {
         } if capability.name == "tool_run" => Some(code.clone()),
         _ => None,
     });
-    assert_eq!(ran, generation(2, tool));
+    assert_eq!(ran, ToolCode::Plugin(generation(2, tool)));
     let failed_with = find(&log, |body| match body {
         EntryBody::RoundEnded {
             end: RoundEnd::Failed { active, .. },
@@ -160,9 +168,9 @@ async fn upgraded_logs_and_inboxes_name_the_same_code() {
         ActiveCode {
             configuration: RegistrationId(2),
             plugins: BTreeMap::from([
-                (composer, factory(composer, "composer factory")),
-                (chat, generation(1, chat)),
-                (tool, generation(2, tool)),
+                (composer, factory("composer factory")),
+                (chat, generation(1, chat).code),
+                (tool, generation(2, tool).code),
             ]),
         }
     );
@@ -176,7 +184,7 @@ async fn upgraded_logs_and_inboxes_name_the_same_code() {
     });
     assert_eq!(
         (consumed.from, consumed.to),
-        (gid(2, chat), Some(generation(1, chat)))
+        (gid(2, chat), Some(generation(1, chat).code))
     );
     assert_eq!(text, "chat failed on trial and was rolled back.");
     let pending = store.pending(old.main).await.unwrap();
@@ -260,7 +268,7 @@ async fn upgraded_sessions_and_schedules_rebuild_from_their_own_facts() {
         EntryBody::ToolCallSettled {
             delegated:
                 Some(Delegated {
-                    creation: Some(creation),
+                    target: DelegationTarget::Created(creation),
                     ..
                 }),
             ..

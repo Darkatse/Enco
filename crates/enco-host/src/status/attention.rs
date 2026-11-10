@@ -9,8 +9,8 @@ use crate::{
     ProfileInstructionFiles,
     development::{HistoryPoint, HistoryQuery, HomeComparison, PluginUnit, RewindArguments},
 };
-use enco_core::{IntentPath, PluginActivation, PluginName, RegistrationId};
-use enco_kernel::{Activation, Cause, Running};
+use enco_core::{IntentPath, PluginName, RegistrationId};
+use enco_kernel::{Cause, Running};
 
 mod runtime;
 use runtime::runtime;
@@ -182,7 +182,7 @@ fn follow<'a>(name: &PluginName, plugin: &'a PluginUnit, out: &mut Vec<Attention
                 .running
                 .as_ref()
                 .and_then(|status| match &status.running {
-                    Running::Serving { activation, .. } => Some(reference(activation)),
+                    Running::Serving { activation, .. } => Some(activation.reference),
                     Running::Unavailable { .. } | Running::Stopped => None,
                 }),
         },
@@ -290,13 +290,6 @@ fn fix_then_recheck(path: &std::path::Path) -> Steps {
         }),
         CallStep::Recheck.into(),
     ])
-}
-
-pub(super) fn reference(activation: &Activation) -> PluginActivation {
-    PluginActivation {
-        code: activation.code.clone(),
-        registration: activation.registration,
-    }
 }
 
 pub(super) fn compare(from: Option<RegistrationId>, to: RegistrationId) -> Step {

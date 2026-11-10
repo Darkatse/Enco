@@ -64,8 +64,11 @@ async fn factory_code_needs_registration_to_activate_and_preserves_source_overri
             .generations
             .is_empty()
     );
-    assert!(
-        matches!(second, CodeRef::Factory { artifact, .. } if artifact == ContentHash::of(b"factory-2"))
+    assert_eq!(
+        second.code,
+        PluginCode::Factory {
+            artifact: ContentHash::of(b"factory-2")
+        }
     );
     assert_ne!(second, first);
     let owner_code = submit(&registry, source_request("fixture", b"owner"))
@@ -92,10 +95,12 @@ async fn factory_code_needs_registration_to_activate_and_preserves_source_overri
     )
     .await
     .unwrap();
-    assert!(matches!(
-        active(&registry).await,
-        CodeRef::Factory { artifact, .. } if artifact == ContentHash::of(b"factory-4")
-    ));
+    assert_eq!(
+        active(&registry).await.code,
+        PluginCode::Factory {
+            artifact: ContentHash::of(b"factory-4")
+        }
+    );
     drop(registry);
     let mut deps = registry_deps(store, runtime, b"factory-4");
     deps.factory[0].id = PluginId::new();
@@ -242,8 +247,8 @@ async fn rollback_and_recovery_skip_lost_artifacts_of_a_registered_plugin() {
     let registry = crashed.lose_artifacts().await;
     let intended = registry.registered_intent(None).await.unwrap().plugins["fixture"]
         .activation
-        .code
-        .clone();
+        .reference
+        .code();
     let only = register_source(&registry, "custom", b"latest").await;
     promote(&registry, only.id).await;
     let newer = register_source(&registry, "custom", b"older").await;
@@ -274,7 +279,10 @@ async fn rollback_and_recovery_skip_lost_artifacts_of_a_registered_plugin() {
         code::PLUGIN_UNAVAILABLE
     );
     let restored = registry.registered_intent(None).await.unwrap();
-    assert_eq!(restored.plugins["fixture"].activation.code, intended);
+    assert_eq!(
+        restored.plugins["fixture"].activation.reference.code(),
+        intended
+    );
     let history = crashed.store.registry().await.unwrap();
     let failed = history.node.health[&only.id].failure().unwrap();
     assert_eq!(failed.code, code::PLUGIN_LOAD);
@@ -339,18 +347,17 @@ async fn registering_new_factory_code_preserves_rollback_content() {
         .completion(&fixture_endpoint("fixture"), true)
         .unwrap()
         .code;
-    assert_ne!(upgraded.code, factory);
+    assert_ne!(upgraded.reference.code(), factory.code);
     assert_eq!(
         registry.status().await.unwrap().plugins[0]
             .rollback_target
-            .clone()
             .unwrap()
-            .code,
-        good
+            .code(),
+        good.code
     );
     registry
         .report(
-            &upgraded.code,
+            &active(&registry).await,
             Verdict::Failed(super::fault(code::PLUGIN_TRAP)),
             None,
         )

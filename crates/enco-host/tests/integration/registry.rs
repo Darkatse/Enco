@@ -81,7 +81,7 @@ async fn active_activation(registry: &Registry) -> Activation {
 
 /// The first plugin's running code.
 async fn active(registry: &Registry) -> CodeRef {
-    active_activation(registry).await.code
+    running_code(&registry.status().await.unwrap().plugins[0]).unwrap()
 }
 
 async fn register_source(registry: &Registry, name: &str, bytes: &[u8]) -> GenerationRecord {

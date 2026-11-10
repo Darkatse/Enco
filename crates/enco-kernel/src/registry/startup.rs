@@ -63,19 +63,12 @@ async fn register(
 }
 
 async fn load_retained(deps: &RegistryDeps, state: &mut State) -> Result<(), RegistryError> {
-    let codes: BTreeSet<_> = state
-        .node
-        .plugins
-        .values()
-        .flat_map(|plugin| [&plugin.active, &plugin.rollback_target])
-        .flatten()
-        .map(|reference| reference.code.clone())
-        .collect();
+    let codes: BTreeSet<_> = state.referenced().collect();
     for code in codes {
         if state.loaded.contains_key(&code) {
             continue;
         }
-        if let Ok(loaded) = activation::load(deps, state, &code, None).await? {
+        if let Ok(loaded) = activation::load(deps, state, code, None).await? {
             state.loaded.insert(code, loaded);
         }
     }

@@ -51,39 +51,58 @@ impl DelegationRequest {
 }
 
 impl SessionActor {
+    /// The child a `session_send` call reaches, resolved when it settles, in call order, and
+    /// what its settlement records and delivers.
+    ///
+    /// Without the child and without a profile there is nothing to address, and the call fails.
     pub(super) async fn delegation(
         &self,
         request: DelegationRequest,
-    ) -> Result<(Delegated, SessionDelivery), StoreError> {
+    ) -> Result<Result<(Delegated, SessionDelivery), Failure>, StoreError> {
         let existing = self.deps.store.session_by_name(&request.name).await?;
         // The parent's Log is the authority over its children's names, so the creation record is
-        // written here, with the settlement that delegates to the child. Without a profile there
-        // is nothing to create, and the commit rejects the call.
-        let existing = existing.map(|session| session.id);
-        let creation = match (existing, &request.profile) {
-            (Some(_), _) | (None, None) => None,
-            (None, Some(profile)) => Some(Creation {
-                id: SessionId::new(),
-                name: request.name.clone(),
-                parent: Some(SessionRef {
-                    id: self.session.id,
-                    name: self.session.name.clone(),
+        // written here, with the settlement that delegates to the child.
+        let (target, profile, working_dir) = match (existing, request.profile) {
+            (Some(child), profile) => (
+                DelegationTarget::Existing(SessionRef {
+                    id: child.id,
+                    name: child.name,
                 }),
-                created_at: self.deps.clock.now(),
-                node: self.session.binding.node,
-                profile: profile.clone(),
-                working_dir: request
-                    .working_dir
-                    .clone()
-                    .unwrap_or_else(|| self.session.working_dir.clone()),
-            }),
+                profile,
+                request.working_dir,
+            ),
+            (None, Some(profile)) => (
+                DelegationTarget::Created(Creation {
+                    id: SessionId::new(),
+                    name: request.name,
+                    parent: Some(SessionRef {
+                        id: self.session.id,
+                        name: self.session.name.clone(),
+                    }),
+                    created_at: self.deps.clock.now(),
+                    node: self.session.binding.node,
+                    profile,
+                    working_dir: request
+                        .working_dir
+                        .unwrap_or_else(|| self.session.working_dir.clone()),
+                }),
+                None,
+                None,
+            ),
+            (None, None) => {
+                return Ok(Err(Failure {
+                    code: code::TOOL_FAILED.into(),
+                    message: format!(
+                        "child Session `{}` does not exist; pass `profile` to create it",
+                        request.name.short_name()
+                    ),
+                    retryable: false,
+                }));
+            }
         };
-        let id = existing
-            .or(creation.as_ref().map(|creation| creation.id))
-            .unwrap_or_default();
         let event = Event {
             id: EventId::new(),
-            session: id,
+            session: target.session().id,
             source: EventSource::Parent,
             body: EventBody::SessionMessage(Outgoing {
                 text: request.text,
@@ -91,26 +110,18 @@ impl SessionActor {
             }),
             received_at: self.deps.clock.now(),
         };
-        let name = request.name.clone();
-        let delegated = Delegated {
-            session: SessionRef {
-                id,
-                name: request.name,
+        Ok(Ok((
+            Delegated {
+                target,
+                event: event.id,
             },
-            creation: creation.clone(),
-            event: event.id,
-        };
-        Ok((
-            delegated,
             SessionDelivery {
                 event,
                 kind: SessionDeliveryKind::Delegation {
-                    name,
-                    create: creation.map(Box::new),
-                    profile: request.profile,
-                    working_dir: request.working_dir,
+                    profile,
+                    working_dir,
                 },
             },
-        ))
+        )))
     }
 }

@@ -102,8 +102,8 @@ async fn a_late_failure_after_replacement_does_not_roll_back_or_publish_a_notice
             .active
             .as_ref()
             .unwrap()
-            .code,
-        CodeRef::from(new.id)
+            .code(),
+        CodeRef::from(new.id).code
     );
     assert_eq!(history.node.health[&old.id], Health::Trial);
     assert!(store.pending(session.id).await.unwrap().is_empty());

@@ -142,33 +142,34 @@ CREATE TABLE registration_names (
   PRIMARY KEY (registration, plugin_id)
 ) STRICT;
 
--- Content a registration brought for a plugin, identified by the two. New settings name the code
--- they reuse: an earlier generation of the plugin, or factory code by its artifact.
+-- Content a registration brought for a plugin, identified by the two, and where its code came
+-- from: the owner's code intent (a source directory, or factory code with settings), or the code
+-- new settings reuse (an earlier generation of the plugin, or factory code by its artifact).
 CREATE TABLE plugin_generations (
   registration        INTEGER NOT NULL REFERENCES registrations(id),
   plugin_id           TEXT NOT NULL,
   artifact            TEXT NOT NULL,
   settings            TEXT NOT NULL,
+  intent              TEXT CHECK (intent IN ('directory', 'factory')),
+  source              TEXT,
   based_on_generation INTEGER,
   based_on_factory    TEXT,
   PRIMARY KEY (registration, plugin_id),
   FOREIGN KEY (based_on_generation, plugin_id) REFERENCES plugin_generations(registration, plugin_id),
+  CHECK ((intent IS 'directory') = (source IS NOT NULL)),
+  CHECK ((intent IS NULL) = (based_on_generation IS NOT NULL OR based_on_factory IS NOT NULL)),
   CHECK (based_on_generation IS NULL OR based_on_factory IS NULL)
 ) STRICT;
 
 -- The code a registration activated for a plugin: the generation it brought, or factory code it
--- followed, by artifact.
+-- chose to follow, by artifact.
 CREATE TABLE registration_code (
   registration INTEGER NOT NULL REFERENCES registrations(id),
   plugin_id    TEXT NOT NULL,
   factory      TEXT,
-  intent       TEXT CHECK (intent IN ('directory', 'factory')),
-  source       TEXT,
   generation   INTEGER GENERATED ALWAYS AS (CASE WHEN factory IS NULL THEN registration END) VIRTUAL,
   PRIMARY KEY (registration, plugin_id),
-  FOREIGN KEY (generation, plugin_id) REFERENCES plugin_generations(registration, plugin_id) DEFERRABLE INITIALLY DEFERRED,
-  CHECK ((intent IS 'directory') = (source IS NOT NULL)),
-  CHECK (factory IS NULL OR intent IS 'factory')
+  FOREIGN KEY (generation, plugin_id) REFERENCES plugin_generations(registration, plugin_id) DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
 -- A registered configuration document, identified by its registration.
@@ -180,26 +181,24 @@ CREATE TABLE config_generations (
 
 -- Node: what runs here and how it fared; another node keeps its own.
 
--- Each plugin's references on this node. A reference is a generation of the plugin, by its
--- registration, or factory code, by its artifact; `_by` is the registration that wrote it.
+-- Each plugin's current and rollback references on this node. `_by` is the registration that
+-- wrote a reference and activated its code; `_factory` is factory code's artifact. A reference
+-- without an artifact is the generation its registration brought; factory code without a
+-- registration is what recovery reached.
 CREATE TABLE plugins (
-  id               TEXT PRIMARY KEY,
-  named_by         INTEGER,
-  active           INTEGER,
-  active_factory   TEXT,
-  active_by        INTEGER,
-  rollback_target  INTEGER,
-  rollback_factory TEXT,
-  rollback_by      INTEGER,
+  id                  TEXT PRIMARY KEY,
+  named_by            INTEGER,
+  active_by           INTEGER,
+  active_factory      TEXT,
+  active_generation   INTEGER GENERATED ALWAYS AS (CASE WHEN active_factory IS NULL THEN active_by END) VIRTUAL,
+  rollback_by         INTEGER,
+  rollback_factory    TEXT,
+  rollback_generation INTEGER GENERATED ALWAYS AS (CASE WHEN rollback_factory IS NULL THEN rollback_by END) VIRTUAL,
   FOREIGN KEY (named_by, id) REFERENCES registration_names(registration, plugin_id),
-  FOREIGN KEY (active, id) REFERENCES plugin_generations(registration, plugin_id),
-  FOREIGN KEY (rollback_target, id) REFERENCES plugin_generations(registration, plugin_id),
   FOREIGN KEY (active_by, id) REFERENCES registration_code(registration, plugin_id),
   FOREIGN KEY (rollback_by, id) REFERENCES registration_code(registration, plugin_id),
-  CHECK (active IS NULL OR active_factory IS NULL),
-  CHECK (active IS NOT NULL OR active_factory IS NOT NULL OR active_by IS NULL),
-  CHECK (rollback_target IS NULL OR rollback_factory IS NULL),
-  CHECK (rollback_target IS NOT NULL OR rollback_factory IS NOT NULL OR rollback_by IS NULL)
+  FOREIGN KEY (active_generation, id) REFERENCES plugin_generations(registration, plugin_id),
+  FOREIGN KEY (rollback_generation, id) REFERENCES plugin_generations(registration, plugin_id)
 ) STRICT;
 
 -- Each generation's trial, health or failure on this node.

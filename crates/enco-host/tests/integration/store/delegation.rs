@@ -40,43 +40,73 @@ fn creation(parent: &SessionRecord) -> Creation {
         working_dir: parent.working_dir.clone(),
     }
 }
+
+/// The settled delegation that creates `child` and hands it `task`.
+fn created(child: Creation, task: &Event) -> EntryBody {
+    EntryBody::ToolCallSettled {
+        call: CallId::new(),
+        outcome: Settlement::Ok,
+        content: "delegated".into(),
+        full: None,
+        images: vec![],
+        outgoing: None,
+        delegated: Some(Delegated {
+            target: DelegationTarget::Created(child),
+            event: task.id,
+        }),
+        schedule: None,
+    }
+}
+
+/// Commits the sender consuming `input`, then `facts`, and handing `delivery` on.
 async fn append(
     store: &SqliteStore,
     sender: SessionId,
     input: &Event,
+    facts: Vec<EntryBody>,
     delivery: SessionDelivery,
 ) -> CommitOutcome {
     store
         .accept(std::slice::from_ref(input), None)
         .await
         .unwrap();
-    let seq = store
-        .log(sender, None)
-        .await
-        .unwrap()
-        .last()
-        .map_or(1, |entry| entry.pos.seq.0 + 1);
-    let mut entry = consumed(input);
-    entry.pos.seq = Seq(seq);
-    store
-        .commit(
-            sender,
-            Commit {
-                entries: vec![entry],
-                plan: None,
-                deliveries: vec![delivery],
-            },
-        )
-        .await
-        .unwrap()
+    let mut bodies = vec![EntryBody::EventConsumed {
+        event: input.clone(),
+    }];
+    bodies.extend(facts);
+    Actor {
+        store,
+        session: sender,
+    }
+    .try_append(bodies, vec![delivery])
+    .await
+    .unwrap()
 }
+
+/// The delivery of a parent's delegation to its child.
+fn delegation(task: Event) -> SessionDelivery {
+    SessionDelivery {
+        event: task,
+        kind: SessionDeliveryKind::Delegation {
+            profile: None,
+            working_dir: None,
+        },
+    }
+}
+
 async fn create_child(store: &SqliteStore, parent: &SessionRecord, input: &Event) -> SessionRecord {
     let child = creation(parent);
     let id = child.id;
-    let name = child.name.clone();
-    assert!(matches!(append(store, parent.id, input, SessionDelivery {
-        event: outgoing(id), kind: SessionDeliveryKind::Delegation { name, create: Some(Box::new(child)), profile: None, working_dir: None },
-    }).await, CommitOutcome::Committed { delivered } if delivered == [id]));
+    let task = outgoing(id);
+    let committed = append(
+        store,
+        parent.id,
+        input,
+        vec![created(child, &task)],
+        delegation(task),
+    )
+    .await;
+    assert!(matches!(committed, CommitOutcome::Committed { delivered } if delivered == [id]));
     store.session(id).await.unwrap().unwrap()
 }
 
@@ -101,11 +131,10 @@ async fn child_creation_and_profile_assertions_are_atomic_with_the_senders_facts
         &store,
         parent.id,
         &retry,
+        vec![],
         SessionDelivery {
             event: outgoing(child.id),
             kind: SessionDeliveryKind::Delegation {
-                name: child.name.clone(),
-                create: None,
                 profile: Some("other".parse().unwrap()),
                 working_dir: None,
             },
@@ -120,18 +149,17 @@ async fn child_creation_and_profile_assertions_are_atomic_with_the_senders_facts
         store.pending(parent.id).await.unwrap(),
         std::slice::from_ref(&retry)
     );
-    assert_eq!(store.log(parent.id, None).await.unwrap().len(), 1);
+    assert_eq!(store.log(parent.id, None).await.unwrap().len(), 2);
     assert_eq!(store.pending(child.id).await.unwrap().len(), 1);
     let other_dir = WorkingDir::new(parent.working_dir.node, dir.path().join("other")).unwrap();
     let rejected = append(
         &store,
         parent.id,
         &retry,
+        vec![],
         SessionDelivery {
             event: outgoing(child.id),
             kind: SessionDeliveryKind::Delegation {
-                name: child.name.clone(),
-                create: None,
                 profile: None,
                 working_dir: Some(other_dir),
             },
@@ -141,26 +169,6 @@ async fn child_creation_and_profile_assertions_are_atomic_with_the_senders_facts
     assert!(matches!(
         rejected,
         CommitOutcome::Rejected(CommitRejection::WorkingDirMismatch { .. })
-    ));
-    let duplicate_child = creation(&parent);
-    let rejected = append(
-        &store,
-        parent.id,
-        &retry,
-        SessionDelivery {
-            event: outgoing(duplicate_child.id),
-            kind: SessionDeliveryKind::Delegation {
-                name: duplicate_child.name.clone(),
-                create: Some(Box::new(duplicate_child)),
-                profile: None,
-                working_dir: None,
-            },
-        },
-    )
-    .await;
-    assert!(matches!(
-        rejected,
-        CommitOutcome::Rejected(CommitRejection::ChildExists(_))
     ));
     assert_eq!(store.sessions().await.unwrap().len(), 2);
 }
@@ -188,6 +196,7 @@ async fn pending_halts_reject_tools_but_keep_boundary_facts_without_delivering()
         &store,
         child.id,
         &first,
+        vec![],
         SessionDelivery {
             event: outgoing(parent.id),
             kind: SessionDeliveryKind::Message,
@@ -201,19 +210,13 @@ async fn pending_halts_reject_tools_but_keep_boundary_facts_without_delivering()
     assert_eq!(store.pending(child.id).await.unwrap(), pending);
     assert!(store.log(child.id, None).await.unwrap().is_empty());
     let new = creation(&child);
+    let task = outgoing(new.id);
     let rejected = append(
         &store,
         child.id,
         &first,
-        SessionDelivery {
-            event: outgoing(new.id),
-            kind: SessionDeliveryKind::Delegation {
-                name: new.name.clone(),
-                create: Some(Box::new(new)),
-                profile: None,
-                working_dir: None,
-            },
-        },
+        vec![created(new, &task)],
+        delegation(task),
     )
     .await;
     assert!(matches!(
@@ -224,6 +227,7 @@ async fn pending_halts_reject_tools_but_keep_boundary_facts_without_delivering()
         &store,
         child.id,
         &first,
+        vec![],
         SessionDelivery {
             event: outgoing(parent.id),
             kind: SessionDeliveryKind::Boundary,
@@ -323,6 +327,44 @@ async fn archive_atomically_halts_the_active_subtree_and_releases_names() {
             .id,
         parent.id
     );
+}
+
+#[tokio::test]
+async fn an_archived_parent_cannot_take_back_a_child_name_its_archive_released() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, input) = main_session(dir.path()).await;
+    let parent = store.session(input.session).await.unwrap().unwrap();
+    let at = Utc::now().trunc_subsecs(3);
+    store
+        .halt_subtree(parent.id, EventSource::Cli, owner_halt(&parent), at, true)
+        .await
+        .unwrap();
+    let replacement = store.ensure_session(&parent.name, at).await.unwrap();
+    let task = Event {
+        session: replacement.id,
+        id: EventId::new(),
+        ..input
+    };
+    let child = create_child(&store, &replacement, &task).await;
+    // The archived parent's actor can still settle a delegation it resolved before the archive;
+    // its halt rejects the settlement before the released name is touched.
+    let stale = creation(&parent);
+    assert_eq!(stale.name, child.name);
+    let message = outgoing(stale.id);
+    let rejected = Actor {
+        store: &store,
+        session: parent.id,
+    }
+    .try_append(vec![created(stale, &message)], vec![delegation(message)])
+    .await
+    .unwrap();
+    assert!(matches!(
+        rejected,
+        CommitOutcome::Rejected(CommitRejection::Halted)
+    ));
+    assert!(store.log(parent.id, None).await.unwrap().is_empty());
+    let named = store.session_by_name(&child.name).await.unwrap().unwrap();
+    assert_eq!(named.id, child.id);
 }
 
 #[tokio::test]

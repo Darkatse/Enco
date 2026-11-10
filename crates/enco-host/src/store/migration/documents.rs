@@ -1,8 +1,8 @@
 //! Version 23 documents in their version 24 form.
 //!
-//! Code is named by registration or as factory code, the rollback notice is the plugin's, and
-//! delegations carry their children's creation records. Mapping records move to new addresses,
-//! and the origins that point at them follow.
+//! Code is named by registration or as factory code, the rollback notice is the plugin's, and a
+//! delegation names its target: an existing child, or the child it created with its creation
+//! record. Mapping records move to new addresses, and the origins that point at them follow.
 //!
 //! What changed form is rewritten as JSON, keyed by the documents' own tags; origins are found by
 //! type after decoding, so content that plugins and services own is never read.
@@ -58,7 +58,8 @@ impl Rewrite<'_> {
                 }
             }
             Some("tool_call_started") if body["code"]["kind"] == "generation" => {
-                body["code"] = json(&self.registry.code(number(&body["code"]["id"])?)?)?;
+                let code = self.registry.code(number(&body["code"]["id"])?)?;
+                body["code"] = json(&ToolCode::Plugin(code))?;
             }
             Some("round_ended") if body["end"]["kind"] == "failed" => {
                 let end = body["end"]
@@ -90,15 +91,16 @@ impl Rewrite<'_> {
         }
         body["kind"] = "plugin_rolled_back".into();
         let rollback = &mut body["rollback"];
-        rollback["from"] = json(&self.registry.generation(number(&rollback["from"])?)?)?;
+        let from = self.registry.generation(number(&rollback["from"])?)?;
+        rollback["from"] = json(&from)?;
         rollback["to"] = match &rollback["to"] {
             Value::Null => Value::Null,
-            to => json(&self.registry.code(number(to)?)?)?,
+            to => json(&self.registry.plugin_code(from.plugin, number(to)?)?)?,
         };
         Ok(())
     }
 
-    /// A delegation records the child's creation, when this call created it.
+    /// A delegation names its child: an existing one, or the one it created, by its creation.
     fn delegated(&self, body: &mut Value) -> Result<(), StoreError> {
         let Some(delegated) = body.get_mut("delegated").and_then(Value::as_object_mut) else {
             return Ok(());
@@ -107,18 +109,22 @@ impl Rewrite<'_> {
             .remove("created")
             .and_then(|created| created.as_bool())
             .ok_or_else(|| backend("a delegation does not say whether it created its child"))?;
-        let creation = if created {
-            let child: SessionId =
-                serde_json::from_value(delegated["session"]["id"].clone()).map_err(backend)?;
+        let child: SessionRef = serde_json::from_value(
+            delegated
+                .remove("session")
+                .ok_or_else(|| backend("a delegation names no child"))?,
+        )
+        .map_err(backend)?;
+        let target = if created {
             let row = self
                 .sessions
-                .get(&child)
-                .ok_or(StoreError::UnknownSession(child))?;
-            Some(creation(row))
+                .get(&child.id)
+                .ok_or(StoreError::UnknownSession(child.id))?;
+            DelegationTarget::Created(creation(row))
         } else {
-            None
+            DelegationTarget::Existing(child)
         };
-        delegated.insert("creation".into(), json(&creation)?);
+        delegated.insert("target".into(), json(&target)?);
         Ok(())
     }
 }

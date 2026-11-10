@@ -1,6 +1,5 @@
 use crate::{
-    CallContext, ContextSource, Exports, KernelError, OfferedMemories, Tool, Tools,
-    builtin::BuiltinCall,
+    ContextSource, Exports, KernelError, OfferedMemories, Tool, Tools, builtin::ActorCall,
 };
 use enco_core::*;
 use std::{collections::HashSet, sync::Arc};
@@ -20,38 +19,51 @@ pub(crate) struct Snapshot {
 pub(crate) struct SnapshotTool {
     pub id: CapabilityId,
     pub spec: ToolSpec,
-    pub code: CodeRef,
-    pub tool: Arc<dyn Tool>,
-    /// Whose tool this is.
-    pub source: ToolSource,
+    /// What answers a call to it.
+    pub handler: Handler,
 }
 
-/// Where a Round's tool comes from.
+/// What answers a call to a Round's tool, given where the tool is defined.
 #[derive(Clone)]
-pub(crate) enum ToolSource {
-    /// The host's own, with the built-in call it is when the Session actor answers it.
-    Host(Option<BuiltinCall>),
-    /// A plugin's, by the name the plugin ran under when the Round bound it; only plugin code can
-    /// be recorded as failed.
-    Plugin(PluginName),
+pub(crate) enum Handler {
+    /// The Session actor, from the Session's own facts, when the call settles.
+    Actor(ActorCall),
+    /// A tool the host implements.
+    Host(Arc<dyn Tool>),
+    /// A plugin's tool, with the name and code the plugin ran under when the Round bound it.
+    Plugin {
+        name: PluginName,
+        code: CodeRef,
+        tools: Arc<dyn Tools>,
+    },
 }
 
 impl SnapshotTool {
-    /// The built-in call this tool is, when the Session actor answers it.
-    pub fn builtin(&self) -> Option<BuiltinCall> {
-        match &self.source {
-            ToolSource::Host(builtin) => *builtin,
-            ToolSource::Plugin(_) => None,
+    /// The code a call to it runs, recorded when the call starts.
+    pub fn code(&self) -> ToolCode {
+        match &self.handler {
+            Handler::Actor(_) => ToolCode::Native(crate::builtin::code()),
+            Handler::Host(tool) => ToolCode::Native(tool.code()),
+            Handler::Plugin { code, .. } => ToolCode::Plugin(*code),
         }
     }
 }
 
 impl Snapshot {
-    pub fn new(node: NodeId, deps: &crate::KernelDeps) -> Result<Self, KernelError> {
+    /// The host's tools, then the kernel's own; each name is one tool, and the registry declared
+    /// exactly these.
+    pub fn new(
+        node: NodeId,
+        deps: &crate::KernelDeps,
+        builtins: Vec<(ToolSpec, Handler)>,
+    ) -> Result<Self, KernelError> {
         let mut names = HashSet::new();
         let mut tools = Vec::new();
-        for tool in &deps.tools {
-            let spec = tool.spec();
+        let host = deps
+            .tools
+            .iter()
+            .map(|tool| (tool.spec(), Handler::Host(tool.clone())));
+        for (spec, handler) in host.chain(builtins) {
             if !names.insert(spec.name.clone()) {
                 return Err(KernelError::Config(format!("duplicate tool {}", spec.name)));
             }
@@ -60,11 +72,20 @@ impl Snapshot {
                     node,
                     name: spec.name.clone(),
                 },
-                source: ToolSource::Host(BuiltinCall::named(&spec.name)),
                 spec,
-                code: tool.code(),
-                tool: tool.clone(),
+                handler,
             });
+        }
+        let declared: std::collections::BTreeSet<_> =
+            deps.registry.host_tool_names().iter().collect();
+        let actual: std::collections::BTreeSet<_> =
+            tools.iter().map(|tool| &tool.spec.name).collect();
+        if declared != actual {
+            return Err(KernelError::Config(format!(
+                "host tool declarations differ from handlers: missing handlers {:?}; undeclared handlers {:?}",
+                declared.difference(&actual).collect::<Vec<_>>(),
+                actual.difference(&declared).collect::<Vec<_>>()
+            )));
         }
         let lifeline = deps
             .registry
@@ -99,46 +120,19 @@ impl Snapshot {
             return snapshot;
         }
         for (name, spec, export) in exports.tools() {
-            let tool = Arc::new(PluginTool {
-                spec,
-                code: export.code,
-                adapter: export.adapter,
-            });
             snapshot.tools.push(SnapshotTool {
                 id: CapabilityId {
                     node: self.node,
-                    name: tool.spec.name.clone(),
+                    name: spec.name.clone(),
                 },
-                spec: tool.spec(),
-                code: tool.code(),
-                tool,
-                source: ToolSource::Plugin(name.clone()),
+                spec,
+                handler: Handler::Plugin {
+                    name: name.clone(),
+                    code: export.code,
+                    tools: export.adapter,
+                },
             });
         }
         snapshot
-    }
-}
-
-/// Registry identity wraps the runtime's tools interface at the ordinary Tool boundary.
-struct PluginTool {
-    spec: ToolSpec,
-    code: CodeRef,
-    adapter: Arc<dyn Tools>,
-}
-
-#[async_trait::async_trait]
-impl Tool for PluginTool {
-    fn spec(&self) -> ToolSpec {
-        self.spec.clone()
-    }
-    fn code(&self) -> CodeRef {
-        self.code.clone()
-    }
-    async fn call(
-        &self,
-        ctx: CallContext,
-        args: serde_json::Map<String, serde_json::Value>,
-    ) -> Outcome {
-        self.adapter.call(ctx, &self.spec, args).await
     }
 }

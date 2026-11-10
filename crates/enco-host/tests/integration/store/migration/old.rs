@@ -91,11 +91,11 @@ pub(super) fn old_form(body: EntryBody, patch: impl FnOnce(&mut Value)) -> Strin
     value.to_string()
 }
 
-pub(super) fn native() -> CodeRef {
-    CodeRef::Native {
+pub(super) fn native() -> ToolCode {
+    ToolCode::Native(NativeCode {
         name: "kernel-builtin".into(),
         version: "0.1.0".into(),
-    }
+    })
 }
 
 pub(super) fn settled(call: CallId, content: &str) -> EntryBody {
@@ -131,27 +131,15 @@ pub(super) fn started(round: RoundId, call: CallId, node: NodeId, name: &str) ->
 
 /// A delegation that created its child, as version 23 recorded it.
 pub(super) fn created(child: SessionId, name: &str) -> String {
-    let body = EntryBody::ToolCallSettled {
-        call: CallId::new(),
-        outcome: Settlement::Ok,
-        content: "Created the child.".into(),
-        full: None,
-        images: Vec::new(),
-        outgoing: None,
-        delegated: Some(Delegated {
-            session: SessionRef {
+    old_form(settled(CallId::new(), "Created the child."), |value| {
+        value["delegated"] = json!({
+            "session": SessionRef {
                 id: child,
                 name: name.parse().unwrap(),
             },
-            creation: None,
-            event: EventId::new(),
-        }),
-        schedule: None,
-    };
-    old_form(body, |value| {
-        let delegated = value["delegated"].as_object_mut().unwrap();
-        delegated.remove("creation");
-        delegated.insert("created".into(), json!(true));
+            "created": true,
+            "event": EventId::new(),
+        });
     })
 }
 
@@ -587,8 +575,13 @@ impl Old {
                     attempt,
                     purpose: AttemptPurpose::Reply,
                     plan: ContentHash::of(b"plan"),
-                    composer: native(),
-                    provider: native(),
+                    composer: CodeRef {
+                        plugin: self.plugins.composer,
+                        code: PluginCode::Factory {
+                            artifact: artifact("composer factory"),
+                        },
+                    },
+                    provider: generation(1, self.plugins.chat),
                     settings: serde_json::from_value(json!({
                         "base_url": "https://fixture.invalid",
                         "model": "fixture",

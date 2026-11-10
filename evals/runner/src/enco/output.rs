@@ -50,7 +50,28 @@ pub(crate) enum Running {
 
 #[derive(Deserialize)]
 pub(crate) struct Activation {
-    pub(crate) code: CodeRef,
+    pub(crate) reference: PluginActivation,
+}
+
+/// A plugin's reference to the code it runs; only the code it names is read.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum PluginActivation {
+    Generation { registration: u64 },
+    Factory {},
+}
+
+impl PluginActivation {
+    /// The code it names, as Enco's text names it.
+    pub(crate) fn name(&self) -> String {
+        match self {
+            Self::Generation { registration } => PluginCode::Generation {
+                registration: *registration,
+            },
+            Self::Factory {} => PluginCode::Factory {},
+        }
+        .name()
+    }
 }
 
 #[derive(Deserialize)]
@@ -76,7 +97,7 @@ pub(crate) enum EntryBody {
     },
     ToolCallStarted {
         call: String,
-        code: CodeRef,
+        code: ToolCode,
     },
     ToolCallSettled {
         call: String,
@@ -91,30 +112,41 @@ pub(crate) enum EntryBody {
     Other,
 }
 
+/// The code behind a tool call: a plugin's, or the host's own.
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum CodeRef {
-    Generation {
-        id: GenerationId,
+pub(crate) enum ToolCode {
+    Plugin {
+        code: PluginCode,
     },
-    Factory {},
     #[serde(other)]
-    Other,
+    Native,
 }
 
-#[derive(Deserialize)]
-pub(crate) struct GenerationId {
-    registration: u64,
-}
-
-impl CodeRef {
-    /// Plugin code as Enco's text names it, `registration 15` or `factory code`; native code has
-    /// no such name.
+impl ToolCode {
+    /// Plugin code as Enco's text names it; native code has no such name.
     pub(crate) fn name(&self) -> Option<String> {
         match self {
-            Self::Generation { id } => Some(format!("registration {}", id.registration)),
-            Self::Factory {} => Some("factory code".into()),
-            Self::Other => None,
+            Self::Plugin { code } => Some(code.name()),
+            Self::Native => None,
+        }
+    }
+}
+
+/// A plugin's code, named within the plugin.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum PluginCode {
+    Generation { registration: u64 },
+    Factory {},
+}
+
+impl PluginCode {
+    /// Plugin code as Enco's text names it: `registration 15` or `factory code`.
+    pub(crate) fn name(&self) -> String {
+        match self {
+            Self::Generation { registration } => format!("registration {registration}"),
+            Self::Factory {} => "factory code".into(),
         }
     }
 }

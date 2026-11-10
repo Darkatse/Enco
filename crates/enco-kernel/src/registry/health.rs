@@ -37,7 +37,7 @@ impl Registry {
                 activation::candidates(&state, &state.node.plugins[&generation.plugin])?;
             (failure, candidates)
         };
-        let recovery = activation::prepare(&self.deps, candidates).await?;
+        let mut recovery = activation::prepare(&self.deps, generation.plugin, candidates).await?;
         let mut state = self.state.lock().await;
         if !current_trial(&state, generation) {
             return Ok(());
@@ -47,17 +47,14 @@ impl Registry {
             RegistryError::Intent(format!("plugin {plugin} on trial has no running name"))
         })?;
         let mut restored = state.node.plugins[&plugin].clone();
-        restored.active = recovery.target.as_ref().map(|(code, _)| code.clone());
+        restored.active = recovery.target.as_ref().map(|(reference, _)| *reference);
         restored.rollback_target = None;
-        let mut failed = recovery.failed;
+        let mut failed = std::mem::take(&mut recovery.failed);
         failed.push((generation, failure.clone()));
         let rollback = RolledBack {
             plugin: name,
             from: generation,
-            to: restored
-                .active
-                .as_ref()
-                .map(|reference| reference.code.clone()),
+            to: restored.active.map(PluginActivation::code),
             failure,
         };
         let event = session.map(|session| Event {
@@ -77,9 +74,7 @@ impl Registry {
             ..ActivationWrite::default()
         };
         activation::commit(&self.deps, &mut state, &change).await?;
-        if let Some((reference, loaded)) = recovery.target {
-            state.loaded.insert(reference.code, loaded);
-        }
+        state.loaded.extend(recovery.loaded());
         self.publish(&mut state, None, None)?;
         cleanup_artifacts(&self.deps, &state).await;
         Ok(())
@@ -104,12 +99,7 @@ impl Registry {
 /// Whether the generation is on trial on this node and is its plugin's current code.
 fn current_trial(state: &State, generation: GenerationId) -> bool {
     state.node.health.get(&generation) == Some(&Health::Trial)
-        && state
-            .node
-            .plugins
-            .get(&generation.plugin)
-            .and_then(|plugin| plugin.active.as_ref())
-            .is_some_and(|active| active.code.generation() == Some(generation))
+        && state.active(generation.plugin) == Some(CodeRef::from(generation))
 }
 
 /// The notice the model reads: what failed, what runs now, and that nothing registered changed.

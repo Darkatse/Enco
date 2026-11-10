@@ -3,8 +3,25 @@ use super::*;
 use crate::ActivationWrite;
 
 pub(super) struct Recovery {
+    /// The plugin recovering.
+    pub plugin: PluginId,
+    /// The reference recovery reaches, with what it loaded.
     pub target: Option<(PluginActivation, Loaded)>,
     pub failed: Vec<(GenerationId, Failure)>,
+}
+
+impl Recovery {
+    /// The code recovery reaches and what it loaded, absent when nothing can run.
+    pub fn loaded(self) -> Option<(CodeRef, Loaded)> {
+        let (reference, loaded) = self.target?;
+        Some((
+            CodeRef {
+                plugin: self.plugin,
+                code: reference.code(),
+            },
+            loaded,
+        ))
+    }
 }
 
 pub(super) struct Candidate {
@@ -20,26 +37,33 @@ pub(super) fn candidates(
     state: &State,
     plugin: &PluginRecord,
 ) -> Result<Vec<Candidate>, RegistryError> {
-    let factory = state.factory.get(&plugin.id).map(|code| PluginActivation {
-        code: code.clone(),
-        registration: None,
-    });
+    let factory = state
+        .factory
+        .get(&plugin.id)
+        .map(|artifact| PluginActivation::Factory {
+            artifact: *artifact,
+            registration: None,
+        });
     let mut seen = Vec::new();
-    [plugin.rollback_target.clone(), factory]
+    [plugin.rollback_target, factory]
         .into_iter()
         .flatten()
         .filter(|reference| {
-            if Some(reference) == plugin.active.as_ref() || seen.contains(reference) {
+            if Some(*reference) == plugin.active || seen.contains(reference) {
                 return false;
             }
-            seen.push(reference.clone());
+            seen.push(*reference);
             true
         })
         .map(|reference| {
-            let (artifact, settings) = state.content(&reference.code)?;
+            let code = CodeRef {
+                plugin: plugin.id,
+                code: reference.code(),
+            };
+            let (artifact, settings) = state.content(code)?;
             Ok(Candidate {
-                failed: matches!(state.health(&reference.code), Some(Health::Failed { .. })),
-                loaded: state.loaded.get(&reference.code).cloned(),
+                failed: matches!(state.health(code), Some(Health::Failed { .. })),
+                loaded: state.loaded.get(&code).cloned(),
                 artifact,
                 settings,
                 reference,
@@ -48,11 +72,14 @@ pub(super) fn candidates(
         .collect()
 }
 
+/// Try the candidates of `plugin` in order; the first that loads is what recovery reaches.
 pub(super) async fn prepare(
     deps: &RegistryDeps,
+    plugin: PluginId,
     candidates: Vec<Candidate>,
 ) -> Result<Recovery, RegistryError> {
     let mut recovery = Recovery {
+        plugin,
         target: None,
         failed: Vec::new(),
     };
@@ -74,7 +101,7 @@ pub(super) async fn prepare(
             }
             // Factory code is never on trial, so only a generation records the failure.
             Err(failure) => {
-                if let Some(id) = candidate.reference.code.generation() {
+                if let Some(id) = candidate.reference.code().generation(plugin) {
                     recovery.failed.push((id, failure));
                 }
             }
@@ -106,7 +133,7 @@ pub(super) async fn commit(
 pub(super) async fn load(
     deps: &RegistryDeps,
     state: &State,
-    code: &CodeRef,
+    code: CodeRef,
     cached: Option<Loaded>,
 ) -> Result<Result<Loaded, Failure>, RegistryError> {
     let (artifact, settings) = state.content(code)?;
@@ -149,33 +176,31 @@ fn load_failure(message: String) -> Failure {
 
 pub(super) async fn restore(deps: &RegistryDeps, state: &mut State) -> Result<(), RegistryError> {
     for plugin in state.node.plugins.values().cloned().collect::<Vec<_>>() {
-        let Some(active) = plugin.active.clone() else {
+        let Some(active) = state.active(plugin.id) else {
             continue;
         };
-        if state.loaded.contains_key(&active.code) {
+        if state.loaded.contains_key(&active) {
             continue;
         }
-        match load(deps, state, &active.code, None).await? {
+        match load(deps, state, active, None).await? {
             Ok(loaded) => {
-                state.loaded.insert(active.code, loaded);
+                state.loaded.insert(active, loaded);
             }
             Err(failure) => {
-                let mut recovery = prepare(deps, candidates(state, &plugin)?).await?;
-                if let Some(id) = active.code.generation() {
+                let mut recovery = prepare(deps, plugin.id, candidates(state, &plugin)?).await?;
+                if let Some(id) = active.generation() {
                     recovery.failed.push((id, failure));
                 }
                 let mut restored = plugin;
-                restored.active = recovery.target.as_ref().map(|(code, _)| code.clone());
+                restored.active = recovery.target.as_ref().map(|(reference, _)| *reference);
                 restored.rollback_target = None;
                 let change = ActivationWrite {
                     plugins: vec![restored],
-                    failed: recovery.failed,
+                    failed: std::mem::take(&mut recovery.failed),
                     ..ActivationWrite::default()
                 };
                 commit(deps, state, &change).await?;
-                if let Some((reference, loaded)) = recovery.target {
-                    state.loaded.insert(reference.code, loaded);
-                }
+                state.loaded.extend(recovery.loaded());
             }
         }
     }
@@ -196,15 +221,13 @@ impl Registry {
         };
         let mut loaded = BTreeMap::new();
         for (id, candidates) in recoveries {
-            let recovery = prepare(&self.deps, candidates).await?;
+            let mut recovery = prepare(&self.deps, id, candidates).await?;
             if let Some(plugin) = change.plugins.iter_mut().find(|plugin| plugin.id == id) {
-                plugin.active = recovery.target.as_ref().map(|(code, _)| code.clone());
+                plugin.active = recovery.target.as_ref().map(|(reference, _)| *reference);
                 plugin.rollback_target = None;
             }
-            change.failed.extend(recovery.failed);
-            if let Some((reference, adapter)) = recovery.target {
-                loaded.insert(reference.code, adapter);
-            }
+            change.failed.append(&mut recovery.failed);
+            loaded.extend(recovery.loaded());
         }
         let mut state = self.state.lock().await;
         if !expected.matches(&state) {
@@ -269,7 +292,7 @@ fn rollback_plan(state: &State) -> Result<RollbackPlan, RegistryError> {
         let code = plugin
             .active
             .as_ref()
-            .is_some_and(|active| active.registration == Some(registration.id));
+            .is_some_and(|active| active.registration() == Some(registration.id));
         let name = plugin.named_by == Some(registration.id);
         if !code && !name {
             continue;
@@ -307,6 +330,6 @@ fn effective(state: &State, record: &RegistrationRecord) -> bool {
                 || plugin
                     .active
                     .as_ref()
-                    .is_some_and(|active| active.registration == Some(record.id))
+                    .is_some_and(|active| active.registration() == Some(record.id))
         })
 }

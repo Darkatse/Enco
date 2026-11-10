@@ -131,7 +131,7 @@ impl FileTool {
 
 #[async_trait]
 impl Tool for FileTool {
-    fn code(&self) -> CodeRef {
+    fn code(&self) -> NativeCode {
         super::code()
     }
 

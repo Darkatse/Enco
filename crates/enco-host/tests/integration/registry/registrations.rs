@@ -333,10 +333,7 @@ async fn owner_rollback_restores_only_the_still_effective_parts_of_the_latest_ba
             .iter()
             .find(|plugin| plugin.id == old.id.plugin)
             .unwrap();
-        assert_eq!(
-            running_activation(plugin).unwrap().code,
-            CodeRef::from(old.id)
-        );
+        assert_eq!(running_code(plugin).unwrap(), CodeRef::from(old.id));
         assert_eq!(
             plugin.standing,
             Standing::Registered {
@@ -467,9 +464,7 @@ async fn rollback_of_deletion_restores_the_name_and_its_configuration_with_only_
             .find(|plugin| plugin.id == code.id.plugin);
         assert_eq!(restored.is_some(), healthy);
         assert_eq!(
-            restored
-                .and_then(running_activation)
-                .map(|activation| activation.code.clone()),
+            restored.and_then(running_code),
             healthy.then_some(CodeRef::from(code.id))
         );
         assert_eq!(
@@ -606,8 +601,5 @@ async fn new_source_cannot_bind_to_a_name_restored_only_by_rollback() {
         .find(|plugin| plugin.id == old.id.plugin)
         .unwrap();
     assert_eq!(plugin.running.name().map(PluginName::as_str), Some("a"));
-    assert_eq!(
-        running_activation(plugin).unwrap().code,
-        CodeRef::from(old.id)
-    );
+    assert_eq!(running_code(plugin).unwrap(), CodeRef::from(old.id));
 }

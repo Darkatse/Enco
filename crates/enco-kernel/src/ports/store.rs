@@ -87,6 +87,11 @@ pub trait Store: Send + Sync {
     /// reading only as far back as the fold needs.
     async fn child_state(&self, child: SessionId) -> Result<ChildState, StoreError>;
     /// Atomically append facts and consume their Inbox inputs after checking ownership and positions.
+    ///
+    /// A halt still waiting once the inputs are consumed rejects, as `Halted`, a commit that creates
+    /// a child or sends a message or delegation, and drops its boundaries. Otherwise a child a fact
+    /// creates gets its row from that creation record before any delivery, so a delegation's
+    /// message reaches it in the same commit.
     async fn commit(&self, session: SessionId, commit: Commit)
     -> Result<CommitOutcome, StoreError>;
     /// Restore a recorded request plan and verify its complete content address.

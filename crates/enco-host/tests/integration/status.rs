@@ -167,8 +167,10 @@ async fn runtime_attention_uses_the_selected_generation_and_keeps_running_source
     let status = node.status(root.path()).await;
     let diverged = attention(&status, "diverged");
     assert_eq!(
-        diverged["divergence"]["registered"]["code"],
-        json!(CodeRef::from(second.generations[0].id))
+        diverged["divergence"]["registered"],
+        json!(PluginActivation::Generation {
+            registration: second.generations[0].id.registration
+        })
     );
     assert_eq!(
         diverged["next"]["first"][0]["arguments"],
@@ -543,14 +545,14 @@ async fn registered_code_provenance_follows_the_selected_generation_through_sett
     assert!(provenance(node.status(root.path()).await).source == CodeSource::Factory);
     let source = node.source(root.path(), "fixture", b"one").await;
     let generation = &source.generations[0];
-    let CodeIntent::Directory { source: content } = source.registration.code[&generation.id.plugin]
-        .intent
-        .unwrap()
+    let Origin::Code {
+        intent: CodeIntent::Directory { source: content },
+    } = generation.origin
     else {
         panic!("source registration must record its directory");
     };
     let registered_code = CodeProvenance {
-        code: generation.id.into(),
+        code: CodeRef::from(generation.id).code,
         source: CodeSource::Directory {
             registration: source.registration.id,
             source: content,
@@ -573,7 +575,7 @@ async fn registered_code_provenance_follows_the_selected_generation_through_sett
         .unwrap()
         .plugin
         .activation;
-    assert_eq!(registered.code, CodeRef::from(settings));
+    assert_eq!(registered.reference.code(), CodeRef::from(settings).code);
     assert!(registered.provenance == registered_code);
     node.kernel.shutdown().await.unwrap();
 }

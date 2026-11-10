@@ -140,7 +140,7 @@ async fn rollback_commits_with_its_notice_and_both_survive_restart() {
     let rollback = RolledBack {
         plugin: "custom".parse().unwrap(),
         from: next.id,
-        to: Some(healthy.id.into()),
+        to: Some(CodeRef::from(healthy.id).code),
         failure: fault(code::PLUGIN_TRAP),
     };
     drop(registry);
@@ -262,8 +262,9 @@ async fn configuration_probes_report_trial_health_even_when_configuration_is_rej
     assert_eq!(
         registry.registered_intent(None).await.unwrap().plugins["fixture"]
             .activation
-            .code,
-        CodeRef::from(broken)
+            .reference
+            .code(),
+        CodeRef::from(broken).code
     );
 }
 

@@ -25,13 +25,10 @@ pub enum SessionDeliveryKind {
     Boundary,
     /// A message's effect is delivery itself; rejection leaves the entire commit unwritten.
     Message,
-    /// A delegation's effect, with optional creation and assertions about an existing child.
+    /// A delegation's message; rejection leaves the entire commit unwritten.
+    ///
+    /// The child exists, or the settlement in the same commit creates it from its creation record.
     Delegation {
-        /// Target child's full name.
-        name: SessionName,
-        /// The new child's creation record, also in the parent's Log; absent when addressing an
-        /// existing child.
-        create: Option<Box<Creation>>,
         /// Supplied profile must match an existing child's effective profile.
         profile: Option<ProfileName>,
         /// Supplied directory must match an existing child's effective directory.
@@ -59,18 +56,6 @@ pub enum CommitRejection {
     /// The recipient no longer accepts inputs.
     #[error("session `{0}` is archived and accepts no more messages")]
     Archived(SessionName),
-    /// Creating a new child requires a profile.
-    #[error(
-        "child Session `{}` does not exist; pass `profile` to create it",
-        .0.short_name()
-    )]
-    MissingProfile(SessionName),
-    /// Another creation occupied this name before commit.
-    #[error(
-        "child Session `{}` already exists; omit `profile` and `working_dir` to send to it",
-        .0.short_name()
-    )]
-    ChildExists(SessionName),
     /// The supplied profile disagrees with the existing child's profile.
     #[error(
         "child Session uses profile `{current}`, not `{requested}`; omit `profile` to send to it"

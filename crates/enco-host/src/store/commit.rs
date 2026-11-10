@@ -4,7 +4,6 @@ use crate::sqlite::timestamp;
 use enco_core::*;
 use enco_kernel::{Commit, CommitOutcome, StoreError};
 mod deliveries;
-use deliveries::Delivered;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 pub(super) fn commit(
@@ -30,19 +29,10 @@ pub(super) fn commit(
         .map_err(backend)?;
     check_append(&tx, node, session, first, &commit.entries)?;
     consume_events(&tx, session, &commit)?;
-
-    let halted: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM inbox WHERE session_id=? AND json_extract(event, '$.body.kind')='halt')",
-        [session.to_string()], |row| row.get(0),
-    ).map_err(backend)?;
-    let mut delivered = Vec::new();
-    for (delivery, document) in commit.deliveries.iter().zip(documents) {
-        match deliveries::deliver(&tx, halted, delivery, document)? {
-            Delivered::Written => delivered.push(delivery.event.session),
-            Delivered::Skipped => {}
-            Delivered::Rejected(reason) => return Ok(CommitOutcome::Rejected(reason)),
-        }
-    }
+    let delivered = match deliveries::send(&tx, session, &commit, documents)? {
+        Ok(delivered) => delivered,
+        Err(reason) => return Ok(CommitOutcome::Rejected(reason)),
+    };
     if let Some(plan) = plan {
         plan.insert(&tx)?;
     }
