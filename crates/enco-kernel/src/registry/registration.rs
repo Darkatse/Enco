@@ -1,6 +1,6 @@
 //! One preparation and commit path for source, configuration and factory code.
 use super::*;
-use crate::{RegistrationWrite, RegistryState};
+use crate::RegistrationWrite;
 mod commit;
 pub(super) use commit::accept;
 mod prepare;
@@ -10,7 +10,7 @@ pub(super) use prepare::{Prepared, artifact, plan, prepare};
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct Expected {
     next: RegistrationId,
-    config: Option<GenerationId>,
+    config: Option<RegistrationId>,
     plugins: BTreeMap<PluginId, PluginRecord>,
 }
 
@@ -18,8 +18,8 @@ impl Expected {
     pub fn capture(state: &State) -> Self {
         Self {
             next: state.next_registration(),
-            config: state.history.active_config,
-            plugins: state.history.plugins.clone(),
+            config: state.node.configuration,
+            plugins: state.node.plugins.clone(),
         }
     }
     pub fn matches(&self, state: &State) -> bool {
@@ -62,7 +62,7 @@ impl Registry {
         let mut state = self.state.lock().await;
         let (mut result, config, admission) =
             commit::accept(&self.deps, &mut state, prepared).await?;
-        self.publish(&mut state, config, Some(admission));
+        self.publish(&mut state, config, Some(admission))?;
         result
             .warnings
             .extend(cleanup_artifacts(&self.deps, &state).await);
@@ -88,18 +88,18 @@ impl Registry {
             {
                 continue;
             }
-            let (loaded, generation) = match prepared.loaded_for(&endpoint.plugin) {
+            let (loaded, code) = match prepared.loaded_for(&endpoint.plugin) {
                 Some(loaded) => (loaded, None),
                 None => match view.exports.loaded(&endpoint.plugin) {
-                    Some(Ok((generation, loaded))) => (loaded, Some(generation)),
+                    Some(Ok((code, loaded))) => (loaded, Some(code)),
                     Some(Err(_)) => return Err(rejected(admission::plugin_unavailable(usage))),
                     None => return Err(rejected(admission::unknown_plugin(usage))),
                 },
             };
             let outcome = match probe::call(loaded, endpoint, need).await {
                 Ok(result) => {
-                    if let Some(generation) = generation {
-                        self.report(generation, result.verdict, None).await?;
+                    if let Some(code) = code {
+                        self.report(code, result.verdict, None).await?;
                     }
                     result.outcome
                 }
@@ -131,12 +131,19 @@ fn empty_plugin(id: PluginId) -> PluginRecord {
     }
 }
 
-fn next_rollback(history: &RegistryState, plugin: &PluginRecord) -> Option<PluginActivation> {
-    match plugin
-        .active
-        .and_then(|active| history.generations.get(&active.generation))
-    {
-        Some(record) if record.status == GenerationStatus::Healthy => plugin.active,
-        _ => plugin.rollback_target,
+/// The code being replaced becomes the rollback target only when it may serve as one: factory
+/// code always, a generation once healthy on this node.
+fn next_rollback(state: &State, plugin: &PluginRecord) -> Option<PluginActivation> {
+    match &plugin.active {
+        Some(active)
+            if match &active.code {
+                CodeRef::Factory { .. } => true,
+                code @ CodeRef::Generation { .. } => state.health(code) == Some(&Health::Healthy),
+                CodeRef::Native { .. } => false,
+            } =>
+        {
+            Some(active.clone())
+        }
+        _ => plugin.rollback_target.clone(),
     }
 }

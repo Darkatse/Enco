@@ -103,8 +103,8 @@ pub enum Cause {
         /// Failure returned by the probe.
         failure: Failure,
     },
-    /// The selected generation is not loaded on this host.
-    #[error("plugin {plugin}: the selected generation is not loaded")]
+    /// The selected code is not loaded on this host.
+    #[error("plugin {plugin}: its selected code is not loaded")]
     NotLoaded {
         /// Plugin without loaded code.
         plugin: PluginName,
@@ -160,12 +160,15 @@ pub enum Cause {
     /// A configuration table cannot be interpreted.
     #[error("{0}")]
     Table(SettingsError),
-    /// Removing a profile would strand the Sessions that use it.
-    #[error("profile {profile} is still used by Sessions {}", .sessions.join(", "))]
+    /// Removing a profile would strand the Sessions that use it, now or from a coming Round.
+    #[error(
+        "profile {profile} is still used by Sessions {}, now or from a coming Round",
+        .sessions.join(", ")
+    )]
     ProfileInUse {
         /// Profile missing from the configuration.
         profile: ProfileName,
-        /// Names of the Sessions using it.
+        /// Names of the Sessions that use it, or whose commands not yet consumed select it.
         sessions: Vec<String>,
     },
     /// Settings name a plugin that this registration does not have.

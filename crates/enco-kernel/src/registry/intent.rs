@@ -168,33 +168,42 @@ pub struct RegisteredPlugin {
     pub named_by: Option<RegistrationId>,
     /// Last accepted code intent; absent for a factory name that has never registered one.
     pub code: Option<RegisteredSource>,
-    /// Generation selected by the latest accepted activation, or this host's unregistered factory code.
+    /// Code selected by the latest accepted activation, or this host's unregistered factory code.
     pub activation: Activation,
     /// Host-owned code and its follow decision, when the name is reserved.
     pub factory: Option<FactoryStatus>,
 }
 
-/// One selected generation and where it came from; the running and registered layers share it.
+/// One selected code and where it came from; the running and registered layers share it.
 #[derive(Clone, serde::Serialize)]
 pub struct Activation {
-    /// Selected generation and its current outcome.
-    pub generation: GenerationRecord,
+    /// The selected code: a generation, or factory code with empty settings.
+    pub code: CodeRef,
     /// Registration that selected it; absent for the host's factory default.
     pub registration: Option<RegistrationId>,
-    /// Where the generation's code came from.
-    pub code: CodeProvenance,
+    /// The component bytes it runs.
+    pub artifact: ContentHash,
+    /// The settings it runs with; factory code runs with empty settings.
+    pub settings: PluginSettings,
+    /// What the generation brought, absent for factory code.
+    #[serde(flatten)]
+    pub origin: Option<Origin>,
+    /// Its standing on this node, absent for factory code, which is never on trial.
+    pub health: Option<Health>,
+    /// Where its code came from.
+    pub provenance: CodeProvenance,
 }
 
-/// Where a generation's code came from; settings-only generations follow their code generation.
-#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize)]
+/// Where code came from; settings-only generations follow the code they reuse.
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CodeProvenance {
-    /// Generation that supplied the code.
-    pub generation: GenerationId,
+    /// The code that supplied the bytes: a generation or factory code.
+    pub code: CodeRef,
     /// How that code entered the registry.
     pub source: CodeSource,
 }
 
-/// How a generation's code entered the registry.
+/// How code entered the registry.
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CodeSource {
@@ -221,10 +230,10 @@ impl RegisteredPlugin {
 pub struct RegisteredSource {
     /// Directory or host factory code.
     pub intent: CodeIntent,
-    /// Accepted activation, including reuse of an existing factory generation.
+    /// Accepted activation, including following factory code.
     pub registration: RegistrationId,
-    /// Generation selected by that activation.
-    pub generation: GenerationId,
+    /// Code selected by that activation.
+    pub code: CodeRef,
     /// Artifact used to compare newly built code.
     pub artifact: ContentHash,
 }
@@ -249,8 +258,8 @@ impl RegisteredSource {
 pub struct FactoryStatus {
     /// Name reserved by the host.
     pub name: PluginName,
-    /// Recorded embedded code.
-    pub generation: GenerationId,
+    /// This host's factory code.
+    pub code: CodeRef,
     /// Content address of the embedded code.
     pub artifact: ContentHash,
     /// Registered intent follows factory code and differs from this host's implementation.
@@ -265,7 +274,7 @@ impl Registry {
     ) -> Result<RegisteredIntent, RegistryError> {
         let state = self.state.lock().await;
         if let Some(id) = at
-            && !state.history.registrations.contains_key(&id)
+            && !state.intent.registrations.contains_key(&id)
         {
             return Err(state.unknown_registration(id));
         }
@@ -283,7 +292,7 @@ impl State {
             .registered_identities_at(factories, at)
             .into_iter()
             .map(|(name, id)| {
-                let code = self.registered_source(id, at);
+                let code = self.registered_source(id, at)?;
                 let factory = factories
                     .iter()
                     .find(|factory| factory.name == name)
@@ -293,13 +302,13 @@ impl State {
                     .rev()
                     .find_map(|(_, registration)| {
                         registration.code.get(&id).map(|code| PluginActivation {
-                            generation: code.generation,
+                            code: code.code.clone(),
                             registration: Some(registration.id),
                         })
                     })
                     .or_else(|| {
                         factory.as_ref().map(|factory| PluginActivation {
-                            generation: factory.generation,
+                            code: factory.code.clone(),
                             registration: None,
                         })
                     })
@@ -315,7 +324,7 @@ impl State {
                             .map(|(registration, _)| registration),
                         code,
                         factory,
-                        activation: self.activation(reference)?,
+                        activation: self.activation(&reference)?,
                     },
                 ))
             })
@@ -364,11 +373,10 @@ impl State {
         factory: &FactoryPlugin,
         code: Option<&RegisteredSource>,
     ) -> FactoryStatus {
-        let generation = self.factory[&factory.id];
-        let artifact = self.history.generations[&generation].artifact;
+        let artifact = ContentHash::of(factory.artifact);
         FactoryStatus {
             name: factory.name.clone(),
-            generation,
+            code: self.factory[&factory.id].clone(),
             artifact,
             follow: code
                 .is_none_or(|code| code.intent == CodeIntent::Factory && code.artifact != artifact),
@@ -379,17 +387,22 @@ impl State {
         &self,
         plugin: PluginId,
         at: Option<RegistrationId>,
-    ) -> Option<RegisteredSource> {
-        self.registrations_through(at)
-            .rev()
-            .find_map(|(_, registration)| {
-                let code = registration.code.get(&plugin)?;
-                Some(RegisteredSource {
-                    intent: code.intent?,
-                    registration: registration.id,
-                    generation: code.generation,
-                    artifact: self.history.generations[&code.generation].artifact,
+    ) -> Result<Option<RegisteredSource>, RegistryError> {
+        let Some((registration, code, intent)) =
+            self.registrations_through(at)
+                .rev()
+                .find_map(|(_, registration)| {
+                    let code = registration.code.get(&plugin)?;
+                    Some((registration.id, &code.code, code.intent?))
                 })
-            })
+        else {
+            return Ok(None);
+        };
+        Ok(Some(RegisteredSource {
+            intent,
+            registration,
+            code: code.clone(),
+            artifact: self.content(code)?.0,
+        }))
     }
 }

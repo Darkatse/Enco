@@ -25,8 +25,8 @@ where
                 .map_err(registry_error)?
         }
     };
-    let references: Vec<_> = state.history.plugins.values().cloned().collect();
-    factory::retain(deps, &state, &references)
+    let references: Vec<_> = state.node.plugins.values().cloned().collect();
+    factory::retain(deps, &references)
         .await
         .map_err(registry_error)?;
     state.release();
@@ -36,13 +36,11 @@ where
 
 async fn restore(deps: &RegistryDeps) -> Result<(State, Option<ActiveConfig>), RegistryError> {
     let mut state = State::new(deps.store.registry().await?);
-    factory::record(deps, &mut state).await?;
+    factory::load(deps, &mut state).await?;
     load_retained(deps, &mut state).await?;
     let current = state
-        .history
-        .active_config
-        .map(|id| {
-            let record = &state.history.config_generations[&id];
+        .active_config()
+        .map(|record| {
             configuration::declare(&record.document, deps)
                 .map(|declaration| declaration.into_active(record))
                 .map_err(RegistryError::Config)
@@ -65,25 +63,20 @@ async fn register(
 }
 
 async fn load_retained(deps: &RegistryDeps, state: &mut State) -> Result<(), RegistryError> {
-    let ids: BTreeSet<_> = state
-        .history
+    let codes: BTreeSet<_> = state
+        .node
         .plugins
         .values()
-        .flat_map(|plugin| [plugin.active, plugin.rollback_target])
+        .flat_map(|plugin| [&plugin.active, &plugin.rollback_target])
         .flatten()
-        .map(|reference| reference.generation)
+        .map(|reference| reference.code.clone())
         .collect();
-    for id in ids {
-        if state.loaded.contains_key(&id) {
+    for code in codes {
+        if state.loaded.contains_key(&code) {
             continue;
         }
-        let record = state
-            .history
-            .generations
-            .get(&id)
-            .ok_or(RegistryError::UnknownGeneration(id))?;
-        if let Ok(loaded) = activation::load(deps, record, None).await? {
-            state.loaded.insert(id, loaded);
+        if let Ok(loaded) = activation::load(deps, state, &code, None).await? {
+            state.loaded.insert(code, loaded);
         }
     }
     Ok(())

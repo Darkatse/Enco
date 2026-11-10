@@ -512,7 +512,7 @@ Shutdown signals the connection actor and all its helpers, then waits for them.
 ### `channel::Channel::start`
 
 ```rust
-pub fn start(kernel: Arc<Kernel>, adapter: Arc<dyn Adapter>, settings: ConnectionSettings, generation: GenerationId, clock: Arc<dyn Clock>, build: crate::status::HostBuild) -> Self
+pub fn start(kernel: Arc<Kernel>, adapter: Arc<dyn Adapter>, settings: ConnectionSettings, code: CodeRef, clock: Arc<dyn Clock>, build: crate::status::HostBuild) -> Self
 ```
 
 Start the connection; it carries addressed messages to Sessions and their replies back
@@ -682,7 +682,7 @@ Maintains the configured connections and joins each old owner before replacing i
 pub fn start(kernel: Arc<Kernel>, store: Arc<dyn Store>, clock: Arc<dyn Clock>, build: crate::status::HostBuild) -> Self
 ```
 
-Follow the registry's active view, opening accounts through their fixed mapper generation.
+Follow the registry's active view, opening accounts through their fixed mapper code.
 
 ### `channel::ChannelSupervisor::status`
 
@@ -1056,8 +1056,8 @@ impl Serialize for ComparisonMode
 
 ```rust
 pub struct ConfigurationUnit {
-    pub running: enco_core::ConfigurationRef,
-    pub registered: enco_core::ConfigurationRef,
+    pub running: enco_core::RegistrationId,
+    pub registered: enco_core::RegistrationId,
     pub home: super::HomeComparison,
     pub invalid: Vec<enco_kernel::SettingsError>,
     pub unavailable_uses: Vec<enco_kernel::UnservedUse>,
@@ -1066,8 +1066,9 @@ pub struct ConfigurationUnit {
 
 The three layers of `config.toml`.
 
-- `running` — The configuration in use; it differs from the registered one after a rollback.
-- `registered` — The configuration the latest registration selected.
+- `running` — Registration of the configuration in use; it differs from the registered one after a
+  rollback.
+- `registered` — Registration of the configuration the latest registrations selected.
 - `home` — How `config.toml` in the home compares with the registered configuration.
 - `invalid` — Tables in the running configuration that this host cannot interpret.
 - `unavailable_uses` — Configured uses that no running plugin can serve now.
@@ -2624,8 +2625,8 @@ pub enum AttentionKind<'a> {
         cause: StopCause<'a>,
     },
     ConfigurationDiverged {
-        running: enco_core::ConfigurationRef,
-        registered: enco_core::ConfigurationRef,
+        running: enco_core::RegistrationId,
+        registered: enco_core::RegistrationId,
     },
     FollowRejected {
         path: enco_core::IntentPath,
@@ -2681,10 +2682,10 @@ Fact templates receive only this value, so they cannot infer prose from the step
   - `running` — Whether the plugin still serves calls.
   - `factory` — Whether the host has factory code for the plugin, which runs once the removal is
     registered.
-- `RolledBack` — The registered generation failed, and the plugin runs an older one instead.
+- `RolledBack` — The registered code failed, and the plugin was rolled back to earlier code.
   - `path` — The plugin directory.
-  - `running` — The older generation that runs.
-  - `registered` — The registered generation, which failed.
+  - `running` — The earlier code that runs.
+  - `registered` — The registered code, which failed.
   - `cause` — The failure, by what the failed generation introduced.
 - `Diverged` — What runs for the plugin differs from what is registered in one respect.
   - `path` — The plugin directory.
@@ -2693,13 +2694,13 @@ Fact templates receive only this value, so they cannot infer prose from the step
   - `path` — The plugin directory.
   - `cause` — Why it serves no calls.
 - `ConfigurationDiverged` — The running `config.toml` is not the registered one, as after a rollback.
-  - `running` — The configuration that runs.
-  - `registered` — The configuration the latest registration selected.
+  - `running` — Registration of the configuration that runs.
+  - `registered` — Registration of the configuration the latest registrations selected.
 - `FollowRejected` — Registering this host's factory code for the plugin was rejected; every registration
   retries it.
   - `path` — The plugin directory.
   - `causes` — Why the registration was rejected.
-  - `running` — The generation the plugin keeps running; absent when it serves no calls.
+  - `running` — The code the plugin keeps running; absent when it serves no calls.
 - `UnservedUse` — A configured use cannot be served, for a reason other than its plugin being unable to run.
   - `usage` — The use, the endpoint it names, and why it cannot be served.
 - `InvalidTable` — A table of the running configuration that this host cannot interpret; what it configures
@@ -2839,14 +2840,14 @@ One way in which what runs for a plugin differs from what is registered.
   - `registered` — The registered name.
   - `registration` — Registration that gave the registered name.
 - `Code` — The plugin runs code other than the registered code, which is not marked failed.
-  - `running` — The generation that runs.
-  - `registered` — The registered generation.
+  - `running` — The code that runs.
+  - `registered` — The registered code.
 - `Settings` — The plugin runs settings other than the registered settings, which are not marked failed.
-  - `running` — The generation that runs.
-  - `registered` — The registered generation.
+  - `running` — The code that runs.
+  - `registered` — The registered code.
 - `Unregistered` — A registration removed the plugin, but mechanical recovery, such as an owner rollback,
   runs it again.
-  - `running` — The generation that runs.
+  - `running` — The code that runs.
   - `removed_by` — Registration that removed the plugin.
 
 Implements:
@@ -2959,6 +2960,14 @@ A recorded failure of a generation, attributed by what the generation introduced
   - `failure` — The failure recorded for the generation.
 - `Factory` — The generation runs the host's factory code, which only a host update changes.
   - `failure` — The failure recorded for the generation.
+
+### `status::GenerationFailure::failure`
+
+```rust
+pub fn failure(&self) -> &Failure
+```
+
+The failure recorded for the generation.
 
 Implements:
 
@@ -3166,9 +3175,11 @@ impl Serialize for Steps
 ```rust
 pub enum StopCause<'a> {
     Failed {
+        registered: enco_core::PluginActivation,
         cause: GenerationFailure<'a>,
     },
     Unavailable {
+        selected: enco_core::PluginActivation,
         causes: &'a [enco_kernel::Cause],
     },
     NotRunning {
@@ -3179,12 +3190,14 @@ pub enum StopCause<'a> {
 
 Why a plugin serves no calls.
 
-- `Failed` — The registered generation failed, and no older generation can run.
+- `Failed` — The registered code failed, and nothing earlier can run.
+  - `registered` — The registered code, which failed.
   - `cause` — The failure, by what the failed generation introduced.
-- `Unavailable` — A generation is selected, but this host cannot serve it.
+- `Unavailable` — Code is selected, but this host cannot serve it.
+  - `selected` — The selected code.
   - `causes` — Why this host cannot serve it.
-- `NotRunning` — A generation is registered, but none is selected to run.
-  - `registered` — The registered generation.
+- `NotRunning` — Code is registered, but nothing is selected to run.
+  - `registered` — The registered code.
 
 Implements:
 

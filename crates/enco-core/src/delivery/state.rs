@@ -53,7 +53,7 @@ pub fn unanswered_input_reach(entries: &[Entry]) -> Option<LogPos> {
 pub struct ChildState {
     /// Whether the parent still waits for this child's answer.
     pub awaiting: bool,
-    /// Most recent halt, provided no later input has superseded it.
+    /// Most recent halt, provided no later input or backtrack has superseded it.
     pub halted: Option<Halt>,
     /// Whether replies currently go to the owner rather than the delegating parent.
     pub replies_to_owner: bool,
@@ -74,8 +74,7 @@ pub struct ChildStateFold {
 impl ChildStateFold {
     /// Fold the next older input; breaks once every fact is decided.
     pub fn input(&mut self, event: &Event) -> ControlFlow<()> {
-        // A compaction request neither resumes a halted Session nor waits for a reply.
-        if matches!(event.body, EventBody::Compact) {
+        if event.body.leaves_inputs() {
             return ControlFlow::Continue(());
         }
         self.halted.get_or_insert_with(|| match &event.body {

@@ -32,7 +32,7 @@ pub use limits::{CHANNEL_MAX_BACKOFF, IMAGE_MAX_BYTES, TRIAL_CALLS};
 pub use ports::*;
 pub use profile::*;
 pub use registry::*;
-pub use scheduler::{ScheduleError, Scheduled, Schedules};
+pub use scheduler::{ScheduleError, Scheduled};
 pub use settings::*;
 
 #[cfg(test)]

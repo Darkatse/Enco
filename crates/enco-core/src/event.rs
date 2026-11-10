@@ -59,8 +59,8 @@ pub enum EventSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventBody {
-    /// A failed trial generation and its committed replacement.
-    GenerationRolledBack {
+    /// A plugin's generation failed on trial, and recovery committed what runs instead.
+    PluginRolledBack {
         /// Committed recovery facts.
         rollback: RolledBack,
         /// Notice written by the Registry when the rollback committed.
@@ -110,6 +110,30 @@ pub enum EventBody {
     Compact,
     /// A command stopping this Session's subtree without moving its reply destination.
     Halt(Halt),
+    /// The owner selected the profile the Session uses from its next Round.
+    SetProfile {
+        /// A profile the configuration defined when the command was accepted.
+        profile: crate::ProfileName,
+    },
+    /// The owner moved the Session's working directory from its next Round.
+    SetWorkingDir {
+        /// The new directory; whether it exists is checked when it is used.
+        working_dir: crate::WorkingDir,
+    },
+    /// The owner cancelled one of the Session's schedules; no later reminder of it is accepted.
+    CancelSchedule {
+        /// The schedule to stop.
+        schedule: ScheduleId,
+    },
+}
+
+/// What a command acts on, which decides when it takes effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandOn {
+    /// The conversation: it is consumed between two Runs.
+    Conversation,
+    /// The Session itself: it is consumed at the next Round boundary, at once while idle.
+    Session,
 }
 
 /// A stop of a whole Session subtree.
@@ -163,13 +187,45 @@ pub struct EarlierMessage {
 }
 
 impl EventBody {
-    /// Whether this is a command about the conversation rather than input to answer: a backtrack,
-    /// a halt or a compaction request. Commands are consumed between Runs.
+    /// What this command acts on; an input, which is answered and drives a Run, has none.
+    ///
+    /// The match is exhaustive, so a new kind of Event must decide before it compiles.
+    pub fn command_on(&self) -> Option<CommandOn> {
+        match self {
+            Self::Backtrack { .. } | Self::Halt(..) | Self::Compact => {
+                Some(CommandOn::Conversation)
+            }
+            Self::SetProfile { .. } | Self::SetWorkingDir { .. } | Self::CancelSchedule { .. } => {
+                Some(CommandOn::Session)
+            }
+            Self::PluginRolledBack { .. }
+            | Self::UserMessage { .. }
+            | Self::Reminder { .. }
+            | Self::SessionMessage(..)
+            | Self::ChildRunEnded { .. } => None,
+        }
+    }
+
+    /// Whether this is a command, which is not answered, rather than an input.
     pub fn is_command(&self) -> bool {
-        matches!(
-            self,
-            Self::Backtrack { .. } | Self::Halt(..) | Self::Compact
-        )
+        self.command_on().is_some()
+    }
+
+    /// The schedule this Event names, a reminder's or an owner's cancel's; the Inbox writes it
+    /// only while that schedule is active.
+    pub fn schedule(&self) -> Option<ScheduleId> {
+        match self {
+            Self::Reminder { schedule, .. } | Self::CancelSchedule { schedule } => Some(*schedule),
+            Self::PluginRolledBack { .. }
+            | Self::UserMessage { .. }
+            | Self::Backtrack { .. }
+            | Self::SessionMessage(..)
+            | Self::ChildRunEnded { .. }
+            | Self::Compact
+            | Self::Halt(..)
+            | Self::SetProfile { .. }
+            | Self::SetWorkingDir { .. } => None,
+        }
     }
 
     /// Whether this command stops the current Run and supersedes the inputs before it: a
@@ -178,6 +234,15 @@ impl EventBody {
     /// The Run stops at its next boundary, and the superseded inputs are not answered.
     pub fn supersedes_inputs(&self) -> bool {
         matches!(self, Self::Backtrack { .. } | Self::Halt(..))
+    }
+
+    /// Whether this command leaves the inputs before it as they were: a compaction request or a
+    /// command acting on the Session.
+    ///
+    /// It is consumed on its own: the model does not see it, it starts no Run, and a reply owed or
+    /// awaited, a halt and the reply destination stand as they were.
+    pub fn leaves_inputs(&self) -> bool {
+        self.is_command() && !self.supersedes_inputs()
     }
 }
 
@@ -209,8 +274,8 @@ impl Event {
     /// The destination selected by this input, absent when it does not ask for a reply.
     pub fn reply_destination(&self) -> Option<ReplyDestination> {
         use EventBody::{
-            Backtrack, ChildRunEnded, Compact, GenerationRolledBack, Halt, Reminder,
-            SessionMessage, UserMessage,
+            Backtrack, CancelSchedule, ChildRunEnded, Compact, Halt, PluginRolledBack, Reminder,
+            SessionMessage, SetProfile, SetWorkingDir, UserMessage,
         };
         use EventSource::{Channel, Child, Cli, Parent, Registry, Scheduler};
         match (&self.source, &self.body) {
@@ -231,33 +296,42 @@ impl Event {
             (Parent, SessionMessage(..)) => Some(ReplyDestination::Parent),
             (
                 Cli | Channel { .. },
-                GenerationRolledBack { .. }
+                PluginRolledBack { .. }
                 | Reminder { .. }
                 | SessionMessage(..)
                 | ChildRunEnded { .. }
                 | Halt(..)
-                | Compact,
+                | Compact
+                | SetProfile { .. }
+                | SetWorkingDir { .. }
+                | CancelSchedule { .. },
             )
             | (
                 Parent,
                 UserMessage { .. }
                 | Backtrack { .. }
-                | GenerationRolledBack { .. }
+                | PluginRolledBack { .. }
                 | Reminder { .. }
                 | ChildRunEnded { .. }
                 | Halt(..)
-                | Compact,
+                | Compact
+                | SetProfile { .. }
+                | SetWorkingDir { .. }
+                | CancelSchedule { .. },
             )
             | (
                 Scheduler | Registry | Child(..),
                 UserMessage { .. }
                 | Backtrack { .. }
-                | GenerationRolledBack { .. }
+                | PluginRolledBack { .. }
                 | Reminder { .. }
                 | SessionMessage(..)
                 | ChildRunEnded { .. }
                 | Halt(..)
-                | Compact,
+                | Compact
+                | SetProfile { .. }
+                | SetWorkingDir { .. }
+                | CancelSchedule { .. },
             ) => None,
         }
     }
@@ -274,14 +348,17 @@ impl Event {
                 attachments,
                 ..
             } => (text.as_str(), quote.as_ref(), attachments.as_slice()),
-            EventBody::GenerationRolledBack { text, .. } | EventBody::Reminder { text, .. } => {
+            EventBody::PluginRolledBack { text, .. } | EventBody::Reminder { text, .. } => {
                 (text.as_str(), None, &[][..])
             }
             EventBody::SessionMessage(message) => (message.text.as_str(), None, &[][..]),
             EventBody::Backtrack { .. }
             | EventBody::ChildRunEnded { .. }
             | EventBody::Halt(..)
-            | EventBody::Compact => ("", None, &[][..]),
+            | EventBody::Compact
+            | EventBody::SetProfile { .. }
+            | EventBody::SetWorkingDir { .. }
+            | EventBody::CancelSchedule { .. } => ("", None, &[][..]),
         };
         let text = (!text.is_empty()).then(|| Part::Text { text: text.into() });
         Message {

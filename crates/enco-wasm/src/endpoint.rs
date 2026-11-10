@@ -60,10 +60,10 @@ impl Provider for WasmPlugin {
             Err(failure) => return unanswered(failure),
         };
         let origin = match record {
-            Some(Recording { generation, store }) => {
+            Some(Recording { code, store }) => {
                 let arguments =
                     json!({"response": mapping::response(store.as_ref(), &response).await?});
-                Some(mapping::record(store.as_ref(), generation, DECODE.into(), arguments).await?)
+                Some(mapping::record(store.as_ref(), code, DECODE.into(), arguments).await?)
             }
             None => None,
         };

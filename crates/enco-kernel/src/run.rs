@@ -49,7 +49,7 @@ impl SessionActor {
             return Ok(());
         }
         for _ in 0..max_rounds.get() {
-            let inputs = std::mem::take(&mut pending);
+            let inputs = self.at_boundary(std::mem::take(&mut pending)).await?;
             let (end, safe_mode) = self
                 .round(run, &token, std::mem::take(&mut prefix), inputs)
                 .await?;
@@ -61,10 +61,13 @@ impl SessionActor {
                 ending = end;
                 break;
             }
+            // Only an input keeps the Run going; a command acting on the Session waits for the
+            // next boundary, or is consumed once the Session is idle.
+            let inputs_wait = pending.iter().any(|event| !event.body.is_command());
             // How the Run ends if it stops after this Round, and whether it stops now.
             let stop;
             (ending, stop) = match end {
-                RoundEnd::Replied | RoundEnd::ReplySkipped if pending.is_empty() => {
+                RoundEnd::Replied | RoundEnd::ReplySkipped if !inputs_wait => {
                     (RunEnd::Completed, true)
                 }
                 RoundEnd::Replied | RoundEnd::ReplySkipped | RoundEnd::ToolsSettled => {
@@ -82,6 +85,24 @@ impl SessionActor {
         self.commit(vec![EntryBody::RunEnded { run, end: ending }], None)
             .await?;
         Ok(())
+    }
+}
+
+impl SessionActor {
+    /// Consume the commands acting on the Session, so the Round reads it with them applied, and
+    /// return the rest.
+    async fn at_boundary(&mut self, pending: Vec<Event>) -> Result<Vec<Event>, KernelError> {
+        let (commands, rest): (Vec<_>, Vec<_>) = pending
+            .into_iter()
+            .partition(|event| event.body.command_on() == Some(CommandOn::Session));
+        if !commands.is_empty() {
+            let consumed = commands
+                .into_iter()
+                .map(|event| EntryBody::EventConsumed { event })
+                .collect();
+            self.commit(consumed, None).await?;
+        }
+        Ok(rest)
     }
 }
 

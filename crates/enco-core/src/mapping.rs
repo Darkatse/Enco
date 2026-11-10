@@ -1,12 +1,12 @@
 //! Immutable evidence for pure calls that translate external protocol responses.
-use crate::{ContentHash, GenerationId};
+use crate::{CodeRef, ContentHash};
 use serde::{Deserialize, Serialize};
 
 /// A recorded mapper call; each response body is separate evidence that its arguments address.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MappingRecord {
-    /// The registered generation that interpreted these arguments.
-    pub generation: GenerationId,
+    /// The mapper code that interpreted these arguments: a generation or factory code.
+    pub code: CodeRef,
     /// The exported function, such as `channel.received`.
     pub export: String,
     /// Complete arguments, with each response body replaced by its content address.

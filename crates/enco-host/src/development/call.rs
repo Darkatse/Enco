@@ -130,7 +130,7 @@ impl DevelopmentTool {
             Self::Apply => ToolSpec::of::<ApplyArguments>(
                 name,
                 format!(
-                    r#"Register all changes in the home as one registration. Changed plugin sources are built, and config.toml is validated together with them. If nothing changed, nothing is registered. New plugin code starts on trial and becomes healthy after its probe and {TRIAL_CALLS} successful calls while it runs; if it fails on trial, Enco runs the previous code again and the registered source stays as it is. Registering config.toml replaces the whole registered document. Sources built with an earlier SDK are rebuilt. The result lists the registration, the builds with up to {BUILD_DIAGNOSTICS} compiler diagnostics and the full log path, and the checks that ran. If another change was registered first, nothing is registered; read {STATUS} and call again."#
+                    r#"Register all changes in the home as one registration. Changed plugin sources are built, and config.toml is validated together with them. If nothing changed, nothing is registered. Changed code and settings start on trial and become healthy after their probe and {TRIAL_CALLS} successful calls while they run; if they fail on trial, the plugin is rolled back to what ran before, and the registered source stays as it is. Registering config.toml replaces the whole registered document. Sources built with an earlier SDK are rebuilt. The result lists the registration, the builds with up to {BUILD_DIAGNOSTICS} compiler diagnostics and the full log path, and the checks that ran. If another change was registered first, nothing is registered; read {STATUS} and call again."#
                 ),
                 Effect::SideEffect,
             ),
@@ -180,7 +180,7 @@ pub fn self_status_spec() -> ToolSpec {
     ToolSpec {
         name: STATUS.into(),
         description: format!(
-            r#"Show Enco's state now. First comes what needs attention, each item with what to do next. A table then shows config.toml and every plugin in three layers: running (the generation in use), registered (the generation its latest registration chose) and home (the files in the Enco home). The latest {RECENT_REGISTRATIONS} registrations, Sessions and channels follow. A registration is one accepted change; a generation is one registered version of a plugin or of the configuration. Reading status builds and changes nothing."#
+            r#"Show Enco's state now. First comes what needs attention, each item with what to do next. A table then shows config.toml and every plugin in three layers: running (what runs now), registered (what was last registered for it) and home (its files in the Enco home). Running and registered name the registration that last changed the code or settings, or say factory code, which ships with the host. The latest {RECENT_REGISTRATIONS} registrations, Sessions and channels follow. A registration is one accepted change. Reading status builds and changes nothing."#
         ),
         input_schema: InputSchema::empty(),
         effect: Effect::ReadOnly,

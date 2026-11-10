@@ -122,6 +122,7 @@ fn replies_halts_and_takeover_have_distinct_effects_on_the_parent_wait() {
             file: None,
         }),
         delegated: None,
+        schedule: None,
     };
     history = entries(
         history
@@ -144,12 +145,36 @@ fn replies_halts_and_takeover_have_distinct_effects_on_the_parent_wait() {
     assert!(!child_state(&history, &[]).awaiting);
     assert_eq!(reply_destination(&history), Some(ReplyDestination::Parent));
     let stop = halt();
-    let compact = event(EventSource::Cli, EventBody::Compact);
-    let stopped = child_state(&history, &[stop, compact]);
-    assert!(!stopped.awaiting);
-    // A compaction request neither resumes a halted Session nor waits for a reply.
-    assert!(stopped.halted.is_some());
-    assert!(!stopped.replies_to_owner);
+    let working_dir = WorkingDir::new(NodeId::new(), "/elsewhere".into()).unwrap();
+    // A command that leaves the inputs neither resumes a halted Session nor waits for a reply,
+    // whether it waits in the Inbox or the Session has consumed it.
+    for body in [
+        EventBody::Compact,
+        EventBody::SetProfile {
+            profile: "worker".parse().unwrap(),
+        },
+        EventBody::SetWorkingDir { working_dir },
+        EventBody::CancelSchedule {
+            schedule: ScheduleId::new(),
+        },
+    ] {
+        let pending = [stop.clone(), event(EventSource::Cli, body)];
+        let committed = entries(
+            history
+                .iter()
+                .map(|entry| entry.body.clone())
+                .chain(pending.iter().cloned().map(consumed))
+                .collect(),
+        );
+        for stopped in [
+            child_state(&history, &pending),
+            child_state(&committed, &[]),
+        ] {
+            assert!(!stopped.awaiting);
+            assert!(stopped.halted.is_some());
+            assert!(!stopped.replies_to_owner);
+        }
+    }
     let owner = event(
         EventSource::Cli,
         EventBody::UserMessage {
@@ -225,8 +250,8 @@ fn final_reply_projection_preserves_content_and_its_parent_destination() {
             attempt,
             purpose: AttemptPurpose::Reply,
             plan: ContentHash::of(b"plan"),
-            composer: GenerationId(1),
-            provider: GenerationId(2),
+            composer: generation(1),
+            provider: generation(2),
             settings: ProviderSettings {
                 base_url: "https://example.test".parse().unwrap(),
                 model: "model".into(),
@@ -273,4 +298,12 @@ fn project(history: &[Entry]) -> Vec<Boundary> {
         .iter()
         .filter_map(|entry| projection.step(entry))
         .collect()
+}
+
+/// Plugin code a registration brought.
+fn generation(registration: u64) -> CodeRef {
+    CodeRef::from(GenerationId {
+        registration: RegistrationId(registration),
+        plugin: PluginId::new(),
+    })
 }

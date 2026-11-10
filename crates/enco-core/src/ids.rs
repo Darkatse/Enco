@@ -69,6 +69,25 @@ id!(
     "Persistent identity assigned when a plugin name is registered."
 );
 
+impl EventId {
+    /// The identity of the reminder for one occurrence of a schedule.
+    ///
+    /// Every node and every retry derives the same identity from the same schedule and planned
+    /// time, so the Inbox and the Log accept the occurrence once. The planned time, not the
+    /// clock, decides it.
+    pub fn reminder(schedule: ScheduleId, due_at: crate::DateTime<crate::Utc>) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&schedule.0.to_bytes());
+        hasher.update(&due_at.timestamp().to_le_bytes());
+        hasher.update(&due_at.timestamp_subsec_nanos().to_le_bytes());
+        let mut random = [0_u8; 16];
+        random[6..].copy_from_slice(&hasher.finalize().as_bytes()[..10]);
+        // The time part only orders identities; no schedule is due before 1970.
+        let millis = u64::try_from(due_at.timestamp_millis()).unwrap_or(0);
+        Self(ulid::Ulid::from_parts(millis, u128::from_be_bytes(random)))
+    }
+}
+
 impl RoundId {
     /// The full Round identity used to seed deterministic composition randomness.
     pub fn as_u128(self) -> u128 {
@@ -76,14 +95,26 @@ impl RoundId {
     }
 }
 
-/// Registry-global generation number, ordered by commit rather than time.
+/// A plugin generation's identity: the registration that brought its content, and the plugin.
+///
+/// A registration brings at most one generation per plugin, so every node derives the same
+/// identity from the same registration. A configuration generation is identified by its
+/// registration alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct GenerationId(pub u64);
+pub struct GenerationId {
+    /// Registration that brought content the host does not have.
+    pub registration: RegistrationId,
+    /// Plugin whose history contains the generation.
+    pub plugin: PluginId,
+}
 
 impl fmt::Display for GenerationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        write!(
+            f,
+            "plugin {} from registration {}",
+            self.plugin, self.registration
+        )
     }
 }
 

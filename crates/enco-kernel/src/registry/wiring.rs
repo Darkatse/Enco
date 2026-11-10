@@ -35,7 +35,7 @@ impl Endpoint {
     }
 }
 
-/// Check and normalize one composer use against the generation that will execute it.
+/// Check and normalize one composer use against the code that will execute it.
 pub(super) fn bind_composer(
     loaded: &Loaded,
     options: &ComposerOptions,
@@ -77,7 +77,7 @@ impl Use {
         }
     }
 
-    /// Availability belongs to this use, not to the generation serving it.
+    /// Availability belongs to this use, not to the code serving it.
     pub(super) fn check(&self, loaded: &Loaded) -> Result<(), Failure> {
         match &self.target {
             UseTarget::Channel { settings, .. } => {

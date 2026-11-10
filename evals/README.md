@@ -138,7 +138,7 @@ trials/<题>/<变体>/<i>/
   grades.json
 ```
 
-- `tool-calls.json` 按 Session 分组、按 Log 顺序列出每次调用：`session`、`round`、`call`、`name`、`arguments`（原始参数字符串）、`generation`（执行这次调用的插件代际；原生工具与没有开始执行的调用为 `null`）、`outcome`（`ok`、`failed` 或 `unknown`）、`code`（失败码）、`content`（模型看到的文本）。
+- `tool-calls.json` 按 Session 分组、按 Log 顺序列出每次调用：`session`、`round`、`call`、`name`、`arguments`（原始参数字符串）、`plugin_code`（执行这次调用的插件代码，写法与 Enco 的文字相同：`registration 15` 或 `factory code`；原生工具与没有开始执行的调用为 `null`）、`outcome`（`ok`、`failed` 或 `unknown`）、`code`（失败码）、`content`（模型看到的文本）。
 - `history.json` 是 `enco history --json` 各页的 `registrations` 依次拼接；每次登记写明发起者（`initiator.kind` 为 `host`、`owner` 或 `agent`）与它选中的代际，评分据此区分启动时的登记与 Agent 经 `self_apply` 的登记。
 - 对话文本不含工具调用与结果，需要它们的评分项读 `tool-calls.json`。
 - `requests.jsonl` 每行是 `{ "at", "method", "path", "query", "body" }`，正文是 JSON 或表单时解析为对象；`network.jsonl` 每行是 `{ "at", "method", "target" }`。
@@ -169,7 +169,7 @@ trials/<题>/<变体>/<i>/
     "criteria": { "<评分项>": { "result": "pass | fail | error", "reason": "…" } },
     "rounds": 12, "wall_secs": 431.5,
     "usage": { "input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0 },
-    "generations": { "<插件>": 2 },
+    "running_code": { "<插件>": "registration 2" },
     "network_violations": 0
   } ],
   "summary": { "base": { "<题>": { "passes": 4, "valid": 5, "instrument_errors": 0, "all_passed": false } } },
@@ -187,7 +187,7 @@ trials/<题>/<变体>/<i>/
 
 - `run` 的结果只有一个变体，名为 `base`，没有 `comparison`。
 - 每个评分项的原因都在 `trials[].criteria` 中：失败的原因是 Agent 提出下一个假设的来源。
-- `generations` 是试验结束时各插件的活跃代际；`model.endpoints` 以配置中的路径为键，例如 `endpoint.chat`。
+- `running_code` 是试验结束时各插件运行的代码，写作 `registration N` 或 `factory code`；`model.endpoints` 以配置中的路径为键，例如 `endpoint.chat`。
 - `usage` 汇总各 Attempt 报告的用量，有一次未报告缓存命中时为 `null`；`wall_secs` 不含评分。
 - 执行中确定的失败（超时、越界等）记在试验目录的 `trial.json`，重评分保留它们。整次运行中止时不写 `result.json`。
 

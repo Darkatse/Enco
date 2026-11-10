@@ -264,12 +264,13 @@ async fn owner_takeover_changes_reply_destination_until_the_parent_sends_again()
     let dir = tempfile::tempdir().unwrap();
     let mut h = Harness::new(dir.path(), |_| {}).await;
     let (parent, mut rx) = start(&h).await;
-    h.next("fixture")
-        .await
-        .respond(calls(vec![send("research", "task", Some("worker"))]));
+    h.next("fixture").await.respond(calls(vec![
+        send("research", "task", Some("worker")),
+        schedule_creation(),
+    ]));
     let worker = h.next("worker").await;
     h.next("fixture").await.respond(reply("delegated"));
-    finish(&mut rx).await;
+    let schedule = created(&finish(&mut rx).await);
     let child = h.child("main/research").await;
     h.kernel
         .submit(child.id, EventId::new(), "owner takeover".into(), vec![])
@@ -278,7 +279,7 @@ async fn owner_takeover_changes_reply_destination_until_the_parent_sends_again()
     worker.respond(calls(vec![call("schedule_list", "{}")]));
     let worker = h.next("worker").await;
     assert!(worker.contains("owner takeover"));
-    crate::silence::reminder(&h.kernel, parent).await;
+    remind(&h.kernel, parent, schedule).await;
     let parent_prompt = h.next("fixture").await;
     let state = &h.latest("main").children[0];
     assert!(state.state.replies_to_owner);

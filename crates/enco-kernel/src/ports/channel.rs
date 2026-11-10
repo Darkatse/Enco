@@ -1,7 +1,7 @@
 use crate::{Store, StoreError};
 use async_trait::async_trait;
 use enco_core::{
-    BaseUrl, DateTime, Failure, FileData, GenerationId, MappingOrigin, Outgoing, QuoteKind, RunEnd,
+    BaseUrl, CodeRef, DateTime, Failure, FileData, MappingOrigin, Outgoing, QuoteKind, RunEnd,
     Unviewable, Utc,
 };
 use serde_json::Value;
@@ -12,11 +12,11 @@ use tokio_util::sync::CancellationToken;
 /// Opens accounts through one loaded, pure protocol mapper.
 #[async_trait]
 pub trait Channel: Send + Sync {
-    /// Bind transport settings and identify the account, retaining this generation for all calls.
+    /// Bind transport settings and identify the account, recording this mapper code for all calls.
     async fn open(
         &self,
         settings: &ChannelSettings,
-        generation: GenerationId,
+        code: CodeRef,
         store: Arc<dyn Store>,
     ) -> Result<Arc<dyn ChannelAdapter>, ChannelCallError>;
 }
@@ -399,12 +399,12 @@ impl ChannelBackoff {
     }
 }
 
-/// One identified account, using the same generation until it is stopped.
+/// One identified account, using the same mapper code until it is stopped.
 #[async_trait]
 pub trait ChannelAdapter: Send + Sync {
     /// The stable account reached by this connection.
     fn identity(&self) -> ChannelIdentity;
-    /// The generation's declared gap before each send; absent sends each as soon as it is ready.
+    /// The mapper's declared gap before each send; absent sends each as soon as it is ready.
     fn pacing(&self) -> Option<ChannelPacingGap>;
     /// Receive arrivals without waiting for preparation; drain receipt acknowledgments on stop.
     async fn receive(

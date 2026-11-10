@@ -1,7 +1,7 @@
 use super::{context::Measured, run_entries, this_round};
 use crate::{run::RoundError, session::SessionActor, *};
 use enco_core::*;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 /// The endpoint a purpose uses now, and the code currently behind it.
 pub(super) struct Choice<'p> {
@@ -14,7 +14,7 @@ impl Choice<'_> {
     pub fn combination(&self) -> Combination {
         Combination {
             settings: self.endpoint.endpoint.settings.clone(),
-            provider: self.export.generation,
+            provider: self.export.code.clone(),
         }
     }
 }
@@ -27,7 +27,6 @@ struct Pick<'p> {
 
 /// Both purposes picked against one view, so the composer may need either.
 pub(super) struct Selection<'p> {
-    view: Arc<View>,
     reply: Pick<'p>,
     compaction: Pick<'p>,
 }
@@ -42,10 +41,6 @@ impl<'p> Selection<'p> {
             .as_ref()
             .map_err(|failure| RoundError::Failed(failure.clone()))
     }
-
-    pub fn exports(&self) -> &Exports {
-        &self.view.exports
-    }
 }
 
 impl SessionActor {
@@ -57,7 +52,6 @@ impl SessionActor {
         Selection {
             reply: pick(&profile.reply, AttemptPurpose::Reply),
             compaction: pick(&profile.compaction, AttemptPurpose::Compaction),
-            view,
         }
     }
 
@@ -186,14 +180,14 @@ fn assess<'p>(
     }
 }
 
-/// The call parameters and exact Provider generation a model request goes to.
+/// The call parameters and exact Provider code a model request goes to.
 ///
 /// Requests to one combination count tokens the same way and meet the same service limits, and
 /// each purpose has one attempt allowance on it.
 #[derive(Clone, PartialEq)]
 pub(super) struct Combination {
     pub settings: ProviderSettings,
-    pub provider: GenerationId,
+    pub provider: CodeRef,
 }
 
 impl Combination {

@@ -1,41 +1,80 @@
-//! Session records: their names, ownership bindings and selected profiles.
+//! Session rows, each the fold of its creation record, its archive and its own Log.
+//!
+//! The Round reads the committed view; every other reader reads the effective one, with the
+//! pending commands applied, and the registration's admission every view in between.
 use super::{backend, rows, signed};
 use crate::sqlite::timestamp;
 use enco_core::*;
-use enco_kernel::{ConsumedMessage, NewSession, NewSessionOrigin, StoreError};
+use enco_kernel::{NewSession, SessionViews, StoreError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 const COLUMNS: &str = "s.id,s.name,s.created_at,s.binding_node,s.binding_epoch,s.profile,
     s.working_dir_node,s.working_dir_path,p.id,p.name,s.archived_at";
 const FROM: &str = "sessions s LEFT JOIN sessions p ON p.id = s.parent";
 
+/// Every Session in its effective view.
 pub(super) fn all(connection: &Connection) -> Result<Vec<SessionRecord>, StoreError> {
-    let mut query = connection
-        .prepare(&format!("SELECT {COLUMNS} FROM {FROM} ORDER BY s.rowid"))
-        .map_err(backend)?;
-    query
-        .query_map([], rows::session)
-        .map_err(backend)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(backend)
+    effective_all(connection, committed_all(connection)?)
+}
+
+/// Every unarchived Session with the views ahead of its committed one.
+pub(super) fn views(connection: &Connection) -> Result<Vec<SessionViews>, StoreError> {
+    select(
+        connection,
+        &format!("SELECT {COLUMNS} FROM {FROM} WHERE s.archived_at IS NULL ORDER BY s.rowid"),
+        [],
+    )?
+    .into_iter()
+    .map(|committed| {
+        Ok(SessionViews {
+            ahead: ahead(connection, &committed)?,
+            committed,
+        })
+    })
+    .collect()
+}
+
+/// A Session's committed row and its ancestors', nearest first.
+pub(super) fn lineage(
+    connection: &Connection,
+    id: SessionId,
+) -> Result<(SessionRecord, Vec<SessionRecord>), StoreError> {
+    let row = |id| committed(connection, id)?.ok_or(StoreError::UnknownSession(id));
+    let session = row(id)?;
+    let mut ancestors = Vec::new();
+    let mut parent = session.parent.as_ref().map(|parent| parent.id);
+    while let Some(id) = parent {
+        let ancestor = row(id)?;
+        parent = ancestor.parent.as_ref().map(|parent| parent.id);
+        ancestors.push(ancestor);
+    }
+    Ok((session, ancestors))
+}
+
+/// Every Session's materialized row, in creation order.
+pub(super) fn committed_all(connection: &Connection) -> Result<Vec<SessionRecord>, StoreError> {
+    select(
+        connection,
+        &format!("SELECT {COLUMNS} FROM {FROM} ORDER BY s.rowid"),
+        [],
+    )
 }
 
 pub(super) fn children(
     connection: &Connection,
     parent: SessionId,
 ) -> Result<Vec<SessionRecord>, StoreError> {
-    let mut query = connection
-        .prepare(&format!(
+    let rows = select(
+        connection,
+        &format!(
             "SELECT {COLUMNS} FROM {FROM} WHERE s.parent=? AND s.archived_at IS NULL ORDER BY s.rowid"
-        ))
-        .map_err(backend)?;
-    query
-        .query_map([parent.to_string()], rows::session)
-        .map_err(backend)?
-        .collect::<Result<_, _>>()
-        .map_err(backend)
+        ),
+        [parent.to_string()],
+    )?;
+    effective_all(connection, rows)
 }
 
+/// The unarchived Session with this name, in its effective view.
 pub(super) fn named(
     connection: &Connection,
     name: &str,
@@ -47,10 +86,23 @@ pub(super) fn named(
             rows::session,
         )
         .optional()
-        .map_err(backend)
+        .map_err(backend)?
+        .map(|row| effective(connection, row))
+        .transpose()
 }
 
+/// A Session's effective view: its committed row with its pending commands applied.
 pub(super) fn get(
+    connection: &Connection,
+    id: SessionId,
+) -> Result<Option<SessionRecord>, StoreError> {
+    committed(connection, id)?
+        .map(|row| effective(connection, row))
+        .transpose()
+}
+
+/// A Session's committed view: the materialized row.
+pub(super) fn committed(
     connection: &Connection,
     id: SessionId,
 ) -> Result<Option<SessionRecord>, StoreError> {
@@ -64,45 +116,101 @@ pub(super) fn get(
         .map_err(backend)
 }
 
-pub(super) fn set_profile(
+fn select(
     connection: &Connection,
-    id: SessionId,
-    profile: &ProfileName,
-) -> Result<(), StoreError> {
-    let changed = connection
-        .execute(
-            "UPDATE sessions SET profile=? WHERE id=?",
-            params![profile.as_str(), id.to_string()],
-        )
-        .map_err(backend)?;
-    if changed == 0 {
-        return Err(StoreError::UnknownSession(id));
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<SessionRecord>, StoreError> {
+    connection
+        .prepare(sql)
+        .map_err(backend)?
+        .query_map(params, rows::session)
+        .map_err(backend)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(backend)
+}
+
+/// The same fold that commits a consumed command, continued over the pending Inbox in order.
+fn effective(connection: &Connection, mut row: SessionRecord) -> Result<SessionRecord, StoreError> {
+    for event in pending(connection, row.id)? {
+        row.consume(&event.body);
     }
+    Ok(row)
+}
+
+/// The same fold as `effective`, keeping the row after each pending Event: every committed view
+/// the Session may come to read.
+fn ahead(
+    connection: &Connection,
+    committed: &SessionRecord,
+) -> Result<Vec<SessionRecord>, StoreError> {
+    let mut row = committed.clone();
+    Ok(pending(connection, row.id)?
+        .iter()
+        .map(|event| {
+            row.consume(&event.body);
+            row.clone()
+        })
+        .collect())
+}
+
+fn effective_all(
+    connection: &Connection,
+    rows: Vec<SessionRecord>,
+) -> Result<Vec<SessionRecord>, StoreError> {
+    rows.into_iter()
+        .map(|row| effective(connection, row))
+        .collect()
+}
+
+/// Write a row folded from a creation record.
+fn materialize(tx: &Transaction<'_>, row: &SessionRecord) -> Result<(), StoreError> {
+    tx.execute(
+        "INSERT INTO sessions(id,name,created_at,binding_node,binding_epoch,profile,working_dir_node,working_dir_path,parent)
+         VALUES (?,?,?,?,?,?,?,?,?)",
+        params![
+            row.id.to_string(),
+            row.name.as_str(),
+            timestamp(row.created_at),
+            row.binding.node.to_string(),
+            signed(row.binding.epoch.0)?,
+            row.profile.as_str(),
+            row.working_dir.node.to_string(),
+            row.working_dir.path_str(),
+            row.parent.as_ref().map(|parent| parent.id.to_string()),
+        ],
+    )
+    .map_err(backend)?;
     Ok(())
 }
 
-pub(super) fn set_working_dir(
-    connection: &Connection,
-    id: SessionId,
-    working_dir: &WorkingDir,
+/// Fold facts the Session's commit appends into its row.
+pub(super) fn apply(
+    tx: &Transaction<'_>,
+    session: SessionId,
+    entries: &[Entry],
 ) -> Result<(), StoreError> {
-    let changed = connection
-        .execute(
-            "UPDATE sessions SET working_dir_node=?,working_dir_path=? WHERE id=?",
+    let before = committed(tx, session)?.ok_or(StoreError::UnknownSession(session))?;
+    let mut row = before.clone();
+    for entry in entries {
+        row.apply(&entry.body);
+    }
+    if row != before {
+        tx.execute(
+            "UPDATE sessions SET profile=?,working_dir_node=?,working_dir_path=? WHERE id=?",
             params![
-                working_dir.node.to_string(),
-                working_dir.path_str(),
-                id.to_string()
+                row.profile.as_str(),
+                row.working_dir.node.to_string(),
+                row.working_dir.path_str(),
+                session.to_string()
             ],
         )
         .map_err(backend)?;
-    if changed == 0 {
-        return Err(StoreError::UnknownSession(id));
     }
     Ok(())
 }
 
-/// Create an unarchived root if absent, using the node's default profile and directory.
+/// Create a root through the root directory if no unarchived Session has the name.
 pub(super) fn ensure(
     connection: &mut Connection,
     node: NodeId,
@@ -113,56 +221,70 @@ pub(super) fn ensure(
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(backend)?;
-    tx.execute(
-        "INSERT INTO sessions(id,name,created_at,binding_node,binding_epoch,profile,working_dir_node,working_dir_path)
-         SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM sessions WHERE name=? AND archived_at IS NULL)",
-        params![
-            SessionId::new().to_string(),
-            name.as_str(),
-            timestamp(created_at),
-            node.to_string(),
-            1,
-            DEFAULT_PROFILE,
-            working_dir.node.to_string(),
-            working_dir.path_str(),
-            name.as_str(),
-        ],
-    ).map_err(backend)?;
+    if named(&tx, name)?.is_none() {
+        create_root(
+            &tx,
+            node,
+            working_dir,
+            &NewSession {
+                id: SessionId::new(),
+                name: name.clone(),
+                profile: DEFAULT_PROFILE.parse().map_err(backend)?,
+                created_at,
+            },
+        )?;
+    }
     let result = named(&tx, name)?.ok_or_else(|| backend("ensured Session is missing"))?;
     tx.commit().map_err(backend)?;
     Ok(result)
 }
 
-/// Insert a creator-owned identity; roots disambiguate active names and children retain theirs.
-pub(super) fn insert_new(
+/// The root directory records a root under a free name, suffixed when occupied, and the row
+/// starts from that record.
+pub(super) fn create_root(
     tx: &Transaction<'_>,
     node: NodeId,
-    default_working_dir: &WorkingDir,
+    working_dir: &WorkingDir,
     new: &NewSession,
 ) -> Result<SessionRecord, StoreError> {
-    let (name, parent, working_dir) = match &new.origin {
-        NewSessionOrigin::Root => (available_root(tx, &new.name)?, None, default_working_dir),
-        NewSessionOrigin::Child {
-            parent,
-            working_dir,
-        } => (new.name.clone(), Some(*parent), working_dir),
+    let creation = Creation {
+        id: new.id,
+        name: available_root(tx, &new.name)?,
+        parent: None,
+        created_at: new.created_at,
+        node,
+        profile: new.profile.clone(),
+        working_dir: working_dir.clone(),
     };
-    tx.execute(
-        "INSERT INTO sessions(id,name,created_at,binding_node,binding_epoch,profile,working_dir_node,working_dir_path,parent)
-         VALUES (?,?,?,?,?,?,?,?,?)",
-        params![
-            new.id.to_string(),
-            name.as_str(),
-            timestamp(new.created_at),
-            node.to_string(),
-            1,
-            new.profile.as_str(),
-            working_dir.node.to_string(),
-            working_dir.path_str(),
-            parent.map(|id| id.to_string()),
-        ],
-    ).map_err(backend)?;
-    get(tx, new.id)?.ok_or(StoreError::UnknownSession(new.id))
+    record_root(tx, &creation)?;
+    let row = SessionRecord::created(&creation);
+    materialize(tx, &row)?;
+    Ok(row)
+}
+
+/// Write a root's creation record in the root directory.
+pub(super) fn record_root(connection: &Connection, creation: &Creation) -> Result<(), StoreError> {
+    connection
+        .execute(
+            "INSERT INTO root_directory(id,name,created_at,node,profile,working_dir_node,working_dir_path)
+             VALUES (?,?,?,?,?,?,?)",
+            params![
+                creation.id.to_string(),
+                creation.name.as_str(),
+                timestamp(creation.created_at),
+                creation.node.to_string(),
+                creation.profile.as_str(),
+                creation.working_dir.node.to_string(),
+                creation.working_dir.path_str(),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
+/// A child's row, from the creation record its parent's commit writes in the same transaction.
+pub(super) fn create_child(tx: &Transaction<'_>, creation: &Creation) -> Result<(), StoreError> {
+    materialize(tx, &SessionRecord::created(creation))
 }
 
 fn available_root(tx: &Transaction<'_>, name: &SessionName) -> Result<SessionName, StoreError> {
@@ -234,6 +356,13 @@ pub(super) fn halt_subtree(
         .collect::<Vec<_>>();
     super::accept::events_in(&tx, &super::accept::encode_events(&events)?)?;
     if archive {
+        // One control-plane fact archives the whole subtree; the rows follow it at once, so the
+        // names are free as soon as it commits.
+        tx.execute(
+            "INSERT INTO archives(session_id,at) VALUES (?,?)",
+            params![root.to_string(), timestamp(at)],
+        )
+        .map_err(backend)?;
         for session in &sessions {
             tx.execute(
                 "UPDATE sessions SET archived_at=? WHERE id=?",
@@ -244,139 +373,6 @@ pub(super) fn halt_subtree(
     }
     tx.commit().map_err(backend)?;
     Ok(sessions)
-}
-
-pub(super) fn log(
-    connection: &Connection,
-    session: SessionId,
-    after: Option<LogPos>,
-) -> Result<Vec<Entry>, StoreError> {
-    let position = after.unwrap_or(LogPos {
-        epoch: Epoch(0),
-        seq: Seq(0),
-    });
-    query_entries(
-        connection,
-        "SELECT epoch,seq,at,body
-         FROM log
-         WHERE session_id=? AND (epoch,seq)>(?,?)
-         ORDER BY epoch,seq",
-        params![
-            session.to_string(),
-            signed(position.epoch.0)?,
-            signed(position.seq.0)?
-        ],
-    )
-}
-
-pub(super) fn log_before(
-    connection: &Connection,
-    session: SessionId,
-    before: Option<LogPos>,
-    limit: usize,
-) -> Result<Vec<Entry>, StoreError> {
-    let limit = i64::try_from(limit).map_err(backend)?;
-    // The bound is its own statement: behind `? IS NULL OR`, SQLite could not seek to it in the
-    // key and would scan from the end of the Session's Log on every page.
-    let mut entries = match before {
-        None => query_entries(
-            connection,
-            "SELECT epoch,seq,at,body
-             FROM log
-             WHERE session_id=?
-             ORDER BY epoch DESC, seq DESC
-             LIMIT ?",
-            params![session.to_string(), limit],
-        ),
-        Some(before) => query_entries(
-            connection,
-            "SELECT epoch,seq,at,body
-             FROM log
-             WHERE session_id=? AND (epoch,seq)<(?,?)
-             ORDER BY epoch DESC, seq DESC
-             LIMIT ?",
-            params![
-                session.to_string(),
-                signed(before.epoch.0)?,
-                signed(before.seq.0)?,
-                limit
-            ],
-        ),
-    }?;
-    entries.reverse();
-    Ok(entries)
-}
-
-pub(super) fn log_entry(
-    connection: &Connection,
-    session: SessionId,
-    pos: LogPos,
-) -> Result<Option<Entry>, StoreError> {
-    // SQLite stores signed integers, so no Log holds a position beyond them.
-    let (Ok(epoch), Ok(seq)) = (i64::try_from(pos.epoch.0), i64::try_from(pos.seq.0)) else {
-        return Ok(None);
-    };
-    connection
-        .query_row(
-            "SELECT epoch,seq,at,body
-             FROM log
-             WHERE session_id=? AND epoch=? AND seq=?",
-            params![session.to_string(), epoch, seq],
-            rows::entry,
-        )
-        .optional()
-        .map_err(backend)
-}
-
-fn query_entries(
-    connection: &Connection,
-    sql: &str,
-    params: impl rusqlite::Params,
-) -> Result<Vec<Entry>, StoreError> {
-    connection
-        .prepare(sql)
-        .map_err(backend)?
-        .query_map(params, rows::entry)
-        .map_err(backend)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(backend)
-}
-
-/// Where the message with this protocol ID, from this channel conversation, was consumed.
-///
-/// Protocols keep message IDs unique within a conversation, so at most one input matches.
-pub(super) fn consumed_message(
-    connection: &Connection,
-    protocol: &str,
-    account: &str,
-    conversation: &str,
-    message: &str,
-) -> Result<Option<ConsumedMessage>, StoreError> {
-    // Only an owner's command asks, so this scans the Log instead of indexing every input.
-    connection
-        .query_row(
-            "SELECT session_id,epoch,seq,json_extract(body,'$.event.source.owner')
-             FROM log
-             WHERE kind='event_consumed'
-               AND json_extract(body,'$.event.body.kind')='user_message'
-               AND json_extract(body,'$.event.source.protocol')=?
-               AND json_extract(body,'$.event.source.account')=?
-               AND json_extract(body,'$.event.source.conversation')=?
-               AND json_extract(body,'$.event.source.message')=?",
-            params![protocol, account, conversation, message],
-            |r| {
-                Ok(ConsumedMessage {
-                    session: rows::text(r, 0)?,
-                    pos: LogPos {
-                        epoch: Epoch(rows::unsigned(r, 1)?),
-                        seq: Seq(rows::unsigned(r, 2)?),
-                    },
-                    owner: r.get(3)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(backend)
 }
 
 /// Stop reading the Log as soon as the fold has every fact; the newest entries decide them.

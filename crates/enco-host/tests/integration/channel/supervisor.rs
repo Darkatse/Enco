@@ -6,14 +6,14 @@ use tokio_util::sync::CancellationToken;
 /// One identification, held until the test answers it.
 struct OpenAttempt {
     base_url: BaseUrl,
-    generation: GenerationId,
+    code: CodeRef,
     result: oneshot::Sender<Result<(), Fault>>,
 }
 impl OpenAttempt {
-    /// Let the identification reach the account; the generation it opened with.
-    fn succeed(self) -> GenerationId {
+    /// Let the identification reach the account; the mapper code it opened with.
+    fn succeed(self) -> CodeRef {
         self.result.send(Ok(())).unwrap();
-        self.generation
+        self.code
     }
 }
 struct Mapper {
@@ -25,14 +25,14 @@ impl enco_kernel::Channel for Mapper {
     async fn open(
         &self,
         settings: &ChannelSettings,
-        generation: GenerationId,
+        code: CodeRef,
         _store: Arc<dyn Store>,
     ) -> Result<Arc<dyn Adapter>, ChannelCallError> {
         let (result, completed) = oneshot::channel();
         self.attempts
             .send(OpenAttempt {
                 base_url: settings.base_url.clone(),
-                generation,
+                code,
                 result,
             })
             .unwrap();

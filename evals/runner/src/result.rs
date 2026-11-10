@@ -88,7 +88,7 @@ pub(crate) struct Trial {
     pub(crate) rounds: u64,
     pub(crate) wall_secs: f64,
     pub(crate) usage: Usage,
-    pub(crate) generations: BTreeMap<String, u64>,
+    pub(crate) running_code: BTreeMap<String, String>,
     pub(crate) network_violations: usize,
 }
 

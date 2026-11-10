@@ -15,34 +15,47 @@ pub trait Store: Send + Sync {
     /// Kernel-owned update, observed at the next Round boundary.
     async fn set_safe_mode(&self, enabled: bool) -> Result<(), StoreError>;
 
-    // ---- Sessions (writer: Kernel)
-    /// List existing Sessions.
+    // ---- Sessions (each row folds its creation record, archive and own Log)
+    /// List existing Sessions in their effective view.
     async fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError>;
-    /// Read the metadata sampled by the Session actor at each Round boundary.
+    /// Read a Session's effective view: its committed row with its pending commands applied, read
+    /// in one transaction.
+    ///
+    /// Readers outside the Session see it; the Session's actor and Rounds read the committed view.
     async fn session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError>;
-    /// Look up an unarchived Session by name without creating it.
+    /// Read a Session's committed view, the row its own Log and recorded facts give; the actor
+    /// reads it after consuming the commands acting on the Session.
+    async fn committed_session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError>;
+    /// Read a Session's committed view and its ancestors', nearest first, in one transaction.
+    ///
+    /// It is what a Round samples, so its permissions narrow along one state of the tree.
+    async fn committed_lineage(
+        &self,
+        id: SessionId,
+    ) -> Result<(SessionRecord, Vec<SessionRecord>), StoreError>;
+    /// Every unarchived Session with each view its Rounds may read from now on, read in one
+    /// transaction.
+    async fn unarchived_views(&self) -> Result<Vec<SessionViews>, StoreError>;
+    /// Look up an unarchived Session by name, in its effective view, without creating it.
     async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError>;
-    /// The unarchived Sessions this one delegated to, in creation order.
+    /// The unarchived Sessions this one delegated to, in creation order and effective view.
     async fn children(&self, parent: SessionId) -> Result<Vec<SessionRecord>, StoreError>;
-    /// Create if absent, with local binding at epoch one, the default profile and this node's
-    /// default working directory.
+    /// Create a root through the root directory if no unarchived Session has the name.
+    ///
+    /// It runs here at epoch one, with the default profile and this node's default working
+    /// directory.
     async fn ensure_session(
         &self,
         name: &SessionName,
         created_at: DateTime<Utc>,
     ) -> Result<SessionRecord, StoreError>;
 
-    /// Persist the working directory for subsequent Rounds, without checking availability.
-    async fn set_working_dir(
-        &self,
-        id: SessionId,
-        working_dir: &WorkingDir,
-    ) -> Result<(), StoreError>;
-
     /// Atomically halt the unarchived subtree, optionally archiving it; returns it root first.
     ///
-    /// The root receives `source`; descendants receive `Parent`. Each input carries `halt`. A root
-    /// that is already archived writes nothing and returns no Sessions.
+    /// The root receives `source`; descendants receive `Parent`. Each input carries `halt`. An
+    /// archive records one control-plane fact for the root, from which its descendants are
+    /// archived too, and releases their names at once. A root that is already archived writes
+    /// nothing and returns no Sessions.
     async fn halt_subtree(
         &self,
         root: SessionId,
@@ -116,36 +129,22 @@ pub trait Store: Send + Sync {
     /// Read unconsumed inputs in acceptance order.
     async fn pending(&self, session: SessionId) -> Result<Vec<Event>, StoreError>;
 
-    // ---- Schedules (writer: Scheduler actor)
-    /// Scheduler-owned insertion of a new schedule, stored as given.
-    async fn insert_schedule(&self, schedule: &Schedule) -> Result<(), StoreError>;
-    /// Scheduler-owned cancellation; return whether an active schedule changed.
-    async fn cancel_schedule(&self, id: ScheduleId) -> Result<bool, StoreError>;
-    /// Read schedules, optionally filtered by state.
-    async fn schedules(&self, state: Option<ScheduleState>) -> Result<Vec<Schedule>, StoreError>;
-    /// Advance an active Schedule from expected_last and accept its Event atomically.
+    // ---- Schedules (each row folds its Session's own facts)
+    /// The schedules of every unarchived Session, or of one, in their effective view.
     ///
-    /// Mark it done when no occurrence remains; archived targets return `Archived` without writes.
-    async fn fire_schedule(
-        &self,
-        expected_last: Option<DateTime<Utc>>,
-        done: bool,
-        event: &Event,
-    ) -> Result<Accepted, StoreError>;
+    /// That is the committed rows with the owners' pending cancels and the pending reminders
+    /// applied.
+    async fn schedules(&self, session: Option<SessionId>) -> Result<Vec<Schedule>, StoreError>;
 
     // ---- Identity, generations and wiring (writer: Registry)
-    /// Select the profile under the registry committer, effective at the next Round.
-    async fn set_profile(&self, id: SessionId, profile: &ProfileName) -> Result<(), StoreError>;
-    /// Read registration history and the references restored at startup.
+    /// Read accepted intent and this node's references, restored at startup.
     async fn registry(&self) -> Result<RegistryState, StoreError>;
-    /// Record embedded factory content without activating it or creating a registration.
-    async fn record_factories(&self, generations: &[GenerationRecord]) -> Result<(), StoreError>;
 
-    /// Atomically accept one registration, its content and its runtime references.
+    /// Atomically accept one registration, its content and this node's references.
     async fn register(&self, write: &RegistrationWrite) -> Result<(), StoreError>;
-    /// Promote an observed trial without changing its identity or rollback target.
+    /// Record that a trial generation is healthy on this node, keeping its rollback target.
     async fn promote(&self, generation: GenerationId) -> Result<(), StoreError>;
-    /// Atomically move runtime references and record attributable failures and a notice.
+    /// Atomically move this node's references and record attributable failures and a notice.
     async fn activate(&self, change: &ActivationWrite) -> Result<(), StoreError>;
     /// Remove component files which no runtime reference retains.
     async fn retain_artifacts(
@@ -225,35 +224,35 @@ pub struct ConnectionWrite {
     pub settlement: Option<DeliverySettlement>,
 }
 
-/// A Session created together with the input that first reaches it.
+/// A root Session requested together with the input that first reaches it.
 ///
-/// It starts bound to this node at epoch one; its origin determines its directory and name policy.
+/// The root directory, the authority over root names, gives an occupied name a numeric suffix
+/// and records the creation; the Session starts here at epoch one in this node's default
+/// working directory.
 #[derive(Clone)]
 pub struct NewSession {
     /// Identity chosen by the creator, which also records it in its own state.
     pub id: SessionId,
-    /// Full validated name; its origin determines how occupied names are handled.
+    /// Requested root name.
     pub name: SessionName,
     /// Registered profile the Session starts with.
     pub profile: ProfileName,
-    /// Root or child creation facts.
-    pub origin: NewSessionOrigin,
     /// Creation time for display.
     pub created_at: DateTime<Utc>,
 }
 
-/// Origin fixed when a Session is created.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NewSessionOrigin {
-    /// A root uses the node's default directory; an occupied name gets a numeric suffix.
-    Root,
-    /// A child uses its parent's identity and an explicitly resolved working directory.
-    Child {
-        /// Fixed parent identity.
-        parent: SessionId,
-        /// Directory supplied by the parent, without availability checks.
-        working_dir: WorkingDir,
-    },
+/// One Session's views, from the one its Rounds read now to its effective view.
+#[derive(Debug, Clone)]
+pub struct SessionViews {
+    /// The row its own Log and recorded facts give, which its Rounds and its descendants' Rounds
+    /// read.
+    pub committed: SessionRecord,
+    /// The committed row after each pending Event in Inbox order, the last being the effective
+    /// view; empty when nothing is pending.
+    ///
+    /// The actor consumes the commands acting on the Session in Inbox order, a prefix at a time,
+    /// so any of these may become its committed view.
+    pub ahead: Vec<SessionRecord>,
 }
 
 /// What an atomic acceptance committed.
@@ -283,6 +282,13 @@ pub enum Accepted {
     Duplicate,
     /// The target Session is archived and accepts no input.
     Archived,
+    /// It names a schedule that is not active in the target Session's effective view.
+    ///
+    /// That is a reminder or an owner's cancel of a schedule that is cancelled, of a one-time
+    /// schedule that has reminded already, or of none the Session created.
+    ///
+    /// The commands and reminders still in the Inbox count.
+    Inactive,
 }
 
 /// A failed storage operation or commit precondition.
@@ -314,12 +320,17 @@ pub enum StoreError {
     /// Input consumption does not match accepted facts.
     #[error("inbox: {0}")]
     Inbox(String),
-    /// The scheduler's expected state no longer matches the authority.
-    #[error("schedule {0} is not active at the expected occurrence")]
-    ScheduleNotActive(ScheduleId),
     /// The target Session does not exist.
     #[error("unknown session {0}")]
     UnknownSession(SessionId),
+    /// A Session's facts name a schedule it never created.
+    #[error("session {session} has no schedule {schedule}")]
+    UnknownSchedule {
+        /// Session whose commit names the schedule.
+        session: SessionId,
+        /// Schedule it never created.
+        schedule: ScheduleId,
+    },
     /// Immutable bytes are missing or do not match their address.
     #[error("blob {0} is corrupt or missing")]
     Blob(ContentHash),
@@ -350,6 +361,14 @@ pub enum StoreError {
         found: u32,
         /// Version understood by this binary.
         expected: u32,
+    },
+    /// Upgrading the database from the previous version failed; it is left as it was.
+    #[error("upgrading the database from version {from}: {reason}")]
+    Migration {
+        /// The version the database has.
+        from: u32,
+        /// What failed, and where the copy taken before the upgrade is.
+        reason: String,
     },
     /// The storage engine or filesystem operation failed.
     #[error("storage: {0}")]

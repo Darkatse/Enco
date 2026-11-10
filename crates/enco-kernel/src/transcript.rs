@@ -46,26 +46,38 @@ pub(crate) fn conversation_reach(
     Some(reach)
 }
 
-/// Whether the Log ends with a backtrack to an input, which the next Run replies to again.
+/// Whether the Log owes a reply to an input it was taken back to, which the next Run gives.
+///
+/// It does when its latest entry that bears on replies is a backtrack to an input. Commands that
+/// leave the inputs, compaction requests and those acting on the Session, leave the reply owed.
 pub(crate) fn backtracked_to_input(entries: &[Entry]) -> bool {
-    trailing_target(entries).is_some_and(|to| {
+    owed_target(entries).is_some_and(|to| {
         entries
             .binary_search_by_key(&to, |entry| entry.pos)
             .is_ok_and(|index| input(&entries[index]).is_some())
     })
 }
 
-/// How far back `backtracked_to_input` reads: to the target of the backtrack the Log ends with,
-/// otherwise its last entry.
+/// How far back `backtracked_to_input` reads: to the target of the backtrack it finds.
+///
+/// Otherwise it reads to the entry it stops at, and needs all it was given while every entry
+/// leaves a reply owed.
 pub(crate) fn backtracked_to_input_reach(entries: &[Entry]) -> Option<LogPos> {
-    trailing_target(entries).or(entries.last().map(|entry| entry.pos))
+    owed_target(entries).or(bearing_on_replies(entries).map(|entry| entry.pos))
 }
 
-fn trailing_target(entries: &[Entry]) -> Option<LogPos> {
-    entries.last().and_then(backtrack).flatten()
+fn owed_target(entries: &[Entry]) -> Option<LogPos> {
+    bearing_on_replies(entries).and_then(backtrack).flatten()
 }
 
-/// The ordinary input an entry consumed; commands about the conversation are not inputs.
+/// The latest entry that is not a consumed command leaving the inputs as they were.
+fn bearing_on_replies(entries: &[Entry]) -> Option<&Entry> {
+    entries.iter().rev().find(|entry| {
+        !matches!(&entry.body, EntryBody::EventConsumed { event } if event.body.leaves_inputs())
+    })
+}
+
+/// The ordinary input an entry consumed; a command is not one.
 fn input(entry: &Entry) -> Option<&Event> {
     match &entry.body {
         EntryBody::EventConsumed { event } if !event.body.is_command() => Some(event),
@@ -117,8 +129,8 @@ pub(crate) struct LastReply<'a> {
     pub usage: &'a Usage,
     /// The call parameters that served it.
     pub settings: &'a ProviderSettings,
-    /// The Provider generation that served it.
-    pub provider: GenerationId,
+    /// The Provider code that served it.
+    pub provider: &'a CodeRef,
 }
 
 /// The latest reply request the service answered, usable or not.
@@ -151,7 +163,7 @@ pub(crate) fn last_reply<'a>(conversation: &[&'a Entry]) -> Option<LastReply<'a>
                         plan,
                         usage,
                         settings,
-                        provider: *provider,
+                        provider,
                     });
                 }
             }
@@ -334,7 +346,7 @@ pub(crate) fn project(entries: &[&Entry]) -> Transcript {
                 provider,
                 ..
             } => {
-                attempts.insert(*attempt, (*purpose, *provider));
+                attempts.insert(*attempt, (*purpose, provider));
             }
             EntryBody::AttemptSettled {
                 attempt,
@@ -350,12 +362,12 @@ pub(crate) fn project(entries: &[&Entry]) -> Transcript {
             }
             _ => {}
         }
-        let (purpose, generation, call) = match &entry.body {
+        let (purpose, provider, call) = match &entry.body {
             EntryBody::AttemptSettled { attempt, .. } => {
                 let info = attempts.get(attempt);
                 (
                     info.map(|(purpose, _)| *purpose),
-                    info.map(|(_, generation)| *generation),
+                    info.map(|(_, provider)| (*provider).clone()),
                     None,
                 )
             }
@@ -366,7 +378,7 @@ pub(crate) fn project(entries: &[&Entry]) -> Transcript {
             transcript.items.push(TranscriptItem {
                 pos: entry.pos,
                 message,
-                generation,
+                provider,
                 event: match &entry.body {
                     EntryBody::EventConsumed { event } => Some(event.clone()),
                     _ => None,

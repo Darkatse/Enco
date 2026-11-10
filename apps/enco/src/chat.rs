@@ -69,7 +69,7 @@ fn render(
         EntryBody::EventConsumed {
             event:
                 Event {
-                    body: EventBody::GenerationRolledBack { text, .. },
+                    body: EventBody::PluginRolledBack { text, .. },
                     ..
                 },
         } => eprintln!("! {text}"),

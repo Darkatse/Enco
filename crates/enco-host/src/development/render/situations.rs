@@ -1,5 +1,5 @@
 //! One template per situation: a bold "path — situation" line, then one sentence per fact.
-use super::{causes::causes, code, generation, location, path};
+use super::{causes::causes, code, location, path, registration_of};
 use crate::status::{AttentionKind, Divergence, GenerationFailure, StopCause};
 use enco_core::{IntentPath, PluginActivation};
 
@@ -34,7 +34,7 @@ pub(super) fn facts(kind: &AttentionKind<'_>) -> String {
             running,
             registered,
             cause,
-        } => rolled_back(target, *running, *registered, cause),
+        } => rolled_back(target, running, registered, cause),
         AttentionKind::Diverged {
             path: target,
             divergence,
@@ -49,15 +49,15 @@ pub(super) fn facts(kind: &AttentionKind<'_>) -> String {
         } => format!(
             "**{} — not running the registered configuration.** The configuration from registration {} runs; registration {} registered a newer one. Registering any edit to {} makes the whole file run, newer parts included.",
             path(&IntentPath::Configuration),
-            running.registration,
-            registered.registration,
+            running,
+            registered,
             path(&IntentPath::Configuration)
         ),
         AttentionKind::FollowRejected {
             path: target,
             causes: rejected,
             running,
-        } => follow_rejected(target, rejected, *running),
+        } => follow_rejected(target, rejected, running.as_ref()),
         AttentionKind::UnservedUse { usage } => format!(
             "**{} — cannot be served.** Cause: {}.",
             code(&usage.user),
@@ -105,7 +105,7 @@ pub(super) fn facts(kind: &AttentionKind<'_>) -> String {
 fn follow_rejected(
     target: &IntentPath,
     rejected: &[enco_kernel::Cause],
-    running: Option<PluginActivation>,
+    running: Option<&PluginActivation>,
 ) -> String {
     let mut out = format!(
         "**{} — host update not applied.** Registering this host's factory code was rejected: {}.",
@@ -113,10 +113,7 @@ fn follow_rejected(
         causes(rejected)
     );
     if let Some(running) = running {
-        out.push_str(&format!(
-            " The plugin keeps running {}.",
-            generation(running)
-        ));
+        out.push_str(&format!(" It keeps running {}.", running.code));
     }
     out.push_str(" Every registration retries the update.");
     out
@@ -145,34 +142,37 @@ fn removed(
 
 fn rolled_back(
     target: &IntentPath,
-    running: PluginActivation,
-    registered: PluginActivation,
+    running: &PluginActivation,
+    registered: &PluginActivation,
     cause: &GenerationFailure<'_>,
 ) -> String {
-    let (subject, consequence, failure) = match cause {
-        GenerationFailure::Code { failure } => (
-            "code",
-            "Registering the same source again changes nothing.",
-            failure,
-        ),
-        GenerationFailure::Settings { failure } => (
-            "settings",
-            "Registering the same settings again changes nothing.",
-            failure,
-        ),
-        GenerationFailure::Factory { failure } => (
-            "factory code",
-            "Only a host update changes factory code.",
-            failure,
-        ),
+    let consequence = match cause {
+        GenerationFailure::Code { .. } => "Registering the same source again changes nothing.",
+        GenerationFailure::Settings { .. } => {
+            "Registering the same settings again changes nothing."
+        }
+        GenerationFailure::Factory { .. } => "Only a host update changes factory code.",
     };
     format!(
-        "**{} — registered {subject} failed; running an older generation.** {}, which failed: {}. The plugin runs {} instead. {consequence}",
+        "**{} — rolled back to {}.** {} failed: {}. {consequence}",
         path(target),
-        selected(registered),
-        failure.message,
-        generation(running)
+        running.code,
+        failed(registered, cause),
+        cause.failure().message,
     )
+}
+
+/// What a failed generation brought, as the subject of a sentence.
+fn failed(registered: &PluginActivation, cause: &GenerationFailure<'_>) -> String {
+    let registration = registration_of(registered).map_or_else(
+        || "The registered code".into(),
+        |id| format!("Registration {id}"),
+    );
+    match cause {
+        GenerationFailure::Code { .. } => format!("{registration}'s code"),
+        GenerationFailure::Settings { .. } => format!("{registration}'s settings"),
+        GenerationFailure::Factory { .. } => format!("{registration}'s factory code"),
+    }
 }
 
 fn diverged(target: &IntentPath, divergence: &Divergence<'_>) -> String {
@@ -191,75 +191,60 @@ fn diverged(target: &IntentPath, divergence: &Divergence<'_>) -> String {
             running,
             registered,
         } => format!(
-            "**{} — not running the registered code.** {}; the plugin runs {}. Registering the same source again changes nothing.",
+            "**{} — runs {}, not the registered {}.** Registering the same source again changes nothing.",
             path(target),
-            selected(*registered),
-            generation(*running)
+            running.code,
+            short(registered)
         ),
         Divergence::Settings {
             running,
             registered,
         } => format!(
-            "**{} — not running the registered settings.** {} with new settings; the plugin runs {}.",
+            "**{} — runs {}, not the registered {}.** Their settings differ.",
             path(target),
-            selected(*registered),
-            generation(*running)
+            running.code,
+            short(registered)
         ),
         Divergence::Unregistered {
             running,
             removed_by,
         } => format!(
-            "**{} — runs but is not registered.** Registration {removed_by} removed it; the plugin runs {} again.",
+            "**{} — runs but is not registered.** Registration {removed_by} removed it; it runs {} again.",
             path(target),
-            generation(*running)
+            running.code
         ),
+    }
+}
+
+/// Registered code after "the registered": its number, or factory code.
+fn short(registered: &PluginActivation) -> String {
+    match registered.code.generation() {
+        Some(id) => id.registration.to_string(),
+        None => registered.code.to_string(),
     }
 }
 
 fn stopped(target: &IntentPath, cause: &StopCause<'_>) -> String {
     let facts = match cause {
-        StopCause::Failed {
-            cause: GenerationFailure::Code { failure },
-        } => format!(
-            "Its registered code failed: {}. No older generation can run.",
-            failure.message
-        ),
-        StopCause::Failed {
-            cause: GenerationFailure::Settings { failure },
-        } => format!(
-            "Its registered settings failed: {}. No older generation can run.",
-            failure.message
-        ),
-        StopCause::Failed {
-            cause: GenerationFailure::Factory { failure },
-        } => format!(
-            "The host's factory code failed: {}. No older generation can run.",
-            failure.message
+        StopCause::Failed { registered, cause } => format!(
+            "{} failed: {}. Nothing earlier can run.",
+            failed(registered, cause),
+            cause.failure().message
         ),
         StopCause::Unavailable {
+            selected,
             causes: unavailable,
         } => format!(
-            "This host cannot serve the selected generation: {}.",
+            "This host cannot run {}: {}.",
+            selected.code,
             causes(unavailable)
         ),
-        StopCause::NotRunning { registered } => format!(
-            "{}, but no generation runs. Registering the same source again changes nothing.",
-            selected(*registered)
-        ),
+        StopCause::NotRunning { registered } => match registered.registration {
+            Some(registration) => format!(
+                "Registration {registration} registered it, but nothing runs. Registering the same source again changes nothing."
+            ),
+            None => "The host selected factory code, but nothing runs.".into(),
+        },
     };
     format!("**{} — stopped.** {facts}", path(target))
-}
-
-/// The registered generation as the subject of a sentence.
-fn selected(reference: PluginActivation) -> String {
-    match reference.registration {
-        Some(registration) => format!(
-            "Registration {registration} registered generation {}",
-            reference.generation
-        ),
-        None => format!(
-            "The host selected generation {} with factory code",
-            reference.generation
-        ),
-    }
 }

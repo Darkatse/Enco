@@ -358,7 +358,7 @@ impl Memories {
 
 /// Invoke one resolved export until cancelled and report its verdict before returning the result.
 ///
-/// An export that cannot be resolved is an ordinary failure with no generation to report.
+/// An export that cannot be resolved is an ordinary failure with no code to report.
 async fn reported_call<T: ?Sized, R, F>(
     registry: &Registry,
     export: Result<Export<T>, Failure>,
@@ -369,11 +369,7 @@ where
     F: Future<Output = Result<R, Failure>>,
 {
     let result = match export {
-        Ok(Export {
-            generation,
-            adapter,
-            ..
-        }) => {
+        Ok(Export { code, adapter, .. }) => {
             let result = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => Err(Failure {
@@ -385,7 +381,7 @@ where
                 Ok(_) => Verdict::Ok,
                 Err(failure) => Verdict::Failed(failure.clone()),
             };
-            registry.report(generation, verdict, None).await?;
+            registry.report(&code, verdict, None).await?;
             result
         }
         Err(failure) => Err(failure),

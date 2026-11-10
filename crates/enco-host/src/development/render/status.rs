@@ -1,6 +1,6 @@
 //! The document that `self_status` returns: what needs attention, then the three layers of every
 //! unit, then recent registrations, Sessions and channels.
-use super::{cell, code, comparison, generation_state, history, next, path, situations, step};
+use super::{cell, code, comparison, health, history, next, path, situations, step};
 use crate::{
     channel::ChannelState,
     clock::local_time,
@@ -8,7 +8,7 @@ use crate::{
     status::{CallStep, Status, Step},
 };
 use enco_core::{IntentPath, Settlement, Tz};
-use enco_kernel::{CodeSource, Running};
+use enco_kernel::{Activation, CodeSource, Running};
 
 impl Status {
     /// The status as the Markdown document `self_status` shows.
@@ -35,11 +35,10 @@ impl Status {
         out.push_str("\n## Plugins and configuration\n\n| Path | Running | Registered | Home |\n|---|---|---|---|\n");
         let config = &self.development.configuration;
         out.push_str(&format!(
-            "| {} | generation {} | generation {} · registration {} | {} |\n",
+            "| {} | registration {} | registration {} | {} |\n",
             path(&IntentPath::Configuration),
-            config.running.generation,
-            config.registered.generation,
-            config.registered.registration,
+            config.running,
+            config.registered,
             comparison(&config.home)
         ));
         for (name, plugin) in &self.development.plugins {
@@ -75,13 +74,9 @@ fn running(plugin: &PluginUnit) -> String {
     match &status.running {
         Running::Stopped => "stopped".into(),
         Running::Unavailable { activation, .. } => {
-            format!("generation {} · cannot be served", activation.generation.id)
+            format!("{} · cannot be served", selected(activation))
         }
-        Running::Serving { activation, .. } => format!(
-            "generation {} · {}",
-            activation.generation.id,
-            generation_state(activation.generation.status)
-        ),
+        Running::Serving { activation, .. } => selected(activation),
     }
 }
 
@@ -89,22 +84,24 @@ fn registered(plugin: &PluginUnit) -> String {
     let Some(registered) = &plugin.registered else {
         return "not registered".into();
     };
-    let activation = &registered.plugin.activation;
-    let mut text = format!(
-        "{}generation {} · {}",
-        if activation.code.source == CodeSource::Factory {
-            "factory code · "
-        } else {
-            ""
-        },
-        activation.generation.id,
-        generation_state(activation.generation.status)
-    );
-    if let Some(registration) = activation.registration {
-        text.push_str(&format!(" · registration {registration}"));
-    }
+    let mut text = selected(&registered.plugin.activation);
     if registered.earlier_sdk {
         text.push_str(" · earlier SDK");
+    }
+    text
+}
+
+/// Selected code as a cell: the registration that last changed it, or factory code.
+///
+/// Its standing on this node follows; a generation that pairs settings with factory code says so.
+fn selected(activation: &Activation) -> String {
+    let mut text = activation.code.to_string();
+    if activation.code.generation().is_some() && activation.provenance.source == CodeSource::Factory
+    {
+        text.push_str(" · factory code");
+    }
+    if let Some(standing) = &activation.health {
+        text.push_str(&format!(" · {}", health(standing)));
     }
     text
 }

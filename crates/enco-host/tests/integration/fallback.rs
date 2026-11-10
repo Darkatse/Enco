@@ -75,7 +75,7 @@ fn modes(entries: &[Entry]) -> Vec<bool> {
         .collect()
 }
 
-fn attempts(entries: &[Entry]) -> Vec<(GenerationId, &str, ContentHash)> {
+fn attempts(entries: &[Entry]) -> Vec<(CodeRef, &str, ContentHash)> {
     entries
         .iter()
         .filter_map(|entry| match &entry.body {
@@ -84,7 +84,7 @@ fn attempts(entries: &[Entry]) -> Vec<(GenerationId, &str, ContentHash)> {
                 settings,
                 plan,
                 ..
-            } => Some((*provider, settings.model.as_str(), *plan)),
+            } => Some((provider.clone(), settings.model.as_str(), *plan)),
             _ => None,
         })
         .collect()
@@ -193,7 +193,7 @@ async fn registry_node(
     root: &Path,
     factory: Arc<dyn Provider>,
     trial: Arc<dyn Provider>,
-) -> (Kernel, GenerationId, GenerationId) {
+) -> (Kernel, CodeRef, CodeRef) {
     let runtime = factory_runtime(fixture(factory, ScriptedProvider::new(vec![])));
     runtime.insert(b"trial", fixture(trial, ScriptedProvider::new(vec![])));
     let (development, registry, store) =
@@ -203,7 +203,7 @@ async fn registry_node(
         .exports
         .completion(&fixture_endpoint("fixture"), true)
         .unwrap()
-        .generation;
+        .code;
     let trial = source_fixture(root, &store, &development, &registry, "fixture", b"trial")
         .await
         .generations[0]
@@ -212,7 +212,7 @@ async fn registry_node(
     let kernel = Kernel::start(kernel_deps(root, store, registry, None, Some(development)).await)
         .await
         .unwrap();
-    (kernel, original, trial)
+    (kernel, original, CodeRef::from(trial))
 }
 
 #[tokio::test]
@@ -245,14 +245,14 @@ async fn automatic_safe_mode_tracks_repair_and_starts_each_run_afresh() {
             .iter()
             .find_map(|entry| match &entry.body {
                 EntryBody::RoundEnded {
-                    end: RoundEnd::Failed { generations, .. },
+                    end: RoundEnd::Failed { active, .. },
                     ..
-                } => Some(generations),
+                } => Some(active),
                 _ => None,
             })
             .unwrap();
-        assert!(failed.contains(&broken) && !failed.contains(&original));
-        assert!(failed.windows(2).all(|ids| ids[0] < ids[1]));
+        let running: Vec<_> = failed.plugins.values().collect();
+        assert!(running.contains(&&broken) && !running.contains(&&original));
         let next = send(&kernel, "new work").await;
         assert_eq!(
             modes(&next),
@@ -297,9 +297,16 @@ async fn a_third_attempt_rollback_grants_the_new_generation_its_own_allowance() 
     assert_eq!(
         attempts[..6]
             .iter()
-            .map(|(generation, _, _)| *generation)
+            .map(|(code, _, _)| code.clone())
             .collect::<Vec<_>>(),
-        [broken, broken, broken, original, original, original]
+        [
+            broken.clone(),
+            broken.clone(),
+            broken.clone(),
+            original.clone(),
+            original.clone(),
+            original.clone()
+        ]
     );
     assert!(
         attempts[..6]
@@ -340,18 +347,19 @@ async fn failed_round_records_the_generations_after_rollback_and_does_not_retry_
     assert_eq!(
         attempts(&log)
             .iter()
-            .map(|(generation, _, _)| *generation)
+            .map(|(code, _, _)| code.clone())
             .collect::<Vec<_>>(),
-        [broken, original]
+        [broken.clone(), original.clone()]
     );
-    for generations in log.iter().filter_map(|entry| match &entry.body {
+    for active in log.iter().filter_map(|entry| match &entry.body {
         EntryBody::RoundEnded {
-            end: RoundEnd::Failed { generations, .. },
+            end: RoundEnd::Failed { active, .. },
             ..
-        } => Some(generations),
+        } => Some(active),
         _ => None,
     }) {
-        assert!(generations.contains(&original) && !generations.contains(&broken));
+        let running: Vec<_> = active.plugins.values().collect();
+        assert!(running.contains(&&original) && !running.contains(&&broken));
     }
     assert_eq!(factory.requests.lock().unwrap().len(), 1);
     kernel.shutdown().await.unwrap();
@@ -464,12 +472,12 @@ async fn applying_calls_every_candidate_once_and_a_failing_backup_rejects_it() {
         vec![],
     )
     .await;
-    let before = registry.view().config.generation;
+    let before = registry.view().config.registration;
     let result = submit(&registry, configuration_request(candidates())).await;
     assert!(matches!(result, Err(RegistryError::Rejected(causes))
         if matches!(causes.as_slice(), [Cause::Use { target: UseRef::Endpoint { endpoint }, failure, .. }]
             if endpoint == "backup-chat" && *failure == unavailable(false))));
-    assert_eq!(registry.view().config.generation, before);
+    assert_eq!(registry.view().config.registration, before);
     // The alias shares the primary's call parameters, so the two make one call.
     assert_eq!(
         provider

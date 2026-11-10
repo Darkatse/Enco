@@ -13,7 +13,6 @@ pub(crate) const SESSION_BROADCAST_CAPACITY: usize = 256;
 /// asked, never what the reads see.
 pub(crate) const LOG_PAGE: usize = 256;
 pub(crate) const SCHEDULER_TICK: Duration = Duration::from_secs(1);
-pub(crate) const SCHEDULER_CHANNEL_CAPACITY: usize = 64;
 pub(crate) const MIN_RECURRENCE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 pub(crate) const RECURRENCE_CHECK: usize = 100;
 

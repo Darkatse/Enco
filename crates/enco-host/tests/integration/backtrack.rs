@@ -204,6 +204,50 @@ async fn a_backtrack_to_an_input_replies_to_it_again() {
 }
 
 #[tokio::test]
+async fn a_backtrack_to_an_input_replies_again_after_the_commands_behind_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![reply("first"), reply("again")]);
+    let (kernel, store) = support::kernel(dir.path(), provider.clone()).await;
+    let session = kernel.open_session("main").await.unwrap().id;
+    let mut rx = kernel.subscribe(session).await.unwrap();
+    send(&kernel, session, "one").await;
+    finish(&mut rx).await;
+    let log = kernel.log(session, None).await.unwrap();
+    std::fs::create_dir(dir.path().join("moved")).unwrap();
+    let moved = WorkingDir::new(store.node().await.unwrap().id, dir.path().join("moved")).unwrap();
+    let event = |body| Event {
+        id: EventId::new(),
+        session,
+        source: EventSource::Cli,
+        body,
+        received_at: Utc::now(),
+    };
+    // Accepted together, so the Session consumes the backtrack and then the command.
+    kernel
+        .accept(
+            &[
+                event(EventBody::Backtrack {
+                    to: Some(input(&log, "one")),
+                }),
+                event(EventBody::SetWorkingDir {
+                    working_dir: moved.clone(),
+                }),
+            ],
+            None,
+        )
+        .await
+        .unwrap();
+    let entries = finish(&mut rx).await;
+    assert!(entries.iter().any(|entry| matches!(&entry.body,
+        EntryBody::RoundStarted { working_dir, .. } if *working_dir == moved)));
+    assert_eq!(
+        texts(provider.requests.lock().unwrap().last().unwrap()),
+        ["one"]
+    );
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_backtrack_stops_the_running_run_and_supersedes_the_inputs_before_it() {
     let dir = tempfile::tempdir().unwrap();
     let gate = Arc::new(Gate::default());

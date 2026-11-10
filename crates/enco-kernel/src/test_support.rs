@@ -51,14 +51,27 @@ pub(crate) fn round_end() -> EntryBody {
     }
 }
 
+/// The generation that registration `registration` brought for the one plugin tests use.
+pub(crate) fn generation(registration: u64) -> GenerationId {
+    GenerationId {
+        registration: RegistrationId(registration),
+        plugin: "01J0000000000000000000TEST".parse().unwrap(),
+    }
+}
+
+/// Plugin code from the registration numbered `registration`.
+pub(crate) fn code(registration: u64) -> CodeRef {
+    CodeRef::from(generation(registration))
+}
+
 pub(crate) fn started(attempt: AttemptId, purpose: AttemptPurpose, model: &str) -> EntryBody {
     EntryBody::AttemptStarted {
         round: RoundId::new(),
         attempt,
         purpose,
         plan: ContentHash::of(b"plan"),
-        composer: GenerationId(1),
-        provider: GenerationId(1),
+        composer: code(1),
+        provider: code(1),
         settings: settings(model),
     }
 }
@@ -222,9 +235,7 @@ impl History {
                 node: NodeId::new(),
                 name: call.name,
             },
-            code: CodeRef::Generation {
-                id: GenerationId(1),
-            },
+            code: CodeRef::Generation { id: generation(1) },
             effect: Effect::ReadOnly,
         });
         if settled {
@@ -236,6 +247,7 @@ impl History {
                 images: vec![],
                 outgoing: None,
                 delegated: None,
+                schedule: None,
             });
         }
     }
@@ -363,6 +375,11 @@ pub(crate) fn history() -> Vec<Entry> {
     h.input(EventBody::Backtrack { to: None });
     let (eighth, _) = h.answered("eighth");
     h.input(EventBody::Backtrack { to: Some(eighth) });
+    // Consumed before that Run, commands superseding no inputs leave the reply owed.
+    h.input(EventBody::SetWorkingDir {
+        working_dir: WorkingDir::new(NodeId::new(), "/elsewhere".into()).unwrap(),
+    });
+    h.input(EventBody::Compact);
     let run = h.run();
     let round = h.round(run);
     h.reply();

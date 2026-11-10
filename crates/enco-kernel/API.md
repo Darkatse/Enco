@@ -7,9 +7,10 @@ Session execution through explicit ports.
 
 - struct `Acceptance` — What an atomic acceptance committed.
 - enum `Accepted` — Whether an Event was newly accepted.
-- struct `Activation` — One selected generation and where it came from; the running and registered layers share it.
-- struct `ActivationWrite` — Mechanical recovery moves references; it never creates new intent.
-- struct `Active` — The generation that runs under one name in ordinary operation.
+- struct `AcceptedIntent` — Accepted changes and the content they brought; identities derive from registrations, so every node agrees on them.
+- struct `Activation` — One selected code and where it came from; the running and registered layers share it.
+- struct `ActivationWrite` — Mechanical recovery moves this node's references; it never creates new intent.
+- struct `Active` — The code that runs under one name in ordinary operation.
 - struct `ActiveConfig` — The active configuration generation: registered content plus the declarations derived from it.
 - enum `Answer` — Finite probabilities in [0, 1], or a refusal for this question. Choice and score distributions follow label order and sum to one, allowing rounding.
 - struct `Answered` — How a completion call ended, with the recorded call that decoded the service's response.
@@ -43,8 +44,8 @@ Session execution through explicit ports.
 - struct `ChannelToolActivity` — One tool call visible in a Run's progress view.
 - enum `ChannelToolState` — A tool's current state in a progress view.
 - struct `Child` — A child of this Session, by the facts that change only at moments its parent sees.
-- struct `CodeProvenance` — Where a generation's code came from; settings-only generations follow their code generation.
-- enum `CodeSource` — How a generation's code entered the registry.
+- struct `CodeProvenance` — Where code came from; settings-only generations follow the code they reuse.
+- enum `CodeSource` — How code entered the registry.
 - struct `Commit` — An atomic append of Log facts, Inbox consumption and cross-Session inputs.
 - enum `CommitOutcome` — Result of checking and committing a Session owner's transaction.
 - enum `CommitRejection` — A normal tool precondition failure, distinct from a storage failure.
@@ -91,12 +92,12 @@ Session execution through explicit ports.
 - enum `LoadError` — Why a component cannot be loaded, attributed to its code or to the settings it was given.
 - struct `Loaded` — Exports returned by loading a component. Each invocation owns its own runtime state.
 - struct `LoadedComposer` — A composer's option declaration and invocation, loaded from the same content.
-- struct `LoadedTools` — Tool declarations are evaluated once with the generation's accepted configuration.
+- struct `LoadedTools` — Tool declarations are evaluated once with the code's accepted configuration.
 - enum `Location` — Where transport alone writes a credential value.
 - enum `Need` — A use's interface and behavior requirements, shared by wiring checks and real probes.
-- struct `NewSession` — A Session created together with the input that first reaches it.
-- enum `NewSessionOrigin` — Origin fixed when a Session is created.
+- struct `NewSession` — A root Session requested together with the input that first reaches it.
 - struct `NodeRecord` — Persistent node identity and recovery policy.
+- struct `NodeState` — This node's references and observations; another node keeps its own.
 - struct `OfferedMemories` — The memories offered for one Round, and what could not be offered.
 - struct `Overflowed` — A plan its target turned away as too large, and what the service said about it.
 - struct `Placement` — One credential recipient and the location populated for that recipient.
@@ -111,7 +112,7 @@ Session execution through explicit ports.
 - struct `ProviderRequest` — A canonical model request. Session requests resolve a frozen, recorded plan; registry probes contain only fixed validation content.
 - struct `Question` — Instructions and the allowed answer shape for one independent judgment.
 - enum `QuestionKind` — A predicate, unordered alternatives, or score levels ordered from low to high.
-- struct `Recording` — Where a Provider records the responses it decodes, under the generation that decodes them.
+- struct `Recording` — Where a Provider records the responses it decodes, under the code that decodes them.
 - enum `Referrer` — What in the configuration refers to a plugin name.
 - struct `Registered` — The result of one accepted registration, with the evidence gathered before acceptance.
 - struct `RegisteredIntent` — Only the facts needed to compare and prepare new intent.
@@ -120,12 +121,13 @@ Session execution through explicit ports.
 - struct `RegistrationBase` — An accepted history position always has a complete configuration.
 - struct `RegistrationDetails` — A bounded description of one accepted registration, without unrelated history.
 - struct `RegistrationRequest` — One intentional change. All supplied parts are accepted or rejected together.
-- struct `RegistrationWrite` — The sole committer assigns identities before handing a complete write to the store.
+- struct `RegistrationWrite` — The sole committer derives identities before handing a complete write to the store.
 - struct `Registry` — Routing is published only after the durable mutation commits.
 - struct `RegistryDeps` — Durable registry dependencies assembled by the application.
 - enum `RegistryError` — An explicit registry operation could not complete.
-- struct `RegistryState` — Durable facts; compiled code and admission are projections of this history.
+- struct `RegistryState` — Durable facts; compiled code and admission are projections of them.
 - struct `RegistryStatus` — Plugin and configuration facts sampled under the same committer.
+- struct `Replaced` — The references one registration replaced on this node, so the owner can restore them here.
 - struct `ReplyModel` — A profile's first reply model, where its next request goes unless that model fails.
 - struct `ReplyTarget` — The reply model the kernel selected, and why earlier candidates were passed over.
 - struct `RewindScope` — The paths a rewind between two accepted states can address, decided once for every caller.
@@ -136,14 +138,14 @@ Session execution through explicit ports.
 - enum `SafeMode` — The reason for the Round's fixed recovery mode.
 - enum `ScheduleError` — Schedule validation or persistence failure.
 - struct `Scheduled` — An active schedule with its derived next occurrence, for tools and administration.
-- struct `Schedules` — Commands to the sole owner of durable schedules.
 - enum `ScopeError` — A requested rewind that the scope cannot address.
-- struct `SelectedGeneration` — A generation a registration selected, as it stands now.
+- struct `SelectedCode` — Code a registration selected, as it stands now on this node.
 - struct `SessionDelivery` — One input handed from a Session owner to another Session's Inbox.
 - enum `SessionDeliveryKind` — Meaning of a cross-Session write within its owning Session's commit.
 - enum `SessionLookupError` — Why a Session name or ID given by the owner did not resolve to a Session to act on.
 - struct `SessionOverview` — One Session as its owner reads it, from its actor, its Log and the running configuration.
 - struct `SessionStatus` — Live execution status, separate from durable Session facts.
+- struct `SessionViews` — One Session's views, from the one its Rounds read now to its effective view.
 - struct `SettingsError` — A configuration error attributed to the table that owns it.
 - enum `Standing` — How the running layer of one plugin stands against its registered layer.
 - struct `Status` — Current node and Session execution state.
@@ -160,7 +162,7 @@ Session execution through explicit ports.
 - enum `Verdict` — One completed invocation's verdict, before caller-specific result handling.
 - struct `View` — The one published snapshot of routing and registered configuration.
 - trait `Channel` — Opens accounts through one loaded, pure protocol mapper.
-- trait `ChannelAdapter` — One identified account, using the same generation until it is stopped.
+- trait `ChannelAdapter` — One identified account, using the same mapper code until it is stopped.
 - trait `Clock` — Time boundary used for reminders and observation, never Log ordering.
 - trait `Composer` — Pure policy boundary: identical inputs must produce identical plans.
 - trait `ContextSource` — Supplies one owner's facts for a Round, in that owner's type; never called in safe mode.
@@ -209,6 +211,7 @@ pub enum Accepted {
     New,
     Duplicate,
     Archived,
+    Inactive,
 }
 ```
 
@@ -217,6 +220,12 @@ Whether an Event was newly accepted.
 - `New` — Accepted for the first time.
 - `Duplicate` — The Event ID was already accepted.
 - `Archived` — The target Session is archived and accepts no input.
+- `Inactive` — It names a schedule that is not active in the target Session's effective view.
+
+  That is a reminder or an owner's cancel of a schedule that is cancelled, of a one-time
+  schedule that has reminded already, or of none the Session created.
+
+  The commands and reminders still in the Inbox count.
 
 Implements:
 
@@ -228,23 +237,57 @@ impl Eq for Accepted
 impl PartialEq for Accepted
 ```
 
+## struct `AcceptedIntent`
+
+`src/ports/store/registry.rs`
+
+```rust
+pub struct AcceptedIntent {
+    pub registrations: std::collections::BTreeMap<RegistrationId, RegistrationRecord>,
+    pub generations: std::collections::BTreeMap<GenerationId, GenerationRecord>,
+    pub configurations: std::collections::BTreeMap<RegistrationId, ConfigGeneration>,
+}
+```
+
+Accepted changes and the content they brought; identities derive from registrations, so
+every node agrees on them.
+
+- `registrations` — Accepted changes in structural order.
+- `generations` — Immutable plugin content, by the registration that brought it.
+- `configurations` — Immutable configuration content, by the registration that brought it.
+
+Implements:
+
+```rust
+impl Clone for AcceptedIntent
+impl Default for AcceptedIntent
+```
+
 ## struct `Activation`
 
 `src/registry/intent.rs`
 
 ```rust
 pub struct Activation {
-    pub generation: GenerationRecord,
+    pub code: CodeRef,
     pub registration: Option<RegistrationId>,
-    pub code: CodeProvenance,
+    pub artifact: ContentHash,
+    pub settings: PluginSettings,
+    pub origin: Option<Origin>,
+    pub health: Option<Health>,
+    pub provenance: CodeProvenance,
 }
 ```
 
-One selected generation and where it came from; the running and registered layers share it.
+One selected code and where it came from; the running and registered layers share it.
 
-- `generation` — Selected generation and its current outcome.
+- `code` — The selected code: a generation, or factory code with empty settings.
 - `registration` — Registration that selected it; absent for the host's factory default.
-- `code` — Where the generation's code came from.
+- `artifact` — The component bytes it runs.
+- `settings` — The settings it runs with; factory code runs with empty settings.
+- `origin` — What the generation brought, absent for factory code.
+- `health` — Its standing on this node, absent for factory code, which is never on trial.
+- `provenance` — Where its code came from.
 
 Implements:
 
@@ -260,15 +303,15 @@ impl Serialize for Activation
 ```rust
 pub struct ActivationWrite {
     pub plugins: Vec<PluginRecord>,
-    pub configuration: Option<GenerationId>,
+    pub configuration: Option<RegistrationId>,
     pub failed: Vec<(GenerationId, Failure)>,
     pub event: Option<Event>,
 }
 ```
 
-Mechanical recovery moves references; it never creates new intent.
+Mechanical recovery moves this node's references; it never creates new intent.
 
-- `plugins` — Final runtime references for affected identities.
+- `plugins` — Final references for affected identities.
 - `configuration` — Configuration to activate, or leave unchanged when absent.
 - `failed` — Attributable failures observed while recovering.
 - `event` — Optional Session input committed with automatic recovery.
@@ -287,17 +330,17 @@ impl Default for ActivationWrite
 ```rust
 pub struct Active<'a> {
     pub name: &'a PluginName,
-    pub generation: GenerationId,
-    pub code: CodeSource,
+    pub code: &'a CodeRef,
+    pub source: CodeSource,
     pub loaded: Result<&'a crate::Loaded, &'a [Cause]>,
 }
 ```
 
-The generation that runs under one name in ordinary operation.
+The code that runs under one name in ordinary operation.
 
 - `name` — Routing name.
-- `generation` — The running generation.
-- `code` — How its code entered the registry.
+- `code` — The running code.
+- `source` — How its code entered the registry.
 - `loaded` — What it declared when it loaded, or why this host cannot serve it.
 
 ## struct `ActiveConfig`
@@ -306,7 +349,7 @@ The generation that runs under one name in ordinary operation.
 
 ```rust
 pub struct ActiveConfig {
-    pub generation: GenerationId,
+    pub registration: RegistrationId,
     pub document: serde_json::Value,
     pub kernel: crate::KernelSettings,
     /* private fields */
@@ -318,7 +361,7 @@ The active configuration generation: registered content plus the declarations de
 The declarations are those the current host derives. They are private to the registry, so only
 the registry builds one, from a single evaluation, and the parts cannot drift apart.
 
-- `generation` — Active configuration generation.
+- `registration` — Registration that brought the active configuration, which is its identity.
 - `document` — Registered document; never read from the intent file during use.
 - `kernel` — Parsed kernel-owned tables.
 
@@ -541,7 +584,7 @@ A failure attributed to the part of the intent it concerns.
   - `plugin` — Plugin whose candidate failed.
   - `candidate` — What the candidate changes.
   - `failure` — Failure returned by the probe.
-- `NotLoaded` — The selected generation is not loaded on this host.
+- `NotLoaded` — The selected code is not loaded on this host.
   - `plugin` — Plugin without loaded code.
 - `Environment` — The component loads but lacks a requirement from its environment.
   - `plugin` — Plugin missing the requirement.
@@ -563,9 +606,9 @@ A failure attributed to the part of the intent it concerns.
   - `target` — Configuration entry named by that consumer.
   - `failure` — Interface check or real call failure.
 - `Table` — A configuration table cannot be interpreted.
-- `ProfileInUse` — Removing a profile would strand the Sessions that use it.
+- `ProfileInUse` — Removing a profile would strand the Sessions that use it, now or from a coming Round.
   - `profile` — Profile missing from the configuration.
-  - `sessions` — Names of the Sessions using it.
+  - `sessions` — Names of the Sessions that use it, or whose commands not yet consumed select it.
 - `SettingsWithoutPlugin` — Settings name a plugin that this registration does not have.
   - `plugin` — Name in the settings table.
 - `SettingsWithoutCode` — Settings changed for a plugin with no running code to pair them with.
@@ -1254,21 +1297,20 @@ impl Debug for Child
 
 ```rust
 pub struct CodeProvenance {
-    pub generation: GenerationId,
+    pub code: CodeRef,
     pub source: CodeSource,
 }
 ```
 
-Where a generation's code came from; settings-only generations follow their code generation.
+Where code came from; settings-only generations follow the code they reuse.
 
-- `generation` — Generation that supplied the code.
+- `code` — The code that supplied the bytes: a generation or factory code.
 - `source` — How that code entered the registry.
 
 Implements:
 
 ```rust
 impl Clone for CodeProvenance
-impl Copy for CodeProvenance
 impl Eq for CodeProvenance
 impl PartialEq for CodeProvenance
 impl Serialize for CodeProvenance
@@ -1288,7 +1330,7 @@ pub enum CodeSource {
 }
 ```
 
-How a generation's code entered the registry.
+How code entered the registry.
 
 - `Factory` — Code shipped with this host, registered or not.
 - `Directory` — A registered source directory.
@@ -1568,7 +1610,7 @@ pub struct ComposerSettings {
 A profile's selected composer and its invocation options.
 
 - `plugin` — Registered name of the plugin exporting composition.
-- `options` — Options checked against the generation selected for each composition.
+- `options` — Options checked against the code selected for each composition.
 
 Implements:
 
@@ -1669,8 +1711,8 @@ impl Debug for CompositionPlan
 
 ```rust
 pub struct ConfigStatus {
-    pub running: ConfigurationRef,
-    pub registered: ConfigurationRef,
+    pub running: RegistrationId,
+    pub registered: RegistrationId,
     pub invalid: Vec<crate::SettingsError>,
     pub unavailable_uses: Vec<UnservedUse>,
 }
@@ -1678,8 +1720,8 @@ pub struct ConfigStatus {
 
 Configuration is one intent document; a rollback changes only its active reference.
 
-- `running` — Running configuration.
-- `registered` — Configuration selected by the latest registration.
+- `running` — Registration of the running configuration.
+- `registered` — Registration of the configuration the latest registrations selected.
 - `invalid` — Host tables which the current host cannot interpret.
 - `unavailable_uses` — Uses which cannot currently be served.
 
@@ -2077,15 +2119,15 @@ impl Clone for Endpoints
 ```rust
 pub struct Export<T: ?Sized> {
     pub plugin: PluginId,
-    pub generation: GenerationId,
+    pub code: CodeRef,
     pub adapter: std::sync::Arc<T>,
 }
 ```
 
 An invocation's immutable association between code and registry identity.
 
-- `plugin` — Plugin owning the generation.
-- `generation` — Exact generation used for this invocation.
+- `plugin` — Plugin owning the code.
+- `code` — Exact code used for this invocation: a generation or factory code.
 - `adapter` — Compiled adapter retained until this invocation ends.
 
 ## struct `Exports`
@@ -2099,14 +2141,6 @@ pub struct Exports {
 ```
 
 Derived routing view. Holding it does not prevent the registry from publishing a new view.
-
-### `Exports::plugin_of`
-
-```rust
-pub fn plugin_of(&self, generation: GenerationId) -> Option<PluginId>
-```
-
-Look up any recorded generation, including failed or unloaded history.
 
 ### `Exports::channel`
 
@@ -2148,7 +2182,7 @@ pub fn composer(&self, settings: &ComposerSettings, safe_mode: bool) -> Result<B
 
 Select the current composer and normalize its profile options in one binding step.
 
-Safe mode always uses the factory generation of the host's composer with empty options.
+Safe mode always uses the host's factory composer code with empty options.
 
 ### `Exports::active`
 
@@ -2156,7 +2190,7 @@ Safe mode always uses the factory generation of the host's composer with empty o
 pub fn active(&self) -> impl Iterator<Item = Active<'_>>
 ```
 
-The generation that runs under each name in ordinary operation, in name order.
+The code that runs under each name in ordinary operation, in name order.
 
 ## struct `FactoryPlugin`
 
@@ -2189,7 +2223,7 @@ impl Clone for FactoryPlugin
 ```rust
 pub struct FactoryStatus {
     pub name: PluginName,
-    pub generation: GenerationId,
+    pub code: CodeRef,
     pub artifact: ContentHash,
     pub follow: bool,
 }
@@ -2198,7 +2232,7 @@ pub struct FactoryStatus {
 Current host-owned recovery code and whether registered intent needs to follow it.
 
 - `name` — Name reserved by the host.
-- `generation` — Recorded embedded code.
+- `code` — This host's factory code.
 - `artifact` — Content address of the embedded code.
 - `follow` — Registered intent follows factory code and differs from this host's implementation.
 
@@ -2288,8 +2322,8 @@ impl Serialize for HeaderPlacement
 pub struct Inspection {
     pub attempt: AttemptId,
     pub purpose: AttemptPurpose,
-    pub composer: GenerationId,
-    pub provider: GenerationId,
+    pub composer: CodeRef,
+    pub provider: CodeRef,
     pub settings: ProviderSettings,
     pub request: crate::ProviderRequest<Image>,
     pub plan: ContextPlan,
@@ -2301,8 +2335,8 @@ An Attempt reconstructed exclusively from its recorded plan and Log prefix.
 
 - `attempt` — Recorded Attempt identity.
 - `purpose` — Reply or compaction.
-- `composer` — Composer generation which produced the frozen plan.
-- `provider` — Provider generation to which the recorded request was bound.
+- `composer` — Composer code which produced the frozen plan.
+- `provider` — Provider code to which the recorded request was bound.
 - `settings` — Recorded invocation parameters, excluding the credential itself.
 - `request` — Exact canonical request at this Attempt's Log position.
 - `plan` — Frozen plan, including each inline message's sources and all recorded omissions.
@@ -2440,6 +2474,68 @@ Take the conversation back to a recorded position, or its start when `to` is abs
 
 Like `submit`, a repeated event ID is accepted once.
 
+### `Kernel::set_working_dir`
+
+`src/kernel/input.rs`
+
+```rust
+pub async fn set_working_dir(&self, session: SessionId, path: std::path::PathBuf) -> Result<WorkingDir, KernelError>
+```
+
+Point the Session at `path` on this node from its next Round, without checking it.
+
+It is a command into its Inbox, consumed at the next Round boundary, at once while the
+Session is idle, and once it runs again if it has stopped.
+
+### `Kernel::set_profile`
+
+`src/kernel/input.rs`
+
+```rust
+pub async fn set_profile(&self, session: SessionId, profile: &ProfileName) -> Result<(), KernelError>
+```
+
+Select a profile from the Session's next Round: a command into its Inbox, accepted only
+while the configuration defines the profile.
+
+### `Kernel::schedules`
+
+`src/kernel/input.rs`
+
+```rust
+pub async fn schedules(&self, session: Option<SessionId>) -> Result<Vec<Scheduled>, KernelError>
+```
+
+The active schedules of every unarchived Session, or of one, in due order.
+
+They are the effective view: an accepted cancel or reminder counts before its Session
+consumes it.
+
+### `Kernel::cancel_schedule`
+
+`src/kernel/input.rs`
+
+```rust
+pub async fn cancel_schedule(&self, schedule: ScheduleId) -> Result<bool, KernelError>
+```
+
+Stop an active schedule: a command into the Inbox of the Session it belongs to.
+
+No reminder is written once the command is accepted; the Session records the cancel at
+its next Round boundary, at once while idle, and once it runs again if it has stopped.
+Returns false when no unarchived Session has the schedule active when the command would be
+written.
+
+### `Kernel::status`
+
+`src/kernel/input.rs`
+
+```rust
+pub async fn status(&self) -> Result<Status, KernelError>
+```
+
+Inspect live state without involving the model.
+
 ### `Kernel::accept`
 
 `src/kernel/input.rs`
@@ -2452,9 +2548,10 @@ Accept inputs and connection progress before waking the affected Session owners.
 
 A Session the connection creates with this acceptance starts once it is committed. An
 input to an archived Session is not written and its result says so; the connection
-progress commits all the same. A backtrack must point at a recorded position other than a
-command; a newly accepted backtrack or halt signals the Session's current Run, which stops
-at its next boundary.
+progress commits all the same. A Session whose actor stopped takes only the commands
+acting on itself, and fails anything else with `SessionStopped`. A backtrack must point at
+a recorded position other than a command; a newly accepted backtrack or halt signals the
+Session's current Run, which stops at its next boundary.
 
 ### `Kernel::can_request_compaction`
 
@@ -2605,30 +2702,6 @@ pub async fn set_safe_mode(&self, enabled: bool) -> Result<(), KernelError>
 
 Change the policy observed at the next Round boundary.
 
-### `Kernel::set_working_dir`
-
-```rust
-pub async fn set_working_dir(&self, session: SessionId, path: std::path::PathBuf) -> Result<WorkingDir, KernelError>
-```
-
-Point the Session at `path` on this node from its next Round, without checking the directory.
-
-### `Kernel::set_profile`
-
-```rust
-pub async fn set_profile(&self, session: SessionId, profile: &ProfileName) -> Result<(), KernelError>
-```
-
-Persist a profile choice; the current Round keeps its sampled policy.
-
-### `Kernel::status`
-
-```rust
-pub async fn status(&self) -> Result<Status, KernelError>
-```
-
-Inspect live state without involving the model.
-
 ### `Kernel::sessions`
 
 ```rust
@@ -2660,14 +2733,6 @@ pub fn registry(&self) -> &Arc<Registry>
 ```
 
 Plugin commands share the registry used by completion and embedding callers.
-
-### `Kernel::schedules`
-
-```rust
-pub fn schedules(&self) -> Schedules
-```
-
-Commands to the Scheduler, shared by CLI and model tools.
 
 ### `Kernel::shutdown`
 
@@ -2754,7 +2819,7 @@ pub enum KernelError {
 Public command failure; Round failures are recorded in the Log instead.
 
 - `Store` — A durable operation failed.
-- `Schedule` — A schedule command failed.
+- `Schedule` — Schedules could not be read back into occurrences.
 - `Registry` — A registry operation failed.
 - `Config` — Invalid composition-root input.
 - `ShuttingDown` — New owners cannot be registered after shutdown starts.
@@ -2950,12 +3015,12 @@ pub struct Loaded {
 Exports returned by loading a component. Each invocation owns its own runtime state.
 
 - `summary` — Adapter-provided description, not a plugin identity.
-- `config_schema` — Plugin-owned configuration documentation, retained with the loaded generation.
+- `config_schema` — Plugin-owned configuration documentation, retained with the loaded code.
 - `credentials` — Credential declarations used by transport, wiring and generated documentation.
-- `channel_origins` — Additional network origins declared by the channel mapper, fixed with its generation.
+- `channel_origins` — Additional network origins declared by the channel mapper, fixed with its code.
 - `unavailable` — A missing environment requirement; the code still loads and retains its health.
 - `lifecycle` — Self-check required before a deployment is admitted.
-- `composer` — Context policy and its profile options, fixed with the loaded generation.
+- `composer` — Context policy and its profile options, fixed with the loaded code.
 - `channel` — Messaging protocol mapper when supplied by the component.
 - `completion` — Completion interface when supplied by the component.
 - `embedding` — Embedding interface when supplied by the component.
@@ -2981,7 +3046,7 @@ pub struct LoadedComposer {
 
 A composer's option declaration and invocation, loaded from the same content.
 
-- `schema` — Profile options accepted by this generation.
+- `schema` — Profile options accepted by this code.
 - `adapter` — Writes requests from the host's fixed facts.
 
 Implements:
@@ -3001,9 +3066,9 @@ pub struct LoadedTools {
 }
 ```
 
-Tool declarations are evaluated once with the generation's accepted configuration.
+Tool declarations are evaluated once with the code's accepted configuration.
 
-- `specs` — Model-facing definitions fixed with this generation.
+- `specs` — Model-facing definitions fixed with this code.
 - `adapter` — Executes a tool with the definition supplied by its caller.
 
 Implements:
@@ -3082,55 +3147,25 @@ pub struct NewSession {
     pub id: SessionId,
     pub name: SessionName,
     pub profile: ProfileName,
-    pub origin: NewSessionOrigin,
     pub created_at: DateTime<Utc>,
 }
 ```
 
-A Session created together with the input that first reaches it.
+A root Session requested together with the input that first reaches it.
 
-It starts bound to this node at epoch one; its origin determines its directory and name policy.
+The root directory, the authority over root names, gives an occupied name a numeric suffix
+and records the creation; the Session starts here at epoch one in this node's default
+working directory.
 
 - `id` — Identity chosen by the creator, which also records it in its own state.
-- `name` — Full validated name; its origin determines how occupied names are handled.
+- `name` — Requested root name.
 - `profile` — Registered profile the Session starts with.
-- `origin` — Root or child creation facts.
 - `created_at` — Creation time for display.
 
 Implements:
 
 ```rust
 impl Clone for NewSession
-```
-
-## enum `NewSessionOrigin`
-
-`src/ports/store.rs`
-
-```rust
-pub enum NewSessionOrigin {
-    Root,
-    Child {
-        parent: SessionId,
-        working_dir: WorkingDir,
-    },
-}
-```
-
-Origin fixed when a Session is created.
-
-- `Root` — A root uses the node's default directory; an occupied name gets a numeric suffix.
-- `Child` — A child uses its parent's identity and an explicitly resolved working directory.
-  - `parent` — Fixed parent identity.
-  - `working_dir` — Directory supplied by the parent, without availability checks.
-
-Implements:
-
-```rust
-impl Clone for NewSessionOrigin
-impl Debug for NewSessionOrigin
-impl Eq for NewSessionOrigin
-impl PartialEq for NewSessionOrigin
 ```
 
 ## struct `NodeRecord`
@@ -3154,6 +3189,33 @@ Implements:
 ```rust
 impl Clone for NodeRecord
 impl Debug for NodeRecord
+```
+
+## struct `NodeState`
+
+`src/ports/store/registry.rs`
+
+```rust
+pub struct NodeState {
+    pub plugins: std::collections::BTreeMap<PluginId, PluginRecord>,
+    pub health: std::collections::BTreeMap<GenerationId, Health>,
+    pub configuration: Option<RegistrationId>,
+    pub replaced: std::collections::BTreeMap<RegistrationId, Replaced>,
+}
+```
+
+This node's references and observations; another node keeps its own.
+
+- `plugins` — Each plugin's name, current code and rollback target on this node.
+- `health` — Each generation's trial, health or failure on this node.
+- `configuration` — Registration of the configuration that runs, absent only before initial registration.
+- `replaced` — What each registration replaced on this node, read by the owner's rollback.
+
+Implements:
+
+```rust
+impl Clone for NodeState
+impl Default for NodeState
 ```
 
 ## struct `OfferedMemories`
@@ -3298,13 +3360,13 @@ pub enum PluginChangeKind {
     },
     Removed,
     Code {
-        generation: Box<SelectedGeneration>,
+        selected: Box<SelectedCode>,
     },
     Factory {
-        generation: Box<SelectedGeneration>,
+        selected: Box<SelectedCode>,
     },
     Settings {
-        generation: Box<SelectedGeneration>,
+        selected: Box<SelectedCode>,
     },
 }
 ```
@@ -3316,19 +3378,19 @@ Accepted changes to one plugin; each variant carries only its own facts.
   - `from` — Name before this registration.
 - `Removed` — The accepted name was removed.
 - `Code` — Source selected new code.
-  - `generation` — Selected generation and its current outcome.
+  - `selected` — Selected code and how it stands now.
 - `Factory` — The host's factory code was selected.
-  - `generation` — Selected generation and its current outcome.
-- `Settings` — New settings selected a generation using existing code.
-  - `generation` — Selected generation and its current outcome.
+  - `selected` — Selected code and how it stands now.
+- `Settings` — New settings were paired with existing code.
+  - `selected` — Selected code and how it stands now.
 
-### `PluginChangeKind::generation`
+### `PluginChangeKind::selected`
 
 ```rust
-pub fn generation(&self) -> Option<&SelectedGeneration>
+pub fn selected(&self) -> Option<&SelectedCode>
 ```
 
-Generation selected by this change, including a reused factory generation.
+Code selected by this change, including factory code it followed.
 
 Implements:
 
@@ -3358,7 +3420,7 @@ What runs for one plugin, and how that differs from its registered intent.
 - `id` — Immutable plugin identity.
 - `name` — Its registered name, or the name it runs under after a registration removed it.
 - `running` — What runs now.
-- `rollback_target` — Retained healthy generation, before the embedded factory fallback.
+- `rollback_target` — Retained code to roll back to, before this host's factory code.
 - `summary` — Summary of the selected component.
 - `users` — Configured users of the running name.
 - `standing` — How what runs stands against the registered intent.
@@ -3561,14 +3623,14 @@ impl Debug for QuestionKind
 
 ```rust
 pub struct Recording {
-    pub generation: GenerationId,
+    pub code: CodeRef,
     pub store: std::sync::Arc<dyn Store>,
 }
 ```
 
-Where a Provider records the responses it decodes, under the generation that decodes them.
+Where a Provider records the responses it decodes, under the code that decodes them.
 
-- `generation` — The Provider generation that decodes the response.
+- `code` — The Provider code that decodes the response.
 - `store` — The store that keeps the response body and the mapping record.
 
 Implements:
@@ -3719,7 +3781,7 @@ An accepted name, plus the code choice and current host implementation available
 - `id` — Immutable plugin identity.
 - `named_by` — Registration that supplied this name; absent for a newly supplied factory name.
 - `code` — Last accepted code intent; absent for a factory name that has never registered one.
-- `activation` — Generation selected by the latest accepted activation, or this host's unregistered factory code.
+- `activation` — Code selected by the latest accepted activation, or this host's unregistered factory code.
 - `factory` — Host-owned code and its follow decision, when the name is reserved.
 
 ### `RegisteredPlugin::source`
@@ -3745,7 +3807,7 @@ impl Serialize for RegisteredPlugin
 pub struct RegisteredSource {
     pub intent: CodeIntent,
     pub registration: RegistrationId,
-    pub generation: GenerationId,
+    pub code: CodeRef,
     pub artifact: ContentHash,
 }
 ```
@@ -3753,8 +3815,8 @@ pub struct RegisteredSource {
 An explicitly registered code choice, independent of mechanical recovery.
 
 - `intent` — Directory or host factory code.
-- `registration` — Accepted activation, including reuse of an existing factory generation.
-- `generation` — Generation selected by that activation.
+- `registration` — Accepted activation, including following factory code.
+- `code` — Code selected by that activation.
 - `artifact` — Artifact used to compare newly built code.
 
 ### `RegisteredSource::source`
@@ -3860,15 +3922,17 @@ pub struct RegistrationWrite {
     pub generations: Vec<GenerationRecord>,
     pub configuration: Option<ConfigGeneration>,
     pub plugins: Vec<PluginRecord>,
+    pub replaced: Replaced,
 }
 ```
 
-The sole committer assigns identities before handing a complete write to the store.
+The sole committer derives identities before handing a complete write to the store.
 
-- `registration` — Accepted change, including the previous name references.
-- `generations` — Plugin generations created in this change.
+- `registration` — Accepted change.
+- `generations` — Plugin generations brought by this change; each starts on trial on this node.
 - `configuration` — A configuration to create and activate, when its intent changed.
-- `plugins` — Final runtime references for each affected identity.
+- `plugins` — Final references on this node for each affected identity.
+- `replaced` — What this change replaced on this node; the store checks it still runs.
 
 Implements:
 
@@ -3908,25 +3972,16 @@ pub fn lifeline(&self) -> &[String]
 
 The host's repair set, also used when validating profile tool restrictions.
 
-### `Registry::set_profile`
-
-`src/registry/configuration.rs`
-
-```rust
-pub async fn set_profile(&self, session: SessionId, profile: &ProfileName) -> Result<(), RegistryError>
-```
-
-Profile assignments share the registry's committer with configuration changes.
-
 ### `Registry::report`
 
 `src/registry/health.rs`
 
 ```rust
-pub async fn report(&self, generation: GenerationId, verdict: Verdict, session: Option<SessionId>) -> Result<(), RegistryError>
+pub async fn report(&self, code: &CodeRef, verdict: Verdict, session: Option<SessionId>) -> Result<(), RegistryError>
 ```
 
-Only the current trial's attributable failures change health; late reports are harmless.
+Only the current trial's attributable failures change health; late reports, and reports
+about factory code, which is never on trial, are harmless.
 
 ### `Registry::history`
 
@@ -4082,7 +4137,7 @@ An explicit registry operation could not complete.
 - `EmptyRequest` — A registration request supplied no change.
 - `NotFactory` — Factory intent was requested for a name the host does not reserve.
 - `FactoryRemoval` — Removal was requested for a host-reserved name; factory intent replaces source instead.
-- `UnknownGeneration` — The requested number is absent from both histories.
+- `UnknownGeneration` — No generation has this identity.
 - `UnknownRegistration` — No accepted change has this structural position.
   - `registration` — Requested position.
   - `latest` — Latest accepted position.
@@ -4091,7 +4146,7 @@ An explicit registry operation could not complete.
 - `Bootstrap` — No initial document is available for the first configuration registration.
 - `TableOwner` — The host composition assigns a table to more than one owner.
 - `NoRollbackTarget` — No accepted change remains to roll back.
-- `Conflict` — The active generation or target health changed while the target was prepared.
+- `Conflict` — The active code or target health changed while the target was prepared.
 
 Implements:
 
@@ -4109,21 +4164,15 @@ impl From<StoreError> for RegistryError
 
 ```rust
 pub struct RegistryState {
-    pub registrations: std::collections::BTreeMap<RegistrationId, RegistrationRecord>,
-    pub plugins: std::collections::BTreeMap<PluginId, PluginRecord>,
-    pub generations: std::collections::BTreeMap<GenerationId, GenerationRecord>,
-    pub config_generations: std::collections::BTreeMap<GenerationId, ConfigGeneration>,
-    pub active_config: Option<GenerationId>,
+    pub intent: AcceptedIntent,
+    pub node: NodeState,
 }
 ```
 
-Durable facts; compiled code and admission are projections of this history.
+Durable facts; compiled code and admission are projections of them.
 
-- `registrations` — Accepted changes in structural order.
-- `plugins` — Every installation, including stopped and removed identities.
-- `generations` — Immutable plugin content and its observed health.
-- `config_generations` — Immutable configuration content.
-- `active_config` — Current configuration, absent only before initial registration.
+- `intent` — What was registered: the same on every node.
+- `node` — What runs on this node and how it fared.
 
 Implements:
 
@@ -4151,6 +4200,33 @@ Plugin and configuration facts sampled under the same committer.
 - `plugins` — Plugins that run or are registered.
 - `config` — Current configuration and its validity.
 - `recent_registrations` — Recent registrations from the same locked observation as the current references.
+
+## struct `Replaced`
+
+`src/ports/store/registry.rs`
+
+```rust
+pub struct Replaced {
+    pub names: std::collections::BTreeMap<PluginId, Option<RegistrationId>>,
+    pub configuration: Option<RegistrationId>,
+}
+```
+
+The references one registration replaced on this node, so the owner can restore them here.
+
+- `names` — For each plugin whose name it wrote: the registration whose name ran before, absent for a
+  plugin that had none.
+- `configuration` — The configuration that ran before, when it activated one.
+
+Implements:
+
+```rust
+impl Clone for Replaced
+impl Debug for Replaced
+impl Default for Replaced
+impl Eq for Replaced
+impl PartialEq for Replaced
+```
 
 ## struct `ReplyModel`
 
@@ -4281,7 +4357,7 @@ impl Default for RewindSelection
 pub struct Rollback {
     pub registration: RegistrationId,
     pub plugins: Vec<PluginRecord>,
-    pub configuration: Option<GenerationId>,
+    pub configuration: Option<RegistrationId>,
     pub warnings: Vec<String>,
 }
 ```
@@ -4363,13 +4439,13 @@ pub enum Running {
 
 The running layer of one plugin.
 
-- `Stopped` — No generation runs under a name.
-- `Serving` — This host serves the selected generation.
+- `Stopped` — Nothing runs under a name.
+- `Serving` — This host serves the selected code.
   - `name` — Routing name.
-  - `activation` — Selected generation and its provenance.
-- `Unavailable` — A generation is selected, but this host cannot serve it.
+  - `activation` — Selected code and its provenance.
+- `Unavailable` — Code is selected, but this host cannot serve it.
   - `name` — Routing name.
-  - `activation` — Selected generation and its provenance.
+  - `activation` — Selected code and its provenance.
   - `causes` — Why this host cannot serve it.
 
 ### `Running::name`
@@ -4386,7 +4462,7 @@ The routing name, absent when nothing runs.
 pub fn activation(&self) -> Option<&Activation>
 ```
 
-The selected generation, whether or not this host can serve it.
+The selected code, whether or not this host can serve it.
 
 Implements:
 
@@ -4423,8 +4499,6 @@ impl Clone for SafeMode
 ```rust
 pub enum ScheduleError {
     EmptyMessage,
-    UnknownSession(SessionId),
-    SessionArchived(SessionId),
     InvalidCron(String),
     NoOccurrenceAfter(DateTime<FixedOffset>),
     TooFrequent,
@@ -4433,23 +4507,19 @@ pub enum ScheduleError {
         source: Box<ScheduleError>,
     },
     Store(crate::StoreError),
-    Stopped(Option<String>),
 }
 ```
 
 Schedule validation or persistence failure.
 
 - `EmptyMessage` — A reminder must contain meaningful text.
-- `UnknownSession` — There is no such destination Session.
-- `SessionArchived` — An archived destination accepts no new reminders.
 - `InvalidCron` — Cron parsing or evaluation failed.
 - `NoOccurrenceAfter` — The rule has no occurrence after the supplied instant.
 - `TooFrequent` — A likely typo would wake the Agent too frequently.
-- `Restore` — A persisted schedule could not be restored.
+- `Restore` — A recorded schedule could not be read back into occurrences.
   - `id` — Schedule whose rule failed.
   - `source` — Parsing or occurrence failure.
 - `Store` — The durable authority failed.
-- `Stopped` — The owner has stopped, with its reported failure when one exists.
 
 Implements:
 
@@ -4475,7 +4545,7 @@ pub struct Scheduled {
 
 An active schedule with its derived next occurrence, for tools and administration.
 
-- `schedule` — Durable rule and last delivered occurrence.
+- `schedule` — The schedule as its Session's facts give it.
 - `next_due` — Next planned delivery in UTC; this value is not persisted.
 - `timezone` — Effective time zone for this view, including the owner's zone when implicit.
 
@@ -4493,48 +4563,6 @@ Implements:
 ```rust
 impl Clone for Scheduled
 impl Debug for Scheduled
-```
-
-## struct `Schedules`
-
-`src/scheduler.rs`
-
-```rust
-pub struct Schedules {
-    /* private fields */
-}
-```
-
-Commands to the sole owner of durable schedules.
-
-### `Schedules::create`
-
-```rust
-pub async fn create(&self, session: SessionId, rule: ScheduleRule, message: String) -> Result<Scheduled, ScheduleError>
-```
-
-Persist a schedule addressed to an existing Session.
-
-### `Schedules::list`
-
-```rust
-pub async fn list(&self, session: Option<SessionId>) -> Result<Vec<Scheduled>, ScheduleError>
-```
-
-List active schedules in due order, optionally limited to one Session.
-
-### `Schedules::cancel`
-
-```rust
-pub async fn cancel(&self, id: ScheduleId) -> Result<bool, ScheduleError>
-```
-
-Stop future occurrences. Events already in the Inbox are unaffected.
-
-Implements:
-
-```rust
-impl Clone for Schedules
 ```
 
 ## enum `ScopeError`
@@ -4559,27 +4587,29 @@ Implements:
 impl Debug for ScopeError
 ```
 
-## struct `SelectedGeneration`
+## struct `SelectedCode`
 
 `src/registry/history.rs`
 
 ```rust
-pub struct SelectedGeneration {
-    pub record: GenerationRecord,
+pub struct SelectedCode {
+    pub code: CodeRef,
+    pub health: Option<Health>,
     pub active: bool,
 }
 ```
 
-A generation a registration selected, as it stands now.
+Code a registration selected, as it stands now on this node.
 
-- `record` — The generation and its recorded outcome.
+- `code` — The generation it brought, or factory code it followed.
+- `health` — Its standing on this node, absent for factory code, which is never on trial.
 - `active` — Whether its plugin still runs it; a trial generation that does not was never promoted.
 
 Implements:
 
 ```rust
-impl Clone for SelectedGeneration
-impl Serialize for SelectedGeneration
+impl Clone for SelectedCode
+impl Serialize for SelectedCode
 ```
 
 ## struct `SessionDelivery`
@@ -4608,7 +4638,7 @@ pub enum SessionDeliveryKind {
     Message,
     Delegation {
         name: SessionName,
-        create: Option<Box<super::NewSession>>,
+        create: Option<Box<Creation>>,
         profile: Option<ProfileName>,
         working_dir: Option<WorkingDir>,
     },
@@ -4621,9 +4651,10 @@ Meaning of a cross-Session write within its owning Session's commit.
 - `Message` — A message's effect is delivery itself; rejection leaves the entire commit unwritten.
 - `Delegation` — A delegation's effect, with optional creation and assertions about an existing child.
   - `name` — Target child's full name.
-  - `create` — New child, absent when addressing an existing child.
-  - `profile` — Supplied profile must match an existing child's current profile.
-  - `working_dir` — Supplied directory must match an existing child's current directory.
+  - `create` — The new child's creation record, also in the parent's Log; absent when addressing an
+    existing child.
+  - `profile` — Supplied profile must match an existing child's effective profile.
+  - `working_dir` — Supplied directory must match an existing child's effective directory.
 
 ## enum `SessionLookupError`
 
@@ -4716,6 +4747,34 @@ Implements:
 
 ```rust
 impl Serialize for SessionStatus
+```
+
+## struct `SessionViews`
+
+`src/ports/store.rs`
+
+```rust
+pub struct SessionViews {
+    pub committed: SessionRecord,
+    pub ahead: Vec<SessionRecord>,
+}
+```
+
+One Session's views, from the one its Rounds read now to its effective view.
+
+- `committed` — The row its own Log and recorded facts give, which its Rounds and its descendants' Rounds
+  read.
+- `ahead` — The committed row after each pending Event in Inbox order, the last being the effective
+  view; empty when nothing is pending.
+
+  The actor consumes the commands acting on the Session in Inbox order, a prefix at a time,
+  so any of these may become its committed view.
+
+Implements:
+
+```rust
+impl Clone for SessionViews
+impl Debug for SessionViews
 ```
 
 ## struct `SettingsError`
@@ -4832,8 +4891,11 @@ pub enum StoreError {
         got: LogPos,
     },
     Inbox(String),
-    ScheduleNotActive(ScheduleId),
     UnknownSession(SessionId),
+    UnknownSchedule {
+        session: SessionId,
+        schedule: ScheduleId,
+    },
     Blob(ContentHash),
     Evidence(ContentHash),
     Plan {
@@ -4845,6 +4907,10 @@ pub enum StoreError {
     SchemaVersion {
         found: u32,
         expected: u32,
+    },
+    Migration {
+        from: u32,
+        reason: String,
     },
     Backend(String),
 }
@@ -4862,8 +4928,10 @@ A failed storage operation or commit precondition.
   - `expected` — Required next Log position.
   - `got` — Position supplied by the writer.
 - `Inbox` — Input consumption does not match accepted facts.
-- `ScheduleNotActive` — The scheduler's expected state no longer matches the authority.
 - `UnknownSession` — The target Session does not exist.
+- `UnknownSchedule` — A Session's facts name a schedule it never created.
+  - `session` — Session whose commit names the schedule.
+  - `schedule` — Schedule it never created.
 - `Blob` — Immutable bytes are missing or do not match their address.
 - `Evidence` — Recorded evidence is missing or does not match its address.
 - `Plan` — A plan or one of its storage dependencies is missing or fails content verification.
@@ -4874,6 +4942,9 @@ A failed storage operation or commit precondition.
 - `SchemaVersion` — The authority uses another schema version; opening it never deletes or migrates data.
   - `found` — Version recorded in the database.
   - `expected` — Version understood by this binary.
+- `Migration` — Upgrading the database from the previous version failed; it is left as it was.
+  - `from` — The version the database has.
+  - `reason` — What failed, and where the copy taken before the upgrade is.
 - `Backend` — The storage engine or filesystem operation failed.
 
 Implements:
@@ -4967,7 +5038,7 @@ impl Default for Transcript
 pub struct TranscriptItem {
     pub pos: LogPos,
     pub message: Message,
-    pub generation: Option<GenerationId>,
+    pub provider: Option<CodeRef>,
     pub event: Option<Event>,
 }
 ```
@@ -4976,7 +5047,7 @@ One canonical message and its immutable source.
 
 - `pos` — Position of the originating fact.
 - `message` — Canonical message used when resolving a plan reference.
-- `generation` — Provider generation of the producing Attempt, present only for Assistant messages.
+- `provider` — Provider code of the producing Attempt, present only for Assistant messages.
 - `event` — Consumed Inbox Event, present only for inputs; the composer narrates its circumstances.
 
 Implements:
@@ -4997,7 +5068,6 @@ pub enum UnitChange {
         change: PluginChangeKind,
     },
     Configuration {
-        generation: GenerationId,
         sections: Vec<String>,
     },
 }
@@ -5008,8 +5078,8 @@ One path's accepted change, named at the registration where it happened.
 - `Plugin` — An accepted plugin change under its name at this registration.
   - `name` — Name at the time of the change.
   - `change` — What changed for this plugin.
-- `Configuration` — Configuration sections changed under their declared ownership.
-  - `generation` — Configuration generation selected by this registration.
+- `Configuration` — Configuration sections changed under their declared ownership; the registration that
+  changes them is the configuration's identity.
   - `sections` — Changed sections at the granularity declared by their owners.
 
 ### `UnitChange::path`
@@ -5197,10 +5267,10 @@ Opens accounts through one loaded, pure protocol mapper.
 ### `Channel::open`
 
 ```rust
-async fn open(&self, settings: &ChannelSettings, generation: GenerationId, store: Arc<dyn Store>) -> Result<Arc<dyn ChannelAdapter>, ChannelCallError>
+async fn open(&self, settings: &ChannelSettings, code: CodeRef, store: Arc<dyn Store>) -> Result<Arc<dyn ChannelAdapter>, ChannelCallError>
 ```
 
-Bind transport settings and identify the account, retaining this generation for all calls.
+Bind transport settings and identify the account, recording this mapper code for all calls.
 
 ## trait `ChannelAdapter`
 
@@ -5210,7 +5280,7 @@ Bind transport settings and identify the account, retaining this generation for 
 pub trait ChannelAdapter: Send + Sync
 ```
 
-One identified account, using the same generation until it is stopped.
+One identified account, using the same mapper code until it is stopped.
 
 ### `ChannelAdapter::identity`
 
@@ -5226,7 +5296,7 @@ The stable account reached by this connection.
 fn pacing(&self) -> Option<ChannelPacingGap>
 ```
 
-The generation's declared gap before each send; absent sends each as soon as it is ready.
+The mapper's declared gap before each send; absent sends each as soon as it is ready.
 
 ### `ChannelAdapter::receive`
 
@@ -5363,7 +5433,7 @@ Pure policy boundary: identical inputs must produce identical plans.
 async fn compose(&self, options: &crate::ComposerOptions, input: &ComposeInput) -> Result<Composition, Failure>
 ```
 
-Select, order and budget content using options already checked against this generation.
+Select, order and budget content using options already checked against this code.
 
 ## trait `ContextSource`
 
@@ -5518,7 +5588,7 @@ Kernel-owned update, observed at the next Round boundary.
 async fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError>
 ```
 
-List existing Sessions.
+List existing Sessions in their effective view.
 
 ### `Store::session`
 
@@ -5526,7 +5596,38 @@ List existing Sessions.
 async fn session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError>
 ```
 
-Read the metadata sampled by the Session actor at each Round boundary.
+Read a Session's effective view: its committed row with its pending commands applied, read
+in one transaction.
+
+Readers outside the Session see it; the Session's actor and Rounds read the committed view.
+
+### `Store::committed_session`
+
+```rust
+async fn committed_session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError>
+```
+
+Read a Session's committed view, the row its own Log and recorded facts give; the actor
+reads it after consuming the commands acting on the Session.
+
+### `Store::committed_lineage`
+
+```rust
+async fn committed_lineage(&self, id: SessionId) -> Result<(SessionRecord, Vec<SessionRecord>), StoreError>
+```
+
+Read a Session's committed view and its ancestors', nearest first, in one transaction.
+
+It is what a Round samples, so its permissions narrow along one state of the tree.
+
+### `Store::unarchived_views`
+
+```rust
+async fn unarchived_views(&self) -> Result<Vec<SessionViews>, StoreError>
+```
+
+Every unarchived Session with each view its Rounds may read from now on, read in one
+transaction.
 
 ### `Store::session_by_name`
 
@@ -5534,7 +5635,7 @@ Read the metadata sampled by the Session actor at each Round boundary.
 async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError>
 ```
 
-Look up an unarchived Session by name without creating it.
+Look up an unarchived Session by name, in its effective view, without creating it.
 
 ### `Store::children`
 
@@ -5542,7 +5643,7 @@ Look up an unarchived Session by name without creating it.
 async fn children(&self, parent: SessionId) -> Result<Vec<SessionRecord>, StoreError>
 ```
 
-The unarchived Sessions this one delegated to, in creation order.
+The unarchived Sessions this one delegated to, in creation order and effective view.
 
 ### `Store::ensure_session`
 
@@ -5550,16 +5651,10 @@ The unarchived Sessions this one delegated to, in creation order.
 async fn ensure_session(&self, name: &SessionName, created_at: DateTime<Utc>) -> Result<SessionRecord, StoreError>
 ```
 
-Create if absent, with local binding at epoch one, the default profile and this node's
-default working directory.
+Create a root through the root directory if no unarchived Session has the name.
 
-### `Store::set_working_dir`
-
-```rust
-async fn set_working_dir(&self, id: SessionId, working_dir: &WorkingDir) -> Result<(), StoreError>
-```
-
-Persist the working directory for subsequent Rounds, without checking availability.
+It runs here at epoch one, with the default profile and this node's default working
+directory.
 
 ### `Store::halt_subtree`
 
@@ -5569,8 +5664,10 @@ async fn halt_subtree(&self, root: SessionId, source: EventSource, halt: Halt, a
 
 Atomically halt the unarchived subtree, optionally archiving it; returns it root first.
 
-The root receives `source`; descendants receive `Parent`. Each input carries `halt`. A root
-that is already archived writes nothing and returns no Sessions.
+The root receives `source`; descendants receive `Parent`. Each input carries `halt`. An
+archive records one control-plane fact for the root, from which its descendants are
+archived too, and releases their names at once. A root that is already archived writes
+nothing and returns no Sessions.
 
 ### `Store::log`
 
@@ -5684,47 +5781,16 @@ async fn pending(&self, session: SessionId) -> Result<Vec<Event>, StoreError>
 
 Read unconsumed inputs in acceptance order.
 
-### `Store::insert_schedule`
-
-```rust
-async fn insert_schedule(&self, schedule: &Schedule) -> Result<(), StoreError>
-```
-
-Scheduler-owned insertion of a new schedule, stored as given.
-
-### `Store::cancel_schedule`
-
-```rust
-async fn cancel_schedule(&self, id: ScheduleId) -> Result<bool, StoreError>
-```
-
-Scheduler-owned cancellation; return whether an active schedule changed.
-
 ### `Store::schedules`
 
 ```rust
-async fn schedules(&self, state: Option<ScheduleState>) -> Result<Vec<Schedule>, StoreError>
+async fn schedules(&self, session: Option<SessionId>) -> Result<Vec<Schedule>, StoreError>
 ```
 
-Read schedules, optionally filtered by state.
+The schedules of every unarchived Session, or of one, in their effective view.
 
-### `Store::fire_schedule`
-
-```rust
-async fn fire_schedule(&self, expected_last: Option<DateTime<Utc>>, done: bool, event: &Event) -> Result<Accepted, StoreError>
-```
-
-Advance an active Schedule from expected_last and accept its Event atomically.
-
-Mark it done when no occurrence remains; archived targets return `Archived` without writes.
-
-### `Store::set_profile`
-
-```rust
-async fn set_profile(&self, id: SessionId, profile: &ProfileName) -> Result<(), StoreError>
-```
-
-Select the profile under the registry committer, effective at the next Round.
+That is the committed rows with the owners' pending cancels and the pending reminders
+applied.
 
 ### `Store::registry`
 
@@ -5732,15 +5798,7 @@ Select the profile under the registry committer, effective at the next Round.
 async fn registry(&self) -> Result<RegistryState, StoreError>
 ```
 
-Read registration history and the references restored at startup.
-
-### `Store::record_factories`
-
-```rust
-async fn record_factories(&self, generations: &[GenerationRecord]) -> Result<(), StoreError>
-```
-
-Record embedded factory content without activating it or creating a registration.
+Read accepted intent and this node's references, restored at startup.
 
 ### `Store::register`
 
@@ -5748,7 +5806,7 @@ Record embedded factory content without activating it or creating a registration
 async fn register(&self, write: &RegistrationWrite) -> Result<(), StoreError>
 ```
 
-Atomically accept one registration, its content and its runtime references.
+Atomically accept one registration, its content and this node's references.
 
 ### `Store::promote`
 
@@ -5756,7 +5814,7 @@ Atomically accept one registration, its content and its runtime references.
 async fn promote(&self, generation: GenerationId) -> Result<(), StoreError>
 ```
 
-Promote an observed trial without changing its identity or rollback target.
+Record that a trial generation is healthy on this node, keeping its rollback target.
 
 ### `Store::activate`
 
@@ -5764,7 +5822,7 @@ Promote an observed trial without changing its identity or rollback target.
 async fn activate(&self, change: &ActivationWrite) -> Result<(), StoreError>
 ```
 
-Atomically move runtime references and record attributable failures and a notice.
+Atomically move this node's references and record attributable failures and a notice.
 
 ### `Store::retain_artifacts`
 

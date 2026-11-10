@@ -25,6 +25,7 @@ pub(crate) struct SessionDeps {
     pub shutdown: CancellationToken,
     pub subtrees: Arc<crate::subtree::Subtrees>,
     pub slots: Arc<crate::child_slots::ChildSlots>,
+    pub scheduler: Arc<crate::scheduler::SchedulerLink>,
 }
 
 pub(crate) struct SessionHandle {
@@ -109,7 +110,7 @@ impl SessionActor {
             self.session = self
                 .deps
                 .store
-                .session(self.session.id)
+                .committed_session(self.session.id)
                 .await?
                 .ok_or(crate::StoreError::UnknownSession(self.session.id))?;
             let pending = self.deps.store.pending(self.session.id).await?;
@@ -128,15 +129,12 @@ impl SessionActor {
                 }
                 continue;
             }
-            // Compaction requests are consumed between Runs on their own; the inputs before them
+            // Commands that leave the inputs are consumed on their own; the inputs before them
             // wait for the next Run.
-            if pending
-                .iter()
-                .any(|event| matches!(event.body, EventBody::Compact))
-            {
+            if pending.iter().any(|event| event.body.leaves_inputs()) {
                 let consumed = pending
                     .into_iter()
-                    .filter(|event| matches!(event.body, EventBody::Compact))
+                    .filter(|event| event.body.leaves_inputs())
                     .map(|event| EntryBody::EventConsumed { event })
                     .collect();
                 self.commit(consumed, None).await?;

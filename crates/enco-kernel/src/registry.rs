@@ -9,7 +9,7 @@ mod exports;
 mod factory;
 mod health;
 mod history;
-pub use history::{PluginChangeKind, RegistrationDetails, SelectedGeneration, UnitChange};
+pub use history::{PluginChangeKind, RegistrationDetails, SelectedCode, UnitChange};
 mod intent;
 mod probe;
 mod registration;
@@ -27,6 +27,7 @@ use crate::{
 use admission::users;
 pub use configuration::{PLUGIN_SETTINGS_TABLE, plugin_settings};
 use enco_core::*;
+pub(crate) use exports::Failed;
 pub use exports::{Active, BoundComposer, Export, Exports};
 pub use intent::{
     Activation, CodeProvenance, CodeSource, FactoryStatus, RegisteredIntent, RegisteredPlugin,
@@ -203,8 +204,8 @@ pub struct View {
 /// the registry builds one, from a single evaluation, and the parts cannot drift apart.
 #[derive(Clone)]
 pub struct ActiveConfig {
-    /// Active configuration generation.
-    pub generation: GenerationId,
+    /// Registration that brought the active configuration, which is its identity.
+    pub registration: RegistrationId,
     /// Registered document; never read from the intent file during use.
     pub document: serde_json::Value,
     /// Parsed kernel-owned tables.
@@ -218,18 +219,13 @@ pub struct ActiveConfig {
 }
 
 impl View {
-    /// The registered behavior a failure is recorded against: the active configuration and
-    /// plugin generations, in ascending order.
-    ///
-    /// Trial promotion leaves them unchanged.
-    pub(crate) fn active_generations(&self) -> Vec<GenerationId> {
-        let mut generations: Vec<_> = self
-            .exports
-            .active_generations()
-            .chain([self.config.generation])
-            .collect();
-        generations.sort_unstable();
-        generations
+    /// The registered behavior a failure is recorded against: the active configuration and each
+    /// running plugin's code. Trial promotion leaves it unchanged.
+    pub(crate) fn active_code(&self) -> ActiveCode {
+        ActiveCode {
+            configuration: self.config.registration,
+            plugins: self.exports.active_code(),
+        }
     }
 }
 
@@ -287,8 +283,8 @@ pub enum RegistryError {
     /// Removal was requested for a host-reserved name; factory intent replaces source instead.
     #[error("factory plugin {0} cannot be removed; register factory intent")]
     FactoryRemoval(PluginName),
-    /// The requested number is absent from both histories.
-    #[error("unknown generation {0}")]
+    /// No generation has this identity.
+    #[error("unknown generation: {0}")]
     UnknownGeneration(GenerationId),
     /// No accepted change has this structural position.
     #[error("unknown registration {registration} (latest: {latest})")]
@@ -313,7 +309,7 @@ pub enum RegistryError {
     /// No accepted change remains to roll back.
     #[error("no registration can be rolled back")]
     NoRollbackTarget,
-    /// The active generation or target health changed while the target was prepared.
+    /// The active code or target health changed while the target was prepared.
     #[error("{0}: the registry changed while preparing; retry")]
     Conflict(String),
 }
@@ -331,12 +327,10 @@ impl Registry {
         configuration::check_owners(&deps.owners).map_err(&registry_error)?;
         let (state, config) = startup::open(&deps, bootstrap, &registry_error).await?;
         let admission = admission::evaluate(state.contents(), &deps.host_tool_names);
-        let (views, _) = watch::channel(Arc::new(state.view(
-            config,
-            admission,
-            &deps.factory,
-            &deps.composer,
-        )));
+        let view = state
+            .view(config, admission, &deps.factory, &deps.composer)
+            .map_err(&registry_error)?;
+        let (views, _) = watch::channel(Arc::new(view));
         Ok(Arc::new(Self {
             deps,
             state: Mutex::new(state),
@@ -358,27 +352,34 @@ impl Registry {
         self.views.subscribe()
     }
 
+    /// Publish the view of committed facts; facts that cannot form one are reported, not hidden.
     fn publish(
         &self,
         state: &mut State,
         config: Option<ActiveConfig>,
         admission: Option<admission::Admission>,
-    ) {
+    ) -> Result<(), RegistryError> {
         state.release();
         let config = config.unwrap_or_else(|| self.view().config.clone());
         let admission = admission
             .unwrap_or_else(|| admission::evaluate(state.contents(), &self.deps.host_tool_names));
-        self.views.send_replace(Arc::new(state.view(
-            config,
-            admission,
-            &self.deps.factory,
-            &self.deps.composer,
-        )));
+        let view = state.view(config, admission, &self.deps.factory, &self.deps.composer)?;
+        self.views.send_replace(Arc::new(view));
+        Ok(())
     }
 }
 
 fn rejected(cause: Cause) -> RegistryError {
     RegistryError::Rejected(vec![cause])
+}
+
+/// Keep the artifacts the node's references run and release the rest; nothing is released when
+/// a reference does not resolve.
+async fn retain_referenced(deps: &RegistryDeps, state: &State) -> Result<(), RegistryError> {
+    Ok(deps
+        .store
+        .retain_artifacts(&state.retained_artifacts()?)
+        .await?)
 }
 
 /// Failed durable writes leave the previous references authoritative for artifact retention.
@@ -387,11 +388,7 @@ async fn cleanup_failed_write(
     state: &State,
     error: RegistryError,
 ) -> RegistryError {
-    match deps
-        .store
-        .retain_artifacts(&state.retained_artifacts())
-        .await
-    {
+    match retain_referenced(deps, state).await {
         Ok(()) => error,
         Err(cleanup) => StoreError::Backend(format!(
             "{error}; releasing unaccepted artifacts also failed: {cleanup}"
@@ -402,11 +399,7 @@ async fn cleanup_failed_write(
 
 /// Cleanup follows committed references; a failure cannot undo their acceptance.
 async fn cleanup_artifacts(deps: &RegistryDeps, state: &State) -> Option<String> {
-    match deps
-        .store
-        .retain_artifacts(&state.retained_artifacts())
-        .await
-    {
+    match retain_referenced(deps, state).await {
         Ok(()) => None,
         Err(error) => {
             let warning = format!("artifact cleanup: {error}");

@@ -1,5 +1,5 @@
 //! Which change wins when another commit lands while a generation is still loading.
-use super::{active, fault, loaded, open, promote, register_source};
+use super::{active, active_activation, fault, loaded, open, promote, register_source};
 use crate::support::*;
 use async_trait::async_trait;
 use enco_core::*;
@@ -68,8 +68,9 @@ async fn registration_cannot_overwrite_a_rollback_committed_during_loading() {
     };
     let (result, ()) = tokio::join!(registering, rollback);
     assert!(matches!(result, Err(RegistryError::Conflict(_))));
-    assert_eq!(store.registry().await.unwrap().generations.len(), 4);
-    assert_eq!(active(&registry).await.id, one.id);
+    // Only `one` and `two` were accepted; the conflicting registration brought nothing.
+    assert_eq!(store.registry().await.unwrap().intent.generations.len(), 2);
+    assert_eq!(active(&registry).await, CodeRef::from(one.id));
 }
 
 #[tokio::test]
@@ -89,7 +90,7 @@ async fn a_late_failure_after_replacement_does_not_roll_back_or_publish_a_notice
         .unwrap();
     registry
         .report(
-            old.id,
+            &old.id.into(),
             Verdict::Failed(fault(code::PLUGIN_TRAP)),
             Some(session.id),
         )
@@ -97,10 +98,14 @@ async fn a_late_failure_after_replacement_does_not_roll_back_or_publish_a_notice
         .unwrap();
     let history = store.registry().await.unwrap();
     assert_eq!(
-        history.plugins[&old.plugin].active.unwrap().generation,
-        new.id
+        history.node.plugins[&old.id.plugin]
+            .active
+            .as_ref()
+            .unwrap()
+            .code,
+        CodeRef::from(new.id)
     );
-    assert_eq!(history.generations[&old.id].status, GenerationStatus::Trial);
+    assert_eq!(history.node.health[&old.id], Health::Trial);
     assert!(store.pending(session.id).await.unwrap().is_empty());
 }
 
@@ -142,6 +147,7 @@ async fn registration_discards_preparation_when_its_plugin_or_configuration_chan
                 .registry()
                 .await
                 .unwrap()
+                .intent
                 .generations
                 .values()
                 .all(|record| record.artifact != ContentHash::of(b"late"))
@@ -151,7 +157,10 @@ async fn registration_discards_preparation_when_its_plugin_or_configuration_chan
         } else {
             b"winner"
         };
-        assert_eq!(active(&registry).await.artifact, ContentHash::of(first));
+        assert_eq!(
+            active_activation(&registry).await.artifact,
+            ContentHash::of(first)
+        );
     }
 }
 
@@ -189,10 +198,10 @@ async fn rollback_cannot_overwrite_a_registration_committed_during_loading() {
         rollback.await.unwrap(),
         Err(RegistryError::Conflict(_))
     ));
-    assert_eq!(store.registry().await.unwrap().generations.len(), 5);
-    assert_eq!(active(&registry).await.id, three.id);
+    assert_eq!(store.registry().await.unwrap().intent.generations.len(), 3);
+    assert_eq!(active(&registry).await, CodeRef::from(three.id));
     registry.rollback().await.unwrap();
-    assert_eq!(active(&registry).await.id, two.id);
+    assert_eq!(active(&registry).await, CodeRef::from(two.id));
 }
 
 #[tokio::test]
@@ -227,7 +236,7 @@ async fn automatic_rollback_discards_preparation_after_registration_or_promotion
             async move {
                 registry
                     .report(
-                        trial.id,
+                        &trial.id.into(),
                         Verdict::Failed(fault(code::PLUGIN_TRAP)),
                         Some(session.id),
                     )
@@ -249,17 +258,18 @@ async fn automatic_rollback_discards_preparation_after_registration_or_promotion
                 .exports
                 .completion(&fixture_endpoint("fixture"), false)
                 .unwrap()
-                .generation,
-            expected
+                .code,
+            CodeRef::from(expected)
         );
         assert!(
             store
                 .registry()
                 .await
                 .unwrap()
-                .generations
+                .node
+                .health
                 .values()
-                .all(|record| record.status != GenerationStatus::Failed && record.failure.is_none())
+                .all(|health| health.failure().is_none())
         );
         assert!(store.pending(session.id).await.unwrap().is_empty());
     }

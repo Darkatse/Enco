@@ -1,6 +1,6 @@
 //! The connection's update boundary: routing, group context and owner commands commit here.
 use super::*;
-use enco_kernel::{ChannelCommand, ChannelCommandKind, NewSessionOrigin};
+use enco_kernel::{ChannelCommand, ChannelCommandKind};
 use transport::Disposition;
 
 pub(super) const NO_GROUP_PROFILE: &str =
@@ -77,12 +77,8 @@ fn commands() -> Vec<ChannelCommand> {
 impl Connection {
     /// Offer the commands in the protocol's menus; a failure is reported, not fatal.
     pub(super) async fn register_commands(&self) {
-        if let Err(error) = health::call(
-            &self.kernel,
-            self.generation,
-            self.adapter.commands(&commands()),
-        )
-        .await
+        if let Err(error) =
+            health::call(&self.kernel, &self.code, self.adapter.commands(&commands())).await
         {
             tracing::warn!(%error, "channel command menu registration failed");
             *lock(&self.menu_failure) = Some(error.to_string());
@@ -267,7 +263,6 @@ impl Connection {
             name: SessionName::root(&name)
                 .map_err(|error| ChannelError::Config(error.to_string()))?,
             profile,
-            origin: NewSessionOrigin::Root,
             created_at: self.clock.now(),
         })
     }
@@ -304,11 +299,21 @@ impl Connection {
             body,
             received_at: self.clock.now(),
         };
-        if self.commit_update(state, key, Some(event), created).await? == Some(Accepted::Archived) {
-            let name = self.kernel.session(session).await?.name;
-            return Ok(Some(format!(
-                "Session {name} is archived and accepts no input."
-            )));
+        match self.commit_update(state, key, Some(event), created).await? {
+            Some(Accepted::New | Accepted::Duplicate) | None => {}
+            Some(Accepted::Archived) => {
+                let name = self.kernel.session(session).await?.name;
+                return Ok(Some(format!(
+                    "Session {name} is archived and accepts no input."
+                )));
+            }
+            // Only an Event naming a schedule can find it inactive.
+            Some(Accepted::Inactive) => {
+                return Err(KernelError::from(StoreError::Inbox(format!(
+                    "session {session} refused a channel input as naming an inactive schedule"
+                )))
+                .into());
+            }
         }
         self.follow(session).await?;
         self.observe(session).await?;

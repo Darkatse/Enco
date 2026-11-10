@@ -13,8 +13,6 @@ use wiremock::{
     matchers::{body_partial_json, header, method, path},
 };
 
-const GENERATION: GenerationId = GenerationId(7);
-
 /// What the factory openai-compatible plugin answers when the endpoint at `base_url` responds,
 /// with the store that recorded it.
 async fn complete(base_url: String) -> (tempfile::TempDir, Arc<SqliteStore>, Answered) {
@@ -53,7 +51,7 @@ async fn complete(base_url: String) -> (tempfile::TempDir, Arc<SqliteStore>, Ans
         max_output_tokens: 64.try_into().unwrap(),
     };
     let record = Recording {
-        generation: GENERATION,
+        code: crate::support::registered_code(7),
         store: store.clone(),
     };
     let answered = provider
@@ -112,7 +110,7 @@ async fn every_answer_names_the_recorded_response() {
             (_, other) => panic!("HTTP {status} answered {other:?}"),
         }
         let (record, bytes) = recorded(&store, answered.origin).await;
-        assert_eq!(record.generation, GENERATION);
+        assert_eq!(record.code, crate::support::registered_code(7));
         assert_eq!(record.export, "completion.decode");
         assert_eq!(record.arguments["response"]["status"], status);
         assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), body);

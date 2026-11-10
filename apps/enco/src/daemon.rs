@@ -201,11 +201,23 @@ impl From<KernelError> for CommandError {
     }
 }
 
-/// The entry's refusal of input to an archived Session.
-fn archived(session: &SessionRecord) -> CommandError {
-    CommandError {
-        code: "bad_request",
-        message: format!("session {} is archived and accepts no input", session.name),
+/// How the protocol reports an owner's input to `session`; an archived Session refuses it.
+fn acceptance(accepted: Accepted, session: &SessionRecord) -> Result<&'static str, CommandError> {
+    match accepted {
+        Accepted::New => Ok("new"),
+        Accepted::Duplicate => Ok("duplicate"),
+        Accepted::Archived => Err(CommandError {
+            code: "bad_request",
+            message: format!("session {} is archived and accepts no input", session.name),
+        }),
+        // Only an Event naming a schedule can find it inactive.
+        Accepted::Inactive => Err(CommandError {
+            code: "kernel",
+            message: format!(
+                "session {} refused an owner's input as naming an inactive schedule",
+                session.name
+            ),
+        }),
     }
 }
 
@@ -273,11 +285,7 @@ async fn process(
             }
             let session = kernel.open_session(&name).await?;
             let accepted = kernel.submit(session.id, event_id, text, stored).await?;
-            let accepted = match accepted {
-                Accepted::New => "new",
-                Accepted::Duplicate => "duplicate",
-                Accepted::Archived => return Err(archived(&session)),
-            };
+            let accepted = acceptance(accepted, &session)?;
             json!({ "session_id": session.id, "event_id": event_id, "accepted": accepted })
         }
         Command::Subscribe { session: name } => {
@@ -312,30 +320,21 @@ async fn process(
             event_id,
         } => {
             let session = kernel.find_session(&name).await?;
-            let accepted = match kernel.backtrack(session.id, event_id, Some(to)).await? {
-                Accepted::New => "new",
-                Accepted::Duplicate => "duplicate",
-                Accepted::Archived => return Err(archived(&session)),
-            };
+            let accepted = kernel.backtrack(session.id, event_id, Some(to)).await?;
+            let accepted = acceptance(accepted, &session)?;
             json!({ "session_id": session.id, "event_id": event_id, "accepted": accepted })
         }
         Command::Schedules {} => json!(
             kernel
-                .schedules()
-                .list(None)
-                .await
-                .map_err(KernelError::from)?
+                .schedules(None)
+                .await?
                 .into_iter()
                 .map(Scheduled::into_json)
                 .collect::<Vec<_>>()
         ),
         Command::CancelSchedule { schedule_id } => {
-            let cancelled = kernel
-                .schedules()
-                .cancel(schedule_id)
-                .await
-                .map_err(KernelError::from)?;
-            json!({ "cancelled": cancelled })
+            // No reminder follows once it is accepted; the Session records it at its next Round.
+            json!({ "cancelled": kernel.cancel_schedule(schedule_id).await? })
         }
         Command::Memories {} => json!(application.memories.list().await.map_err(memory_error)?),
         Command::ForgetMemory { memory_id } => {
@@ -447,7 +446,8 @@ async fn process(
         } => {
             let session = kernel.find_session(&name).await?;
             let working_dir = kernel.set_working_dir(session.id, path).await?;
-            json!({ "working_dir": working_dir })
+            // Accepted as a command: it applies from the next Round, at once while idle.
+            json!({ "working_dir": working_dir, "takes_effect": "next_round" })
         }
         Command::SetProfile {
             session: name,
@@ -455,7 +455,7 @@ async fn process(
         } => {
             let session = kernel.find_session(&name).await?;
             kernel.set_profile(session.id, &profile).await?;
-            json!({ "profile": profile })
+            json!({ "profile": profile, "takes_effect": "next_round" })
         }
         Command::SafeMode { enabled } => {
             kernel.set_safe_mode(enabled).await?;

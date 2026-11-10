@@ -66,7 +66,7 @@ impl Endpoints {
 pub struct ComposerSettings {
     /// Registered name of the plugin exporting composition.
     pub plugin: PluginName,
-    /// Options checked against the generation selected for each composition.
+    /// Options checked against the code selected for each composition.
     #[serde(default)]
     pub options: ComposerOptions,
 }

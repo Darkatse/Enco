@@ -23,7 +23,7 @@ impl AttemptKind {
 /// The immutable request and its recorded plan, reused across retries.
 pub(crate) struct PlannedAttempt {
     pub kind: AttemptKind,
-    pub composer: GenerationId,
+    pub composer: CodeRef,
     pub plan: std::sync::Arc<PlanWrite>,
     pub request: ProviderRequest,
 }
@@ -65,8 +65,8 @@ impl SessionActor {
                 .view()
                 .exports
                 .completion(endpoint, safe_mode)
-                .map(|current| current.generation);
-            if current != Ok(export.generation) {
+                .map(|current| current.code);
+            if current.as_ref() != Ok(&export.code) {
                 return Err(RoundError::Failed(failure));
             }
         }
@@ -87,15 +87,15 @@ impl SessionActor {
                 attempt,
                 purpose: planned.kind.purpose(),
                 plan: planned.plan.hash(),
-                composer: planned.composer,
-                provider: export.generation,
+                composer: planned.composer.clone(),
+                provider: export.code.clone(),
                 settings: endpoint.settings.clone(),
             }],
             Some(planned.plan.clone()),
         )
         .await?;
         let record = Recording {
-            generation: export.generation,
+            code: export.code.clone(),
             store: self.deps.store.clone(),
         };
         let Answered { result, origin } = tokio::select! {
@@ -110,19 +110,19 @@ impl SessionActor {
         };
         let result = match result {
             Ok(completion) => match self
-                .settle_completion(planned, attempt, export.generation, &completion, origin)
+                .settle_completion(planned, attempt, &export.code, &completion, origin)
                 .await?
             {
                 Some(failure) => Err(failure),
                 None => Ok(Ok(completion)),
             },
             Err(CompleteError::Overflow(overflow)) => {
-                self.settle_overflow(attempt, export.generation, &overflow, origin)
+                self.settle_overflow(attempt, &export.code, &overflow, origin)
                     .await?;
                 Ok(Err(overflow))
             }
             Err(CompleteError::Failed(failure)) => {
-                self.settle_failure(attempt, export.generation, &failure, origin)
+                self.settle_failure(attempt, &export.code, &failure, origin)
                     .await?;
                 Err(failure)
             }
@@ -137,7 +137,7 @@ impl SessionActor {
         &mut self,
         planned: &PlannedAttempt,
         attempt: AttemptId,
-        generation: GenerationId,
+        code: &CodeRef,
         completion: &Completion,
         origin: Option<MappingOrigin>,
     ) -> Result<Option<Failure>, RoundError> {
@@ -164,7 +164,7 @@ impl SessionActor {
         self.commit(bodies, None).await?;
         self.deps
             .registry
-            .report(generation, Verdict::Ok, Some(self.session.id))
+            .report(code, Verdict::Ok, Some(self.session.id))
             .await?;
         Ok(unusable)
     }
@@ -173,7 +173,7 @@ impl SessionActor {
     async fn settle_overflow(
         &mut self,
         attempt: AttemptId,
-        generation: GenerationId,
+        code: &CodeRef,
         overflow: &Overflow,
         origin: Option<MappingOrigin>,
     ) -> Result<(), RoundError> {
@@ -190,7 +190,7 @@ impl SessionActor {
         .await?;
         self.deps
             .registry
-            .report(generation, Verdict::Ok, Some(self.session.id))
+            .report(code, Verdict::Ok, Some(self.session.id))
             .await?;
         Ok(())
     }
@@ -199,7 +199,7 @@ impl SessionActor {
     async fn settle_failure(
         &mut self,
         attempt: AttemptId,
-        generation: GenerationId,
+        code: &CodeRef,
         failure: &Failure,
         origin: Option<MappingOrigin>,
     ) -> Result<(), RoundError> {
@@ -217,7 +217,7 @@ impl SessionActor {
         self.deps
             .registry
             .report(
-                generation,
+                code,
                 Verdict::Failed(failure.clone()),
                 Some(self.session.id),
             )

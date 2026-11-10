@@ -15,17 +15,17 @@ pub trait Runtime: Send + Sync {
 pub struct Loaded {
     /// Adapter-provided description, not a plugin identity.
     pub summary: String,
-    /// Plugin-owned configuration documentation, retained with the loaded generation.
+    /// Plugin-owned configuration documentation, retained with the loaded code.
     pub config_schema: serde_json::Value,
     /// Credential declarations used by transport, wiring and generated documentation.
     pub credentials: Vec<Credential>,
-    /// Additional network origins declared by the channel mapper, fixed with its generation.
+    /// Additional network origins declared by the channel mapper, fixed with its code.
     pub channel_origins: Vec<String>,
     /// A missing environment requirement; the code still loads and retains its health.
     pub unavailable: Option<Failure>,
     /// Self-check required before a deployment is admitted.
     pub lifecycle: Arc<dyn Lifecycle>,
-    /// Context policy and its profile options, fixed with the loaded generation.
+    /// Context policy and its profile options, fixed with the loaded code.
     pub composer: Option<LoadedComposer>,
     /// Messaging protocol mapper when supplied by the component.
     pub channel: Option<Arc<dyn Channel>>,
@@ -42,16 +42,16 @@ pub struct Loaded {
 /// A composer's option declaration and invocation, loaded from the same content.
 #[derive(Clone)]
 pub struct LoadedComposer {
-    /// Profile options accepted by this generation.
+    /// Profile options accepted by this code.
     pub schema: enco_core::InputSchema,
     /// Writes requests from the host's fixed facts.
     pub adapter: Arc<dyn Composer>,
 }
 
-/// Tool declarations are evaluated once with the generation's accepted configuration.
+/// Tool declarations are evaluated once with the code's accepted configuration.
 #[derive(Clone)]
 pub struct LoadedTools {
-    /// Model-facing definitions fixed with this generation.
+    /// Model-facing definitions fixed with this code.
     pub specs: Vec<ToolSpec>,
     /// Executes a tool with the definition supplied by its caller.
     pub adapter: Arc<dyn Tools>,

@@ -1,8 +1,6 @@
 //! Atomic delegation rejection and archive behavior through the persistence port.
 use super::*;
-use enco_kernel::{
-    CommitOutcome, CommitRejection, NewSessionOrigin, SessionDelivery, SessionDeliveryKind,
-};
+use enco_kernel::{CommitRejection, SessionDeliveryKind};
 
 fn outgoing(session: SessionId) -> Event {
     Event {
@@ -27,16 +25,19 @@ fn owner_halt(root: &SessionRecord) -> Halt {
     }
 }
 
-fn creation(parent: &SessionRecord) -> NewSession {
-    NewSession {
+/// The record a parent writes when it creates its `research` child.
+fn creation(parent: &SessionRecord) -> Creation {
+    Creation {
         id: SessionId::new(),
         name: parent.name.child("research").unwrap(),
-        profile: parent.profile.clone(),
-        origin: NewSessionOrigin::Child {
-            parent: parent.id,
-            working_dir: parent.working_dir.clone(),
-        },
+        parent: Some(SessionRef {
+            id: parent.id,
+            name: parent.name.clone(),
+        }),
         created_at: Utc::now().trunc_subsecs(3),
+        node: parent.binding.node,
+        profile: parent.profile.clone(),
+        working_dir: parent.working_dir.clone(),
     }
 }
 async fn append(
@@ -271,9 +272,28 @@ async fn archive_atomically_halts_the_active_subtree_and_releases_names() {
         assert_eq!(store.pending(id).await.unwrap(), pending);
     }
     assert!(store.session_by_name(&parent.name).await.unwrap().is_none());
+    // One control-plane fact archives the subtree; the child is archived because its parent is.
+    let db = rusqlite::Connection::open(dir.path().join("enco.db")).unwrap();
+    let archives: Vec<String> = db
+        .prepare("SELECT session_id FROM archives")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(archives, [parent.id.to_string()]);
     let replacement = store.ensure_session(&parent.name, at).await.unwrap();
     assert_ne!(replacement.id, parent.id);
     assert_eq!(replacement.parent, None);
+    // The archived child's name is free for the new root's child at once.
+    let task = Event {
+        session: replacement.id,
+        id: EventId::new(),
+        ..input.clone()
+    };
+    let new_child = create_child(&store, &replacement, &task).await;
+    assert_eq!(new_child.name, child.name);
+    assert_ne!(new_child.id, child.id);
     assert!(
         store
             .halt_subtree(parent.id, EventSource::Cli, halt, at, true)
@@ -306,55 +326,45 @@ async fn archive_atomically_halts_the_active_subtree_and_releases_names() {
 }
 
 #[tokio::test]
-async fn archived_schedule_targets_disappear_without_changing_the_schedule_record() {
+async fn archived_sessions_list_no_schedules_and_take_no_reminders() {
     let dir = tempfile::tempdir().unwrap();
     let (store, input) = main_session(dir.path()).await;
     let session = store.session(input.session).await.unwrap().unwrap();
-    let at = Utc::now().trunc_subsecs(3);
-    let schedule = Schedule {
-        id: ScheduleId::new(),
+    let main = Actor {
+        store: &store,
         session: session.id,
-        rule: ScheduleRule::Once {
-            at: at + chrono::Duration::hours(1),
-        },
-        message: "reminder".into(),
-        created_at: at,
-        state: ScheduleState::Active,
-        last: None,
     };
-    store.insert_schedule(&schedule).await.unwrap();
+    let at = Utc::now().trunc_subsecs(3);
+    let schedule = main
+        .create_schedule(ScheduleRule::Once {
+            at: at + chrono::Duration::hours(1),
+        })
+        .await;
+    let recorded = store.log(session.id, None).await.unwrap();
     store
         .halt_subtree(session.id, EventSource::Cli, owner_halt(&session), at, true)
         .await
         .unwrap();
-    assert!(
-        store
-            .schedules(Some(ScheduleState::Active))
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(store.schedules(None).await.unwrap().is_empty());
     let reminder = Event {
+        id: EventId::reminder(schedule, at + chrono::Duration::hours(1)),
         body: EventBody::Reminder {
-            schedule: schedule.id,
+            schedule,
             due_at: at + chrono::Duration::hours(1),
             skipped: 0,
-            text: schedule.message.clone(),
+            text: "briefing".into(),
         },
         source: EventSource::Scheduler,
         ..input
     };
     assert_eq!(
-        store.fire_schedule(None, true, &reminder).await.unwrap(),
-        Accepted::Archived
-    );
-    assert_eq!(store.schedules(None).await.unwrap(), [schedule]);
-    assert!(
         store
-            .pending(session.id)
+            .accept(std::slice::from_ref(&reminder), None)
             .await
             .unwrap()
-            .iter()
-            .all(|event| !matches!(event.body, EventBody::Reminder { .. }))
+            .events,
+        [Accepted::Archived]
     );
+    // The Session's own facts are as they were.
+    assert_eq!(store.log(session.id, None).await.unwrap(), recorded);
 }

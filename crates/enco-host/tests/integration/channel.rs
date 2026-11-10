@@ -530,7 +530,8 @@ fn start_with(
             .active()
             .find(|active| active.name.as_ref() == "fixture")
             .unwrap()
-            .generation,
+            .code
+            .clone(),
         Arc::new(enco_host::SystemClock),
         host_version(),
     )

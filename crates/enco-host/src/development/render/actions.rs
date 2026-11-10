@@ -1,10 +1,10 @@
 //! The documents that registering, applying and rewinding return.
-use super::{code, generation_state, location, next, path, quoted};
+use super::{code, health, location, next, path, quoted};
 use crate::{
     development::{Applied, HistoryPoint, HistoryQuery, Rewound},
     status::{CallStep, Steps},
 };
-use enco_core::{GenerationStatus, IntentPath};
+use enco_core::{Health, IntentPath};
 use enco_kernel::{PluginChangeKind, Registered, TRIAL_CALLS, UnitChange};
 use std::collections::BTreeMap;
 
@@ -84,25 +84,16 @@ impl Applied {
             }
         }
         if let Some(registered) = &self.registered {
-            let trials: Vec<_> = registered
-                .changes
-                .iter()
-                .filter_map(|change| match change {
-                    UnitChange::Plugin { change, .. } => change.generation(),
-                    UnitChange::Configuration { .. } => None,
-                })
-                .filter(|generation| generation.record.status == GenerationStatus::Trial)
-                .map(|generation| generation.record.id.to_string())
-                .collect();
-            match trials.as_slice() {
-                [] => {}
-                [one] => out.push_str(&format!(
-                    "\nNew code starts on trial: generation {one} becomes healthy after {TRIAL_CALLS} successful calls while it runs.\n"
-                )),
-                many => out.push_str(&format!(
-                    "\nNew code starts on trial: generations {} each become healthy after {TRIAL_CALLS} successful calls while they run.\n",
-                    many.join(", ")
-                )),
+            let on_trial = registered.changes.iter().any(|change| match change {
+                UnitChange::Plugin { change, .. } => change
+                    .selected()
+                    .is_some_and(|selected| selected.health == Some(Health::Trial)),
+                UnitChange::Configuration { .. } => false,
+            });
+            if on_trial {
+                out.push_str(&format!(
+                    "\nNew code and settings start on trial: each becomes healthy after its probe and {TRIAL_CALLS} successful calls while it runs; one that fails first is rolled back to what ran before.\n"
+                ));
             }
             out.push_str(&recheck());
         }
@@ -175,16 +166,13 @@ pub(super) fn changes(changes: &[UnitChange], failures: bool) -> String {
         let mut details = Vec::new();
         for change in changes {
             match change {
-                UnitChange::Configuration {
-                    generation,
-                    sections,
-                } => {
+                UnitChange::Configuration { sections } => {
                     let tables = sections
                         .iter()
                         .map(|table| code(&format!("[{table}]")))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    details.push(format!("changed {tables} → generation {generation}"));
+                    details.push(format!("changed {tables}"));
                 }
                 UnitChange::Plugin {
                     change: PluginChangeKind::Created,
@@ -222,13 +210,16 @@ fn plugin_change(change: &PluginChangeKind, created: bool, failures: bool) -> St
         .into(),
         PluginChangeKind::Settings { .. } => "new settings".into(),
     };
-    if let Some(generation) = change.generation() {
-        let state = match generation.record.status {
-            GenerationStatus::Trial if !generation.active => "retired during trial",
-            status => generation_state(status),
+    // The registration is this one, so the code needs no number; factory code is never on trial.
+    if let Some(selected) = change.selected()
+        && let Some(standing) = &selected.health
+    {
+        let state = match standing {
+            Health::Trial if !selected.active => "retired during trial",
+            standing => health(standing),
         };
-        detail.push_str(&format!(" → generation {} · {state}", generation.record.id));
-        if failures && let Some(failure) = &generation.record.failure {
+        detail.push_str(&format!(" · {state}"));
+        if failures && let Some(failure) = standing.failure() {
             detail.push_str(&format!(": {}", failure.message));
         }
     }

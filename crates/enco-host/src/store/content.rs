@@ -30,12 +30,29 @@ pub(super) async fn get(
     hash: &ContentHash,
     missing: fn(ContentHash) -> StoreError,
 ) -> Result<Vec<u8>, StoreError> {
-    let bytes = tokio::fs::read(path)
-        .await
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => missing(*hash),
-            _ => backend(format!("reading {}: {error}", path.display())),
-        })?;
+    checked(tokio::fs::read(path).await, path, hash, missing)
+}
+
+/// The same read for a caller already off the async runtime, such as an upgrade.
+pub(super) fn get_blocking(
+    path: &Path,
+    hash: &ContentHash,
+    missing: fn(ContentHash) -> StoreError,
+) -> Result<Vec<u8>, StoreError> {
+    checked(std::fs::read(path), path, hash, missing)
+}
+
+/// Bytes read from `path`, which must be there and match their address.
+fn checked(
+    read: std::io::Result<Vec<u8>>,
+    path: &Path,
+    hash: &ContentHash,
+    missing: fn(ContentHash) -> StoreError,
+) -> Result<Vec<u8>, StoreError> {
+    let bytes = read.map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => missing(*hash),
+        _ => backend(format!("reading {}: {error}", path.display())),
+    })?;
     if ContentHash::of(&bytes) != *hash {
         return Err(missing(*hash));
     }

@@ -6,28 +6,12 @@ impl SessionActor {
         call: CallId,
         execution: Execution,
     ) -> Result<(), StoreError> {
-        let mut delegated = None;
-        let mut deliveries = Vec::new();
-        let mut outcome = match execution {
-            Execution::Result(outcome) => outcome,
-            Execution::Delegation(request) => {
-                let (fact, delivery) = self.delegation(request).await?;
-                let short = fact.session.name.short_name();
-                let value = if fact.created {
-                    format!("Created child Session `{short}` and sent it the message.")
-                } else {
-                    format!("Sent the message to `{short}`.")
-                }
-                .into();
-                delegated = Some(fact);
-                deliveries.push(delivery);
-                Outcome::Ok {
-                    value,
-                    images: Vec::new(),
-                    outgoing: None,
-                }
-            }
-        };
+        let Executed {
+            mut outcome,
+            delegated,
+            schedule,
+            deliveries,
+        } = self.executed(execution).await?;
         let mut stored = Vec::new();
         if let Outcome::Ok { images, .. } = &outcome {
             for bytes in images {
@@ -75,6 +59,8 @@ impl SessionActor {
                 self.deps.store.blob_path(&image.content).display()
             ));
         }
+        // The Scheduler reads the schedules again once a change to them is committed.
+        let changes_schedules = schedule.is_some();
         let body = EntryBody::ToolCallSettled {
             call,
             outcome: Settlement::from(&outcome),
@@ -83,11 +69,50 @@ impl SessionActor {
             images: stored,
             outgoing,
             delegated,
+            schedule,
         };
         match self.commit_checked(vec![body], None, deliveries).await? {
-            CommitOutcome::Committed { .. } => Ok(()),
+            CommitOutcome::Committed { .. } => {
+                if changes_schedules {
+                    self.deps.scheduler.changed.notify_one();
+                }
+                Ok(())
+            }
             CommitOutcome::Rejected(reason) => self.reject_settlement(call, reason).await,
         }
+    }
+
+    /// The outcome an execution settles with, and the facts it records alongside.
+    async fn executed(&self, execution: Execution) -> Result<Executed, StoreError> {
+        let ok = |value| Outcome::Ok {
+            value,
+            images: Vec::new(),
+            outgoing: None,
+        };
+        Ok(match execution {
+            Execution::Result(outcome) => Executed::outcome(outcome),
+            Execution::Schedule(request) => match self.schedule_call(request).await? {
+                Ok((change, value)) => Executed {
+                    schedule: change,
+                    ..Executed::outcome(ok(value))
+                },
+                Err(failure) => Executed::outcome(Outcome::Failed { failure }),
+            },
+            Execution::Delegation(request) => {
+                let (fact, delivery) = self.delegation(request).await?;
+                let short = fact.session.name.short_name();
+                let value = if fact.creation.is_some() {
+                    format!("Created child Session `{short}` and sent it the message.")
+                } else {
+                    format!("Sent the message to `{short}`.")
+                };
+                Executed {
+                    delegated: Some(fact),
+                    deliveries: vec![delivery],
+                    ..Executed::outcome(ok(value.into()))
+                }
+            }
+        })
     }
 
     async fn reject_settlement(
@@ -110,9 +135,29 @@ impl SessionActor {
                 images: Vec::new(),
                 outgoing: None,
                 delegated: None,
+                schedule: None,
             }],
             None,
         )
         .await
+    }
+}
+
+/// An execution's outcome, with what its settlement records and delivers.
+struct Executed {
+    outcome: Outcome,
+    delegated: Option<Delegated>,
+    schedule: Option<ScheduleChange>,
+    deliveries: Vec<crate::SessionDelivery>,
+}
+
+impl Executed {
+    fn outcome(outcome: Outcome) -> Self {
+        Self {
+            outcome,
+            delegated: None,
+            schedule: None,
+            deliveries: Vec::new(),
+        }
     }
 }

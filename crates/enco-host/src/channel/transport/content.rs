@@ -163,7 +163,7 @@ impl Reader {
         let mut backoff = ChannelBackoff::default();
         let mut attempt = 1;
         loop {
-            match super::super::health::call(&self.kernel, self.generation, fetch()).await {
+            match super::super::health::call(&self.kernel, &self.code, fetch()).await {
                 Err(ChannelError::Protocol(ChannelCallError::Protocol(fault))) if !fault.fatal => {
                     if !fault.failure.retryable || attempt == CHANNEL_ATTEMPTS {
                         return Ok(Fetched {

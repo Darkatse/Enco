@@ -1,6 +1,6 @@
 #![expect(clippy::unwrap_used, reason = "fixtures fail the test with context")]
 use crate::support::channel;
-use enco_core::{GenerationId, MappingRecord, Outgoing};
+use enco_core::{MappingRecord, Outgoing};
 use enco_kernel::{ChannelCallError, Store};
 use serde_json::{Value, json};
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
@@ -28,14 +28,14 @@ async fn recorded_channel_calls() {
         .up_to_n_times(1)
         .mount(&server)
         .await;
-    let generation = GenerationId(31);
+    let code = crate::support::registered_code(31);
     assert_eq!(adapter.identity().key(), "telegram:42");
     let updates = channel::messages(adapter.clone()).await;
     assert_eq!(updates.len(), 1);
     assert_eq!(updates[0].key, "12");
     assert_eq!(updates[0].origin.index, 0);
     let record = mapping(&*store, updates[0].origin.call).await;
-    assert_eq!(record.generation, generation);
+    assert_eq!(record.code, code);
     assert_eq!(record.export, "channel.received");
     assert_eq!(
         record.arguments["identity"],
@@ -65,7 +65,7 @@ async fn recorded_channel_calls() {
     assert_eq!(sent.message.as_deref(), Some("88"));
     let record = mapping(&*store, sent.origin.call).await;
     assert_eq!(record.export, "channel.answered");
-    assert_eq!(record.generation, generation);
+    assert_eq!(record.code, code);
     Mock::given(path("/bot42:test-secret/sendRichMessage"))
         .respond_with(ResponseTemplate::new(200).set_body_string("protocol drift"))
         .with_priority(1)
@@ -159,7 +159,7 @@ async fn attachment_exchange_records_each_complete_mapper_input() {
     calls.sort_by_key(|record| record.arguments["responses"].as_array().unwrap().len());
     assert_eq!(calls.len(), 3);
     for (index, call) in calls.iter().enumerate() {
-        assert_eq!(call.generation, GenerationId(31));
+        assert_eq!(call.code, crate::support::registered_code(31));
         assert_eq!(call.arguments["locator"], "a-image");
         assert!(call.arguments["limit"].is_u64());
         let responses = call.arguments["responses"].as_array().unwrap();

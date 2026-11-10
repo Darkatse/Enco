@@ -1,6 +1,6 @@
 //! Accepting input events, each once by its ID, together with the connection state that read
 //! them.
-use super::{backend, encode, sessions, signed};
+use super::{backend, encode, schedules, sessions, signed};
 use enco_core::*;
 use enco_kernel::{Acceptance, Accepted, ConnectionWrite, StoreError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -28,7 +28,7 @@ pub(super) fn accept(
         .map_err(backend)?;
     let session = write
         .and_then(|write| write.session.as_ref())
-        .map(|new| sessions::insert_new(&tx, node, working_dir, new))
+        .map(|new| sessions::create_root(&tx, node, working_dir, new))
         .transpose()?;
     let events = events_in(&tx, &events)?;
     if let Some((write, state, settlement)) = prepared {
@@ -61,44 +61,73 @@ pub(super) fn accept(
     Ok(Acceptance { events, session })
 }
 
-pub(super) fn encode_events(
-    events: &[Event],
-) -> Result<Vec<(EventId, SessionId, String)>, StoreError> {
+/// An Event with its stored document, encoded before the transaction that writes it.
+pub(super) struct Encoded<'a> {
+    pub event: &'a Event,
+    pub document: String,
+}
+
+pub(super) fn encode_events(events: &[Event]) -> Result<Vec<Encoded<'_>>, StoreError> {
     events
         .iter()
-        .map(|event| Ok((event.id, event.session, encode(event)?)))
+        .map(|event| {
+            Ok(Encoded {
+                event,
+                document: encode(event)?,
+            })
+        })
         .collect()
 }
 
-/// Reused by owners that accept inputs together with their own state transition.
+/// The Inbox's single write function, reused by owners that accept inputs together with their
+/// own state transition.
+///
+/// An Event is written once by its ID and never to an archived Session; one naming a schedule, a
+/// reminder or an owner's cancel, only while that schedule is active in the effective view, so
+/// no reminder follows an accepted cancel and a schedule is cancelled once.
 pub(super) fn events_in(
     tx: &Transaction<'_>,
-    events: &[(EventId, SessionId, String)],
+    events: &[Encoded<'_>],
 ) -> Result<Vec<Accepted>, StoreError> {
-    let mut accepted = Vec::with_capacity(events.len());
-    for (id, session, body) in events {
-        let archived: Option<String> = tx
-            .query_row(
-                "SELECT archived_at FROM sessions WHERE id=?",
-                [session.to_string()],
-                |row| row.get(0),
+    events
+        .iter()
+        .map(|Encoded { event, document }| {
+            let archived: Option<String> = tx
+                .query_row(
+                    "SELECT archived_at FROM sessions WHERE id=?",
+                    [event.session.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(backend)?
+                .ok_or(StoreError::UnknownSession(event.session))?;
+            if archived.is_some() {
+                return Ok(Accepted::Archived);
+            }
+            let seen: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM inbox WHERE event_id=?1)
+                         OR EXISTS(SELECT 1 FROM log WHERE event_id=?1)",
+                    [event.id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if seen {
+                return Ok(Accepted::Duplicate);
+            }
+            if let Some(schedule) = event.body.schedule()
+                && schedules::effective(tx, event.session)?
+                    .get(schedule)
+                    .is_none_or(|schedule| schedule.state != ScheduleState::Active)
+            {
+                return Ok(Accepted::Inactive);
+            }
+            tx.execute(
+                "INSERT INTO inbox(event_id,session_id,event) VALUES (?,?,?)",
+                params![event.id.to_string(), event.session.to_string(), document],
             )
-            .optional()
-            .map_err(backend)?
-            .ok_or(StoreError::UnknownSession(*session))?;
-        if archived.is_some() {
-            accepted.push(Accepted::Archived);
-            continue;
-        }
-        let inserted = tx.execute(
-            "INSERT INTO inbox(event_id,session_id,event) SELECT ?1,?2,?3 WHERE NOT EXISTS (SELECT 1 FROM log WHERE event_id=?1) ON CONFLICT(event_id) DO NOTHING",
-            params![id.to_string(), session.to_string(), body],
-        ).map_err(backend)?;
-        accepted.push(if inserted == 0 {
-            Accepted::Duplicate
-        } else {
-            Accepted::New
-        });
-    }
-    Ok(accepted)
+            .map_err(backend)?;
+            Ok(Accepted::New)
+        })
+        .collect()
 }

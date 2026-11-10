@@ -4,7 +4,7 @@
     reason = "fixture failures retain their context"
 )]
 use crate::support::channel;
-use enco_core::{GenerationId, MappingRecord, PluginSettings};
+use enco_core::{MappingRecord, PluginSettings};
 use enco_host::{SqliteStore, StorePaths};
 use enco_kernel::{ChannelAdapter, ChannelReading, ChannelSettings, Runtime, Store};
 use futures_util::{SinkExt, StreamExt};
@@ -243,7 +243,7 @@ async fn adapter(
                 base_url: base.parse().unwrap(),
                 secrets: [("token".into(), "ENCO_CHANNEL_FIXTURE_TOKEN".into())].into(),
             },
-            GenerationId(32),
+            crate::support::registered_code(32),
             store.clone(),
         )
         .await
@@ -357,7 +357,7 @@ async fn assert_records(root: &Path, store: &dyn Store) {
     for bytes in crate::support::evidence(root, store).await {
         assert!(!secret(&bytes));
         if let Ok(record) = serde_json::from_slice::<MappingRecord>(&bytes) {
-            assert_eq!(record.generation, GenerationId(32));
+            assert_eq!(record.code, crate::support::registered_code(32));
             if record.export == "channel.received" {
                 arrivals.push(record.arguments["arrival"].clone());
             }

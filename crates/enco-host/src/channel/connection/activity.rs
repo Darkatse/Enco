@@ -12,7 +12,7 @@ pub(in crate::channel) struct Card {
     pub(super) target: String,
     /// Whether the Run's replies go to `target`; otherwise the card is only for display.
     pub(super) replies_here: bool,
-    pub(super) creation: Creation,
+    pub(super) creation: Appearance,
 }
 
 /// The view requests in flight and the pacing that spaces them out.
@@ -129,12 +129,12 @@ impl Connection {
     pub(super) fn display(&self, session: SessionId) -> Option<(&str, bool)> {
         match self.observations.get(&session)?.destination.as_ref()? {
             ReplyDestination::Parent => match self.state.children.get(&session)? {
-                Creation::Shown(conversation)
+                Appearance::Shown(conversation)
                     if self.state.chats.get(conversation) == Some(&session) =>
                 {
                     Some((conversation, false))
                 }
-                Creation::Shown(_) | Creation::Forgone => None,
+                Appearance::Shown(_) | Appearance::Forgone => None,
             },
             destination => {
                 let conversation = projection::channel_target(destination, &self.identity)?;
@@ -156,7 +156,7 @@ impl Connection {
                     return self.open_request(*session);
                 }
                 match self.state.children.get(session)? {
-                    Creation::Shown(target)
+                    Appearance::Shown(target)
                         if self.state.chats.get(target) == Some(session)
                             && self.finished(*session) =>
                     {
@@ -232,7 +232,7 @@ impl Connection {
                 continue;
             }
             match card.creation {
-                Creation::Shown(shown) => {
+                Appearance::Shown(shown) => {
                     moved.insert(run);
                     requests.push(Request {
                         target: card.target,
@@ -245,7 +245,7 @@ impl Connection {
                         },
                     });
                 }
-                Creation::Forgone => self.clear_card(run).await?,
+                Appearance::Forgone => self.clear_card(run).await?,
             }
         }
         Ok(moved)
@@ -286,7 +286,7 @@ impl Connection {
                 let shown = match card {
                     None => Some(None),
                     Some(Card {
-                        creation: Creation::Shown(shown),
+                        creation: Appearance::Shown(shown),
                         ..
                     }) if refresh => Some(Some(shown)),
                     Some(_) => None,
@@ -366,7 +366,7 @@ impl Connection {
             return Ok(None);
         }
         let shown = match card.map(|card| card.creation) {
-            Some(Creation::Shown(shown)) => Some(shown),
+            Some(Appearance::Shown(shown)) => Some(shown),
             None if !replies_here => None,
             _ => {
                 self.finish_view(session, id).await?;
@@ -422,9 +422,9 @@ impl Connection {
         }
         let adapter = self.adapter.clone();
         let kernel = self.kernel.clone();
-        let generation = self.generation;
+        let code = self.code.clone();
         self.activities.spawn(async move {
-            let result = health::call(&kernel, generation, async {
+            let result = health::call(&kernel, &code, async {
                 match &request.operation {
                     Operation::Open { segments, .. } => {
                         adapter.open_conversation(&request.target, segments).await

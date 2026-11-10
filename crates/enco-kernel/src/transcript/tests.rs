@@ -52,6 +52,30 @@ fn clearing_discards_the_view_but_can_return_to_the_previous_reply() {
 }
 
 #[test]
+fn commands_that_leave_the_inputs_leave_a_backtracked_reply_owed() {
+    let first = LogPos {
+        epoch: Epoch(1),
+        seq: Seq(1),
+    };
+    let working_dir = WorkingDir::new(NodeId::new(), "/elsewhere".into()).unwrap();
+    let steps = [
+        consumed(EventBody::Backtrack { to: Some(first) }),
+        consumed(EventBody::SetWorkingDir { working_dir }),
+        consumed(EventBody::Compact),
+    ];
+    let mut bodies = vec![message()];
+    for step in steps {
+        bodies.push(step);
+        assert!(backtracked_to_input(&entries(bodies.clone())));
+    }
+    let mut halted = bodies.clone();
+    halted.push(consumed(halt()));
+    assert!(!backtracked_to_input(&entries(halted)));
+    bodies.push(EntryBody::RunStarted { run: RunId::new() });
+    assert!(!backtracked_to_input(&entries(bodies)));
+}
+
+#[test]
 fn compaction_requests_are_derived_at_pending_round_and_compaction_boundaries() {
     let mut history = entries(vec![message(), round_end(), consumed(EventBody::Compact)]);
     assert!(compaction_requested(&conversation(&history), &[]));

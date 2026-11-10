@@ -141,7 +141,7 @@ pub(crate) async fn run(
         rounds: snapshot.metrics.rounds,
         wall_secs,
         usage: snapshot.metrics.usage,
-        generations: snapshot.metrics.generations,
+        running_code: snapshot.metrics.running_code,
         network_violations: violations,
     })
 }

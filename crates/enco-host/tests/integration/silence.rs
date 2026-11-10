@@ -16,27 +16,6 @@ pub(super) fn skip(note: &str) -> Result<Completion, Failure> {
     Ok(completion)
 }
 
-pub(super) async fn reminder(kernel: &Kernel, session: SessionId) {
-    kernel
-        .accept(
-            &[Event {
-                id: EventId::new(),
-                session,
-                source: EventSource::Scheduler,
-                body: EventBody::Reminder {
-                    schedule: ScheduleId::new(),
-                    due_at: Utc::now(),
-                    skipped: 0,
-                    text: "routine check".into(),
-                },
-                received_at: Utc::now(),
-            }],
-            None,
-        )
-        .await
-        .unwrap();
-}
-
 fn skip_failure(entries: &[Entry]) {
     assert!(!entries.iter().any(|entry| matches!(&entry.body,
         EntryBody::ToolCallStarted { capability, .. } if capability.name == "reply_skip"
@@ -88,7 +67,17 @@ async fn an_owner_message_cannot_be_skipped_and_its_run_eventually_replies() {
 async fn a_backtrack_requires_a_reply_even_when_it_returns_to_a_reminder() {
     for interactive in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let provider = ScriptedProvider::new(vec![reply("first"), skip("no"), reply("again")]);
+        let setup = if interactive {
+            Vec::new()
+        } else {
+            scheduling().into()
+        };
+        let provider = ScriptedProvider::new(
+            setup
+                .into_iter()
+                .chain([reply("first"), skip("no"), reply("again")])
+                .collect(),
+        );
         let (kernel, _) = kernel(dir.path(), provider).await;
         let session = kernel.open_session("main").await.unwrap().id;
         let mut rx = kernel.subscribe(session).await.unwrap();
@@ -98,7 +87,8 @@ async fn a_backtrack_requires_a_reply_even_when_it_returns_to_a_reminder() {
                 .await
                 .unwrap();
         } else {
-            reminder(&kernel, session).await;
+            let schedule = agent_schedule(&kernel, session, &mut rx).await;
+            remind(&kernel, session, schedule).await;
         }
         let entries = finish(&mut rx).await;
         let to = entries
@@ -115,11 +105,29 @@ async fn a_backtrack_requires_a_reply_even_when_it_returns_to_a_reminder() {
     }
 }
 
-/// Holds the first request open so an input can arrive at a deterministic Round boundary.
+/// Holds the next request after `hold` open, so an input can arrive at a deterministic Round
+/// boundary.
 struct HeldProvider {
     scripted: Arc<ScriptedProvider>,
     entered: Notify,
     release: Mutex<Option<oneshot::Receiver<()>>>,
+}
+
+impl HeldProvider {
+    fn new(scripted: Arc<ScriptedProvider>) -> Arc<Self> {
+        Arc::new(Self {
+            scripted,
+            entered: Notify::new(),
+            release: Mutex::new(None),
+        })
+    }
+
+    /// Hold the next request until the returned sender fires.
+    fn hold(&self) -> oneshot::Sender<()> {
+        let (release, gate) = oneshot::channel();
+        *self.release.lock().unwrap() = Some(gate);
+        release
+    }
 }
 
 #[async_trait]
@@ -148,17 +156,21 @@ async fn an_owner_input_arriving_mid_round_is_answered_in_the_same_run() {
         } else {
             calls(vec![call("schedule_list", "{}")])
         };
-        let scripted = ScriptedProvider::new(vec![first, skip("cannot skip now"), reply("answer")]);
-        let (release, gate) = oneshot::channel();
-        let provider = Arc::new(HeldProvider {
-            scripted: scripted.clone(),
-            entered: Notify::new(),
-            release: Mutex::new(Some(gate)),
-        });
+        let [create, scheduled] = scheduling();
+        let scripted = ScriptedProvider::new(vec![
+            create,
+            scheduled,
+            first,
+            skip("cannot skip now"),
+            reply("answer"),
+        ]);
+        let provider = HeldProvider::new(scripted.clone());
         let (kernel, _) = kernel(dir.path(), provider.clone()).await;
         let session = kernel.open_session("main").await.unwrap().id;
         let mut rx = kernel.subscribe(session).await.unwrap();
-        reminder(&kernel, session).await;
+        let schedule = agent_schedule(&kernel, session, &mut rx).await;
+        let release = provider.hold();
+        remind(&kernel, session, schedule).await;
         provider.entered.notified().await;
         kernel
             .submit(session, EventId::new(), "question".into(), vec![])
@@ -194,7 +206,8 @@ async fn an_owner_input_arriving_mid_round_is_answered_in_the_same_run() {
             + 1;
         skip_failure(&entries[after_first_round..]);
         assert!(
-            scripted.requests.lock().unwrap()[1]
+            // After the two requests that created the schedule and the reminder's first.
+            scripted.requests.lock().unwrap()[3]
                 .messages
                 .iter()
                 .any(|message| message.joined_text() == "question")
@@ -215,11 +228,14 @@ async fn skip_fails_among_other_calls_without_stopping_them_across_batches() {
         } else {
             vec![list.clone(), shell.clone(), skip.clone()]
         };
-        let provider = ScriptedProvider::new(vec![calls(proposed), reply("done")]);
+        let [create, scheduled] = scheduling();
+        let provider =
+            ScriptedProvider::new(vec![create, scheduled, calls(proposed), reply("done")]);
         let (kernel, _) = kernel(dir.path(), provider).await;
         let session = kernel.open_session("main").await.unwrap().id;
         let mut rx = kernel.subscribe(session).await.unwrap();
-        reminder(&kernel, session).await;
+        let schedule = agent_schedule(&kernel, session, &mut rx).await;
+        remind(&kernel, session, schedule).await;
         let entries = finish(&mut rx).await;
         assert!(!entries.iter().any(|entry| matches!(&entry.body,
             EntryBody::ToolCallStarted { call, .. } if *call == skip.id
@@ -258,7 +274,7 @@ async fn an_automatic_rollback_notice_can_end_without_a_reply() {
     kernel
         .registry()
         .report(
-            trial.id,
+            &trial.id.into(),
             Verdict::Failed(Failure {
                 code: code::PLUGIN_TRAP.into(),
                 message: "fixture trapped".into(),
@@ -276,7 +292,7 @@ async fn an_automatic_rollback_notice_can_end_without_a_reply() {
         EntryBody::EventConsumed {
             event: Event {
                 source: EventSource::Registry,
-                body: EventBody::GenerationRolledBack { .. },
+                body: EventBody::PluginRolledBack { .. },
                 ..
             }
         }
@@ -301,22 +317,25 @@ async fn an_automatic_rollback_notice_can_end_without_a_reply() {
 #[tokio::test]
 async fn a_reminder_after_the_reply_may_be_skipped_in_the_same_run() {
     let dir = tempfile::tempdir().unwrap();
-    let scripted = ScriptedProvider::new(vec![reply("first answer"), skip("nothing new")]);
-    let (release, gate) = oneshot::channel();
-    let provider = Arc::new(HeldProvider {
-        scripted,
-        entered: Notify::new(),
-        release: Mutex::new(Some(gate)),
-    });
+    let [create, scheduled] = scheduling();
+    let scripted = ScriptedProvider::new(vec![
+        create,
+        scheduled,
+        reply("first answer"),
+        skip("nothing new"),
+    ]);
+    let provider = HeldProvider::new(scripted);
     let (kernel, _) = kernel(dir.path(), provider.clone()).await;
     let session = kernel.open_session("main").await.unwrap().id;
     let mut rx = kernel.subscribe(session).await.unwrap();
+    let schedule = agent_schedule(&kernel, session, &mut rx).await;
+    let release = provider.hold();
     kernel
         .submit(session, EventId::new(), "question".into(), vec![])
         .await
         .unwrap();
     provider.entered.notified().await;
-    reminder(&kernel, session).await;
+    remind(&kernel, session, schedule).await;
     release.send(()).unwrap();
     let entries = finish(&mut rx).await;
     assert_eq!(
@@ -353,10 +372,17 @@ async fn a_reminder_after_a_failed_run_may_be_skipped() {
         retryable: false,
     };
     // The failed combination stays exhausted in safe mode until the next Run.
-    let provider = ScriptedProvider::new(vec![Err(failure), skip("all quiet after failure")]);
+    let [create, scheduled] = scheduling();
+    let provider = ScriptedProvider::new(vec![
+        create,
+        scheduled,
+        Err(failure),
+        skip("all quiet after failure"),
+    ]);
     let (kernel, _) = kernel(dir.path(), provider).await;
     let session = kernel.open_session("main").await.unwrap().id;
     let mut rx = kernel.subscribe(session).await.unwrap();
+    let schedule = agent_schedule(&kernel, session, &mut rx).await;
     kernel
         .submit(session, EventId::new(), "question".into(), vec![])
         .await
@@ -368,7 +394,7 @@ async fn a_reminder_after_a_failed_run_may_be_skipped() {
             ..
         }
     ));
-    reminder(&kernel, session).await;
+    remind(&kernel, session, schedule).await;
     let entries = finish(&mut rx).await;
     assert!(entries.iter().any(|entry| matches!(
         entry.body,

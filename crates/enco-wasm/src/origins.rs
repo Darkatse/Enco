@@ -90,7 +90,7 @@ impl Origin {
 }
 
 /// A mapper's selected service, a channel connection's or a Provider's endpoint, and the
-/// additional origins its generation declares.
+/// additional origins its code declares.
 pub(crate) struct Destinations {
     service: Origin,
     declared: Vec<Origin>,

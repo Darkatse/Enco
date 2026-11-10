@@ -58,7 +58,7 @@ struct Callers {
     factory: Arc<ScriptedProvider>,
     provider: Arc<ScriptedProvider>,
     broken: Arc<ScriptedProvider>,
-    factory_id: GenerationId,
+    factory_id: CodeRef,
     trial: GenerationId,
     settings: ProviderSettings,
 }
@@ -87,7 +87,7 @@ impl Callers {
             .exports
             .completion(&fixture_endpoint("fixture"), true)
             .unwrap()
-            .generation;
+            .code;
         let trial = register_source(&registry, "fixture", b"working").await.id;
         let settings = registry.view().config.kernel.profiles["default"]
             .reply
@@ -110,14 +110,15 @@ impl Callers {
         }
     }
 
-    async fn active_status(&self) -> GenerationStatus {
-        running_generation(&self.registry.status().await.unwrap().plugins[0])
+    async fn active_status(&self) -> Option<Health> {
+        running_activation(&self.registry.status().await.unwrap().plugins[0])
             .unwrap()
-            .status
+            .health
+            .clone()
     }
 
-    /// Shuts the node down and returns the generations a reopened registry restores.
-    async fn restart(self) -> Vec<GenerationRecord> {
+    /// Shuts the node down and returns each generation's health a reopened registry restores.
+    async fn restart(self) -> std::collections::BTreeMap<GenerationId, Health> {
         let Self {
             node,
             store,
@@ -128,13 +129,7 @@ impl Callers {
         node.kernel.shutdown().await.unwrap();
         drop((node, registry));
         let _registry = open(&store, runtime).await;
-        store
-            .registry()
-            .await
-            .unwrap()
-            .generations
-            .into_values()
-            .collect()
+        store.registry().await.unwrap().node.health
     }
 }
 
@@ -144,16 +139,21 @@ async fn attempts_use_the_factory_in_safe_mode_and_the_trial_otherwise_with_prof
     let mut callers = Callers::start(dir.path()).await;
     callers.factory.script([reply("safe mode")]);
     callers.provider.script([reply("active")]);
-    for (safe, expected) in [(true, callers.factory_id), (false, callers.trial)] {
+    for (safe, expected) in [
+        (true, callers.factory_id.clone()),
+        (false, CodeRef::from(callers.trial)),
+    ] {
         callers.node.kernel.set_safe_mode(safe).await.unwrap();
         let entries = callers.node.run("reply").await;
         let attempt = entries
             .iter()
             .find_map(|entry| match entry.body {
                 EntryBody::AttemptStarted {
-                    attempt, provider, ..
+                    attempt,
+                    ref provider,
+                    ..
                 } => {
-                    assert_eq!(provider, expected);
+                    assert_eq!(*provider, expected);
                     Some(attempt)
                 }
                 _ => None,
@@ -197,9 +197,9 @@ async fn kernel_attempts_and_memory_calls_count_toward_one_trial() {
                 .is_some()
         );
     }
-    assert_eq!(callers.active_status().await, GenerationStatus::Trial);
+    assert_eq!(callers.active_status().await, Some(Health::Trial));
     callers.node.run("one more success").await;
-    assert_eq!(callers.active_status().await, GenerationStatus::Healthy);
+    assert_eq!(callers.active_status().await, Some(Health::Healthy));
     callers.node.kernel.shutdown().await.unwrap();
 }
 
@@ -232,8 +232,8 @@ async fn a_failed_memory_call_rolls_back_without_a_session_notice() {
             .exports
             .embedding(&fixture_endpoint("fixture"))
             .unwrap()
-            .generation,
-        callers.trial
+            .code,
+        CodeRef::from(callers.trial)
     );
     assert!(
         callers
@@ -253,12 +253,11 @@ async fn a_failed_memory_call_rolls_back_without_a_session_notice() {
             .lexical_only
             .is_none()
     );
-    let generations = callers.restart().await;
-    let generation = generations
-        .iter()
-        .find(|record| record.id == embedding_id)
-        .unwrap();
-    assert_eq!(generation.failure, Some(fault(code::PLUGIN_CONTRACT)));
+    let health = callers.restart().await;
+    assert_eq!(
+        health[&embedding_id].failure(),
+        Some(&fault(code::PLUGIN_CONTRACT))
+    );
 }
 
 #[tokio::test]
@@ -281,17 +280,17 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
                 attempt,
                 round,
                 plan,
-                provider,
+                ref provider,
                 ..
-            } => Some((attempt, round, plan, provider)),
+            } => Some((attempt, round, plan, provider.clone())),
             _ => None,
         })
         .collect();
     assert_eq!(starts.len(), 3);
     assert_eq!(starts[0].1, starts[1].1);
     assert_eq!(starts[0].2, starts[1].2);
-    assert_eq!(starts[0].3, broken_id);
-    assert_eq!(starts[1].3, callers.trial);
+    assert_eq!(starts[0].3, CodeRef::from(broken_id));
+    assert_eq!(starts[1].3, CodeRef::from(callers.trial));
     assert_ne!(starts[1].1, starts[2].1);
     let request = callers.broken.requests.lock().unwrap()[0].clone();
     assert_eq!(request, callers.provider.requests.lock().unwrap()[0]);
@@ -312,7 +311,7 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
         .iter()
         .filter_map(|entry| match &entry.body {
             EntryBody::EventConsumed { event }
-                if matches!(event.body, EventBody::GenerationRolledBack { .. }) =>
+                if matches!(event.body, EventBody::PluginRolledBack { .. }) =>
             {
                 Some(event)
             }
@@ -335,16 +334,16 @@ async fn a_failed_attempt_retries_its_recorded_request_on_the_rollback_target() 
             .unwrap()
             .plugins["fixture"]
             .activation
-            .generation
-            .status,
-        GenerationStatus::Failed
+            .health,
+        Some(Health::Failed {
+            failure: fault(code::PLUGIN_TRAP)
+        })
     );
-    let generations = callers.restart().await;
-    let generation = generations
-        .iter()
-        .find(|record| record.id == broken_id)
-        .unwrap();
-    assert_eq!(generation.failure, Some(fault(code::PLUGIN_TRAP)));
+    let health = callers.restart().await;
+    assert_eq!(
+        health[&broken_id].failure(),
+        Some(&fault(code::PLUGIN_TRAP))
+    );
 }
 
 #[tokio::test]
@@ -374,7 +373,7 @@ async fn safe_mode_replies_when_another_use_needs_an_interface_absent_from_facto
         .exports
         .completion(&fixture_endpoint("fixture"), true)
         .unwrap()
-        .generation;
+        .code;
     register_source(&registry, "fixture", b"multi-export").await;
     document["endpoint"]["embed"]["plugin"] = "fixture".into();
     submit(&registry, configuration_request(document))
@@ -424,7 +423,7 @@ async fn safe_mode_keeps_the_active_generation_of_a_plugin_without_factory_code(
     node.kernel.set_safe_mode(true).await.unwrap();
     let log = node.run("repair").await;
     assert!(log.iter().any(|entry| matches!(&entry.body,
-        EntryBody::AttemptStarted { provider, .. } if *provider == custom_generation.id
+        EntryBody::AttemptStarted { provider, .. } if *provider == CodeRef::from(custom_generation.id)
     )));
     assert!(matches!(
         log.last().unwrap().body,

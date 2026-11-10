@@ -1,10 +1,11 @@
 use super::*;
-use crate::silence::{reminder, skip};
+use crate::silence::skip;
 
 #[tokio::test]
 async fn a_skipped_reply_keeps_its_note_but_only_deletes_the_activity_card() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![
+        create_schedule(),
         reply("seed"),
         calls(vec![call(
             "shell_exec",
@@ -32,7 +33,7 @@ async fn a_skipped_reply_keeps_its_note_but_only_deletes_the_activity_card() {
         .unwrap();
     receive(&mut polling).await;
     receive(&mut sending).await.result.send(Ok(())).unwrap();
-    finish(&mut rx).await;
+    let schedule = created(&finish(&mut rx).await);
     channel.shutdown().await.unwrap();
 
     let gate = dir.path().join("workspace/gate");
@@ -46,7 +47,7 @@ async fn a_skipped_reply_keeps_its_note_but_only_deletes_the_activity_card() {
     adapter.activity_enabled.store(true, Ordering::SeqCst);
     let channel = start(&kernel, &adapter);
     receive(&mut polling).await;
-    reminder(&kernel, session).await;
+    remind(&kernel, session, schedule).await;
     let created = receive(&mut activity).await;
     assert!(created.shown.is_none());
     assert_eq!(created.target, "chat");
@@ -90,7 +91,7 @@ async fn a_skipped_reply_keeps_its_note_but_only_deletes_the_activity_card() {
     adapter.activity_enabled.store(false, Ordering::SeqCst);
     let channel = start(&kernel, &adapter);
     receive(&mut polling).await;
-    reminder(&kernel, session).await;
+    remind(&kernel, session, schedule).await;
     let delivered = receive(&mut sending).await;
     assert_eq!(delivered.text, "A reminder worth sending");
     delivered.result.send(Ok(())).unwrap();

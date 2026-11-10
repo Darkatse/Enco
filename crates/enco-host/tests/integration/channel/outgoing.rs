@@ -72,6 +72,7 @@ async fn settled_message_arrives_before_the_same_rounds_shell_finishes() {
 async fn restart_delivers_recorded_files_and_continues_after_missing_blobs() {
     let dir = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![
+        create_schedule(),
         reply("seed"),
         calls(vec![
             call("message_send", r#"{"file":"missing.txt"}"#),
@@ -90,6 +91,8 @@ async fn restart_delivers_recorded_files_and_continues_after_missing_blobs() {
     let workspace = dir.path().join("workspace");
     std::fs::write(workspace.join("missing.txt"), "missing bytes").unwrap();
     std::fs::write(workspace.join("kept.txt"), "original bytes").unwrap();
+    let session = kernel.open_session("main").await.unwrap();
+    let mut entries = kernel.subscribe(session.id).await.unwrap();
     let channel = start(&kernel, &adapter);
     receive(&mut polling).await;
     updates
@@ -98,27 +101,10 @@ async fn restart_delivers_recorded_files_and_continues_after_missing_blobs() {
         .unwrap();
     receive(&mut polling).await;
     receive(&mut sending).await.result.send(Ok(())).unwrap();
+    // The seed Run ends before the reminder starts the Run under test.
+    let schedule = created(&finish(&mut entries).await);
     channel.shutdown().await.unwrap();
-    let session = kernel.open_session("main").await.unwrap();
-    let mut entries = kernel.subscribe(session.id).await.unwrap();
-    kernel
-        .accept(
-            &[Event {
-                id: EventId::new(),
-                session: session.id,
-                source: EventSource::Scheduler,
-                body: EventBody::Reminder {
-                    schedule: ScheduleId::new(),
-                    due_at: enco_core::Utc::now(),
-                    skipped: 0,
-                    text: "continue".into(),
-                },
-                received_at: enco_core::Utc::now(),
-            }],
-            None,
-        )
-        .await
-        .unwrap();
+    remind(&kernel, session.id, schedule).await;
     let entries = finish(&mut entries).await;
     let missing = entries
         .iter()

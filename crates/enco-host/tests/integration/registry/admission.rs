@@ -97,7 +97,7 @@ async fn admission_keeps_configured_exports_connected() {
     )
     .await
     .unwrap();
-    let before = store.registry().await.unwrap().generations;
+    let before = store.registry().await.unwrap().intent.generations;
     for (bytes, expected_user, expected_endpoint) in [
         (b"completion-only".as_slice(), "memory.embedding", "embed"),
         (b"no-credential", "memory.embedding", "embed"),
@@ -115,7 +115,7 @@ async fn admission_keeps_configured_exports_connected() {
             "{causes:?}"
         );
     }
-    assert_eq!(store.registry().await.unwrap().generations, before);
+    assert_eq!(store.registry().await.unwrap().intent.generations, before);
     drop(registry);
     // Restoring registered content reports unavailable uses instead of accepting new intent.
     let restored = open_registry(
@@ -154,7 +154,7 @@ async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
         .remove(0);
     registry
         .report(
-            trial.id,
+            &trial.id.into(),
             Verdict::Failed(super::fault(code::PLUGIN_TRAP)),
             None,
         )
@@ -175,7 +175,7 @@ async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
     submit(&registry, configuration_request(document.clone()))
         .await
         .unwrap();
-    let before = registry.view().config.generation;
+    let before = registry.view().config.registration;
     let mut invalid = document.clone();
     invalid["endpoint"]["new"] = invalid["endpoint"]["reply"].clone();
     invalid["endpoint"]["new"]["api_key_env"] = "FIXTURE_KEY".into();
@@ -192,7 +192,7 @@ async fn unavailable_uses_are_isolated_and_can_be_repaired_through_the_view() {
                     && failure.code == code::PLUGIN_UNAVAILABLE)),
         "{error:?}"
     );
-    assert_eq!(registry.view().config.generation, before);
+    assert_eq!(registry.view().config.registration, before);
 
     document["endpoint"]["embed"]
         .as_object_mut()
@@ -241,13 +241,13 @@ async fn a_rejected_registration_writes_neither_a_generation_nor_a_name() {
     rejected.lifecycle = Arc::new(ScriptedLifecycle(Err(fault(code::PLUGIN_TRAP))));
     runtime.insert(b"rejected", rejected);
     let registry = open(&store, runtime).await;
-    let before = store.registry().await.unwrap().generations;
+    let before = store.registry().await.unwrap().intent.generations;
     assert!(matches!(
         submit(&registry, source_request("new-name", b"rejected")).await,
         Err(RegistryError::Rejected { .. })
     ));
-    assert_eq!(store.registry().await.unwrap().generations, before);
-    assert_eq!(store.registry().await.unwrap().plugins.len(), 2);
+    assert_eq!(store.registry().await.unwrap().intent.generations, before);
+    assert_eq!(store.registry().await.unwrap().node.plugins.len(), 2);
 }
 
 #[tokio::test]

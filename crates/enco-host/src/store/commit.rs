@@ -10,7 +10,6 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 pub(super) fn commit(
     connection: &mut Connection,
     node: NodeId,
-    default_working_dir: &WorkingDir,
     session: SessionId,
     commit: Commit,
     plan: Option<EncodedWrite>,
@@ -21,10 +20,10 @@ pub(super) fn commit(
         .iter()
         .map(|entry| encode(&entry.body))
         .collect::<Result<Vec<_>, _>>()?;
-    let events = commit
+    let documents = commit
         .deliveries
         .iter()
-        .map(|delivery| super::accept::encode_events(std::slice::from_ref(&delivery.event)))
+        .map(|delivery| encode(&delivery.event))
         .collect::<Result<Vec<_>, _>>()?;
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -37,8 +36,8 @@ pub(super) fn commit(
         [session.to_string()], |row| row.get(0),
     ).map_err(backend)?;
     let mut delivered = Vec::new();
-    for (delivery, encoded) in commit.deliveries.iter().zip(&events) {
-        match deliveries::deliver(&tx, node, default_working_dir, halted, delivery, encoded)? {
+    for (delivery, document) in commit.deliveries.iter().zip(documents) {
+        match deliveries::deliver(&tx, halted, delivery, document)? {
             Delivered::Written => delivered.push(delivery.event.session),
             Delivered::Skipped => {}
             Delivered::Rejected(reason) => return Ok(CommitOutcome::Rejected(reason)),
@@ -61,6 +60,9 @@ pub(super) fn commit(
         )
         .map_err(backend)?;
     }
+    // The rows are folds of the Log, so they change in the transaction that appends to the Log.
+    super::sessions::apply(&tx, session, &commit.entries)?;
+    super::schedules::apply(&tx, session, &commit.entries)?;
     tx.commit().map_err(backend)?;
     Ok(CommitOutcome::Committed { delivered })
 }

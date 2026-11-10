@@ -6,6 +6,7 @@
 Durable vocabulary shared by the kernel, host and local protocol.
 
 - module `code` — Stable failure codes shared with WIT plugins.
+- struct `ActiveCode` — The registered behavior a Round ran with: the active configuration and each running plugin's code.
 - struct `ArgumentError` — Why a call's arguments do not fit the tool's schema, naming the argument.
 - enum `Arguments` — The single normalization step for raw tool arguments, used by dispatch.
 - enum `Attachment` — A recorded attachment: an image a model may view, or any other file.
@@ -20,11 +21,12 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `ChildState` — Child facts computed from committed history followed by accepted, unconsumed inputs.
 - struct `ChildStateFold` — Folds a child's history, newest first, into its `ChildState`.
 - enum `CodeIntent` — The owner's choice of code source, independent of the resulting component bytes.
-- enum `CodeRef` — Identifies the exact code used by an invocation.
-- struct `ConfigGeneration` — An immutable registered configuration document.
-- struct `ConfigurationRef` — The identity and registration of a configuration, without copying its document.
+- enum `CodeRef` — Identifies the exact code used by an invocation, or that a plugin runs.
+- enum `CommandOn` — What a command acts on, which decides when it takes effect.
+- struct `ConfigGeneration` — An immutable registered configuration document; its registration is its identity.
 - struct `ContentHash` — BLAKE3 address of immutable bytes, encoded as lowercase hexadecimal.
 - struct `ContextPlan` — The complete request plan, recorded by content address before sending.
+- struct `Creation` — What the authority over a Session's name records when it creates the Session: its identity and where it starts.
 - struct `Delegated` — Child Session delegation committed with a `session_send` settlement.
 - enum `Deliverable` — What a Session hands to its reply destination at a delivery boundary.
 - struct `Delivery` — A logical channel delivery referencing its original Log fact.
@@ -45,10 +47,10 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `Failure` — Stable machine-readable classification with contextual diagnostic text.
 - struct `File` — A recorded file; the kernel stores the bytes before accepting this reference.
 - struct `FileData` — File bytes handed to the kernel at settlement, or resolved for one delivery.
-- struct `GenerationId` — Registry-global generation number, ordered by commit rather than time.
-- struct `GenerationRecord` — One immutable generation identity, with a mutable availability status.
-- enum `GenerationStatus` — Eligibility for use and automatic recovery.
+- struct `GenerationId` — A plugin generation's identity: the registration that brought its content, and the plugin.
+- struct `GenerationRecord` — Immutable plugin content that one registration brought: the artifact, its settings and where the code came from.
 - struct `Halt` — A stop of a whole Session subtree.
+- enum `Health` — A generation's standing on one node; another node may judge the same content differently.
 - struct `Image` — Recorded image metadata; the kernel stores the bytes before accepting this reference.
 - struct `ImageData` — Bytes resolved from a recorded image for one frozen Provider request.
 - enum `ImageFormat` — Encodings shared by the supported image input protocols.
@@ -70,9 +72,9 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `Message` — Provider-independent message; this shape is part of the Log format.
 - enum `Modality` — Non-text input accepted by a completion endpoint.
 - struct `NodeId` — Persistent identity of an Enco installation.
-- struct `Occurrence` — Last delivered occurrence; the next one is derived rather than stored.
+- struct `Occurrence` — An occurrence that reached the Session; the next one is derived rather than stored.
 - struct `Omission` — A visible explanation of content excluded from this request.
-- enum `Origin` — Source of a registered generation.
+- enum `Origin` — Where a generation's code came from.
 - enum `Outcome` — Known success, known failure, or an effect whose outcome is uncertain.
 - struct `Outgoing` — Content addressed to a reply destination: Markdown text and at most one file.
 - struct `Overflow` — A service's refusal of a request larger than its model accepts, with the numbers it gave.
@@ -81,7 +83,7 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `PluginActivation` — A current or retained code reference, distinct from the generation's creation provenance.
 - struct `PluginId` — Persistent identity assigned when a plugin name is registered.
 - struct `PluginName` — A validated directory and routing name for one plugin.
-- struct `PluginRecord` — Mutable references owned exclusively by the registry.
+- struct `PluginRecord` — One node's mutable references for a plugin, owned exclusively by the registry.
 - struct `PluginSettings` — The complete `[plugin.<name>]` table. Only `config` is visible to the plugin.
 - struct `ProfileName` — A validated profile name, also used to select its profile instructions.
 - struct `ProviderSettings` — Per-call provider settings recorded before invocation. Credential values belong only to the host transport.
@@ -101,10 +103,12 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - struct `RoundId` — Identity of a model request and its tool settlements.
 - enum `RunEnd` — Why this Run stopped.
 - struct `RunId` — Identity of one Run of a Session.
-- struct `Schedule` — A durable sequence of reminders delivered to a Session Inbox.
+- struct `Schedule` — A schedule of reminders to one Session, as its facts give it.
+- enum `ScheduleChange` — A change a call made to its own Session's schedules, committed with its settlement.
+- struct `ScheduleFold` — A Session's schedules, folded by identity from its facts: settlement changes, consumed owner cancels and consumed reminders.
 - struct `ScheduleId` — Identity of a durable schedule.
 - enum `ScheduleRule` — One instant or a recurring pattern interpreted in local time.
-- enum `ScheduleState` — Schedule lifetime; firing and Inbox acceptance are atomic.
+- enum `ScheduleState` — Schedule lifetime.
 - struct `SchemaError` — Why a declared schema is outside the canonical subset, and where, as a JSON Pointer.
 - struct `Seq` — Sequence assigned by a Session actor, starting at one.
 - struct `SessionId` — Durable identity of a conversation and its Log.
@@ -132,6 +136,37 @@ Durable vocabulary shared by the kernel, host and local protocol.
 - const `REASON_PLACEHOLDER` — Reserved marker in suggested calls; it is never an acceptable registration reason.
 
 Re-exports `chrono::DateTime`, `chrono::FixedOffset`, `chrono::Utc`, `chrono_tz::Tz`.
+
+## struct `ActiveCode`
+
+`src/generation.rs`
+
+```rust
+pub struct ActiveCode {
+    pub configuration: crate::RegistrationId,
+    pub plugins: std::collections::BTreeMap<crate::PluginId, crate::CodeRef>,
+}
+```
+
+The registered behavior a Round ran with: the active configuration and each running
+plugin's code.
+
+Trial promotion leaves it unchanged; a registration or a rollback that changes what runs
+changes it.
+
+- `configuration` — Registration of the active configuration.
+- `plugins` — Code each running plugin uses.
+
+Implements:
+
+```rust
+impl Clone for ActiveCode
+impl Debug for ActiveCode
+impl<'de> Deserialize<'de> for ActiveCode
+impl Eq for ActiveCode
+impl PartialEq for ActiveCode
+impl Serialize for ActiveCode
+```
 
 ## struct `ArgumentError`
 
@@ -519,7 +554,7 @@ pub struct ChildState {
 Child facts computed from committed history followed by accepted, unconsumed inputs.
 
 - `awaiting` — Whether the parent still waits for this child's answer.
-- `halted` — Most recent halt, provided no later input has superseded it.
+- `halted` — Most recent halt, provided no later input or backtrack has superseded it.
 - `replies_to_owner` — Whether replies currently go to the owner rather than the delegating parent.
 
 Implements:
@@ -618,6 +653,10 @@ pub enum CodeRef {
     Generation {
         id: crate::GenerationId,
     },
+    Factory {
+        plugin: crate::PluginId,
+        artifact: crate::ContentHash,
+    },
     Native {
         name: String,
         version: String,
@@ -625,13 +664,32 @@ pub enum CodeRef {
 }
 ```
 
-Identifies the exact code used by an invocation.
+Identifies the exact code used by an invocation, or that a plugin runs.
 
-- `Generation` — Code and settings registered together as a plugin generation.
-  - `id` — Immutable registry identity.
+- `Generation` — Code and settings that one registration brought for a plugin.
+  - `id` — The registration and plugin that identify it.
+- `Factory` — Code shipped with a host, run with empty settings; it is host content, never registered.
+  - `plugin` — Plugin the host reserves this code for.
+  - `artifact` — Content address of the embedded component; hosts with the same bytes agree on it.
 - `Native` — Code linked into the host binary.
   - `name` — Identity of the linked native capability or policy.
   - `version` — Version of the linked native crate.
+
+### `CodeRef::plugin`
+
+```rust
+pub fn plugin(&self) -> Option<PluginId>
+```
+
+The plugin this code belongs to; native code belongs to none.
+
+### `CodeRef::generation`
+
+```rust
+pub fn generation(&self) -> Option<GenerationId>
+```
+
+The registered generation, absent for host content.
 
 Implements:
 
@@ -639,8 +697,40 @@ Implements:
 impl Clone for CodeRef
 impl Debug for CodeRef
 impl<'de> Deserialize<'de> for CodeRef
+impl Display for CodeRef
+impl Eq for CodeRef
+impl From<GenerationId> for CodeRef
+impl Hash for CodeRef
+impl Ord for CodeRef
 impl PartialEq for CodeRef
+impl PartialOrd for CodeRef
 impl Serialize for CodeRef
+```
+
+## enum `CommandOn`
+
+`src/event.rs`
+
+```rust
+pub enum CommandOn {
+    Conversation,
+    Session,
+}
+```
+
+What a command acts on, which decides when it takes effect.
+
+- `Conversation` — The conversation: it is consumed between two Runs.
+- `Session` — The Session itself: it is consumed at the next Round boundary, at once while idle.
+
+Implements:
+
+```rust
+impl Clone for CommandOn
+impl Copy for CommandOn
+impl Debug for CommandOn
+impl Eq for CommandOn
+impl PartialEq for CommandOn
 ```
 
 ## struct `ConfigGeneration`
@@ -649,23 +739,17 @@ impl Serialize for CodeRef
 
 ```rust
 pub struct ConfigGeneration {
-    pub id: crate::GenerationId,
     pub registration: crate::RegistrationId,
     pub source: crate::ContentHash,
     pub document: serde_json::Value,
-    pub previous: Option<crate::GenerationId>,
-    pub created_at: crate::DateTime<crate::Utc>,
 }
 ```
 
-An immutable registered configuration document.
+An immutable registered configuration document; its registration is its identity.
 
-- `id` — Global registry sequence number, shared with plugin generations.
 - `registration` — Accepted change which produced this generation.
 - `source` — Content address of the exact configuration file, including comments.
 - `document` — Complete configuration content; declarations are derived by its owners.
-- `previous` — Configuration which was active immediately before this one was registered.
-- `created_at` — Observation time for display, never ordering.
 
 Implements:
 
@@ -675,41 +759,6 @@ impl Debug for ConfigGeneration
 impl<'de> Deserialize<'de> for ConfigGeneration
 impl PartialEq for ConfigGeneration
 impl Serialize for ConfigGeneration
-```
-
-## struct `ConfigurationRef`
-
-`src/generation.rs`
-
-```rust
-pub struct ConfigurationRef {
-    pub generation: crate::GenerationId,
-    pub registration: crate::RegistrationId,
-}
-```
-
-The identity and registration of a configuration, without copying its document.
-
-- `generation` — Selected configuration generation.
-- `registration` — Registration that accepted the configuration.
-
-### `ConfigurationRef::of`
-
-```rust
-pub fn of(configuration: &ConfigGeneration) -> Self
-```
-
-The reference to one configuration generation.
-
-Implements:
-
-```rust
-impl Clone for ConfigurationRef
-impl Copy for ConfigurationRef
-impl Debug for ConfigurationRef
-impl Eq for ConfigurationRef
-impl PartialEq for ConfigurationRef
-impl Serialize for ConfigurationRef
 ```
 
 ## struct `ContentHash`
@@ -741,7 +790,9 @@ impl Display for ContentHash
 impl Eq for ContentHash
 impl FromStr for ContentHash
 impl Hash for ContentHash
+impl Ord for ContentHash
 impl PartialEq for ContentHash
+impl PartialOrd for ContentHash
 impl Serialize for ContentHash
 ```
 
@@ -783,6 +834,46 @@ impl PartialEq for ContextPlan
 impl Serialize for ContextPlan
 ```
 
+## struct `Creation`
+
+`src/session.rs`
+
+```rust
+pub struct Creation {
+    pub id: crate::SessionId,
+    pub name: crate::SessionName,
+    pub parent: Option<SessionRef>,
+    pub created_at: crate::DateTime<crate::Utc>,
+    pub node: crate::NodeId,
+    pub profile: crate::ProfileName,
+    pub working_dir: crate::WorkingDir,
+}
+```
+
+What the authority over a Session's name records when it creates the Session: its identity
+and where it starts.
+
+A root's authority is the root directory; a child's is its parent's Log. Later changes are the
+Session's own Log facts, and its archive is a control-plane fact.
+
+- `id` — Identity joining the Session's Inbox, Log and execution binding.
+- `name` — Full name, unique among unarchived Sessions when it was created.
+- `parent` — The parent, absent for a root.
+- `created_at` — Creation time in UTC.
+- `node` — The node that first executes it.
+- `profile` — The profile it starts with.
+- `working_dir` — The working directory it starts with.
+
+Implements:
+
+```rust
+impl Clone for Creation
+impl Debug for Creation
+impl<'de> Deserialize<'de> for Creation
+impl PartialEq for Creation
+impl Serialize for Creation
+```
+
 ## struct `Delegated`
 
 `src/entry.rs`
@@ -790,7 +881,7 @@ impl Serialize for ContextPlan
 ```rust
 pub struct Delegated {
     pub session: crate::SessionRef,
-    pub created: bool,
+    pub creation: Option<crate::Creation>,
     pub event: crate::EventId,
 }
 ```
@@ -798,7 +889,8 @@ pub struct Delegated {
 Child Session delegation committed with a `session_send` settlement.
 
 - `session` — Target child Session identity and full name.
-- `created` — Whether this call created the child Session.
+- `creation` — The child's creation record, when this call created it; the parent's Log is the
+  authority over its children's names.
 - `event` — Event accepted into the child Session's Inbox.
 
 Implements:
@@ -807,7 +899,6 @@ Implements:
 impl Clone for Delegated
 impl Debug for Delegated
 impl<'de> Deserialize<'de> for Delegated
-impl Eq for Delegated
 impl PartialEq for Delegated
 impl Serialize for Delegated
 ```
@@ -1137,8 +1228,8 @@ pub enum EntryBody {
         attempt: crate::AttemptId,
         purpose: AttemptPurpose,
         plan: crate::ContentHash,
-        composer: crate::GenerationId,
-        provider: crate::GenerationId,
+        composer: crate::CodeRef,
+        provider: crate::CodeRef,
         settings: crate::ProviderSettings,
     },
     AttemptSettled {
@@ -1161,6 +1252,7 @@ pub enum EntryBody {
         images: Vec<crate::Image>,
         outgoing: Option<crate::Outgoing>,
         delegated: Option<Delegated>,
+        schedule: Option<crate::ScheduleChange>,
     },
     RoundEnded {
         round: crate::RoundId,
@@ -1194,8 +1286,8 @@ Facts accepted by the Session owner.
   - `attempt` — Provider attempt associated with this fact.
   - `purpose` — Purpose of this provider request.
   - `plan` — Address of the frozen ContextPlan.
-  - `composer` — Composer generation which constructed the frozen plan.
-  - `provider` — Provider generation used by this Attempt.
+  - `composer` — Composer code which constructed the frozen plan.
+  - `provider` — Provider code used by this Attempt.
   - `settings` — Exact per-call parameters; credentials are never recorded.
 - `AttemptSettled` — A provider attempt completed or failed.
   - `attempt` — Provider attempt associated with this fact.
@@ -1218,6 +1310,7 @@ Facts accepted by the Session owner.
   - `images` — Images stored by the settlement before this entry was committed.
   - `outgoing` — Content handed to the current reply destination with this settlement.
   - `delegated` — Child delegation accepted atomically with this settlement.
+  - `schedule` — A change to the Session's own schedules, committed with this settlement.
 - `RoundEnded` — All proposed calls have been settled and the Round has ended.
   - `round` — Round containing this fact.
   - `end` — Reason execution stopped.
@@ -1347,7 +1440,7 @@ impl Serialize for Event
 
 ```rust
 pub enum EventBody {
-    GenerationRolledBack {
+    PluginRolledBack {
         rollback: crate::RolledBack,
         text: String,
     },
@@ -1373,12 +1466,21 @@ pub enum EventBody {
     },
     Compact,
     Halt(Halt),
+    SetProfile {
+        profile: crate::ProfileName,
+    },
+    SetWorkingDir {
+        working_dir: crate::WorkingDir,
+    },
+    CancelSchedule {
+        schedule: crate::ScheduleId,
+    },
 }
 ```
 
 Input to a Session, consumed in Inbox order.
 
-- `GenerationRolledBack` — A failed trial generation and its committed replacement.
+- `PluginRolledBack` — A plugin's generation failed on trial, and recovery committed what runs instead.
   - `rollback` — Committed recovery facts.
   - `text` — Notice written by the Registry when the rollback committed.
 - `UserMessage` — A message that drives this Session, with quoted context from its conversation.
@@ -1402,6 +1504,22 @@ Input to a Session, consumed in Inbox order.
   - `end` — Recorded terminal result, distinct from the child's own words.
 - `Compact` — The owner asked for the conversation to be compacted before the next Run's reply.
 - `Halt` — A command stopping this Session's subtree without moving its reply destination.
+- `SetProfile` — The owner selected the profile the Session uses from its next Round.
+  - `profile` — A profile the configuration defined when the command was accepted.
+- `SetWorkingDir` — The owner moved the Session's working directory from its next Round.
+  - `working_dir` — The new directory; whether it exists is checked when it is used.
+- `CancelSchedule` — The owner cancelled one of the Session's schedules; no later reminder of it is accepted.
+  - `schedule` — The schedule to stop.
+
+### `EventBody::command_on`
+
+```rust
+pub fn command_on(&self) -> Option<CommandOn>
+```
+
+What this command acts on; an input, which is answered and drives a Run, has none.
+
+The match is exhaustive, so a new kind of Event must decide before it compiles.
 
 ### `EventBody::is_command`
 
@@ -1409,8 +1527,16 @@ Input to a Session, consumed in Inbox order.
 pub fn is_command(&self) -> bool
 ```
 
-Whether this is a command about the conversation rather than input to answer: a backtrack,
-a halt or a compaction request. Commands are consumed between Runs.
+Whether this is a command, which is not answered, rather than an input.
+
+### `EventBody::schedule`
+
+```rust
+pub fn schedule(&self) -> Option<ScheduleId>
+```
+
+The schedule this Event names, a reminder's or an owner's cancel's; the Inbox writes it
+only while that schedule is active.
 
 ### `EventBody::supersedes_inputs`
 
@@ -1422,6 +1548,18 @@ Whether this command stops the current Run and supersedes the inputs before it: 
 backtrack or a halt.
 
 The Run stops at its next boundary, and the superseded inputs are not answered.
+
+### `EventBody::leaves_inputs`
+
+```rust
+pub fn leaves_inputs(&self) -> bool
+```
+
+Whether this command leaves the inputs before it as they were: a compaction request or a
+command acting on the Session.
+
+It is consumed on its own: the model does not see it, it starts no Run, and a reply owed or
+awaited, a halt and the reply destination stand as they were.
 
 Implements:
 
@@ -1450,6 +1588,18 @@ pub fn new() -> Self
 ```
 
 Allocate a globally unique identity, independent of ordering.
+
+### `EventId::reminder`
+
+```rust
+pub fn reminder(schedule: ScheduleId, due_at: crate::DateTime<crate::Utc>) -> Self
+```
+
+The identity of the reminder for one occurrence of a schedule.
+
+Every node and every retry derives the same identity from the same schedule and planned
+time, so the Inbox and the Log accept the occurrence once. The planned time, not the
+clock, decides it.
 
 Implements:
 
@@ -1635,10 +1785,20 @@ impl Serialize for FileData
 `src/ids.rs`
 
 ```rust
-pub struct GenerationId(pub u64);
+pub struct GenerationId {
+    pub registration: RegistrationId,
+    pub plugin: PluginId,
+}
 ```
 
-Registry-global generation number, ordered by commit rather than time.
+A plugin generation's identity: the registration that brought its content, and the plugin.
+
+A registration brings at most one generation per plugin, so every node derives the same
+identity from the same registration. A configuration generation is identified by its
+registration alone.
+
+- `registration` — Registration that brought content the host does not have.
+- `plugin` — Plugin whose history contains the generation.
 
 Implements:
 
@@ -1649,6 +1809,7 @@ impl Debug for GenerationId
 impl<'de> Deserialize<'de> for GenerationId
 impl Display for GenerationId
 impl Eq for GenerationId
+impl From<GenerationId> for CodeRef
 impl Hash for GenerationId
 impl Ord for GenerationId
 impl PartialEq for GenerationId
@@ -1663,26 +1824,21 @@ impl Serialize for GenerationId
 ```rust
 pub struct GenerationRecord {
     pub id: crate::GenerationId,
-    pub plugin: crate::PluginId,
     pub artifact: crate::ContentHash,
     pub settings: PluginSettings,
     pub origin: Origin,
-    pub status: GenerationStatus,
-    pub failure: Option<crate::Failure>,
-    pub created_at: crate::DateTime<crate::Utc>,
 }
 ```
 
-One immutable generation identity, with a mutable availability status.
+Immutable plugin content that one registration brought: the artifact, its settings and
+where the code came from.
 
-- `id` — Registry-assigned structural sequence number.
-- `plugin` — Plugin whose history contains this generation.
+It is intent, the same on every node; whether it runs well is each node's `Health`.
+
+- `id` — The registration that brought it, and its plugin.
 - `artifact` — Content-addressed component bytes.
 - `settings` — Owner-selected plugin configuration and credential names, fixed together with the code.
-- `origin` — How this generation entered the registry.
-- `status` — Whether this generation remains eligible for use.
-- `failure` — The reason this generation was marked failed; absent for trial and healthy records.
-- `created_at` — Observation time for display, never ordering.
+- `origin` — Where the code came from.
 
 Implements:
 
@@ -1692,36 +1848,6 @@ impl Debug for GenerationRecord
 impl<'de> Deserialize<'de> for GenerationRecord
 impl PartialEq for GenerationRecord
 impl Serialize for GenerationRecord
-```
-
-## enum `GenerationStatus`
-
-`src/generation.rs`
-
-```rust
-pub enum GenerationStatus {
-    Trial,
-    Healthy,
-    Failed,
-}
-```
-
-Eligibility for use and automatic recovery.
-
-- `Trial` — Active under observation; not yet eligible as a rollback target.
-- `Healthy` — Eligible to become active or serve as a rollback target.
-- `Failed` — Unavailable; redeploying its bytes creates a new identity.
-
-Implements:
-
-```rust
-impl Clone for GenerationStatus
-impl Copy for GenerationStatus
-impl Debug for GenerationStatus
-impl<'de> Deserialize<'de> for GenerationStatus
-impl Eq for GenerationStatus
-impl PartialEq for GenerationStatus
-impl Serialize for GenerationStatus
 ```
 
 ## struct `Halt`
@@ -1749,6 +1875,45 @@ impl<'de> Deserialize<'de> for Halt
 impl Eq for Halt
 impl PartialEq for Halt
 impl Serialize for Halt
+```
+
+## enum `Health`
+
+`src/generation.rs`
+
+```rust
+pub enum Health {
+    Trial,
+    Healthy,
+    Failed {
+        failure: crate::Failure,
+    },
+}
+```
+
+A generation's standing on one node; another node may judge the same content differently.
+
+- `Trial` — Active under observation; not yet eligible as a rollback target.
+- `Healthy` — Eligible to become active or serve as a rollback target.
+- `Failed` — Unavailable on this node; registering its bytes again brings a new identity.
+  - `failure` — The attributable fault that marked it failed.
+
+### `Health::failure`
+
+```rust
+pub fn failure(&self) -> Option<&Failure>
+```
+
+The recorded fault, absent unless failed.
+
+Implements:
+
+```rust
+impl Clone for Health
+impl Debug for Health
+impl<'de> Deserialize<'de> for Health
+impl PartialEq for Health
+impl Serialize for Health
 ```
 
 ## struct `Image`
@@ -2208,7 +2373,7 @@ impl Serialize for MappingOrigin
 
 ```rust
 pub struct MappingRecord {
-    pub generation: crate::GenerationId,
+    pub code: crate::CodeRef,
     pub export: String,
     pub arguments: serde_json::Value,
 }
@@ -2216,7 +2381,7 @@ pub struct MappingRecord {
 
 A recorded mapper call; each response body is separate evidence that its arguments address.
 
-- `generation` — The registered generation that interpreted these arguments.
+- `code` — The mapper code that interpreted these arguments: a generation or factory code.
 - `export` — The exported function, such as `channel.received`.
 - `arguments` — Complete arguments, with each response body replaced by its content address.
 
@@ -2417,7 +2582,7 @@ impl Serialize for NodeId
 
 ## struct `Occurrence`
 
-`src/session.rs`
+`src/schedule.rs`
 
 ```rust
 pub struct Occurrence {
@@ -2426,10 +2591,10 @@ pub struct Occurrence {
 }
 ```
 
-Last delivered occurrence; the next one is derived rather than stored.
+An occurrence that reached the Session; the next one is derived rather than stored.
 
-- `due_at` — Planned time, independent of when the scheduler actually delivered it.
-- `event` — Event accepted into the destination Inbox.
+- `due_at` — Planned time, independent of when the reminder was delivered.
+- `event` — The reminder that carried it.
 
 Implements:
 
@@ -2474,39 +2639,24 @@ impl Serialize for Omission
 
 ```rust
 pub enum Origin {
-    Factory,
-    Code {
-        registration: crate::RegistrationId,
-    },
+    Code,
     Settings {
-        registration: crate::RegistrationId,
-        based_on: crate::GenerationId,
+        based_on: crate::CodeRef,
     },
 }
 ```
 
-Source of a registered generation.
+Where a generation's code came from.
 
-- `Factory` — Component embedded in the host binary.
-- `Code` — Accepted code intent, from source or the current host's factory implementation.
-  - `registration` — Accepted change that supplied this code.
-- `Settings` — New settings paired with the currently active code.
-  - `registration` — Accepted change that supplied these settings.
-  - `based_on` — Generation whose code is reused.
-
-### `Origin::registration`
-
-```rust
-pub fn registration(self) -> Option<RegistrationId>
-```
-
-The accepted change that produced this content; factory content belongs to the host.
+- `Code` — The registration's code intent supplied it: a built source directory, or the host's
+  factory code with non-empty settings.
+- `Settings` — New settings paired with the code that ran when they were registered.
+  - `based_on` — The code reused, a generation or factory code.
 
 Implements:
 
 ```rust
 impl Clone for Origin
-impl Copy for Origin
 impl Debug for Origin
 impl<'de> Deserialize<'de> for Origin
 impl Eq for Origin
@@ -2710,21 +2860,20 @@ impl Serialize for PlanItem
 
 ```rust
 pub struct PluginActivation {
-    pub generation: crate::GenerationId,
+    pub code: crate::CodeRef,
     pub registration: Option<crate::RegistrationId>,
 }
 ```
 
 A current or retained code reference, distinct from the generation's creation provenance.
 
-- `generation` — Target code and settings.
+- `code` — Target code: a generation, or factory code with empty settings.
 - `registration` — Registration which wrote this reference; absent only for direct factory recovery.
 
 Implements:
 
 ```rust
 impl Clone for PluginActivation
-impl Copy for PluginActivation
 impl Debug for PluginActivation
 impl<'de> Deserialize<'de> for PluginActivation
 impl Eq for PluginActivation
@@ -2829,7 +2978,7 @@ pub struct PluginRecord {
 }
 ```
 
-Mutable references owned exclusively by the registry.
+One node's mutable references for a plugin, owned exclusively by the registry.
 
 - `id` — Immutable installation identity; names may change or be reused.
 - `named_by` — This identity's current name row, including a row recording removal.
@@ -3129,14 +3278,14 @@ impl Serialize for Reason
 
 ```rust
 pub struct RegisteredCode {
-    pub generation: crate::GenerationId,
+    pub code: crate::CodeRef,
     pub intent: Option<CodeIntent>,
 }
 ```
 
 One accepted code activation.
 
-- `generation` — Code activated by this change.
+- `code` — Code activated by this change: the generation it brought, or factory code it followed.
 - `intent` — Code intent accepted here; a settings change leaves it unchanged.
 
 Implements:
@@ -3157,14 +3306,12 @@ impl Serialize for RegisteredCode
 ```rust
 pub struct RegisteredName {
     pub name: Option<crate::PluginName>,
-    pub previous: Option<crate::RegistrationId>,
 }
 ```
 
 One accepted name change.
 
 - `name` — Directory and routing name, or no name after removal.
-- `previous` — Name version actually in effect before this change, for the same identity.
 
 Implements:
 
@@ -3312,7 +3459,7 @@ impl Serialize for Role
 pub struct RolledBack {
     pub plugin: crate::PluginName,
     pub from: crate::GenerationId,
-    pub to: Option<crate::GenerationId>,
+    pub to: Option<crate::CodeRef>,
     pub failure: crate::Failure,
 }
 ```
@@ -3320,8 +3467,8 @@ pub struct RolledBack {
 A committed automatic rollback, also accepted as a Session input when applicable.
 
 - `plugin` — Running plugin name.
-- `from` — Failed trial generation.
-- `to` — Replacement, or none when no healthy generation remains.
+- `from` — The generation that failed on trial.
+- `to` — What runs instead: an earlier generation or factory code; absent when nothing can run.
 - `failure` — Plugin fault which triggered recovery.
 
 Implements:
@@ -3347,7 +3494,7 @@ pub enum RoundEnd {
     Cancelled,
     Failed {
         failure: crate::Failure,
-        generations: Vec<crate::GenerationId>,
+        active: crate::ActiveCode,
     },
 }
 ```
@@ -3361,7 +3508,7 @@ Why this Round stopped.
 - `Cancelled` — Cancellation was requested and work has stopped.
 - `Failed` — The operation stopped with a known failure.
   - `failure` — Classification and details of the failure.
-  - `generations` — Active configuration and plugin generations when this Round failed, in ascending order.
+  - `active` — The active configuration and plugin code when this Round failed.
 
 Implements:
 
@@ -3496,7 +3643,7 @@ impl Serialize for RunId
 
 ## struct `Schedule`
 
-`src/session.rs`
+`src/schedule.rs`
 
 ```rust
 pub struct Schedule {
@@ -3510,15 +3657,15 @@ pub struct Schedule {
 }
 ```
 
-A durable sequence of reminders delivered to a Session Inbox.
+A schedule of reminders to one Session, as its facts give it.
 
 - `id` — Identity used to cancel this schedule and link its delivered Events.
-- `session` — Destination Session for the reminder Event.
-- `rule` — Rule from which future occurrences are derived.
+- `session` — The Session whose facts define it, and to which its reminders go.
+- `rule` — Rule from which occurrences are derived.
 - `message` — Reminder text delivered when due.
 - `created_at` — Creation time in UTC.
-- `state` — Current schedule lifetime state.
-- `last` — Most recent occurrence atomically accepted into the Inbox.
+- `state` — Lifetime state, derived from what is known about it.
+- `last` — The latest occurrence that reached the Session's Inbox.
 
 Implements:
 
@@ -3528,6 +3675,124 @@ impl Debug for Schedule
 impl<'de> Deserialize<'de> for Schedule
 impl PartialEq for Schedule
 impl Serialize for Schedule
+```
+
+## enum `ScheduleChange`
+
+`src/schedule.rs`
+
+```rust
+pub enum ScheduleChange {
+    Created {
+        id: crate::ScheduleId,
+        rule: ScheduleRule,
+        message: String,
+        created_at: crate::DateTime<crate::Utc>,
+    },
+    Cancelled {
+        id: crate::ScheduleId,
+    },
+}
+```
+
+A change a call made to its own Session's schedules, committed with its settlement.
+
+- `Created` — The call created a schedule.
+  - `id` — The new schedule's identity.
+  - `rule` — Rule from which its occurrences are derived.
+  - `message` — Reminder text delivered when due.
+  - `created_at` — Creation time; the first occurrence follows it.
+- `Cancelled` — The call cancelled one of the Session's schedules.
+  - `id` — The schedule it stopped.
+
+Implements:
+
+```rust
+impl Clone for ScheduleChange
+impl Debug for ScheduleChange
+impl<'de> Deserialize<'de> for ScheduleChange
+impl PartialEq for ScheduleChange
+impl Serialize for ScheduleChange
+```
+
+## struct `ScheduleFold`
+
+`src/schedule.rs`
+
+```rust
+pub struct ScheduleFold {
+    /* private fields */
+}
+```
+
+A Session's schedules, folded by identity from its facts: settlement changes, consumed
+owner cancels and consumed reminders.
+
+The same functions fold the Log into the committed view and the pending Inbox into the
+effective view.
+
+### `ScheduleFold::new`
+
+```rust
+pub fn new(session: SessionId) -> Self
+```
+
+Nothing known yet.
+
+### `ScheduleFold::from_rows`
+
+```rust
+pub fn from_rows(session: SessionId, rows: impl IntoIterator<Item = Schedule>) -> Self
+```
+
+Continue from materialized rows; a row keeps every fact the fold needs.
+
+### `ScheduleFold::apply`
+
+```rust
+pub fn apply(&mut self, body: &EntryBody)
+```
+
+Apply one fact of the Session's own Log.
+
+### `ScheduleFold::consume`
+
+```rust
+pub fn consume(&mut self, event: &Event)
+```
+
+Apply one input the Session consumed or will consume: an owner's cancel or a reminder.
+
+### `ScheduleFold::unknown`
+
+```rust
+pub fn unknown(&self) -> impl Iterator<Item = ScheduleId> + '_
+```
+
+Facts about schedules this Session never created, which no producer may record.
+
+### `ScheduleFold::get`
+
+```rust
+pub fn get(&self, id: ScheduleId) -> Option<Schedule>
+```
+
+One schedule, if this Session created it.
+
+### `ScheduleFold::rows`
+
+```rust
+pub fn rows(&self) -> Vec<Schedule>
+```
+
+Every schedule this Session created, in identity order.
+
+Implements:
+
+```rust
+impl Clone for ScheduleFold
+impl Debug for ScheduleFold
+impl PartialEq for ScheduleFold
 ```
 
 ## struct `ScheduleId`
@@ -3569,7 +3834,7 @@ impl Serialize for ScheduleId
 
 ## enum `ScheduleRule`
 
-`src/session.rs`
+`src/schedule.rs`
 
 ```rust
 pub enum ScheduleRule {
@@ -3603,7 +3868,7 @@ impl Serialize for ScheduleRule
 
 ## enum `ScheduleState`
 
-`src/session.rs`
+`src/schedule.rs`
 
 ```rust
 pub enum ScheduleState {
@@ -3613,11 +3878,11 @@ pub enum ScheduleState {
 }
 ```
 
-Schedule lifetime; firing and Inbox acceptance are atomic.
+Schedule lifetime.
 
 - `Active` — Future occurrences may be delivered.
-- `Done` — The last occurrence has been delivered.
-- `Cancelled` — Future occurrences have been cancelled.
+- `Done` — Its one occurrence reached the Session.
+- `Cancelled` — Cancelled; a cancel wins over any other fact.
 
 Implements:
 
@@ -3829,6 +4094,42 @@ Persistent Session identity, execution binding, selected profile and working dir
 - `binding` — Node and generation authorized to execute this Session.
 - `profile` — Name of the configuration selected at the next Round boundary.
 - `working_dir` — Working directory sampled at the next Round boundary.
+
+### `SessionRecord::created`
+
+```rust
+pub fn created(creation: &Creation) -> Self
+```
+
+The row a creation record starts: unarchived, executed by its first node at epoch one.
+
+### `SessionRecord::consume`
+
+```rust
+pub fn consume(&mut self, event: &crate::EventBody)
+```
+
+Apply one input the Session consumed, or will consume: only a command acting on the
+Session changes its row.
+
+The same function folds the Log into the committed view and the pending Inbox into the
+effective view, so the two views cannot disagree about what a command does.
+
+### `SessionRecord::apply`
+
+```rust
+pub fn apply(&mut self, body: &crate::EntryBody)
+```
+
+Apply one fact of the Session's own Log.
+
+### `SessionRecord::fold`
+
+```rust
+pub fn fold<'a>(creation: &Creation, archived_at: Option<DateTime<Utc>>, log: impl IntoIterator<Item = &'a crate::EntryBody>) -> Self
+```
+
+The materialized row: the creation record, the recorded archive and the Session's own Log.
 
 Implements:
 

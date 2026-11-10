@@ -57,7 +57,7 @@ impl Runtime for ConfiguredRuntime {
         loaded.tools = Some(LoadedTools {
             specs: vec![spec(
                 settings.config["tool"].as_str().unwrap_or(match bytes {
-                    b"other" => "other_read",
+                    b"other" | b"other trap" => "other_read",
                     b"native" => "fs_read",
                     _ => "fixture_read",
                 }),
@@ -66,7 +66,7 @@ impl Runtime for ConfiguredRuntime {
             )],
             adapter: Arc::new(Echo {
                 label,
-                trap: bytes == b"trap",
+                trap: bytes.ends_with(b"trap"),
             }),
         });
         Ok(loaded)
@@ -124,13 +124,13 @@ async fn send(kernel: &Kernel) -> Vec<Entry> {
     finish(&mut rx).await
 }
 
-fn plugin_generation(registry: &Registry) -> GenerationId {
+fn plugin_code(registry: &Registry) -> CodeRef {
     registry
         .view()
         .exports
         .completion(&fixture_endpoint("fixture"), false)
         .unwrap()
-        .generation
+        .code
 }
 
 #[tokio::test]
@@ -159,7 +159,7 @@ async fn configuration_changes_tools_at_the_next_round_and_rewind_restores_setti
         .unwrap()
         .registration()
         .unwrap();
-    let old = plugin_generation(&registry);
+    let old = plugin_code(&registry);
     document["plugin"]["fixture"] =
         json!({"config": {"label": "new"}, "secrets": {"service": "NEW_KEY"}});
     std::fs::write(
@@ -177,7 +177,7 @@ async fn configuration_changes_tools_at_the_next_round_and_rewind_restores_setti
     .await;
     let kernel = Kernel::start(deps).await.unwrap();
     let log = send(&kernel).await;
-    let new = plugin_generation(&registry);
+    let new = plugin_code(&registry);
     assert_ne!(old, new);
     let bound: Vec<_> = log
         .iter()
@@ -188,14 +188,7 @@ async fn configuration_changes_tools_at_the_next_round_and_rewind_restores_setti
             _ => None,
         })
         .collect();
-    assert_eq!(
-        bound,
-        [
-            CodeRef::Generation { id: old },
-            CodeRef::Generation { id: old },
-            CodeRef::Generation { id: new }
-        ]
-    );
+    assert_eq!(bound, [old.clone(), old, new]);
     let outputs: Vec<_> = log
         .iter()
         .filter_map(|entry| match &entry.body {
@@ -225,7 +218,7 @@ async fn configuration_changes_tools_at_the_next_round_and_rewind_restores_setti
     }
     restore_config(initial, &registry, &development).await;
     let status = registry.status().await.unwrap();
-    let restored = running_generation(&status.plugins[0]).unwrap();
+    let restored = running_activation(&status.plugins[0]).unwrap();
     assert_eq!(restored.settings.config, json!({"label":"old"}));
     assert_eq!(restored.settings.secrets["service"], "OLD_KEY");
     assert_eq!(
@@ -264,6 +257,75 @@ async fn restore_config(
 }
 
 #[tokio::test]
+async fn failed_code_with_nothing_earlier_stops_later_calls_all_the_same() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![
+        calls(vec![
+            call("other_read", "{}"),
+            call("fs_write", r#"{"path":"barrier.txt","content":"written"}"#),
+            call("other_read", "{}"),
+        ]),
+        reply("done"),
+    ]);
+    let runtime = Arc::new(ConfiguredRuntime { provider });
+    let (development, registry, store) =
+        scripted_home(root.path(), runtime, configuration(), vec![]).await;
+    // A first registration of a plugin the host does not ship: nothing earlier can run.
+    let broken = source_fixture(
+        root.path(),
+        &store,
+        &development,
+        &registry,
+        "other",
+        b"other trap",
+    )
+    .await
+    .generations
+    .remove(0)
+    .id;
+    let kernel = Kernel::start(
+        kernel_deps(
+            root.path(),
+            store,
+            registry.clone(),
+            None,
+            Some(development),
+        )
+        .await,
+    )
+    .await
+    .unwrap();
+    let log = send(&kernel).await;
+    let failures: Vec<_> = log
+        .iter()
+        .filter_map(|entry| match &entry.body {
+            EntryBody::ToolCallSettled {
+                outcome: Settlement::Failed { failure },
+                ..
+            } => Some(failure),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        failures
+            .iter()
+            .map(|failure| failure.code.as_str())
+            .collect::<Vec<_>>(),
+        [code::PLUGIN_TRAP, code::PLUGIN_ROLLED_BACK]
+    );
+    assert!(failures[1].message.contains("nothing earlier can run"));
+    assert_eq!(
+        log.iter()
+            .filter(|entry| matches!(&entry.body,
+                EntryBody::ToolCallStarted { code: CodeRef::Generation { id }, .. } if *id == broken
+            ))
+            .count(),
+        1
+    );
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn failed_bound_code_stops_later_calls_until_the_next_round() {
     let root = tempfile::tempdir().unwrap();
     let provider = ScriptedProvider::new(vec![
@@ -278,7 +340,7 @@ async fn failed_bound_code_stops_later_calls_until_the_next_round() {
     let runtime = Arc::new(ConfiguredRuntime { provider });
     let (development, registry, store) =
         scripted_home(root.path(), runtime, configuration(), vec![]).await;
-    let factory = plugin_generation(&registry);
+    let factory = plugin_code(&registry);
     let broken = source_fixture(
         root.path(),
         &store,
@@ -321,8 +383,11 @@ async fn failed_bound_code_stops_later_calls_until_the_next_round() {
             .collect::<Vec<_>>(),
         [code::PLUGIN_TRAP, code::PLUGIN_ROLLED_BACK]
     );
+    // The text names code the way the Agent does: by registration, or as factory code.
     assert!(
-        failures[1].message.contains(&broken.to_string())
+        failures[1]
+            .message
+            .contains(&CodeRef::from(broken).to_string())
             && failures[1].message.contains(&factory.to_string())
     );
     assert!(log.iter().any(|entry| matches!(&entry.body, EntryBody::ToolCallSettled { content, .. } if content == "factory")));
@@ -334,7 +399,7 @@ async fn failed_bound_code_stops_later_calls_until_the_next_round() {
             .count(),
         1
     );
-    assert_eq!(plugin_generation(&registry), factory);
+    assert_eq!(plugin_code(&registry), factory);
     kernel.shutdown().await.unwrap();
 }
 
@@ -509,12 +574,12 @@ async fn registrations_and_configuration_reject_native_and_plugin_tool_name_conf
         [host("native-copy", "fs_read")]
     );
     assert_eq!(
-        store.registry().await.unwrap().generations,
-        before.generations
+        store.registry().await.unwrap().intent.generations,
+        before.intent.generations
     );
     assert_eq!(
-        store.registry().await.unwrap().config_generations,
-        before.config_generations
+        store.registry().await.unwrap().intent.configurations,
+        before.intent.configurations
     );
     submit(&registry, source_request("other", b"other"))
         .await
@@ -591,12 +656,15 @@ async fn mechanical_rollback_excludes_both_conflicts_and_keeps_native_tools_runn
     };
     let first = register("first", b"shared").await;
     for _ in 0..TRIAL_CALLS {
-        registry.report(first.id, Verdict::Ok, None).await.unwrap();
+        registry
+            .report(&first.id.into(), Verdict::Ok, None)
+            .await
+            .unwrap();
     }
     let renamed = register("first", b"renamed").await;
     let second = register("second", b"shared").await;
     registry
-        .report(renamed.id, Verdict::Failed(fault()), None)
+        .report(&renamed.id.into(), Verdict::Failed(fault()), None)
         .await
         .unwrap();
     drop(registry);
@@ -626,7 +694,7 @@ async fn mechanical_rollback_excludes_both_conflicts_and_keeps_native_tools_runn
         assert!(matches!(causes.as_slice(),
             [Cause::ToolConflict { tool, with: ToolOwner::Plugins(others), .. }]
             if tool == "shared_read" && others.iter().map(PluginName::as_str).eq([other])));
-        assert_eq!(activation.generation.id, generation);
+        assert_eq!(activation.code, CodeRef::from(generation));
     }
     let kernel =
         Kernel::start(kernel_deps(root.path(), store, registry, None, Some(development)).await)
@@ -707,8 +775,8 @@ async fn self_apply_moves_the_next_attempt_and_memory_call_to_the_restored_code(
         })
         .collect();
     assert_eq!(starts.len(), 2);
-    assert_eq!(starts[0].0, &previous);
-    assert_eq!(*starts[1].0, plugin_generation(&registry));
+    assert_eq!(*starts[0].0, CodeRef::from(previous));
+    assert_eq!(*starts[1].0, plugin_code(&registry));
     assert_ne!(starts[0].0, starts[1].0);
     assert!(starts.iter().all(|(_, selected)| **selected == settings));
     assert_eq!(

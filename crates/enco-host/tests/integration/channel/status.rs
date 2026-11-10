@@ -80,6 +80,14 @@ async fn a_group_status_and_clear_are_limited_to_its_own_session() {
         .into_iter()
         .find(|session| session.id != main.id)
         .unwrap();
+    // The receipt answers once the clear is accepted; the group consumes it when its Run stops.
+    let mut group_entries = h.kernel.subscribe(group.id).await.unwrap();
+    while !h.store.pending(group.id).await.unwrap().is_empty() {
+        tokio::time::timeout(Duration::from_secs(15), group_entries.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    }
     assert!(
         h.kernel
             .session_overview(group.id)

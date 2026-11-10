@@ -80,9 +80,9 @@ impl Connection {
                 let creation = match sent {
                     Some(conversation) => {
                         state.chats.insert(conversation.clone(), session);
-                        Creation::Shown(conversation)
+                        Appearance::Shown(conversation)
                     }
-                    None => Creation::Forgone,
+                    None => Appearance::Forgone,
                 };
                 state.children.insert(session, creation);
                 self.commit(state, None).await?;
@@ -110,7 +110,7 @@ impl Connection {
                             session,
                             target,
                             replies_here,
-                            creation: sent.map_or(Creation::Forgone, Creation::Shown),
+                            creation: sent.map_or(Appearance::Forgone, Appearance::Shown),
                         },
                     );
                     self.commit(state, None).await?;

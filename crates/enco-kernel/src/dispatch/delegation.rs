@@ -1,10 +1,5 @@
 use super::*;
 
-pub(super) enum Execution {
-    Result(Outcome),
-    Delegation(DelegationRequest),
-}
-
 pub(super) struct DelegationRequest {
     name: SessionName,
     text: String,
@@ -61,30 +56,31 @@ impl SessionActor {
         request: DelegationRequest,
     ) -> Result<(Delegated, SessionDelivery), StoreError> {
         let existing = self.deps.store.session_by_name(&request.name).await?;
-        let created = existing.is_none();
-        let (id, create) = if let Some(session) = existing {
-            (session.id, None)
-        } else if let Some(profile) = &request.profile {
-            let id = SessionId::new();
-            (
-                id,
-                Some(Box::new(NewSession {
-                    id,
-                    name: request.name.clone(),
-                    profile: profile.clone(),
-                    origin: NewSessionOrigin::Child {
-                        parent: self.session.id,
-                        working_dir: request
-                            .working_dir
-                            .clone()
-                            .unwrap_or_else(|| self.session.working_dir.clone()),
-                    },
-                    created_at: self.deps.clock.now(),
-                })),
-            )
-        } else {
-            (SessionId::new(), None)
+        // The parent's Log is the authority over its children's names, so the creation record is
+        // written here, with the settlement that delegates to the child. Without a profile there
+        // is nothing to create, and the commit rejects the call.
+        let existing = existing.map(|session| session.id);
+        let creation = match (existing, &request.profile) {
+            (Some(_), _) | (None, None) => None,
+            (None, Some(profile)) => Some(Creation {
+                id: SessionId::new(),
+                name: request.name.clone(),
+                parent: Some(SessionRef {
+                    id: self.session.id,
+                    name: self.session.name.clone(),
+                }),
+                created_at: self.deps.clock.now(),
+                node: self.session.binding.node,
+                profile: profile.clone(),
+                working_dir: request
+                    .working_dir
+                    .clone()
+                    .unwrap_or_else(|| self.session.working_dir.clone()),
+            }),
         };
+        let id = existing
+            .or(creation.as_ref().map(|creation| creation.id))
+            .unwrap_or_default();
         let event = Event {
             id: EventId::new(),
             session: id,
@@ -101,7 +97,7 @@ impl SessionActor {
                 id,
                 name: request.name,
             },
-            created,
+            creation: creation.clone(),
             event: event.id,
         };
         Ok((
@@ -110,7 +106,7 @@ impl SessionActor {
                 event,
                 kind: SessionDeliveryKind::Delegation {
                     name,
-                    create,
+                    create: creation.map(Box::new),
                     profile: request.profile,
                     working_dir: request.working_dir,
                 },

@@ -86,7 +86,7 @@ fn transcript_item(event: Event) -> TranscriptItem {
             seq: Seq(1),
         },
         message: event.canonical_message(),
-        generation: None,
+        provider: None,
         event: Some(event),
     }
 }

@@ -1,5 +1,5 @@
 //! What opening the registry establishes from the factory and restores from durable records.
-use super::{active, loaded, open, promote, register_source};
+use super::{active, active_activation, loaded, open, promote, register_source};
 use crate::support::*;
 use enco_core::*;
 use enco_host::*;
@@ -7,7 +7,7 @@ use enco_kernel::*;
 use std::{path::PathBuf, sync::Arc};
 
 #[tokio::test]
-async fn factory_records_need_registration_to_activate_and_preserve_source_overrides() {
+async fn factory_code_needs_registration_to_activate_and_preserves_source_overrides() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(open_store(dir.path()).await);
     let runtime = Arc::new(ScriptedRuntime::default());
@@ -54,9 +54,20 @@ async fn factory_records_need_registration_to_activate_and_preserve_source_overr
     .await
     .unwrap();
     let second = active(&registry).await;
-    assert_eq!(store.registry().await.unwrap().generations.len(), 3);
-    assert_eq!(second.origin, Origin::Factory);
-    assert!(second.id > first.id);
+    // Factory code with empty settings is host content, identified by its bytes: no generation.
+    assert!(
+        store
+            .registry()
+            .await
+            .unwrap()
+            .intent
+            .generations
+            .is_empty()
+    );
+    assert!(
+        matches!(second, CodeRef::Factory { artifact, .. } if artifact == ContentHash::of(b"factory-2"))
+    );
+    assert_ne!(second, first);
     let owner_code = submit(&registry, source_request("fixture", b"owner"))
         .await
         .unwrap()
@@ -69,8 +80,8 @@ async fn factory_records_need_registration_to_activate_and_preserve_source_overr
     )
     .await
     .unwrap();
-    assert_eq!(active(&registry).await, owner_code);
-    assert_eq!(store.registry().await.unwrap().generations.len(), 5);
+    assert_eq!(active(&registry).await, CodeRef::from(owner_code.id));
+    assert_eq!(store.registry().await.unwrap().intent.generations.len(), 1);
     drop(registry);
     // A contract upgrade can make every older artifact unloadable, including the active one.
     let runtime = Arc::new(ScriptedRuntime::default());
@@ -81,10 +92,10 @@ async fn factory_records_need_registration_to_activate_and_preserve_source_overr
     )
     .await
     .unwrap();
-    assert_eq!(
-        active(&registry).await.artifact,
-        ContentHash::of(b"factory-4")
-    );
+    assert!(matches!(
+        active(&registry).await,
+        CodeRef::Factory { artifact, .. } if artifact == ContentHash::of(b"factory-4")
+    ));
     drop(registry);
     let mut deps = registry_deps(store, runtime, b"factory-4");
     deps.factory[0].id = PluginId::new();
@@ -130,7 +141,7 @@ async fn overlapping_table_owners_are_rejected_before_any_generation_is_written(
         .await;
         assert!(matches!(result, Err(RegistryError::TableOwner(name)) if name == table));
         let records = store.registry().await.unwrap();
-        assert!(records.generations.is_empty() && records.config_generations.is_empty());
+        assert!(records.intent.generations.is_empty() && records.intent.configurations.is_empty());
     }
 }
 
@@ -139,7 +150,7 @@ struct Crashed {
     dir: tempfile::TempDir,
     store: Arc<SqliteStore>,
     runtime: Arc<ScriptedRuntime>,
-    factory: GenerationId,
+    factory: CodeRef,
     latest: GenerationId,
     older_artifact: ContentHash,
     latest_artifact: ContentHash,
@@ -154,7 +165,7 @@ impl Crashed {
             runtime.insert(bytes, loaded(ScriptedProvider::new(vec![])));
         }
         let registry = open(&store, runtime.clone()).await;
-        let factory = active(&registry).await.id;
+        let factory = active(&registry).await;
         let older = register_source(&registry, "fixture", b"older").await;
         promote(&registry, older.id).await;
         let latest = register_source(&registry, "fixture", b"latest").await;
@@ -200,8 +211,8 @@ async fn recovery_uses_the_committed_activation() {
             .exports
             .completion(&fixture_endpoint("fixture"), false)
             .unwrap()
-            .generation,
-        crashed.latest
+            .code,
+        CodeRef::from(crashed.latest)
     );
 }
 
@@ -209,20 +220,17 @@ async fn recovery_uses_the_committed_activation() {
 async fn recovery_skips_missing_and_corrupt_artifacts() {
     let crashed = Crashed::new().await;
     let registry = crashed.lose_artifacts().await;
-    assert_eq!(active(&registry).await.id, crashed.factory);
-    for record in crashed
-        .store
-        .registry()
-        .await
-        .unwrap()
+    assert_eq!(active(&registry).await, crashed.factory);
+    let history = crashed.store.registry().await.unwrap();
+    for record in history
+        .intent
         .generations
         .values()
-        .filter(|record| {
-            record.plugin == FIXTURE_ID.parse().unwrap() && record.id != crashed.factory
-        })
+        .filter(|record| record.id.plugin == FIXTURE_ID.parse().unwrap())
     {
-        assert_eq!(record.status, GenerationStatus::Failed);
-        let failure = record.failure.as_ref().unwrap();
+        let Health::Failed { failure } = &history.node.health[&record.id] else {
+            panic!("{} is not failed", record.id);
+        };
         assert_eq!(failure.code, code::PLUGIN_LOAD);
         assert!(failure.message.contains(&record.artifact.to_string()));
     }
@@ -234,7 +242,7 @@ async fn rollback_and_recovery_skip_lost_artifacts_of_a_registered_plugin() {
     let registry = crashed.lose_artifacts().await;
     let intended = registry.registered_intent(None).await.unwrap().plugins["fixture"]
         .activation
-        .generation
+        .code
         .clone();
     let only = register_source(&registry, "custom", b"latest").await;
     promote(&registry, only.id).await;
@@ -266,13 +274,11 @@ async fn rollback_and_recovery_skip_lost_artifacts_of_a_registered_plugin() {
         code::PLUGIN_UNAVAILABLE
     );
     let restored = registry.registered_intent(None).await.unwrap();
-    assert_eq!(restored.plugins["fixture"].activation.generation, intended);
+    assert_eq!(restored.plugins["fixture"].activation.code, intended);
     let history = crashed.store.registry().await.unwrap();
-    let failed = &history.generations[&only.id];
-    assert_eq!(failed.failure.as_ref().unwrap().code, code::PLUGIN_LOAD);
-    let retired = &history.generations[&newer.id];
-    assert_eq!(retired.status, GenerationStatus::Trial);
-    assert!(retired.failure.is_none());
+    let failed = history.node.health[&only.id].failure().unwrap();
+    assert_eq!(failed.code, code::PLUGIN_LOAD);
+    assert_eq!(history.node.health[&newer.id], Health::Trial);
 }
 
 #[tokio::test]
@@ -289,9 +295,9 @@ async fn registering_new_factory_code_preserves_rollback_content() {
     submit(&registry, configuration_request(document.clone()))
         .await
         .unwrap();
-    let good = active(&registry).await.id;
+    let good = active(&registry).await;
     for _ in 0..TRIAL_CALLS {
-        registry.report(good, Verdict::Ok, None).await.unwrap();
+        registry.report(&good, Verdict::Ok, None).await.unwrap();
     }
     document["plugin"]["fixture"]["config"]["label"] = "bad".into();
     submit(&registry, configuration_request(document))
@@ -299,13 +305,13 @@ async fn registering_new_factory_code_preserves_rollback_content() {
         .unwrap();
     registry
         .report(
-            active(&registry).await.id,
+            &active(&registry).await,
             Verdict::Failed(super::fault(code::PLUGIN_TRAP)),
             None,
         )
         .await
         .unwrap();
-    assert_eq!(active(&registry).await.id, good);
+    assert_eq!(active(&registry).await, good);
     drop(registry);
     let registry = open_registry(
         registry_deps(store, runtime, b"new-factory"),
@@ -324,7 +330,7 @@ async fn registering_new_factory_code_preserves_rollback_content() {
     )
     .await
     .unwrap();
-    let upgraded = active(&registry).await;
+    let upgraded = active_activation(&registry).await;
     assert_eq!(upgraded.artifact, ContentHash::of(b"new-factory"));
     assert_eq!(upgraded.settings.config, serde_json::json!({"label":"bad"}));
     let factory = registry
@@ -332,24 +338,25 @@ async fn registering_new_factory_code_preserves_rollback_content() {
         .exports
         .completion(&fixture_endpoint("fixture"), true)
         .unwrap()
-        .generation;
-    assert_ne!(upgraded.id, factory);
+        .code;
+    assert_ne!(upgraded.code, factory);
     assert_eq!(
         registry.status().await.unwrap().plugins[0]
             .rollback_target
+            .clone()
             .unwrap()
-            .generation,
+            .code,
         good
     );
     registry
         .report(
-            upgraded.id,
+            &upgraded.code,
             Verdict::Failed(super::fault(code::PLUGIN_TRAP)),
             None,
         )
         .await
         .unwrap();
-    assert_eq!(active(&registry).await.id, good);
+    assert_eq!(active(&registry).await, good);
 }
 
 #[tokio::test]
@@ -370,11 +377,11 @@ async fn rejected_settings_do_not_register_either_plugin_or_configuration() {
             .is_err()
     );
     let rejected = store.registry().await.unwrap();
-    assert_eq!(rejected.config_generations, before.config_generations);
-    assert_eq!(rejected.generations, before.generations);
+    assert_eq!(rejected.intent.configurations, before.intent.configurations);
+    assert_eq!(rejected.intent.generations, before.intent.generations);
     assert_eq!(
-        registry.view().config.generation,
-        before.active_config.unwrap()
+        registry.view().config.registration,
+        before.node.configuration.unwrap()
     );
     sql.execute_batch("DROP TRIGGER reject_settings").unwrap();
 }

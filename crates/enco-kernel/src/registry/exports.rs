@@ -5,10 +5,10 @@ use state::State;
 
 /// An invocation's immutable association between code and registry identity.
 pub struct Export<T: ?Sized> {
-    /// Plugin owning the generation.
+    /// Plugin owning the code.
     pub plugin: PluginId,
-    /// Exact generation used for this invocation.
-    pub generation: GenerationId,
+    /// Exact code used for this invocation: a generation or factory code.
+    pub code: CodeRef,
     /// Compiled adapter retained until this invocation ends.
     pub adapter: Arc<T>,
 }
@@ -21,21 +21,21 @@ pub struct BoundComposer {
     pub options: ComposerOptions,
 }
 
-struct LoadedGeneration {
+struct LoadedCode {
     plugin: PluginId,
-    generation: GenerationId,
-    code: CodeSource,
+    code: CodeRef,
+    source: CodeSource,
     loaded: Result<Loaded, Vec<Cause>>,
 }
 
-/// The generation that runs under one name in ordinary operation.
+/// The code that runs under one name in ordinary operation.
 pub struct Active<'a> {
     /// Routing name.
     pub name: &'a PluginName,
-    /// The running generation.
-    pub generation: GenerationId,
+    /// The running code.
+    pub code: &'a CodeRef,
     /// How its code entered the registry.
-    pub code: CodeSource,
+    pub source: CodeSource,
     /// What it declared when it loaded, or why this host cannot serve it.
     pub loaded: Result<&'a Loaded, &'a [Cause]>,
 }
@@ -43,34 +43,50 @@ pub struct Active<'a> {
 /// Derived routing view. Holding it does not prevent the registry from publishing a new view.
 pub struct Exports {
     plugins: BTreeMap<PluginName, Routes>,
-    generations: BTreeMap<GenerationId, GenerationRecord>,
+    /// Each generation's standing on this node, for calls bound before a rollback.
+    health: BTreeMap<GenerationId, Health>,
     /// The factory plugin that composes in safe mode.
     composer: PluginName,
 }
 
 struct Routes {
-    active: Option<LoadedGeneration>,
-    factory: Option<LoadedGeneration>,
+    active: Option<LoadedCode>,
+    factory: Option<LoadedCode>,
+}
+
+/// Code that has failed, and what its plugin runs now.
+pub(crate) struct Failed<'a> {
+    /// The generation that failed.
+    pub from: GenerationId,
+    /// The fault that marked the generation failed.
+    pub failure: &'a Failure,
+    /// What runs instead, absent when nothing can run.
+    pub current: Option<&'a CodeRef>,
 }
 
 impl Exports {
-    /// The recorded failure and current active generation for a bound invocation.
-    pub(crate) fn failed(
-        &self,
-        generation: GenerationId,
-    ) -> Option<(&Failure, Option<GenerationId>)> {
-        let record = self.generations.get(&generation)?;
-        let failure = record.failure.as_ref()?;
+    /// The recorded failure of code bound before it failed, with what its plugin runs now.
+    ///
+    /// Whether it failed is the health record's to say alone; nothing running in its place leaves
+    /// `current` empty.
+    pub(crate) fn failed(&self, code: &CodeRef) -> Option<Failed<'_>> {
+        let generation = code.generation()?;
+        let failure = self.health.get(&generation)?.failure()?;
         let current = self
             .plugins
             .values()
             .filter_map(|routes| routes.active.as_ref())
-            .find(|active| active.plugin == record.plugin)
-            .map(|active| active.generation);
-        Some((failure, current))
+            .find(|active| active.plugin == generation.plugin)
+            .map(|active| &active.code);
+        Some(Failed {
+            from: generation,
+            failure,
+            current,
+        })
     }
 
-    pub(crate) fn tools(&self) -> Vec<(ToolSpec, Export<dyn crate::Tools>)> {
+    /// Each running plugin's tools, with the name the plugin runs under.
+    pub(crate) fn tools(&self) -> Vec<(&PluginName, ToolSpec, Export<dyn crate::Tools>)> {
         let mut tools = Vec::new();
         for name in self.plugins.keys() {
             if let Some(Ok((active, loaded))) = self.selected(name, false)
@@ -78,10 +94,11 @@ impl Exports {
             {
                 tools.extend(exported.specs.iter().map(|spec| {
                     (
+                        name,
                         spec.clone(),
                         Export {
                             plugin: active.plugin,
-                            generation: active.generation,
+                            code: active.code.clone(),
                             adapter: exported.adapter.clone(),
                         },
                     )
@@ -108,9 +125,9 @@ impl Exports {
     pub(super) fn loaded(
         &self,
         plugin: &PluginName,
-    ) -> Option<Result<(GenerationId, &Loaded), &[Cause]>> {
+    ) -> Option<Result<(&CodeRef, &Loaded), &[Cause]>> {
         self.selected(plugin, false)
-            .map(|selected| selected.map(|(generation, loaded)| (generation.generation, loaded)))
+            .map(|selected| selected.map(|(selected, loaded)| (&selected.code, loaded)))
     }
 
     pub(super) fn check_use(&self, usage: &Use) -> Result<(), Vec<Cause>> {
@@ -119,13 +136,6 @@ impl Exports {
             self.loaded(usage.plugin())
                 .map(|selected| selected.map(|(_, loaded)| loaded)),
         )
-    }
-
-    /// Look up any recorded generation, including failed or unloaded history.
-    pub fn plugin_of(&self, generation: GenerationId) -> Option<PluginId> {
-        self.generations
-            .get(&generation)
-            .map(|record| record.plugin)
     }
 
     /// Resolve the active mapper; connection settings were checked during registration.
@@ -142,7 +152,7 @@ impl Exports {
         })?;
         Ok(Export {
             plugin: selected.plugin,
-            generation: selected.generation,
+            code: selected.code.clone(),
             adapter,
         })
     }
@@ -174,7 +184,7 @@ impl Exports {
 
     /// Select the current composer and normalize its profile options in one binding step.
     ///
-    /// Safe mode always uses the factory generation of the host's composer with empty options.
+    /// Safe mode always uses the host's factory composer code with empty options.
     pub fn composer(
         &self,
         settings: &ComposerSettings,
@@ -193,28 +203,26 @@ impl Exports {
         };
         let (adapter, options) =
             wiring::bind_composer(loaded, options).map_err(|mut failure| {
-                failure.message = format!(
-                    "composer {name}, generation {}: {}",
-                    selected.generation, failure.message
-                );
+                failure.message =
+                    format!("composer {name}, {}: {}", selected.code, failure.message);
                 failure
             })?;
         Ok(BoundComposer {
             export: Export {
                 plugin: selected.plugin,
-                generation: selected.generation,
+                code: selected.code.clone(),
                 adapter,
             },
             options,
         })
     }
 
-    /// Absent when no generation runs under the name.
+    /// Absent when nothing runs under the name.
     fn selected(
         &self,
         plugin: &PluginName,
         safe_mode: bool,
-    ) -> Option<Result<(&LoadedGeneration, &Loaded), &[Cause]>> {
+    ) -> Option<Result<(&LoadedCode, &Loaded), &[Cause]>> {
         let routes = self.plugins.get(plugin)?;
         // Safe mode replaces only what the host ships; a plugin without factory code keeps its own.
         let selected = if safe_mode {
@@ -246,24 +254,28 @@ impl Exports {
         let adapter = endpoint.export(loaded, adapter(loaded), interface)?;
         Ok(Export {
             plugin: selected.plugin,
-            generation: selected.generation,
+            code: selected.code.clone(),
             adapter,
         })
     }
 
-    /// The active generation behind every name, in name order.
-    pub(super) fn active_generations(&self) -> impl Iterator<Item = GenerationId> + '_ {
-        self.active().map(|active| active.generation)
+    /// The code every running plugin uses, by identity.
+    pub(super) fn active_code(&self) -> BTreeMap<PluginId, CodeRef> {
+        self.plugins
+            .values()
+            .filter_map(|routes| routes.active.as_ref())
+            .map(|active| (active.plugin, active.code.clone()))
+            .collect()
     }
 
-    /// The generation that runs under each name in ordinary operation, in name order.
+    /// The code that runs under each name in ordinary operation, in name order.
     pub fn active(&self) -> impl Iterator<Item = Active<'_>> {
         self.plugins.iter().filter_map(|(name, routes)| {
             let active = routes.active.as_ref()?;
             Some(Active {
                 name,
-                generation: active.generation,
-                code: active.code,
+                code: &active.code,
+                source: active.source,
                 loaded: active.loaded.as_ref().map_err(Vec::as_slice),
             })
         })
@@ -273,7 +285,7 @@ impl Exports {
 fn not_running(plugin: &PluginName) -> Failure {
     Failure {
         code: code::PLUGIN_UNAVAILABLE.into(),
-        message: format!("plugin {plugin}: no generation runs"),
+        message: format!("plugin {plugin}: nothing runs"),
         retryable: false,
     }
 }
@@ -285,7 +297,7 @@ impl State {
         admission: Admission,
         factory: &[FactoryPlugin],
         composer: &PluginName,
-    ) -> Exports {
+    ) -> Result<Exports, RegistryError> {
         let mut plugins = BTreeMap::new();
         let mut names = self.running_names();
         names.extend(
@@ -294,36 +306,29 @@ impl State {
                 .map(|plugin| (plugin.name.clone(), plugin.id)),
         );
         for (name, plugin) in names {
-            plugins.insert(
-                name.clone(),
-                Routes {
-                    active: self
-                        .history
-                        .plugins
-                        .get(&plugin)
-                        .and_then(|record| record.active)
-                        .zip(admission.result(&name))
-                        .map(|(generation, loaded)| LoadedGeneration {
-                            plugin,
-                            generation: generation.generation,
-                            code: self.provenance(generation.generation).source,
-                            loaded,
-                        }),
-                    factory: self.factory.get(&plugin).and_then(|generation| {
-                        self.loaded.get(generation).map(|loaded| LoadedGeneration {
-                            plugin,
-                            generation: *generation,
-                            code: CodeSource::Factory,
-                            loaded: Ok(loaded.clone()),
-                        })
-                    }),
-                },
-            );
+            let active = match self.active(plugin).zip(admission.result(&name)) {
+                Some((code, loaded)) => Some(LoadedCode {
+                    plugin,
+                    source: self.provenance(code)?.source,
+                    code: code.clone(),
+                    loaded,
+                }),
+                None => None,
+            };
+            let factory = self.factory.get(&plugin).and_then(|code| {
+                self.loaded.get(code).map(|loaded| LoadedCode {
+                    plugin,
+                    code: code.clone(),
+                    source: CodeSource::Factory,
+                    loaded: Ok(loaded.clone()),
+                })
+            });
+            plugins.insert(name.clone(), Routes { active, factory });
         }
-        Exports {
+        Ok(Exports {
             plugins,
-            generations: self.history.generations.clone(),
+            health: self.node.health.clone(),
             composer: composer.clone(),
-        }
+        })
     }
 }

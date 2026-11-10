@@ -120,8 +120,8 @@ dimensions = 4
     }
 }
 
-pub fn running_generation(plugin: &serde_json::Value) -> &serde_json::Value {
-    &plugin["running"]["running"]["activation"]["generation"]
+pub fn running_activation(plugin: &serde_json::Value) -> &serde_json::Value {
+    &plugin["running"]["running"]["activation"]
 }
 
 pub async fn finish(client: &mut client::Client) -> Vec<Entry> {
@@ -306,4 +306,12 @@ pub fn copy_directory(source: &Path, destination: &Path) {
             std::fs::copy(entry.path(), destination).unwrap();
         }
     }
+}
+
+/// Mapper or Provider code that a registration brought, for the one plugin a test opens.
+pub fn registered_code(registration: u64) -> enco_core::CodeRef {
+    enco_core::CodeRef::from(enco_core::GenerationId {
+        registration: enco_core::RegistrationId(registration),
+        plugin: "01J0000000000000000000TEST".parse().unwrap(),
+    })
 }

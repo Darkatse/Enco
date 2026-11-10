@@ -121,7 +121,7 @@ async fn missing_image_content_fails_before_an_attempt_and_leaves_provider_healt
     document["endpoint"]["reply"]["accepts"] = json!(["image"]);
     let (kernel, store) =
         kernel_configured(root.path(), provider.clone(), document, vec![], |_| {}).await;
-    let before = store.registry().await.unwrap().generations;
+    let before = store.registry().await.unwrap().intent.generations;
     let Attachment::Image(image) = kernel.store_attachment("photo".into(), PNG).await.unwrap()
     else {
         panic!("PNG must be an image")
@@ -136,7 +136,7 @@ async fn missing_image_content_fails_before_an_attempt_and_leaves_provider_healt
     assert!(matches!(&log.last().unwrap().body, EntryBody::RunEnded {
         end: RunEnd::Failed { failure }, ..
     } if failure.code == code::CONTEXT_FAILED));
-    assert_eq!(store.registry().await.unwrap().generations, before);
+    assert_eq!(store.registry().await.unwrap().intent.generations, before);
     kernel.shutdown().await.unwrap();
 }
 

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{CompleteError, ProviderRequest, Question, QuestionKind, limits::*};
 
-/// A new use is checked against its candidate code, before that code receives a generation ID.
+/// A new use is checked against its candidate code, before its registration gives it an identity.
 pub(super) async fn call(
     loaded: &Loaded,
     endpoint: &Endpoint,

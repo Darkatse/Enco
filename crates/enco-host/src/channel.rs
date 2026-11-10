@@ -56,16 +56,28 @@ impl ChannelError {
     }
 }
 
+/// A connection's committed state, which the host alone reads and writes.
 #[derive(Clone, Serialize, Deserialize)]
-struct State {
+pub(crate) struct State {
     protocol: Option<Value>,
     chats: BTreeMap<String, SessionId>,
     context: BTreeMap<String, Vec<EarlierMessage>>,
     everyone: std::collections::BTreeSet<String>,
     outbound: BTreeMap<SessionId, Cursor>,
     sending: Option<Delivery>,
-    children: BTreeMap<SessionId, Creation>,
+    children: BTreeMap<SessionId, Appearance>,
     activity: BTreeMap<RunId, connection::activity::Card>,
+}
+
+impl State {
+    /// The origins of the earlier messages this state quotes, which an upgrade moving their
+    /// records points at the new addresses.
+    pub(crate) fn origins_mut(&mut self) -> impl Iterator<Item = &mut MappingOrigin> {
+        self.context
+            .values_mut()
+            .flatten()
+            .map(|message| &mut message.origin)
+    }
 }
 
 /// Where a conversation's route leads; a route to an archived Session counts as no route.
@@ -96,9 +108,10 @@ impl Route {
     }
 }
 
-/// What came of creating a Run's card or a child's conversation; nothing is created twice.
+/// How a Run's card or a child's conversation appears on the connection: what came of creating
+/// it, which happens once.
 #[derive(Clone, Serialize, Deserialize)]
-enum Creation {
+enum Appearance {
     /// The protocol's ID for what was created: the card's message, or the conversation.
     Shown(String),
     /// The connection goes without it here: nothing is shown and nothing will be created.
@@ -197,7 +210,7 @@ impl Channel {
         kernel: Arc<Kernel>,
         adapter: Arc<dyn Adapter>,
         settings: ConnectionSettings,
-        generation: GenerationId,
+        code: CodeRef,
         clock: Arc<dyn Clock>,
         build: crate::status::HostBuild,
     ) -> Self {
@@ -217,7 +230,7 @@ impl Channel {
                     kernel,
                     adapter,
                     settings,
-                    generation,
+                    code,
                     clock,
                     stop,
                     menu_failure,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Acceptance, ConnectionWrite, NewSession};
+use crate::{Acceptance, ConnectionWrite};
 
 /// The registry owns the named settings sections of plugins.
 pub const PLUGIN_SETTINGS_TABLE: ConfigTable = ConfigTable::Named("plugin");
@@ -189,7 +189,7 @@ impl Declaration {
     /// The only way to activate content: with the declarations evaluated from it.
     pub fn into_active(self, record: &ConfigGeneration) -> ActiveConfig {
         ActiveConfig {
-            generation: record.id,
+            registration: record.registration,
             document: record.document.clone(),
             kernel: self.kernel,
             uses: self.uses,
@@ -199,24 +199,27 @@ impl Declaration {
     }
 }
 
-/// Sessions name profiles, so a configuration cannot remove a profile still in use.
+/// Sessions name profiles, so a registration cannot remove one an unarchived Session may still read.
+///
+/// A Session's Rounds, and its descendants', read its committed view, which may become any view
+/// ahead of it as the Session consumes its pending commands.
 pub(super) async fn check_profiles(
     deps: &RegistryDeps,
     kernel: &KernelSettings,
 ) -> Result<(), RegistryError> {
     let mut stranded: BTreeMap<ProfileName, Vec<String>> = BTreeMap::new();
-    for session in deps
-        .store
-        .sessions()
-        .await?
-        .into_iter()
-        .filter(|session| session.archived_at.is_none())
-    {
-        if !kernel.profiles.contains_key(&session.profile) {
-            stranded
-                .entry(session.profile)
-                .or_default()
-                .push(session.name.into());
+    for views in deps.store.unarchived_views().await? {
+        let named: std::collections::BTreeSet<&ProfileName> = std::iter::once(&views.committed)
+            .chain(&views.ahead)
+            .map(|view| &view.profile)
+            .collect();
+        for profile in named {
+            if !kernel.profiles.contains_key(profile) {
+                stranded
+                    .entry(profile.clone())
+                    .or_default()
+                    .push(views.committed.name.to_string());
+            }
         }
     }
     if stranded.is_empty() {
@@ -237,51 +240,35 @@ impl Registry {
         &self.deps.lifeline
     }
 
-    /// Session creation and profile selection observe one registered configuration.
+    /// What a Round samples: the committed views of the Session and its ancestors, with the
+    /// registered configuration they observe.
     pub(crate) async fn session_view(
         &self,
         session: SessionId,
     ) -> Result<(SessionRecord, Vec<SessionRecord>, Arc<View>), RegistryError> {
         let _state = self.state.lock().await;
-        let session = self
-            .deps
-            .store
-            .session(session)
-            .await?
-            .ok_or(StoreError::UnknownSession(session))?;
-        let mut ancestors = Vec::new();
-        let mut parent = session.parent.as_ref().map(|parent| parent.id);
-        while let Some(id) = parent {
-            let ancestor = self
-                .deps
-                .store
-                .session(id)
-                .await?
-                .ok_or(StoreError::UnknownSession(id))?;
-            parent = ancestor.parent.as_ref().map(|parent| parent.id);
-            ancestors.push(ancestor);
-        }
+        let (session, ancestors) = self.deps.store.committed_lineage(session).await?;
         Ok((session, ancestors, self.view()))
     }
 
-    /// Accept input that creates a Session, under the committer that also changes profiles.
+    /// Accept input that names profiles, under the committer that also removes them.
     ///
-    /// The Session thus never starts with a profile that a concurrent registration removes.
-    pub(crate) async fn accept_creating(
+    /// A Session created with the input, or a command selecting a profile, thus never names one a
+    /// concurrent registration removes: the registration's admission reads the accepted command
+    /// among the views ahead of the Session.
+    pub(crate) async fn accept_naming(
         &self,
-        session: &NewSession,
+        profiles: &[&ProfileName],
         events: &[Event],
         connection: Option<&ConnectionWrite>,
     ) -> Result<Acceptance, RegistryError> {
         let _state = self.state.lock().await;
-        if !self
-            .view()
-            .config
-            .kernel
-            .profiles
-            .contains_key(&session.profile)
+        let view = self.view();
+        if let Some(profile) = profiles
+            .iter()
+            .find(|profile| !view.config.kernel.profiles.contains_key(**profile))
         {
-            return Err(RegistryError::UnknownProfile(session.profile.clone()));
+            return Err(RegistryError::UnknownProfile((*profile).clone()));
         }
         Ok(self.deps.store.accept(events, connection).await?)
     }
@@ -315,19 +302,5 @@ impl Registry {
             ));
         }
         self.deps.store.commit(session, commit).await
-    }
-
-    /// Profile assignments share the registry's committer with configuration changes.
-    pub async fn set_profile(
-        &self,
-        session: SessionId,
-        profile: &ProfileName,
-    ) -> Result<(), RegistryError> {
-        let _state = self.state.lock().await;
-        if !self.view().config.kernel.profiles.contains_key(profile) {
-            return Err(RegistryError::UnknownProfile(profile.clone()));
-        }
-        self.deps.store.set_profile(session, profile).await?;
-        Ok(())
     }
 }

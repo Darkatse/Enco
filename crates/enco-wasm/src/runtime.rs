@@ -176,7 +176,7 @@ impl Runtime for WasmRuntime {
     }
 }
 
-/// Evaluate declarations once against the generation's accepted configuration.
+/// Evaluate declarations once against the code's accepted configuration.
 async fn describe(
     mut plugin: WasmPlugin,
     tools: Option<ToolPluginPre<HostState>>,

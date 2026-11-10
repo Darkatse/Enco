@@ -11,7 +11,7 @@ pub(crate) enum CallWorld {
     /// Running a mapper's encode or decode: fixed clocks and random seed, no configuration or
     /// network.
     Mapper,
-    /// Declaring what the generation offers: its configuration, without network, so a reload
+    /// Declaring what the code offers: its configuration, without network, so a reload
     /// never depends on an outside service.
     Declaration,
     /// Checking the code alone: no configuration and no network.

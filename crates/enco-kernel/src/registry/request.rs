@@ -83,7 +83,7 @@ pub struct Rollback {
     /// Runtime references after recovery.
     pub plugins: Vec<PluginRecord>,
     /// Configuration activated by the rollback, when it changed.
-    pub configuration: Option<GenerationId>,
+    pub configuration: Option<RegistrationId>,
     /// Post-commit cleanup errors; the recovered references are already active.
     pub warnings: Vec<String>,
 }

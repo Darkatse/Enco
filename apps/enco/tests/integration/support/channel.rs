@@ -1,5 +1,5 @@
 //! Real factory channel fixtures use a child process for their fixed transport credential.
-use enco_core::{GenerationId, PluginSettings};
+use enco_core::PluginSettings;
 use enco_host::{SqliteStore, StorePaths};
 use enco_kernel::{ChannelAdapter, ChannelCallError, ChannelFault, ChannelSettings, Runtime};
 use serde_json::json;
@@ -67,7 +67,7 @@ pub async fn open(
                 base_url: base.parse().unwrap(),
                 secrets: [(secret.into(), "ENCO_CHANNEL_FIXTURE_TOKEN".into())].into(),
             },
-            GenerationId(31),
+            super::registered_code(31),
             store.clone(),
         )
         .await

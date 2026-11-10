@@ -53,7 +53,7 @@ pub(super) fn authored(path: &Path, text: &str) -> Result<String, EntryError> {
     }
 }
 
-/// What a loaded generation declares, as its README's generated section and its manual show it.
+/// What loaded code declares, as its README's generated section and its manual show it.
 ///
 /// That is its summary, the configuration it accepts, its credentials, and an index of its tools
 /// followed by each tool's description and arguments.

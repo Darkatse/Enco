@@ -39,7 +39,6 @@ pub struct KernelDeps {
 
 /// Single-node execution owner. Sessions serialize their own Log writes.
 pub struct Kernel {
-    schedules: Schedules,
     scheduler: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) deps: Arc<SessionDeps>,
     pub(crate) sessions: Arc<Mutex<HashMap<SessionId, Arc<SessionHandle>>>>,
@@ -88,7 +87,7 @@ pub enum KernelError {
     /// A durable operation failed.
     #[error(transparent)]
     Store(#[from] StoreError),
-    /// A schedule command failed.
+    /// Schedules could not be read back into occurrences.
     #[error(transparent)]
     Schedule(#[from] ScheduleError),
     /// A registry operation failed.
@@ -154,7 +153,6 @@ pub struct DeliveryStatus {
 impl Kernel {
     /// Bind capabilities and start unarchived Sessions, plus archived ones not yet quiescent.
     pub async fn start(mut deps: KernelDeps) -> Result<Self, KernelError> {
-        let (schedules, scheduler) = crate::scheduler::Scheduler::channel();
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let subtrees = Arc::new(crate::subtree::Subtrees {
             store: deps.store.clone(),
@@ -163,7 +161,7 @@ impl Kernel {
             deps: std::sync::OnceLock::new(),
         });
         deps.tools.extend(
-            crate::builtin::tools(schedules.clone(), subtrees.clone())
+            crate::builtin::tools(&subtrees)
                 .map_err(|error| KernelError::Config(format!("tool declaration: {error}")))?,
         );
         let declared: std::collections::BTreeSet<_> =
@@ -180,7 +178,6 @@ impl Kernel {
         let node = deps.store.node().await?;
         let snapshot = Arc::new(Snapshot::new(node.id, &deps)?);
         let kernel = Self {
-            schedules,
             scheduler: Mutex::new(None),
             deps: Arc::new(SessionDeps {
                 home: deps.home,
@@ -191,6 +188,7 @@ impl Kernel {
                 shutdown: CancellationToken::new(),
                 subtrees,
                 slots: Arc::new(crate::child_slots::ChildSlots::default()),
+                scheduler: Arc::default(),
             }),
             sessions,
         };
@@ -203,11 +201,12 @@ impl Kernel {
                 kernel.ensure_actor(session)?;
             }
         }
-        *lock(&kernel.scheduler) = Some(scheduler.start(
+        *lock(&kernel.scheduler) = Some(crate::scheduler::start(
             kernel.deps.store.clone(),
             kernel.deps.clock.clone(),
             kernel.deps.registry.subscribe(),
             kernel.sessions.clone(),
+            kernel.deps.scheduler.clone(),
             kernel.deps.shutdown.clone(),
         ));
         Ok(kernel)
@@ -338,58 +337,6 @@ impl Kernel {
         Ok(self.deps.store.set_safe_mode(enabled).await?)
     }
 
-    /// Point the Session at `path` on this node from its next Round, without checking the directory.
-    pub async fn set_working_dir(
-        &self,
-        session: SessionId,
-        path: std::path::PathBuf,
-    ) -> Result<WorkingDir, KernelError> {
-        self.handle(session)?;
-        let working_dir = WorkingDir::new(self.deps.store.node().await?.id, path)?;
-        self.deps
-            .store
-            .set_working_dir(session, &working_dir)
-            .await?;
-        Ok(working_dir)
-    }
-
-    /// Persist a profile choice; the current Round keeps its sampled policy.
-    pub async fn set_profile(
-        &self,
-        session: SessionId,
-        profile: &ProfileName,
-    ) -> Result<(), KernelError> {
-        self.handle(session)?;
-        self.deps
-            .registry
-            .set_profile(session, profile)
-            .await
-            .map_err(|error| match error {
-                RegistryError::UnknownProfile(name) => KernelError::UnknownProfile(name),
-                error => error.into(),
-            })
-    }
-
-    /// Inspect live state without involving the model.
-    pub async fn status(&self) -> Result<Status, KernelError> {
-        let view = self.deps.registry.view();
-        let node = self.deps.store.node().await?;
-        let records = self.deps.store.sessions().await?;
-        let handles = lock(&self.sessions);
-        let sessions = records
-            .into_iter()
-            .map(|session| self.session_status(&handles, session))
-            .collect();
-        Ok(Status {
-            timezone: view.config.kernel.timezone,
-            node: node.id,
-            safe_mode: node.safe_mode,
-            profiles: view.config.kernel.profiles.keys().cloned().collect(),
-            sessions,
-            scheduler_stopped: self.schedules.stopped(),
-        })
-    }
-
     /// A Session's live execution status from its actor and the child slot queue.
     fn session_status(
         &self,
@@ -428,11 +375,6 @@ impl Kernel {
     /// Plugin commands share the registry used by completion and embedding callers.
     pub fn registry(&self) -> &Arc<Registry> {
         &self.deps.registry
-    }
-
-    /// Commands to the Scheduler, shared by CLI and model tools.
-    pub fn schedules(&self) -> Schedules {
-        self.schedules.clone()
     }
 
     /// Signal cancellation and wait for every owner to stop.

@@ -1,9 +1,9 @@
 //! Records the external input a pure mapper is about to read, so every output keeps its source.
 //!
-//! A record holds the generation, the export and its complete arguments, with each response body
+//! A record holds the mapper code, the export and its complete arguments, with each response body
 //! stored as evidence of its own; channel mappers and Providers share this one form.
 use crate::bindings::enco::plugin::types::HttpResponse;
-use enco_core::{ContentHash, GenerationId, MappingOrigin, MappingRecord};
+use enco_core::{CodeRef, ContentHash, MappingOrigin, MappingRecord};
 use enco_kernel::{Store, StoreError};
 use serde_json::{Value, json};
 
@@ -11,12 +11,12 @@ use serde_json::{Value, json};
 /// from; a call with several outputs indexes them from this origin.
 pub(crate) async fn record(
     store: &dyn Store,
-    generation: GenerationId,
+    code: CodeRef,
     export: String,
     arguments: Value,
 ) -> Result<MappingOrigin, StoreError> {
     let record = MappingRecord {
-        generation,
+        code,
         export,
         arguments,
     };

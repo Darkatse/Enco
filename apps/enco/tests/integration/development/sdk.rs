@@ -91,7 +91,7 @@ async fn sdk_upgrades_and_downgrades_compare_built_artifacts_and_unchanged_sdk_s
     for _ in 0..enco_kernel::TRIAL_CALLS {
         registry
             .report(
-                first.registered.as_ref().unwrap().generations[0].id,
+                &first.registered.as_ref().unwrap().generations[0].id.into(),
                 enco_kernel::Verdict::Ok,
                 None,
             )

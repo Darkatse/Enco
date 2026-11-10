@@ -42,8 +42,14 @@ fn attempt(seq: u64, hash: ContentHash) -> Entry {
             attempt: AttemptId::new(),
             purpose: AttemptPurpose::Reply,
             plan: hash,
-            composer: GenerationId(1),
-            provider: GenerationId(2),
+            composer: CodeRef::Native {
+                name: "composer".into(),
+                version: "1".into(),
+            },
+            provider: CodeRef::Native {
+                name: "provider".into(),
+                version: "2".into(),
+            },
             settings: ProviderSettings {
                 base_url: "https://example.test".parse().unwrap(),
                 model: "fixture".into(),
@@ -237,7 +243,7 @@ async fn fresh_databases_enable_incremental_vacuum_and_old_versions_stay_untouch
         .await,
         Err(StoreError::SchemaVersion {
             found: 22,
-            expected: 23
+            expected: 24
         })
     ));
     let sessions: i64 = db

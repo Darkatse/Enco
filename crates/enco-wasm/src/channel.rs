@@ -10,7 +10,7 @@ use crate::{
     plugin::WasmPlugin,
 };
 use async_trait::async_trait;
-use enco_core::{Failure, FileData, GenerationId, MappingOrigin, Outgoing, code};
+use enco_core::{CodeRef, Failure, FileData, MappingOrigin, Outgoing, code};
 use enco_kernel::{
     Channel, ChannelActivity, ChannelActivityUpdate, ChannelAdapter, ChannelCallError,
     ChannelCommand, ChannelFault, ChannelIdentity, ChannelPacingGap, ChannelQuotedMessage,
@@ -64,7 +64,7 @@ struct Transport {
     mapper: WasmChannel,
     destinations: Destinations,
     credentials: Vec<CallCredential>,
-    generation: GenerationId,
+    code: CodeRef,
     store: Arc<dyn Store>,
 }
 
@@ -78,7 +78,7 @@ impl Channel for WasmChannel {
     async fn open(
         &self,
         settings: &ChannelSettings,
-        generation: GenerationId,
+        code: CodeRef,
         store: Arc<dyn Store>,
     ) -> Result<Arc<dyn ChannelAdapter>, ChannelCallError> {
         let credentials = credentials::resolve_channel(
@@ -95,7 +95,7 @@ impl Channel for WasmChannel {
             mapper: self.clone(),
             destinations: Destinations::new(&settings.base_url, &self.plugin.channel_origins),
             credentials,
-            generation,
+            code,
             store,
         };
         let response = transport.http(request).await?;
@@ -123,7 +123,7 @@ impl Transport {
     async fn record(&self, export: &str, arguments: Value) -> Result<MappingOrigin, StoreError> {
         mapping::record(
             self.store.as_ref(),
-            self.generation,
+            self.code.clone(),
             format!("channel.{export}"),
             arguments,
         )

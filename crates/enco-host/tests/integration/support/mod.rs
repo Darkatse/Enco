@@ -20,8 +20,10 @@ use tokio::sync::{Notify, broadcast};
 
 mod composer;
 mod development;
+mod schedules;
 pub use composer::*;
 pub use development::*;
+pub use schedules::*;
 
 /// A plugin whose admission probe has a fixed result.
 pub struct ScriptedLifecycle(pub Result<(), Failure>);
@@ -155,11 +157,8 @@ impl Runtime for ScriptedRuntime {
     }
 }
 
-pub fn running_generation(plugin: &PluginStatus) -> Option<&GenerationRecord> {
-    plugin
-        .running
-        .activation()
-        .map(|activation| &activation.generation)
+pub fn running_activation(plugin: &PluginStatus) -> Option<&Activation> {
+    plugin.running.activation()
 }
 
 pub fn store_paths(root: &Path) -> StorePaths {

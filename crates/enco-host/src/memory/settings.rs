@@ -1,6 +1,6 @@
 //! The `[memory]` table: the endpoint that embeds memories, and the one, if any, that judges
 //! relevance.
-use enco_core::GenerationId;
+use enco_core::RegistrationId;
 use enco_kernel::{
     Endpoint, KernelSettings, Need, SettingsError, TableOwner, Use, UseTarget, View, parse_table,
 };
@@ -102,7 +102,8 @@ pub const TABLE_OWNER: TableOwner = TableOwner {
 #[derive(Default)]
 pub(super) struct SettingsCache(Mutex<Option<Cached>>);
 struct Cached {
-    generation: GenerationId,
+    /// Registration of the configuration these settings were parsed from.
+    configuration: RegistrationId,
     settings: Result<Arc<MemorySettings>, SettingsError>,
 }
 
@@ -113,14 +114,14 @@ impl SettingsCache {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(cached) = &*cached
-            && cached.generation == view.config.generation
+            && cached.configuration == view.config.registration
         {
             return cached.settings.clone();
         }
         let settings =
             MemorySettings::from_document(&view.config.document, &view.config.kernel).map(Arc::new);
         *cached = Some(Cached {
-            generation: view.config.generation,
+            configuration: view.config.registration,
             settings: settings.clone(),
         });
         settings

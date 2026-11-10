@@ -59,8 +59,8 @@ async fn registrations_check_profile_options_against_candidate_composer_schemas(
         "limit",
     );
     let after = store.registry().await.unwrap();
-    assert_eq!(after.generations, before.generations);
-    assert_eq!(after.active_config, before.active_config);
+    assert_eq!(after.intent.generations, before.intent.generations);
+    assert_eq!(after.node.configuration, before.node.configuration);
 }
 
 #[tokio::test]
@@ -94,13 +94,16 @@ async fn pinned_options_follow_current_code_and_unrepaired_mismatches_do_not_blo
         .composer(&pinned, true)
         .unwrap()
         .export
-        .generation;
+        .code;
     document["profile"]["default"]["composer"]["options"] = json!({"mood": "bright"});
     let mut request = configuration_request(document);
     request.plugins = source_request("custom-composer", b"mood").plugins;
     let registered = submit(&registry, request).await.unwrap();
     assert!(registered.probes.is_empty());
-    assert_eq!(registered.generations[0].status, GenerationStatus::Trial);
+    assert_eq!(
+        store.registry().await.unwrap().node.health[&registered.generations[0].id],
+        Health::Trial
+    );
     let current = registry.view().config.kernel.profiles["default"]
         .composer
         .clone();
@@ -114,7 +117,7 @@ async fn pinned_options_follow_current_code_and_unrepaired_mismatches_do_not_blo
     );
     registry
         .report(
-            registered.generations[0].id,
+            &registered.generations[0].id.into(),
             Verdict::Failed(fault(code::PLUGIN_TRAP)),
             None,
         )
@@ -125,7 +128,7 @@ async fn pinned_options_follow_current_code_and_unrepaired_mismatches_do_not_blo
         matches!(view.exports.composer(&current, false), Err(failure) if failure.message.contains("mood"))
     );
     let safe = view.exports.composer(&current, true).unwrap();
-    assert_eq!(safe.export.generation, factory);
+    assert_eq!(safe.export.code, factory);
     assert!(safe.options.is_empty());
     let unavailable = |status: RegistryStatus| {
         matches!(status.config.unavailable_uses.as_slice(), [usage]

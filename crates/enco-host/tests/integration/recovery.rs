@@ -241,6 +241,65 @@ async fn recovery_distinguishes_started_effects_from_calls_never_dispatched() {
     }
 }
 
+/// A scheduling call changes schedules only with its settlement, so one interrupted before it
+/// settles leaves none.
+#[tokio::test]
+async fn an_interrupted_scheduling_call_settles_failed_and_leaves_no_schedule() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_owned();
+    let tool = Arc::new(GatedTool {
+        effect: Effect::ReadOnly,
+        entered: Notify::new(),
+        dropped: Notify::new(),
+        finished: AtomicBool::new(false),
+    });
+    let remote = tool.clone();
+    // Both calls are read-only, so they start in one batch, and neither settles before the
+    // gated one finishes.
+    let schedule = schedule_creation();
+    let gated = call("gated", "{}");
+    let provider = ScriptedProvider::new(vec![calls(vec![schedule.clone(), gated])]);
+    let worker = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (old, _, session) = worker
+        .spawn(async move {
+            let (kernel, store) =
+                kernel_configured(&path, provider, configuration(), vec![remote], |_| {}).await;
+            let session = kernel.open_session("main").await.unwrap();
+            (kernel, store, session)
+        })
+        .await
+        .unwrap();
+    old.submit(session.id, EventId::new(), "remind me".into(), Vec::new())
+        .await
+        .unwrap();
+    observed(&tool.entered).await;
+    worker.shutdown_background();
+    observed(&tool.dropped).await;
+    drop(old);
+    let (kernel, store) = kernel(dir.path(), ScriptedProvider::new(vec![])).await;
+    let log = recovered(&kernel, session.id).await;
+    assert!(log.iter().any(|entry| matches!(
+        &entry.body,
+        EntryBody::ToolCallStarted { call, .. } if *call == schedule.id
+    )));
+    assert!(log.iter().any(|entry| matches!(
+        &entry.body,
+        EntryBody::ToolCallSettled {
+            call,
+            outcome: Settlement::Failed { .. },
+            schedule: None,
+            ..
+        } if *call == schedule.id
+    )));
+    assert!(store.schedules(Some(session.id)).await.unwrap().is_empty());
+    assert!(kernel.schedules(None).await.unwrap().is_empty());
+    kernel.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn cancellation_reaches_context_and_shutdown_waits_for_tool_settlement() {
     let dir = tempfile::tempdir().unwrap();
@@ -377,7 +436,7 @@ async fn safe_mode_bypasses_broken_context_and_offers_only_lifeline_tools() {
             }
         )
     }));
-    assert!(kernel.schedules().list(None).await.unwrap().is_empty());
+    assert!(kernel.schedules(None).await.unwrap().is_empty());
     assert_eq!(
         log.iter()
             .filter(|entry| matches!(entry.body, EntryBody::ToolCallStarted { .. }))

@@ -25,8 +25,10 @@ pub(in crate::registry) struct PlannedPlugin {
 }
 
 pub(in crate::registry) enum Action {
+    /// Content the host does not have, which brings a generation.
     Code(Content),
-    Existing(GenerationId, Box<Loaded>),
+    /// This host's factory code with empty settings, which brings none.
+    Factory(CodeRef, Box<Loaded>),
     Remove,
     Rename,
 }
@@ -54,7 +56,7 @@ pub(in crate::registry) async fn plan(
     current: Option<&ActiveConfig>,
     request: RegistrationRequest,
 ) -> Result<Plan, RegistryError> {
-    if request.base != state.history.registrations.keys().next_back().copied() {
+    if request.base != state.intent.registrations.keys().next_back().copied() {
         return Err(RegistryError::Conflict("registration baseline".into()));
     }
     if request.configuration.is_none() && request.plugins.is_empty() {
@@ -112,25 +114,17 @@ async fn plan_plugin(
                 ArtifactSource::Stored(hash) => deps.store.artifact(&hash).await?,
             }),
             settings,
-            origin: Origin::Code {
-                registration: plan.expected.next,
-            },
+            origin: Origin::Code,
         }),
         PluginChange::Factory => {
             let factory = factory.ok_or_else(|| RegistryError::NotFactory(name.clone()))?;
-            let generation = state.factory[&factory.id];
-            if settings == PluginSettings::default() {
-                let loaded = state.loaded[&generation].clone();
-                Action::Existing(generation, Box::new(loaded))
-            } else {
+            factory_itself(state, factory, &settings).unwrap_or_else(|| {
                 Action::Code(Content {
                     bytes: Cow::Borrowed(factory.artifact),
                     settings,
-                    origin: Origin::Code {
-                        registration: plan.expected.next,
-                    },
+                    origin: Origin::Code,
                 })
-            }
+            })
         }
         PluginChange::Remove if factory.is_some() => {
             return Err(RegistryError::FactoryRemoval(name));
@@ -255,44 +249,68 @@ async fn plan_settings(
             .get(name)
             .cloned()
             .unwrap_or_default();
-        let (bytes, based_on) = match state.active(id) {
-            Some(record) => (artifact(deps, record).await?, record.id),
-            None => {
-                return Err(rejected(Cause::SettingsWithoutCode {
-                    plugin: name.clone(),
-                }));
-            }
+        let Some(based_on) = state.active(id).cloned() else {
+            return Err(rejected(Cause::SettingsWithoutCode {
+                plugin: name.clone(),
+            }));
+        };
+        // A plugin following factory code runs it as itself once its settings are emptied.
+        let follows_factory = state.provenance(&based_on)?.source == CodeSource::Factory;
+        let itself = deps
+            .factory
+            .iter()
+            .find(|factory| factory.id == id)
+            .filter(|_| follows_factory)
+            .and_then(|factory| factory_itself(state, factory, &selected));
+        let (intent, action) = match itself {
+            Some(action) => (Some(CodeIntent::Factory), action),
+            None => (
+                None,
+                Action::Code(Content {
+                    bytes: artifact(deps, &state.artifact(&based_on)?).await?,
+                    settings: selected,
+                    origin: Origin::Settings { based_on },
+                }),
+            ),
         };
         plan.plugins.insert(
             id,
             PlannedPlugin {
                 name: Some(name.clone()),
-                intent: None,
-                action: Action::Code(Content {
-                    bytes,
-                    settings: selected,
-                    origin: Origin::Settings {
-                        registration: plan.expected.next,
-                        based_on,
-                    },
-                }),
+                intent,
+                action,
             },
         );
     }
     Ok(())
 }
 
+/// This host's factory code run as itself: with empty settings it is host content, which brings
+/// no generation; otherwise it is not.
+fn factory_itself(
+    state: &State,
+    factory: &FactoryPlugin,
+    settings: &PluginSettings,
+) -> Option<Action> {
+    (*settings == PluginSettings::default()).then(|| {
+        let code = state.factory[&factory.id].clone();
+        let loaded = state.loaded[&code].clone();
+        Action::Factory(code, Box::new(loaded))
+    })
+}
+
+/// Embedded bytes when this host ships them, otherwise the stored file.
 pub(in crate::registry) async fn artifact(
     deps: &RegistryDeps,
-    record: &GenerationRecord,
+    hash: &ContentHash,
 ) -> Result<Cow<'static, [u8]>, RegistryError> {
     match deps
         .factory
         .iter()
-        .find(|factory| ContentHash::of(factory.artifact) == record.artifact)
+        .find(|factory| ContentHash::of(factory.artifact) == *hash)
     {
         Some(factory) => Ok(Cow::Borrowed(factory.artifact)),
-        None => Ok(Cow::Owned(deps.store.artifact(&record.artifact).await?)),
+        None => Ok(Cow::Owned(deps.store.artifact(hash).await?)),
     }
 }
 
@@ -308,9 +326,7 @@ pub(in crate::registry) async fn prepare(
         };
         let result = match &plugin.action {
             Action::Code(content) => load(deps.runtime.as_ref(), content, name, candidate).await,
-            Action::Existing(_, existing) => {
-                probe(existing.as_ref().clone(), name, candidate).await
-            }
+            Action::Factory(_, existing) => probe(existing.as_ref().clone(), name, candidate).await,
             Action::Remove | Action::Rename => continue,
         };
         match result {
@@ -334,8 +350,8 @@ impl PlannedPlugin {
     /// What the candidate changes, which decides the part a load failure concerns.
     fn candidate(&self) -> Option<Proposed> {
         match &self.action {
-            Action::Existing(..) => Some(Proposed::Factory),
-            Action::Code(content) => Some(match (self.intent, content.origin) {
+            Action::Factory(..) => Some(Proposed::Factory),
+            Action::Code(content) => Some(match (self.intent, &content.origin) {
                 (Some(CodeIntent::Factory), _) => Proposed::Factory,
                 (_, Origin::Settings { .. }) => Proposed::Settings,
                 (Some(CodeIntent::Directory { .. }) | None, _) => Proposed::Code,

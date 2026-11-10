@@ -39,12 +39,9 @@ fn runtime(artifacts: &[&[u8]]) -> Arc<ScriptedRuntime> {
     runtime
 }
 
-async fn promote(registry: &Registry, generation: GenerationId) {
+async fn promote(registry: &Registry, code: &CodeRef) {
     for _ in 0..TRIAL_CALLS {
-        registry
-            .report(generation, Verdict::Ok, None)
-            .await
-            .unwrap();
+        registry.report(code, Verdict::Ok, None).await.unwrap();
     }
 }
 
@@ -53,7 +50,7 @@ async fn default_factory_follow_activates_existing_host_code_and_rollback_surviv
     let root = tempfile::tempdir().unwrap();
     let runtime = runtime(&[b"one", b"two", b"three"]);
     let (_, _, first) = open_following(root.path(), runtime.clone(), b"one", configuration()).await;
-    let old = running_generation(&first.status().await.unwrap().plugins[0])
+    let old = running_activation(&first.status().await.unwrap().plugins[0])
         .unwrap()
         .clone();
     drop(first);
@@ -62,33 +59,37 @@ async fn default_factory_follow_activates_existing_host_code_and_rollback_surviv
     let status = registry.status().await.unwrap();
     let plugin = &status.plugins[0];
     let activation = plugin.running.activation().unwrap();
-    let active = &activation.generation;
     assert_eq!(
-        active.id,
+        activation.code,
         status.registered.plugins["fixture"]
             .factory
             .as_ref()
             .unwrap()
-            .generation
+            .code
     );
-    assert_eq!(active.origin.registration(), None);
+    // Factory code with empty settings is host content: no generation, never on trial.
+    assert!(matches!(activation.code, CodeRef::Factory { .. }));
+    assert_eq!(activation.health, None);
     let followed = registry.history(None, 1).await.unwrap().remove(0);
     assert_eq!(followed.initiator, Initiator::Host);
     assert_eq!(activation.registration, Some(followed.id));
-    assert!(followed.changes.iter().any(|change| matches!(change, UnitChange::Plugin { name, change: PluginChangeKind::Factory { generation } } if name.as_ref() == "fixture" && generation.record.id == active.id)));
+    assert!(followed.changes.iter().any(|change| matches!(change, UnitChange::Plugin { name, change: PluginChangeKind::Factory { selected } } if name.as_ref() == "fixture" && selected.code == activation.code)));
     assert_eq!(registry.rollback().await.unwrap().registration, followed.id);
     assert_eq!(
-        running_generation(&registry.status().await.unwrap().plugins[0])
+        running_activation(&registry.status().await.unwrap().plugins[0])
             .unwrap()
-            .id,
-        old.id
+            .code,
+        old.code
     );
     drop(registry);
     let (_, _, registry) =
         open_following(root.path(), runtime.clone(), b"two", configuration()).await;
     let status = registry.status().await.unwrap();
     assert_eq!(registry.history(None, 3).await.unwrap().len(), 2);
-    assert_eq!(running_generation(&status.plugins[0]).unwrap().id, old.id);
+    assert_eq!(
+        running_activation(&status.plugins[0]).unwrap().code,
+        old.code
+    );
     assert_eq!(
         status.plugins[0].standing,
         Standing::Registered {
@@ -98,7 +99,7 @@ async fn default_factory_follow_activates_existing_host_code_and_rollback_surviv
     drop(registry);
     let (_, _, registry) = open_following(root.path(), runtime, b"three", configuration()).await;
     assert_eq!(
-        running_generation(&registry.status().await.unwrap().plugins[0])
+        running_activation(&registry.status().await.unwrap().plugins[0])
             .unwrap()
             .artifact,
         ContentHash::of(b"three")
@@ -127,6 +128,45 @@ impl Runtime for ConfiguredFactory {
 }
 
 #[tokio::test]
+async fn emptying_the_settings_of_factory_code_runs_it_as_itself() {
+    let root = tempfile::tempdir().unwrap();
+    let mut document = configuration();
+    document["plugin"] = serde_json::json!({"fixture": {"config": {"label": "old"}}});
+    let (_, development, registry) = open_following(
+        root.path(),
+        Arc::new(ConfiguredFactory),
+        b"old",
+        document.clone(),
+    )
+    .await;
+    let configured = running_activation(&registry.status().await.unwrap().plugins[0])
+        .unwrap()
+        .code
+        .clone();
+    assert!(matches!(configured, CodeRef::Generation { .. }));
+    promote(&registry, &configured).await;
+    document.as_object_mut().unwrap().remove("plugin");
+    let applied = apply_configuration(root.path(), &development, &registry, &document).await;
+    assert!(applied.registered.is_some());
+    let status = registry.status().await.unwrap();
+    let activation = running_activation(&status.plugins[0]).unwrap();
+    // No generation and no trial: the plugin runs the factory code itself again.
+    assert!(matches!(activation.code, CodeRef::Factory { .. }));
+    assert_eq!(activation.health, None);
+    let emptied = registry.history(None, 1).await.unwrap().remove(0);
+    assert!(emptied.changes.iter().any(|change| matches!(change,
+        UnitChange::Plugin { name, change: PluginChangeKind::Factory { .. } } if name.as_ref() == "fixture")));
+    // The settings it replaced come back with the owner's rollback.
+    registry.rollback().await.unwrap();
+    assert_eq!(
+        running_activation(&registry.status().await.unwrap().plugins[0])
+            .unwrap()
+            .code,
+        configured
+    );
+}
+
+#[tokio::test]
 async fn rejected_follow_keeps_running_state_and_a_configuration_repair_accepts_it() {
     let root = tempfile::tempdir().unwrap();
     let runtime = Arc::new(ConfiguredFactory);
@@ -134,17 +174,18 @@ async fn rejected_follow_keeps_running_state_and_a_configuration_repair_accepts_
     document["plugin"] = serde_json::json!({"fixture": {"config": {"label": "old"}}});
     let (_, _, first) =
         open_following(root.path(), runtime.clone(), b"old", document.clone()).await;
-    let old = running_generation(&first.status().await.unwrap().plugins[0])
+    let old = running_activation(&first.status().await.unwrap().plugins[0])
         .unwrap()
-        .id;
-    promote(&first, old).await;
+        .code
+        .clone();
+    promote(&first, &old).await;
     drop(first);
     let (store, development, registry) =
         open_following(root.path(), runtime.clone(), b"new", document.clone()).await;
     let status = registry.status().await.unwrap();
     let plugin = &status.plugins[0];
     assert_eq!(registry.history(None, 2).await.unwrap().len(), 1);
-    assert_eq!(running_generation(plugin).unwrap().id, old);
+    assert_eq!(running_activation(plugin).unwrap().code, old);
     let follow_rejection = development.status(&registry).await.unwrap().plugins["fixture"]
         .registered
         .as_ref()
@@ -189,8 +230,8 @@ async fn rejected_follow_keeps_running_state_and_a_configuration_repair_accepts_
             .exports
             .completion(&fixture_endpoint("fixture"), true)
             .unwrap()
-            .generation,
-        factory.generation
+            .code,
+        factory.code
     );
     document["plugin"]["fixture"]["config"]["label"] = "new".into();
     std::fs::write(
@@ -208,7 +249,7 @@ async fn rejected_follow_keeps_running_state_and_a_configuration_repair_accepts_
         .unwrap();
     assert!(applied.registered.unwrap().configuration.is_some());
     let plugin = registry.status().await.unwrap().plugins.remove(0);
-    let generation = running_generation(&plugin).unwrap();
+    let generation = running_activation(&plugin).unwrap();
     assert_eq!(generation.artifact, ContentHash::of(b"new"));
     assert_eq!(generation.settings.config["label"], "new");
     assert!(
@@ -242,7 +283,7 @@ async fn startup_follows_registered_factory_intent_independently_of_working_dire
         .await
         .unwrap();
     assert_eq!(
-        running_generation(&registry.status().await.unwrap().plugins[0])
+        running_activation(&registry.status().await.unwrap().plugins[0])
             .unwrap()
             .artifact,
         ContentHash::of(b"two")
@@ -259,7 +300,7 @@ async fn startup_follows_registered_factory_intent_independently_of_working_dire
     .await
     .generations
     .remove(0);
-    assert!(matches!(custom.origin, Origin::Code { .. }));
+    assert_eq!(custom.origin, Origin::Code);
     assert_eq!(
         registry.registered_intent(None).await.unwrap().plugins["fixture"]
             .code
@@ -281,10 +322,10 @@ async fn startup_follows_registered_factory_intent_independently_of_working_dire
         .await
         .unwrap();
     assert_eq!(
-        running_generation(&registry.status().await.unwrap().plugins[0])
+        running_activation(&registry.status().await.unwrap().plugins[0])
             .unwrap()
-            .id,
-        custom.id
+            .code,
+        CodeRef::from(custom.id)
     );
     development
         .apply(
@@ -295,7 +336,7 @@ async fn startup_follows_registered_factory_intent_independently_of_working_dire
         .await
         .unwrap();
     assert_eq!(
-        running_generation(&registry.status().await.unwrap().plugins[0])
+        running_activation(&registry.status().await.unwrap().plugins[0])
             .unwrap()
             .artifact,
         ContentHash::of(b"three")
@@ -423,7 +464,7 @@ async fn code_and_settings_rollbacks_survive_unrelated_registration_until_source
     )
     .await;
     let old = running.generations[0].clone();
-    promote(&registry, old.id).await;
+    promote(&registry, &old.id.into()).await;
     let broken = source_fixture(
         root.path(),
         &store,
@@ -441,7 +482,7 @@ async fn code_and_settings_rollbacks_survive_unrelated_registration_until_source
         retryable: false,
     };
     registry
-        .report(broken.id, Verdict::Failed(failure.clone()), None)
+        .report(&broken.id.into(), Verdict::Failed(failure.clone()), None)
         .await
         .unwrap();
     document["owner"]["timezone"] = "Europe/Paris".into();
@@ -454,9 +495,12 @@ async fn code_and_settings_rollbacks_survive_unrelated_registration_until_source
     let plugin = status
         .plugins
         .iter()
-        .find(|plugin| plugin.id == old.plugin)
+        .find(|plugin| plugin.id == old.id.plugin)
         .unwrap();
-    assert_eq!(running_generation(plugin).unwrap().id, old.id);
+    assert_eq!(
+        running_activation(plugin).unwrap().code,
+        CodeRef::from(old.id)
+    );
     assert_eq!(
         plugin.standing,
         Standing::Registered {
@@ -464,11 +508,10 @@ async fn code_and_settings_rollbacks_survive_unrelated_registration_until_source
         }
     );
     let intended = &status.registered.plugins["fixture"].code.as_ref().unwrap();
-    assert_eq!(intended.generation, broken.id);
-    let rejected = &status.registered.plugins["fixture"].activation.generation;
-    assert_eq!(rejected.id, intended.generation);
-    assert_eq!(rejected.status, GenerationStatus::Failed);
-    assert_eq!(rejected.failure.as_ref(), Some(&failure));
+    assert_eq!(intended.code, CodeRef::from(broken.id));
+    let rejected = &status.registered.plugins["fixture"].activation;
+    assert_eq!(rejected.code, intended.code);
+    assert_eq!(rejected.health, Some(Health::Failed { failure }));
 
     document["plugin"] = serde_json::json!({"fixture": {"config": {"label": "settings"}}});
     let settings = apply_configuration(root.path(), &development, &registry, &document)
@@ -478,19 +521,18 @@ async fn code_and_settings_rollbacks_survive_unrelated_registration_until_source
     assert_eq!(
         settings.generations[0].origin,
         Origin::Settings {
-            registration: settings.registration.id,
-            based_on: old.id
+            based_on: old.id.into()
         }
     );
     registry.rollback().await.unwrap();
-    let activation = plugin_status(&registry, old.plugin)
+    let activation = plugin_status(&registry, old.id.plugin)
         .await
         .running
         .activation()
         .unwrap()
         .clone();
-    assert_eq!(activation.generation.id, old.id);
-    assert_eq!(activation.code.generation, old.id);
+    assert_eq!(activation.code, CodeRef::from(old.id));
+    assert_eq!(activation.provenance.code, CodeRef::from(old.id));
 
     document["run"] = serde_json::json!({"max_rounds": 31});
     let unrelated = apply_configuration(root.path(), &development, &registry, &document)
@@ -514,20 +556,20 @@ async fn check_running_source_and_repair(
     let plugin = status
         .plugins
         .iter()
-        .find(|plugin| plugin.id == old.plugin)
+        .find(|plugin| plugin.id == old.id.plugin)
         .unwrap();
     let activation = plugin.running.activation().unwrap();
-    assert_eq!(activation.generation.id, old.id);
+    assert_eq!(activation.code, CodeRef::from(old.id));
     assert_eq!(
         plugin.standing,
         Standing::Registered {
             differences: vec![Difference::Settings]
         }
     );
-    assert_eq!(activation.code.generation, old.id);
+    assert_eq!(activation.provenance.code, CodeRef::from(old.id));
     let supplier = running.registration.id;
     assert!(matches!(
-        activation.code.source,
+        activation.provenance.source,
         CodeSource::Directory { registration, .. } if registration == supplier
     ));
     development
@@ -554,7 +596,7 @@ async fn check_running_source_and_repair(
         serde_json::json!({"label": "settings"})
     );
     assert_eq!(
-        plugin_status(registry, old.plugin).await.standing,
+        plugin_status(registry, old.id.plugin).await.standing,
         Standing::Registered {
             differences: vec![]
         }
@@ -600,7 +642,7 @@ async fn settings_use_registered_names_while_running_names_remain_reserved() {
     );
     assert_eq!(
         grouped.plugins["b"].registered.as_ref().unwrap().plugin.id,
-        old.plugin
+        old.id.plugin
     );
     assert!(!grouped.plugins.contains_key("a"));
 
@@ -611,15 +653,12 @@ async fn settings_use_registered_names_while_running_names_remain_reserved() {
         .await
         .registered
         .unwrap();
-    assert_eq!(settings.generations[0].plugin, old.plugin);
-    let plugin = plugin_status(&registry, old.plugin).await;
+    assert_eq!(settings.generations[0].id.plugin, old.id.plugin);
+    let plugin = plugin_status(&registry, old.id.plugin).await;
     assert_eq!(plugin.running.name().map(PluginName::as_str), Some("a"));
     let activation = plugin.running.activation().unwrap();
-    assert_eq!(
-        activation.generation.settings.config["label"],
-        "registered name"
-    );
-    assert_eq!(activation.code.generation, old.id);
+    assert_eq!(activation.settings.config["label"], "registered name");
+    assert_eq!(activation.provenance.code, CodeRef::from(old.id));
     source_fixture(root.path(), &store, &development, &registry, "c", b"c").await;
     let taken: PluginName = "a".parse().unwrap();
     let collision = development
@@ -717,7 +756,7 @@ async fn unrelated_host_registration_does_not_recreate_a_rolled_back_reused_name
         .await
         .generations
         .remove(0);
-    promote(&registry, x.id).await;
+    promote(&registry, &x.id.into()).await;
     std::fs::remove_dir_all(root.path().join("plugins/custom")).unwrap();
     development
         .apply(
@@ -731,7 +770,7 @@ async fn unrelated_host_registration_does_not_recreate_a_rolled_back_reused_name
         .await
         .generations
         .remove(0);
-    assert_ne!(x.plugin, y.plugin);
+    assert_ne!(x.id.plugin, y.id.plugin);
     registry.rollback().await.unwrap();
     registry.rollback().await.unwrap();
     document["owner"]["timezone"] = "Europe/Paris".into();
@@ -740,12 +779,15 @@ async fn unrelated_host_registration_does_not_recreate_a_rolled_back_reused_name
         .registered
         .unwrap();
     assert!(unrelated.generations.is_empty() && unrelated.registration.names.is_empty());
-    let restored = plugin_status(&registry, x.plugin).await;
-    assert_eq!(running_generation(&restored).unwrap().id, x.id);
+    let restored = plugin_status(&registry, x.id.plugin).await;
+    assert_eq!(
+        running_activation(&restored).unwrap().code,
+        CodeRef::from(x.id)
+    );
     assert_eq!(
         restored.running.name().map(PluginName::as_str),
         Some("custom")
     );
-    let removed = plugin_status(&registry, y.plugin).await;
+    let removed = plugin_status(&registry, y.id.plugin).await;
     assert!(matches!(removed.running, Running::Stopped));
 }

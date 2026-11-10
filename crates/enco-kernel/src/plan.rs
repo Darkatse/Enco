@@ -1,6 +1,4 @@
-use crate::{
-    Budget, ComposeInput, CompositionItem, CompositionPlan, Exports, ProviderRequest, Transcript,
-};
+use crate::{Budget, ComposeInput, CompositionItem, CompositionPlan, ProviderRequest, Transcript};
 use enco_core::*;
 use std::collections::HashSet;
 
@@ -98,15 +96,13 @@ pub(crate) fn bind(
 pub(crate) fn resolve(
     plan: &ContextPlan,
     transcript: &Transcript,
-    exports: &Exports,
     target: PluginId,
 ) -> Result<ProviderRequest<Image>, PlanError> {
     Ok(ProviderRequest {
         messages: messages(plan, transcript)?
             .into_iter()
-            .map(|(message, generation)| {
-                let own_extensions =
-                    generation.and_then(|id| exports.plugin_of(id)) == Some(target);
+            .map(|(message, provider)| {
+                let own_extensions = provider.as_ref().and_then(CodeRef::plugin) == Some(target);
                 Message {
                     role: message.role,
                     parts: message
@@ -139,7 +135,7 @@ pub(crate) fn held(plan: &ContextPlan, transcript: &Transcript) -> bool {
 fn messages(
     plan: &ContextPlan,
     transcript: &Transcript,
-) -> Result<Vec<(Message, Option<GenerationId>)>, PlanError> {
+) -> Result<Vec<(Message, Option<CodeRef>)>, PlanError> {
     let mut messages = Vec::with_capacity(plan.items.len());
     for item in &plan.items {
         match item {
@@ -165,7 +161,7 @@ fn messages(
                         .collect(),
                 };
                 if !message.parts.is_empty() {
-                    messages.push((message, item.generation));
+                    messages.push((message, item.provider.clone()));
                 }
             }
         }
@@ -173,7 +169,7 @@ fn messages(
     Ok(messages)
 }
 
-fn validate_messages(messages: &[(Message, Option<GenerationId>)]) -> Result<(), PlanError> {
+fn validate_messages(messages: &[(Message, Option<CodeRef>)]) -> Result<(), PlanError> {
     let mut pending = std::collections::HashMap::new();
     for (message, _) in messages {
         if message.role == Role::Tool {

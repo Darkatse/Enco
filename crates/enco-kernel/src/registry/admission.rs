@@ -1,9 +1,9 @@
 use super::*;
 
-/// Whether each registered name's active generation, with any candidates substituted, can run on
+/// Whether each registered name's active code, with any candidates substituted, can run on
 /// this node, and why not.
 ///
-/// It depends only on the generations' own facts, never on their users.
+/// It depends only on the code's own facts, never on its users.
 #[derive(Default)]
 pub(super) struct Admission(BTreeMap<PluginName, Result<Loaded, Vec<Cause>>>);
 

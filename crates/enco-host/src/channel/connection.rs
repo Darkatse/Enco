@@ -25,7 +25,7 @@ struct Connection {
     pacing: Arc<transport::PacingGate>,
     identity: Identity,
     settings: ConnectionSettings,
-    generation: GenerationId,
+    code: CodeRef,
     state: State,
     menu_failure: Arc<Mutex<Option<String>>>,
     clock: Arc<dyn Clock>,
@@ -92,7 +92,7 @@ pub(super) struct Start {
     pub kernel: Arc<Kernel>,
     pub adapter: Arc<dyn Adapter>,
     pub settings: ConnectionSettings,
-    pub generation: GenerationId,
+    pub code: CodeRef,
     pub clock: Arc<dyn Clock>,
     pub stop: CancellationToken,
     pub menu_failure: Arc<Mutex<Option<String>>>,
@@ -104,7 +104,7 @@ pub(super) async fn run(start: Start) -> Exit {
         kernel,
         adapter,
         settings,
-        generation,
+        code,
         clock,
         stop,
         menu_failure,
@@ -131,7 +131,7 @@ pub(super) async fn run(start: Start) -> Exit {
         kernel,
         adapter,
         settings,
-        generation,
+        code,
         menu_failure,
         state,
         clock,
@@ -269,12 +269,12 @@ impl Connection {
         let protocol = self.state.protocol.clone();
         let stop = self.stop.clone();
         let kernel = self.kernel.clone();
-        let generation = self.generation;
+        let code = self.code.clone();
         self.readers.spawn(async move {
             let pending = readings.clone();
             let result = health::call(
                 &kernel,
-                generation,
+                &code,
                 adapter.receive(protocol, readings, stop.clone()),
             )
             .await;
@@ -292,7 +292,7 @@ impl Connection {
             adapter: self.adapter.clone(),
             kernel: self.kernel.clone(),
             settings: self.settings.clone(),
-            generation: self.generation,
+            code: self.code.clone(),
             clock: self.clock.clone(),
         }
         .prepare(

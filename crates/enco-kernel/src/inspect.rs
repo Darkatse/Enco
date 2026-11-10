@@ -1,4 +1,4 @@
-use crate::{Kernel, KernelError, ProviderRequest, StoreError, plan, transcript};
+use crate::{Kernel, KernelError, ProviderRequest, plan, transcript};
 use enco_core::*;
 
 /// An Attempt reconstructed exclusively from its recorded plan and Log prefix.
@@ -8,10 +8,10 @@ pub struct Inspection {
     pub attempt: AttemptId,
     /// Reply or compaction.
     pub purpose: AttemptPurpose,
-    /// Composer generation which produced the frozen plan.
-    pub composer: GenerationId,
-    /// Provider generation to which the recorded request was bound.
-    pub provider: GenerationId,
+    /// Composer code which produced the frozen plan.
+    pub composer: CodeRef,
+    /// Provider code to which the recorded request was bound.
+    pub provider: CodeRef,
     /// Recorded invocation parameters, excluding the credential itself.
     pub settings: ProviderSettings,
     /// Exact canonical request at this Attempt's Log position.
@@ -55,15 +55,12 @@ impl Kernel {
             reason,
         };
         let plan = self.deps.store.plan(hash).await?;
-        let view = self.deps.registry.view();
-        let exports = &view.exports;
-        let target = exports
-            .plugin_of(*provider)
-            .ok_or(StoreError::UnknownGeneration(*provider))?;
+        let target = provider
+            .plugin()
+            .ok_or_else(|| invalid(format!("Provider code {provider} belongs to no plugin")))?;
         let request = plan::resolve(
             &plan,
             &transcript::project(&transcript::conversation(&entries[..index])),
-            exports,
             target,
         )
         .map_err(|error| invalid(error.to_string()))?;
@@ -80,8 +77,8 @@ impl Kernel {
         Ok(Inspection {
             attempt: *attempt,
             purpose: *purpose,
-            composer: *composer,
-            provider: *provider,
+            composer: composer.clone(),
+            provider: provider.clone(),
             settings: settings.clone(),
             request,
             plan,

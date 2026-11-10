@@ -1,15 +1,27 @@
 mod delegation;
+mod schedule;
 mod settle;
-use delegation::{DelegationRequest, Execution};
+use delegation::DelegationRequest;
+use schedule::ScheduleRequest;
 
 use crate::{
     builtin::{BuiltinCall, REPLY_SKIP},
     session::SessionActor,
-    snapshot::Snapshot,
+    snapshot::{Snapshot, ToolSource},
     *,
 };
 use enco_core::*;
 use tokio_util::sync::CancellationToken;
+
+/// What executing a call returned for the actor to settle.
+enum Execution {
+    /// A tool's outcome.
+    Result(Outcome),
+    /// A message to a child, checked and delivered with the settlement.
+    Delegation(DelegationRequest),
+    /// A scheduling call, answered with the settlement and recording any change with it.
+    Schedule(ScheduleRequest),
+}
 
 pub(crate) fn render_text(outcome: &Outcome) -> String {
     match outcome {
@@ -27,12 +39,15 @@ pub(crate) fn render_text(outcome: &Outcome) -> String {
 
 impl SessionActor {
     /// The actor alone orders calls and records their facts; workers only return outcomes.
+    ///
+    /// `timezone` is the one the Round sampled with its configuration.
     pub(crate) async fn dispatch(
         &mut self,
         round: RoundId,
         snapshot: &Snapshot,
         plan: &ContextPlan,
         calls: &[&ToolCall],
+        timezone: Tz,
         token: &CancellationToken,
     ) -> Result<(), crate::run::RoundError> {
         let skip = skip_allowed(calls.len(), self.tail.entries());
@@ -47,8 +62,15 @@ impl SessionActor {
                 .count()
                 .max(1);
             let (batch, rest) = remaining.split_at(count);
-            self.dispatch_batch(round, snapshot, plan, batch, &skip, token)
-                .await?;
+            let batch = Batch {
+                round,
+                snapshot,
+                plan,
+                calls: batch,
+                skip: &skip,
+                timezone,
+            };
+            self.dispatch_batch(&batch, token).await?;
             remaining = rest;
         }
         Ok(())
@@ -56,13 +78,18 @@ impl SessionActor {
 
     async fn dispatch_batch(
         &mut self,
-        round: RoundId,
-        snapshot: &Snapshot,
-        plan: &ContextPlan,
-        calls: &[&ToolCall],
-        skip: &Result<(), Failure>,
+        batch: &Batch<'_>,
         token: &CancellationToken,
     ) -> Result<(), crate::run::RoundError> {
+        let Batch {
+            round,
+            snapshot,
+            plan,
+            calls,
+            skip,
+            timezone,
+        } = *batch;
+        // Only for the health gate: a failure in an earlier batch of this Round counts.
         let view = self.deps.registry.view();
         let mut ready = Vec::new();
         let mut outcomes = Vec::new();
@@ -89,9 +116,10 @@ impl SessionActor {
         }
         let batch_cancel = token.child_token();
         let mut tasks = tokio::task::JoinSet::new();
+        let now = self.deps.clock.now();
         for (index, tool, args) in ready {
             let code = tool.code.clone();
-            let builtin = tool.builtin;
+            let builtin = tool.builtin();
             let name = self.session.name.clone();
             let tool = tool.tool.clone();
             let ctx = CallContext {
@@ -102,14 +130,21 @@ impl SessionActor {
                 result_budget: limits::TOOL_RESULT_INLINE_BYTES,
             };
             tasks.spawn(async move {
-                let execution = if builtin == Some(BuiltinCall::SessionSend) {
-                    match DelegationRequest::parse(args, &name, &ctx.working_dir) {
-                        Ok(request) => Execution::Delegation(request),
-                        Err(failure) => Execution::Result(Outcome::Failed { failure }),
+                let parsed = match builtin {
+                    Some(BuiltinCall::SessionSend) => {
+                        DelegationRequest::parse(args, &name, &ctx.working_dir)
+                            .map(Execution::Delegation)
                     }
-                } else {
-                    Execution::Result(tool.call(ctx, args).await)
+                    Some(BuiltinCall::Schedule(call)) => {
+                        ScheduleRequest::parse(call, args, ctx.session, now, timezone)
+                            .map(Execution::Schedule)
+                    }
+                    Some(BuiltinCall::ReplySkip) | None => {
+                        Ok(Execution::Result(tool.call(ctx, args).await))
+                    }
                 };
+                let execution =
+                    parsed.unwrap_or_else(|failure| Execution::Result(Outcome::Failed { failure }));
                 (index, Some(code), execution)
             });
         }
@@ -129,17 +164,17 @@ impl SessionActor {
         outcomes.sort_unstable_by_key(|(index, _, _)| *index);
         for (index, code, outcome) in outcomes {
             let verdict = match &outcome {
-                Execution::Delegation(..) => Verdict::Ok,
+                Execution::Delegation(..) | Execution::Schedule(..) => Verdict::Ok,
                 Execution::Result(Outcome::Ok { .. }) => Verdict::Ok,
                 Execution::Result(Outcome::Failed { failure } | Outcome::Unknown { failure }) => {
                     Verdict::Failed(failure.clone())
                 }
             };
             self.settle(calls[index].id, outcome).await?;
-            if let Some(CodeRef::Generation { id }) = code {
+            if let Some(code) = code {
                 self.deps
                     .registry
-                    .report(id, verdict, Some(self.session.id))
+                    .report(&code, verdict, Some(self.session.id))
                     .await?;
             }
         }
@@ -158,7 +193,7 @@ impl SessionActor {
             [] => RoundEnd::Replied,
             [call]
                 if disclosed(snapshot, plan, call)
-                    .is_some_and(|tool| tool.builtin == Some(BuiltinCall::ReplySkip))
+                    .is_some_and(|tool| tool.builtin() == Some(BuiltinCall::ReplySkip))
                     && self.settled_ok(call.id) =>
             {
                 RoundEnd::ReplySkipped
@@ -182,6 +217,17 @@ impl SessionActor {
             })
             == Some(true)
     }
+}
+
+/// One batch of a reply's calls, with what the whole reply shares.
+#[derive(Clone, Copy)]
+struct Batch<'a> {
+    round: RoundId,
+    snapshot: &'a Snapshot,
+    plan: &'a ContextPlan,
+    calls: &'a [&'a ToolCall],
+    skip: &'a Result<(), Failure>,
+    timezone: Tz,
 }
 
 fn disclosed<'a>(
@@ -224,16 +270,12 @@ fn prepare<'a>(
             format!("tool `{}` is not available in this Round", call.name),
         )
     })?;
-    if let CodeRef::Generation { id } = tool.code
-        && let Some((recorded, current)) = exports.failed(id)
+    if let ToolSource::Plugin(name) = &tool.source
+        && let Some(failed) = exports.failed(&tool.code)
     {
-        let current = current.map_or_else(|| "none".into(), |id| id.to_string());
         return Err(failure(
             code::PLUGIN_ROLLED_BACK,
-            format!(
-                "generation {id} was marked failed ({}: {}); current active generation: {current}",
-                recorded.code, recorded.message
-            ),
+            rolled_back(name, &failed),
         ));
     }
     let args = match Arguments::parse(&call.arguments) {
@@ -254,7 +296,7 @@ fn prepare<'a>(
             format!("invalid arguments for `{}`: {error}", call.name),
         )
     })?;
-    if tool.builtin == Some(BuiltinCall::ReplySkip) {
+    if tool.builtin() == Some(BuiltinCall::ReplySkip) {
         skip.clone()?;
     }
     Ok((tool, args))
@@ -280,4 +322,23 @@ fn skip_allowed(calls: usize, entries: &[Entry]) -> Result<(), Failure> {
         message,
         retryable: false,
     })
+}
+
+/// A call bound to code that has failed: what happened, and what calls from the next Round
+/// reach, since this Round's catalog stays bound to the failed code.
+fn rolled_back(plugin: &PluginName, failed: &Failed<'_>) -> String {
+    let cause = format!(
+        "not executed: {plugin} failed with registration {} ({}: {})",
+        failed.from.registration, failed.failure.code, failed.failure.message
+    );
+    match failed.current {
+        Some(code) => {
+            format!(
+                "{cause} and was rolled back to {code}; calls from the next Round go to {code}."
+            )
+        }
+        None => format!(
+            "{cause}; nothing earlier can run, so its tools are unavailable from the next Round."
+        ),
+    }
 }

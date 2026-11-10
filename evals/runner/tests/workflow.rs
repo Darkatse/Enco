@@ -278,8 +278,13 @@ async fn evidence_is_isolated_and_regrading_uses_the_saved_trial() {
         "{output}"
     );
     let plugins = read(&trial_dir.join("snapshot/status.json"))["plugins"].clone();
-    let active = &plugins["openai-compatible"]["running"]["running"]["activation"]["generation"];
-    assert_eq!(trial["generations"]["openai-compatible"], active["id"]);
+    let active = &plugins["openai-compatible"]["running"]["running"]["activation"]["code"];
+    let running = match active["kind"].as_str() {
+        Some("generation") => format!("registration {}", active["id"]["registration"]),
+        Some("factory") => "factory code".into(),
+        kind => panic!("unexpected code kind {kind:?}"),
+    };
+    assert_eq!(trial["running_code"]["openai-compatible"], running.as_str());
     let before = evaluation.judge.received_requests().await.unwrap().len();
     let output = evaluation
         .command(&["regrade", directory.to_str().unwrap()], false)
@@ -506,13 +511,9 @@ async fn source_fixture_is_registered_offline_before_serving() {
     assert_eq!(trial["network_violations"], 0);
     let trial = directory.join(trial["dir"].as_str().unwrap());
     let status = read(&trial.join("snapshot/status.json"));
-    let generation =
-        &status["plugins"]["fixture"]["running"]["running"]["activation"]["generation"];
-    assert_eq!(generation["origin"], "code");
-    assert_eq!(
-        generation["registration"],
-        status["configuration"]["running"]["registration"]
-    );
+    let running = &status["plugins"]["fixture"]["running"]["running"]["activation"];
+    assert_eq!(running["origin"], "code");
+    assert_eq!(running["registration"], status["configuration"]["running"]);
     assert!(!trial.join("home/.cargo").exists());
     assert!(trial.join("home/.enco/plugins/fixture/README.md").is_file());
     assert_eq!(
@@ -523,10 +524,15 @@ async fn source_fixture_is_registered_offline_before_serving() {
         report["variants"]["base"]["source"][0]["directory"],
         fixture.canonicalize().unwrap().to_str().unwrap()
     );
-    // The snapshot attributes the call to the generation that ran it, which the complete
-    // history shows the first registration selecting.
+    // The snapshot attributes the call to the code that ran it, named by the registration the
+    // complete history shows selecting it.
     let calls = read(&trial.join("snapshot/tool-calls.json"));
-    assert_eq!(calls[0]["generation"], generation["id"], "{calls:#}");
+    let code = &running["code"];
+    assert_eq!(
+        calls[0]["plugin_code"],
+        format!("registration {}", code["id"]["registration"]),
+        "{calls:#}"
+    );
     let history = read(&trial.join("snapshot/history.json"));
     assert!(
         history
@@ -534,8 +540,7 @@ async fn source_fixture_is_registered_offline_before_serving() {
             .unwrap()
             .iter()
             .flat_map(|registration| registration["changes"].as_array().unwrap())
-            .any(|change| change["name"] == "fixture"
-                && change["generation"]["id"] == generation["id"]),
+            .any(|change| change["name"] == "fixture" && change["selected"]["code"] == *code),
         "{history:#}"
     );
     evaluation.finish().await;

@@ -5,7 +5,7 @@
 use super::{
     Development, DevelopmentError, EntryError, Failed, HomeComparison, HomePlugin, Operation,
 };
-use enco_core::{ConfigurationRef, PluginName, RegistrationId};
+use enco_core::{PluginName, RegistrationId};
 use enco_kernel::{
     Cause, PluginStatus, RegisteredPlugin, RegistrationDetails, Registry, SettingsError,
     UnservedUse,
@@ -54,10 +54,11 @@ pub struct RegisteredUnit {
 /// The three layers of `config.toml`.
 #[derive(Serialize)]
 pub struct ConfigurationUnit {
-    /// The configuration in use; it differs from the registered one after a rollback.
-    pub running: ConfigurationRef,
-    /// The configuration the latest registration selected.
-    pub registered: ConfigurationRef,
+    /// Registration of the configuration in use; it differs from the registered one after a
+    /// rollback.
+    pub running: RegistrationId,
+    /// Registration of the configuration the latest registrations selected.
+    pub registered: RegistrationId,
     /// How `config.toml` in the home compares with the registered configuration.
     pub home: HomeComparison,
     /// Tables in the running configuration that this host cannot interpret.

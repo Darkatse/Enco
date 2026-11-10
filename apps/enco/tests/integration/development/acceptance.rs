@@ -45,7 +45,7 @@ async fn first_start_rejects_a_failed_source_build() {
     .await
     .unwrap();
     let state = store.registry().await.unwrap();
-    assert!(state.registrations.is_empty() && state.active_config.is_none());
+    assert!(state.intent.registrations.is_empty() && state.node.configuration.is_none());
 }
 
 #[tokio::test]
@@ -195,17 +195,16 @@ pub(super) async fn register_with_agent(daemon: &Daemon) -> Value {
         )
         .unwrap();
     assert_eq!(record.0, super::sdk::sdk().unwrap().hash().to_string());
-    assert_eq!(
-        record.1,
-        registered["changes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|change| change["kind"] == "code" && change["name"] == "alpha")
-            .unwrap()["generation"]["artifact"]
-            .as_str()
-            .unwrap()
-    );
+    // The registration selected alpha's code, and what runs is that code with the built bytes.
+    let alpha = &registered["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|change| change["kind"] == "code" && change["name"] == "alpha")
+        .unwrap()["selected"]["code"];
+    let running = &status["plugins"]["alpha"]["running"]["running"]["activation"];
+    assert_eq!(running["code"], *alpha);
+    assert_eq!(record.1, running["artifact"].as_str().unwrap());
     assert!(record.2.contains("rustc ") && record.2.contains("host:"));
     registered
 }
@@ -327,8 +326,8 @@ async fn delete_and_recreate(
     let added = apply(daemon).await;
     assert_eq!(added["builds"][0]["reused"], true);
     assert_ne!(
-        added["registered"]["generations"][0]["plugin"],
-        original["plugin"]
+        added["registered"]["generations"][0]["id"]["plugin"],
+        original["id"]["plugin"]
     );
 }
 

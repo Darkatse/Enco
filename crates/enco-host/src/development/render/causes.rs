@@ -29,7 +29,7 @@ fn cause(cause: &Cause) -> String {
             recorded(failure)
         ),
         Cause::NotLoaded { plugin } => {
-            format!("the selected generation of {} is not loaded", code(plugin))
+            format!("the selected code of {} is not loaded", code(plugin))
         }
         Cause::Environment { plugin, failure } => format!(
             "{} lacks a requirement from its environment: {}",
@@ -83,7 +83,7 @@ fn cause(cause: &Cause) -> String {
             format!("{}: {}", code(&format!("[{}]", error.table)), error.message)
         }
         Cause::ProfileInUse { profile, sessions } => format!(
-            "Sessions {} use {}, which is missing",
+            "Sessions {} use {}, now or from a coming Round; it is missing",
             codes(sessions.iter().map(String::as_str)),
             code(&format!("[{}.{profile}]", PROFILE_TABLE.name()))
         ),

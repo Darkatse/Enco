@@ -13,7 +13,7 @@ use tokio::{sync::watch, task::JoinSet};
 #[derive(Clone)]
 struct Slot {
     settings: ConnectionSettings,
-    route: Result<GenerationId, String>,
+    route: Result<CodeRef, String>,
     current: Current,
 }
 #[derive(Clone)]
@@ -32,7 +32,7 @@ pub struct ChannelSupervisor {
 }
 
 impl ChannelSupervisor {
-    /// Follow the registry's active view, opening accounts through their fixed mapper generation.
+    /// Follow the registry's active view, opening accounts through their fixed mapper code.
     pub fn start(
         kernel: Arc<Kernel>,
         store: Arc<dyn Store>,
@@ -152,7 +152,7 @@ impl Supervision {
                     name.clone(),
                     view.exports
                         .channel(&setting.plugin)
-                        .map(|export| export.generation)
+                        .map(|export| export.code)
                         .map_err(|error| error.message),
                 )
             })
@@ -233,7 +233,7 @@ impl Supervision {
                         self.kernel.clone(),
                         adapter,
                         settings,
-                        opening.generation,
+                        opening.code.clone(),
                         self.clock.clone(),
                         self.build.clone(),
                     ))),

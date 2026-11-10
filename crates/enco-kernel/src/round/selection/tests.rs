@@ -10,15 +10,15 @@ fn round_started() -> EntryBody {
     }
 }
 
-/// An Attempt for `purpose` on the model `model` of generation 1, with the plan named `plan`.
+/// An Attempt for `purpose` on the model `model` of registration 1, with the plan named `plan`.
 fn start(attempt: AttemptId, purpose: AttemptPurpose, model: &str, plan: &str) -> EntryBody {
     EntryBody::AttemptStarted {
         round: RoundId::new(),
         attempt,
         purpose,
         plan: ContentHash::of(plan.as_bytes()),
-        composer: GenerationId(1),
-        provider: GenerationId(1),
+        composer: code(1),
+        provider: code(1),
         settings: settings(model),
     }
 }
@@ -40,7 +40,7 @@ fn refused(attempt: AttemptId) -> EntryBody {
 fn combination(model: &str, provider: u64) -> Combination {
     Combination {
         settings: settings(model),
-        provider: GenerationId(provider),
+        provider: code(provider),
     }
 }
 

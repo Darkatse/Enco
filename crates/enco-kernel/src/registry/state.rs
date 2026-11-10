@@ -1,19 +1,25 @@
 use super::*;
-use crate::{ActivationWrite, RegistrationWrite, RegistryState};
+use crate::{AcceptedIntent, ActivationWrite, NodeState, RegistrationWrite, RegistryState};
 use std::collections::BTreeSet;
 
 /// Persisted references own lifetime; loaded adapters and names are projections.
 pub(super) struct State {
-    pub history: RegistryState,
-    pub loaded: BTreeMap<GenerationId, Loaded>,
-    pub factory: BTreeMap<PluginId, GenerationId>,
+    /// What was registered, the same on every node.
+    pub intent: AcceptedIntent,
+    /// What runs on this node and how it fared.
+    pub node: NodeState,
+    /// Compiled code for every retained reference and this host's factory code.
+    pub loaded: BTreeMap<CodeRef, Loaded>,
+    /// This host's factory code, by the plugin it is reserved for.
+    pub factory: BTreeMap<PluginId, CodeRef>,
     pub trial_successes: BTreeMap<GenerationId, u32>,
 }
 
 impl State {
     pub fn new(history: RegistryState) -> Self {
         Self {
-            history,
+            intent: history.intent,
+            node: history.node,
             loaded: BTreeMap::new(),
             factory: BTreeMap::new(),
             trial_successes: BTreeMap::new(),
@@ -25,7 +31,7 @@ impl State {
         plugin: PluginId,
         registration: Option<RegistrationId>,
     ) -> Option<&RegisteredName> {
-        self.history
+        self.intent
             .registrations
             .get(&registration?)?
             .names
@@ -33,13 +39,13 @@ impl State {
     }
 
     pub fn running_name(&self, plugin: PluginId) -> Option<&PluginName> {
-        let record = self.history.plugins.get(&plugin)?;
-        record.active?;
+        let record = self.node.plugins.get(&plugin)?;
+        record.active.as_ref()?;
         self.name_at(plugin, record.named_by)?.name.as_ref()
     }
 
     pub fn running_names(&self) -> BTreeMap<PluginName, PluginId> {
-        self.history
+        self.node
             .plugins
             .keys()
             .filter_map(|id| self.running_name(*id).map(|name| (name.to_owned(), *id)))
@@ -55,7 +61,7 @@ impl State {
         &self,
         at: Option<RegistrationId>,
     ) -> std::collections::btree_map::Range<'_, RegistrationId, RegistrationRecord> {
-        self.history.registrations.range((
+        self.intent.registrations.range((
             std::ops::Bound::Unbounded,
             at.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Included),
         ))
@@ -93,64 +99,123 @@ impl State {
 
     pub fn registered_config_at(&self, at: Option<RegistrationId>) -> Option<&ConfigGeneration> {
         let (last, _) = self.registrations_through(at).next_back()?;
-        self.history
-            .config_generations
-            .values()
-            .rev()
-            .find(|config| config.registration <= *last)
+        self.intent
+            .configurations
+            .range(..=*last)
+            .next_back()
+            .map(|(_, config)| config)
     }
 
-    /// Settings preserve their exact code provenance, even when bytes match another generation.
-    pub fn code_generation(&self, mut generation: GenerationId) -> GenerationId {
-        while let Origin::Settings {
-            based_on: previous, ..
-        } = self.history.generations[&generation].origin
-        {
-            generation = previous;
-        }
-        generation
+    /// The configuration that runs on this node.
+    pub fn active_config(&self) -> Option<&ConfigGeneration> {
+        self.intent.configurations.get(&self.node.configuration?)
     }
 
-    /// The one derivation of where a generation's code came from, for both layers.
-    pub fn provenance(&self, generation: GenerationId) -> CodeProvenance {
-        let generation = self.code_generation(generation);
-        let code = &self.history.generations[&generation];
-        let intent = code.origin.registration().map(|registration| {
-            (
-                registration,
-                self.history.registrations[&registration].code[&code.plugin].intent,
-            )
-        });
-        let source = match intent {
-            Some((registration, Some(CodeIntent::Directory { source }))) => CodeSource::Directory {
-                registration,
-                source,
-            },
-            // Factory generations, and factory code registered with settings. The registration
-            // that creates a code generation always records its intent.
-            None | Some((_, Some(CodeIntent::Factory) | None)) => CodeSource::Factory,
-        };
-        CodeProvenance { generation, source }
-    }
-
-    pub fn activation(&self, reference: PluginActivation) -> Result<Activation, RegistryError> {
-        let generation = self
-            .history
+    /// A registered generation's content.
+    pub fn generation(&self, id: GenerationId) -> Result<&GenerationRecord, RegistryError> {
+        self.intent
             .generations
-            .get(&reference.generation)
-            .ok_or(RegistryError::UnknownGeneration(reference.generation))?
-            .clone();
+            .get(&id)
+            .ok_or(RegistryError::UnknownGeneration(id))
+    }
+
+    /// The artifact a reference runs; only plugin code has one.
+    pub fn artifact(&self, code: &CodeRef) -> Result<ContentHash, RegistryError> {
+        match code {
+            CodeRef::Generation { id } => Ok(self.generation(*id)?.artifact),
+            CodeRef::Factory { artifact, .. } => Ok(*artifact),
+            CodeRef::Native { name, .. } => Err(RegistryError::Intent(format!(
+                "native capability {name} is not plugin code"
+            ))),
+        }
+    }
+
+    /// The bytes and settings a reference runs: factory code runs with empty settings.
+    pub fn content(&self, code: &CodeRef) -> Result<(ContentHash, PluginSettings), RegistryError> {
+        let settings = match code {
+            CodeRef::Generation { id } => self.generation(*id)?.settings.clone(),
+            CodeRef::Factory { .. } | CodeRef::Native { .. } => PluginSettings::default(),
+        };
+        Ok((self.artifact(code)?, settings))
+    }
+
+    /// A generation's standing on this node; factory code is never on trial.
+    pub fn health(&self, code: &CodeRef) -> Option<&Health> {
+        self.node.health.get(&code.generation()?)
+    }
+
+    /// The one derivation of where a reference's code came from, for both layers: settings
+    /// follow the code they reuse.
+    pub fn provenance(&self, code: &CodeRef) -> Result<CodeProvenance, RegistryError> {
+        let mut code = code.clone();
+        loop {
+            let id = match &code {
+                CodeRef::Generation { id } => *id,
+                CodeRef::Factory { .. } => {
+                    return Ok(CodeProvenance {
+                        code,
+                        source: CodeSource::Factory,
+                    });
+                }
+                CodeRef::Native { name, .. } => {
+                    return Err(RegistryError::Intent(format!(
+                        "native capability {name} is not plugin code"
+                    )));
+                }
+            };
+            match &self.generation(id)?.origin {
+                Origin::Settings { based_on } => code = based_on.clone(),
+                Origin::Code => {
+                    // The registration that brings code always records its intent.
+                    let source = match self
+                        .intent
+                        .registrations
+                        .get(&id.registration)
+                        .and_then(|registration| registration.code.get(&id.plugin))
+                        .and_then(|registered| registered.intent)
+                    {
+                        Some(CodeIntent::Directory { source }) => CodeSource::Directory {
+                            registration: id.registration,
+                            source,
+                        },
+                        Some(CodeIntent::Factory) => CodeSource::Factory,
+                        None => {
+                            return Err(RegistryError::Intent(format!(
+                                "{id} brings code without a code intent"
+                            )));
+                        }
+                    };
+                    return Ok(CodeProvenance { code, source });
+                }
+            }
+        }
+    }
+
+    pub fn activation(&self, reference: &PluginActivation) -> Result<Activation, RegistryError> {
+        let (artifact, settings) = self.content(&reference.code)?;
+        let origin = reference
+            .code
+            .generation()
+            .map(|id| self.generation(id).map(|record| record.origin.clone()))
+            .transpose()?;
         Ok(Activation {
-            code: self.provenance(generation.id),
-            generation,
+            provenance: self.provenance(&reference.code)?,
+            health: self.health(&reference.code).cloned(),
+            artifact,
+            settings,
+            origin,
+            code: reference.code.clone(),
             registration: reference.registration,
         })
     }
 
-    pub fn active(&self, plugin: PluginId) -> Option<&GenerationRecord> {
-        self.history
-            .generations
-            .get(&self.history.plugins.get(&plugin)?.active?.generation)
+    pub fn active(&self, plugin: PluginId) -> Option<&CodeRef> {
+        self.node
+            .plugins
+            .get(&plugin)?
+            .active
+            .as_ref()
+            .map(|active| &active.code)
     }
 
     pub fn contents(&self) -> BTreeMap<PluginName, Option<Loaded>> {
@@ -159,7 +224,7 @@ impl State {
             .map(|(name, id)| {
                 let loaded = self
                     .active(id)
-                    .and_then(|record| self.loaded.get(&record.id))
+                    .and_then(|code| self.loaded.get(code))
                     .cloned();
                 (name, loaded)
             })
@@ -168,7 +233,7 @@ impl State {
 
     pub fn next_registration(&self) -> RegistrationId {
         RegistrationId(
-            self.history
+            self.intent
                 .registrations
                 .keys()
                 .next_back()
@@ -176,40 +241,30 @@ impl State {
         )
     }
 
-    pub fn next_generation(&self) -> GenerationId {
-        GenerationId(
-            self.history
-                .generations
-                .keys()
-                .chain(self.history.config_generations.keys())
-                .map(|id| id.0)
-                .max()
-                .map_or(1, |id| id + 1),
-        )
-    }
-
-    pub fn registered(&mut self, write: RegistrationWrite, loaded: BTreeMap<GenerationId, Loaded>) {
-        self.history
+    pub fn registered(&mut self, write: RegistrationWrite, loaded: BTreeMap<CodeRef, Loaded>) {
+        let registration = write.registration.id;
+        self.intent
             .registrations
-            .insert(write.registration.id, write.registration);
-        self.history.generations.extend(
-            write
-                .generations
-                .into_iter()
-                .map(|record| (record.id, record)),
-        );
-        self.history
+            .insert(registration, write.registration);
+        for record in write.generations {
+            self.node.health.insert(record.id, Health::Trial);
+            self.intent.generations.insert(record.id, record);
+        }
+        self.node
             .plugins
             .extend(write.plugins.into_iter().map(|record| (record.id, record)));
         if let Some(config) = write.configuration {
-            self.history.active_config = Some(config.id);
-            self.history.config_generations.insert(config.id, config);
+            self.node.configuration = Some(config.registration);
+            self.intent
+                .configurations
+                .insert(config.registration, config);
         }
+        self.node.replaced.insert(registration, write.replaced);
         self.loaded.extend(loaded);
     }
 
     pub fn activated(&mut self, change: &ActivationWrite) {
-        self.history.plugins.extend(
+        self.node.plugins.extend(
             change
                 .plugins
                 .iter()
@@ -217,51 +272,50 @@ impl State {
                 .map(|record| (record.id, record)),
         );
         if let Some(config) = change.configuration {
-            self.history.active_config = Some(config);
+            self.node.configuration = Some(config);
         }
         for (id, failure) in &change.failed {
-            if let Some(record) = self.history.generations.get_mut(id) {
-                record.status = GenerationStatus::Failed;
-                record.failure = Some(failure.clone());
-            }
+            self.node.health.insert(
+                *id,
+                Health::Failed {
+                    failure: failure.clone(),
+                },
+            );
         }
     }
 
-    pub fn retained_artifacts(&self) -> std::collections::HashSet<ContentHash> {
-        self.history
+    /// Code every reference on this node retains: current and rollback targets.
+    fn referenced(&self) -> impl Iterator<Item = &CodeRef> {
+        self.node
             .plugins
             .values()
-            .flat_map(|plugin| [plugin.active, plugin.rollback_target])
+            .flat_map(|plugin| [&plugin.active, &plugin.rollback_target])
             .flatten()
-            .map(|reference| reference.generation)
-            .filter_map(|id| self.history.generations.get(&id))
-            .map(|record| record.artifact)
-            .collect()
+            .map(|reference| &reference.code)
+    }
+
+    /// The artifacts every reference on this node runs, which artifact cleanup keeps.
+    pub fn retained_artifacts(
+        &self,
+    ) -> Result<std::collections::HashSet<ContentHash>, RegistryError> {
+        self.referenced().map(|code| self.artifact(code)).collect()
     }
 
     pub fn release(&mut self) {
         let retained: BTreeSet<_> = self
-            .history
+            .referenced()
+            .chain(self.factory.values())
+            .cloned()
+            .collect();
+        self.loaded.retain(|code, _| retained.contains(code));
+        let trials: BTreeSet<_> = self
+            .node
             .plugins
             .values()
-            .flat_map(|plugin| [plugin.active, plugin.rollback_target])
-            .flatten()
-            .map(|reference| reference.generation)
-            .chain(self.factory.values().copied())
+            .filter_map(|plugin| plugin.active.as_ref()?.code.generation())
+            .filter(|id| self.node.health.get(id) == Some(&Health::Trial))
             .collect();
-        self.loaded.retain(|id, _| retained.contains(id));
-        self.trial_successes.retain(|id, _| {
-            self.history.generations.get(id).is_some_and(|record| {
-                record.status == GenerationStatus::Trial
-                    && self
-                        .history
-                        .plugins
-                        .get(&record.plugin)
-                        .is_some_and(|plugin| {
-                            plugin.active.is_some_and(|active| active.generation == *id)
-                        })
-            })
-        });
+        self.trial_successes.retain(|id, _| trials.contains(id));
     }
 
     pub fn view(
@@ -270,10 +324,10 @@ impl State {
         admission: admission::Admission,
         factory: &[FactoryPlugin],
         composer: &PluginName,
-    ) -> View {
-        View {
+    ) -> Result<View, RegistryError> {
+        Ok(View {
             config,
-            exports: self.exports(admission, factory, composer),
-        }
+            exports: self.exports(admission, factory, composer)?,
+        })
     }
 }

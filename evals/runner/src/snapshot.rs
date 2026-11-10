@@ -11,7 +11,8 @@ use std::{collections::BTreeMap, path::Path};
 pub(crate) struct Metrics {
     pub(crate) rounds: u64,
     pub(crate) usage: result::Usage,
-    pub(crate) generations: BTreeMap<String, u64>,
+    /// What each plugin ran when the trial ended, as Enco's text names it.
+    pub(crate) running_code: BTreeMap<String, String>,
 }
 
 #[derive(Default)]
@@ -34,9 +35,9 @@ struct Call {
     session: String,
     #[serde(flatten)]
     proposal: Proposal,
-    /// The plugin generation that executed the call; absent for native tools and calls that
-    /// never started.
-    generation: Option<u64>,
+    /// The plugin code that executed the call, as Enco's text names it; absent for native tools
+    /// and calls that never started.
+    plugin_code: Option<String>,
     outcome: CallOutcome,
     code: Option<String>,
     content: String,
@@ -65,10 +66,9 @@ pub(crate) async fn export(enco: &Enco, directory: &Path, forbidden: &[&Path]) -
             match plugin.running {
                 Running::Serving { name, activation }
                 | Running::Unavailable { name, activation } => {
-                    snapshot
-                        .metrics
-                        .generations
-                        .insert(name, activation.generation.id);
+                    if let Some(code) = activation.code.name() {
+                        snapshot.metrics.running_code.insert(name, code);
+                    }
                 }
                 Running::Stopped => {}
             }
@@ -237,7 +237,7 @@ impl Snapshot {
                     }
                 }
                 EntryBody::ToolCallStarted { call, code } => {
-                    started.insert(call, code.generation());
+                    started.insert(call, code.name());
                 }
                 EntryBody::ToolCallSettled {
                     call,
@@ -278,7 +278,7 @@ impl Snapshot {
 fn pair(
     session: &str,
     proposals: Vec<Proposal>,
-    started: &BTreeMap<String, Option<u64>>,
+    started: &BTreeMap<String, Option<String>>,
     mut settlements: BTreeMap<String, (Settlement, String)>,
     calls: &mut Vec<Call>,
 ) -> Result<()> {
@@ -293,7 +293,7 @@ fn pair(
         };
         calls.push(Call {
             session: session.into(),
-            generation: started.get(&proposal.call).copied().flatten(),
+            plugin_code: started.get(&proposal.call).cloned().flatten(),
             proposal,
             outcome,
             code,

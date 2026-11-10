@@ -176,10 +176,10 @@ async fn rewind_checks_only_files_it_will_overwrite_and_preserves_unselected_uni
     let alpha = status
         .plugins
         .iter()
-        .find(|plugin| plugin.id == first.generations[0].plugin)
+        .find(|plugin| plugin.id == first.generations[0].id.plugin)
         .unwrap();
     assert_ne!(
-        running_generation(alpha).unwrap().artifact,
+        running_activation(alpha).unwrap().artifact,
         first.generations[0].artifact
     );
 }
@@ -240,7 +240,7 @@ async fn rewind_follows_identity_through_rename() {
     );
     assert_eq!(
         registry.registered_intent(None).await.unwrap().plugins["beta"].id,
-        first.generations[0].plugin
+        first.generations[0].id.plugin
     );
     source_fixture(root.path(), &store, &development, &registry, "beta", b"one").await;
     let directory = root.path().join("plugins/beta");
@@ -375,10 +375,10 @@ async fn a_generation_replaced_during_its_trial_stays_unpromoted_and_inactive() 
         [
             ..,
             UnitChange::Plugin {
-                change: PluginChangeKind::Code { generation },
+                change: PluginChangeKind::Code { selected },
                 ..
             },
-        ] => (generation.record.status, generation.active),
+        ] => (selected.health.clone(), selected.active),
         _ => panic!("the registration selected no code"),
     };
     let first = source_fixture(
@@ -390,7 +390,7 @@ async fn a_generation_replaced_during_its_trial_stays_unpromoted_and_inactive() 
         b"one",
     )
     .await;
-    assert_eq!(selected(&first.changes), (GenerationStatus::Trial, true));
+    assert_eq!(selected(&first.changes), (Some(Health::Trial), true));
     source_fixture(
         root.path(),
         &store,
@@ -401,7 +401,7 @@ async fn a_generation_replaced_during_its_trial_stays_unpromoted_and_inactive() 
     )
     .await;
     let earlier = registry.registration(first.registration.id).await.unwrap();
-    assert_eq!(selected(&earlier.changes), (GenerationStatus::Trial, false));
+    assert_eq!(selected(&earlier.changes), (Some(Health::Trial), false));
 }
 
 #[tokio::test]
@@ -482,10 +482,7 @@ async fn history_pages_provenance_and_status_bounds_are_independent_of_history_l
     let status = development.status(&registry).await.unwrap();
     assert_eq!(status.recent_registrations.len(), RECENT_REGISTRATIONS);
     assert!(matches!(status.configuration.home, HomeComparison::Same));
-    assert_eq!(
-        status.configuration.running.registration,
-        applied.registration.id
-    );
+    assert_eq!(status.configuration.running, applied.registration.id);
 }
 
 #[tokio::test]

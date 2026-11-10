@@ -4,8 +4,8 @@ use enco_kernel::{ChannelBackoff, ChannelSettings, Export, Store};
 
 /// One connection's identification in progress, shared by its slot and its task.
 pub(super) struct Opening {
-    /// The generation that identifies the account and then serves it.
-    pub generation: GenerationId,
+    /// The mapper code that identifies the account and then serves it.
+    pub code: CodeRef,
     /// The latest retryable failure, shown while the next attempt waits.
     pub retrying: Mutex<Option<ChannelFailure>>,
     stop: CancellationToken,
@@ -32,7 +32,7 @@ impl Opening {
         stop: CancellationToken,
     ) -> Arc<Self> {
         let opening = Arc::new(Self {
-            generation: export.generation,
+            code: export.code.clone(),
             retrying: Mutex::new(None),
             stop,
         });
@@ -60,11 +60,11 @@ impl Opening {
         loop {
             let opened = export
                 .adapter
-                .open(settings, export.generation, store.clone());
+                .open(settings, export.code.clone(), store.clone());
             let error = tokio::select! {
                 biased;
                 () = self.stop.cancelled() => return Ok(None),
-                result = health::call(kernel, export.generation, opened) => match result {
+                result = health::call(kernel, &export.code, opened) => match result {
                     Ok(adapter) => return Ok(Some(adapter)),
                     Err(error) => error,
                 },

@@ -103,7 +103,7 @@ impl SessionActor {
                     usage: last.usage.clone(),
                     combination: Combination {
                         settings: last.settings.clone(),
-                        provider: last.provider,
+                        provider: last.provider.clone(),
                     },
                 }),
             )),

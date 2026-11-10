@@ -12,7 +12,7 @@ pub struct PluginStatus {
     pub name: PluginName,
     /// What runs now.
     pub running: Running,
-    /// Retained healthy generation, before the embedded factory fallback.
+    /// Retained code to roll back to, before this host's factory code.
     pub rollback_target: Option<PluginActivation>,
     /// Summary of the selected component.
     pub summary: Option<String>,
@@ -26,20 +26,20 @@ pub struct PluginStatus {
 #[derive(serde::Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Running {
-    /// No generation runs under a name.
+    /// Nothing runs under a name.
     Stopped,
-    /// This host serves the selected generation.
+    /// This host serves the selected code.
     Serving {
         /// Routing name.
         name: PluginName,
-        /// Selected generation and its provenance.
+        /// Selected code and its provenance.
         activation: Activation,
     },
-    /// A generation is selected, but this host cannot serve it.
+    /// Code is selected, but this host cannot serve it.
     Unavailable {
         /// Routing name.
         name: PluginName,
-        /// Selected generation and its provenance.
+        /// Selected code and its provenance.
         activation: Activation,
         /// Why this host cannot serve it.
         causes: Vec<Cause>,
@@ -55,7 +55,7 @@ impl Running {
         }
     }
 
-    /// The selected generation, whether or not this host can serve it.
+    /// The selected code, whether or not this host can serve it.
     pub fn activation(&self) -> Option<&Activation> {
         match self {
             Self::Serving { activation, .. } | Self::Unavailable { activation, .. } => {
@@ -111,10 +111,10 @@ pub struct RegistryStatus {
 
 /// Configuration is one intent document; a rollback changes only its active reference.
 pub struct ConfigStatus {
-    /// Running configuration.
-    pub running: ConfigurationRef,
-    /// Configuration selected by the latest registration.
-    pub registered: ConfigurationRef,
+    /// Registration of the running configuration.
+    pub running: RegistrationId,
+    /// Registration of the configuration the latest registrations selected.
+    pub registered: RegistrationId,
     /// Host tables which the current host cannot interpret.
     pub invalid: Vec<SettingsError>,
     /// Uses which cannot currently be served.
@@ -137,7 +137,6 @@ impl Registry {
     pub async fn status(&self) -> Result<RegistryStatus, RegistryError> {
         let state = self.state.lock().await;
         let view = self.view();
-        let active = &state.history.config_generations[&view.config.generation];
         let registered = state.registered_intent(&self.deps.factory, None)?;
         let registered_config = &registered.accepted()?.configuration;
         let unavailable_uses: Vec<_> = view
@@ -156,7 +155,7 @@ impl Registry {
             })
             .collect();
         let plugins = state
-            .history
+            .node
             .plugins
             .values()
             .filter(|plugin| {
@@ -168,8 +167,8 @@ impl Registry {
         let recent_registrations =
             state.registration_history(None, RECENT_REGISTRATIONS, &self.deps.owners)?;
         let config = ConfigStatus {
-            running: ConfigurationRef::of(active),
-            registered: ConfigurationRef::of(registered_config),
+            running: view.config.registration,
+            registered: registered_config.registration,
             invalid: view.config.invalid.clone(),
             unavailable_uses,
         };
@@ -192,8 +191,8 @@ fn plugin_status(
     let running = match state.running_name(plugin.id) {
         None => Running::Stopped,
         Some(name) => {
-            let reference = plugin.active.ok_or_else(|| {
-                RegistryError::Intent(format!("running plugin {name} has no active generation"))
+            let reference = plugin.active.as_ref().ok_or_else(|| {
+                RegistryError::Intent(format!("running plugin {name} has no active code"))
             })?;
             let activation = state.activation(reference)?;
             match view.exports.loaded(name) {
@@ -252,12 +251,12 @@ fn plugin_status(
         name,
         summary: running
             .activation()
-            .and_then(|activation| state.loaded.get(&activation.generation.id))
+            .and_then(|activation| state.loaded.get(&activation.code))
             .map(|loaded| loaded.summary.clone()),
         users: running
             .name()
             .map_or_else(Vec::new, |name| users(&view.config.uses, name)),
-        rollback_target: plugin.rollback_target,
+        rollback_target: plugin.rollback_target.clone(),
         standing,
         running,
     })
@@ -275,10 +274,10 @@ fn differences(
             running: running_name.clone(),
         });
     }
-    if running.generation.artifact != registered.generation.artifact {
+    if running.artifact != registered.artifact {
         differences.push(Difference::Code);
     }
-    if running.generation.settings != registered.generation.settings {
+    if running.settings != registered.settings {
         differences.push(Difference::Settings);
     }
     differences

@@ -1,5 +1,11 @@
+//! The Scheduler owns no state: it reads the schedules' effective view, derives each next
+//! occurrence, and hands a due reminder to the Inbox like any other input.
+//!
+//! Exactly once comes from identity: a reminder's Event ID follows from its schedule and planned
+//! time, so a reminder sent again after a restart is a duplicate. Whether it may be written at
+//! all is the Inbox's single write function's to say.
 use crate::{
-    Clock, Store, StoreError, View, limits,
+    Accepted, Clock, Store, StoreError, View, limits,
     session::{SessionHandle, lock},
 };
 use croner::{
@@ -14,22 +20,24 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::{
-    sync::{mpsc, oneshot, watch},
+    sync::{Notify, watch},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
 
-/// Commands to the sole owner of durable schedules.
-#[derive(Clone)]
-pub struct Schedules {
-    tx: mpsc::Sender<Command>,
-    stopped: Arc<Mutex<Option<String>>>,
+/// What the Scheduler shares with the rest of the kernel.
+#[derive(Default)]
+pub(crate) struct SchedulerLink {
+    /// Woken after a schedule is created or cancelled, so the Scheduler reads them again.
+    pub changed: Notify,
+    /// The failure that stopped the Scheduler, if any.
+    pub stopped: Mutex<Option<String>>,
 }
 
 /// An active schedule with its derived next occurrence, for tools and administration.
 #[derive(Debug, Clone)]
 pub struct Scheduled {
-    /// Durable rule and last delivered occurrence.
+    /// The schedule as its Session's facts give it.
     pub schedule: Schedule,
     /// Next planned delivery in UTC; this value is not persisted.
     pub next_due: DateTime<Utc>,
@@ -38,6 +46,41 @@ pub struct Scheduled {
 }
 
 impl Scheduled {
+    /// A schedule its creating call may record: meaningful text, a rule with an occurrence after
+    /// its creation, and occurrences far enough apart; the first is its next.
+    pub(crate) fn create(schedule: Schedule, owner_timezone: Tz) -> Result<Self, ScheduleError> {
+        if schedule.message.trim().is_empty() {
+            return Err(ScheduleError::EmptyMessage);
+        }
+        let rule = Rule::parse(&schedule.rule, owner_timezone)?;
+        let next_due = rule.first_after(schedule.created_at)?;
+        let mut previous = next_due;
+        for _ in 1..limits::RECURRENCE_CHECK {
+            let Some(next) = rule.next_after(previous)? else {
+                break;
+            };
+            if next < previous + limits::MIN_RECURRENCE_INTERVAL {
+                return Err(ScheduleError::TooFrequent);
+            }
+            previous = next;
+        }
+        Ok(Self {
+            next_due,
+            timezone: rule.timezone(),
+            schedule,
+        })
+    }
+
+    /// Its next occurrence follows the last one that reached its Session, else its creation.
+    fn of(schedule: Schedule, owner_timezone: Tz) -> Result<Self, ScheduleError> {
+        let (rule, next_due) = restore(&schedule, owner_timezone)?;
+        Ok(Self {
+            next_due,
+            timezone: rule.timezone(),
+            schedule,
+        })
+    }
+
     /// Shared tool and CLI view, with local offsets fixed when producing the result.
     /// The rule echoes the creation arguments; `timezone` is the effective zone.
     pub fn into_json(self) -> Value {
@@ -66,23 +109,18 @@ impl Scheduled {
     }
 }
 
-type Reply<T> = oneshot::Sender<Result<T, ScheduleError>>;
-
-enum Command {
-    Create {
-        session: SessionId,
-        rule: ScheduleRule,
-        message: String,
-        reply: Reply<Scheduled>,
-    },
-    List {
-        session: Option<SessionId>,
-        reply: Reply<Vec<Scheduled>>,
-    },
-    Cancel {
-        id: ScheduleId,
-        reply: Reply<bool>,
-    },
+/// The active ones among `schedules`, each with its next occurrence, in due order.
+pub(crate) fn in_due_order(
+    schedules: Vec<Schedule>,
+    owner_timezone: Tz,
+) -> Result<Vec<Scheduled>, ScheduleError> {
+    let mut scheduled = schedules
+        .into_iter()
+        .filter(|schedule| schedule.state == ScheduleState::Active)
+        .map(|schedule| Scheduled::of(schedule, owner_timezone))
+        .collect::<Result<Vec<_>, _>>()?;
+    scheduled.sort_by_key(|scheduled| (scheduled.next_due, scheduled.schedule.id));
+    Ok(scheduled)
 }
 
 /// Schedule validation or persistence failure.
@@ -91,12 +129,6 @@ pub enum ScheduleError {
     /// A reminder must contain meaningful text.
     #[error("reminder message is empty")]
     EmptyMessage,
-    /// There is no such destination Session.
-    #[error("unknown session {0}")]
-    UnknownSession(SessionId),
-    /// An archived destination accepts no new reminders.
-    #[error("this Session is archived and accepts no new reminders")]
-    SessionArchived(SessionId),
     /// Cron parsing or evaluation failed.
     #[error("invalid cron expression: {0}")]
     InvalidCron(String),
@@ -109,7 +141,7 @@ pub enum ScheduleError {
         limits::MIN_RECURRENCE_INTERVAL.as_secs() / 60
     )]
     TooFrequent,
-    /// A persisted schedule could not be restored.
+    /// A recorded schedule could not be read back into occurrences.
     #[error("schedule {id}: {source}")]
     Restore {
         /// Schedule whose rule failed.
@@ -120,52 +152,27 @@ pub enum ScheduleError {
     /// The durable authority failed.
     #[error(transparent)]
     Store(#[from] StoreError),
-    /// The owner has stopped, with its reported failure when one exists.
-    #[error("scheduler has stopped{}", .0.as_ref().map_or(String::new(), |reason| format!(": {reason}")))]
-    Stopped(Option<String>),
 }
 
-impl Schedules {
-    pub(crate) fn stopped(&self) -> Option<String> {
-        lock(&self.stopped).clone()
-    }
-
-    /// Persist a schedule addressed to an existing Session.
-    pub async fn create(
-        &self,
-        session: SessionId,
-        rule: ScheduleRule,
-        message: String,
-    ) -> Result<Scheduled, ScheduleError> {
-        self.ask(|reply| Command::Create {
-            session,
-            rule,
-            message,
-            reply,
-        })
-        .await
-    }
-
-    /// List active schedules in due order, optionally limited to one Session.
-    pub async fn list(&self, session: Option<SessionId>) -> Result<Vec<Scheduled>, ScheduleError> {
-        self.ask(|reply| Command::List { session, reply }).await
-    }
-
-    /// Stop future occurrences. Events already in the Inbox are unaffected.
-    pub async fn cancel(&self, id: ScheduleId) -> Result<bool, ScheduleError> {
-        self.ask(|reply| Command::Cancel { id, reply }).await
-    }
-
-    /// Send one command and wait for the owner's reply.
-    async fn ask<T>(&self, command: impl FnOnce(Reply<T>) -> Command) -> Result<T, ScheduleError> {
-        let (reply, result) = oneshot::channel();
-        let stopped = || ScheduleError::Stopped(self.stopped());
-        self.tx.send(command(reply)).await.map_err(|_| stopped())?;
-        result.await.map_err(|_| stopped())?
-    }
+/// A schedule's rule and next occurrence, which follows the last one that reached the Session,
+/// else the schedule's creation; a failure names the schedule.
+fn restore(
+    schedule: &Schedule,
+    owner_timezone: Tz,
+) -> Result<(Rule, DateTime<Utc>), ScheduleError> {
+    let context = |source| ScheduleError::Restore {
+        id: schedule.id,
+        source: Box::new(source),
+    };
+    let rule = Rule::parse(&schedule.rule, owner_timezone).map_err(context)?;
+    let after = schedule
+        .last
+        .map_or(schedule.created_at, |last| last.due_at);
+    let next = rule.first_after(after).map_err(context)?;
+    Ok((rule, next))
 }
 
-/// Parsed rules are derived once on creation or startup and stay local to their owner.
+/// Parsed rules are derived when read and stay local to their reader.
 enum Rule {
     Once { at: DateTime<Utc>, timezone: Tz },
     Cron { pattern: Box<Cron>, timezone: Tz },
@@ -225,211 +232,70 @@ struct AgendaEntry {
     rule: Rule,
 }
 
-impl AgendaEntry {
-    fn scheduled(&self, next_due: DateTime<Utc>) -> Scheduled {
-        Scheduled {
-            schedule: self.schedule.clone(),
-            next_due,
-            timezone: self.rule.timezone(),
-        }
-    }
-}
-
 type Agenda = BTreeMap<(DateTime<Utc>, ScheduleId), AgendaEntry>;
 
-pub(crate) struct Scheduler {
-    rx: mpsc::Receiver<Command>,
-    stopped: Arc<Mutex<Option<String>>>,
+/// Start reading schedules and delivering their reminders until shutdown.
+pub(crate) fn start(
+    store: Arc<dyn Store>,
+    clock: Arc<dyn Clock>,
+    views: watch::Receiver<Arc<View>>,
+    sessions: Arc<Mutex<HashMap<SessionId, Arc<SessionHandle>>>>,
+    link: Arc<SchedulerLink>,
+    shutdown: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(error) = run(&*store, &*clock, views, &sessions, &link, shutdown).await {
+            *lock(&link.stopped) = Some(error.to_string());
+            tracing::error!(%error, "Scheduler stopped");
+        }
+    })
 }
 
-impl Scheduler {
-    pub fn channel() -> (Schedules, Self) {
-        let (tx, rx) = mpsc::channel(limits::SCHEDULER_CHANNEL_CAPACITY);
-        let stopped = Arc::new(Mutex::new(None));
-        (
-            Schedules {
-                tx,
-                stopped: stopped.clone(),
+async fn run(
+    store: &dyn Store,
+    clock: &dyn Clock,
+    mut views: watch::Receiver<Arc<View>>,
+    sessions: &Mutex<HashMap<SessionId, Arc<SessionHandle>>>,
+    link: &SchedulerLink,
+    shutdown: CancellationToken,
+) -> Result<(), ScheduleError> {
+    let mut timezone = views.borrow_and_update().config.kernel.timezone;
+    let mut agenda = load(store, timezone).await?;
+    let mut tick = tokio::time::interval(limits::SCHEDULER_TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => return Ok(()),
+            changed = views.changed() => {
+                if changed.is_err() { return Ok(()); }
+                let next = views.borrow_and_update().config.kernel.timezone;
+                if next != timezone {
+                    timezone = next;
+                    agenda = load(store, timezone).await?;
+                }
             },
-            Self { rx, stopped },
-        )
-    }
-
-    pub fn start(
-        mut self,
-        store: Arc<dyn Store>,
-        clock: Arc<dyn Clock>,
-        views: watch::Receiver<Arc<View>>,
-        sessions: Arc<Mutex<HashMap<SessionId, Arc<SessionHandle>>>>,
-        shutdown: CancellationToken,
-    ) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            if let Err(error) = self.run(&*store, &*clock, views, &sessions, shutdown).await {
-                *lock(&self.stopped) = Some(error.to_string());
-                tracing::error!(%error, "Scheduler stopped");
-            }
-        })
-    }
-
-    async fn run(
-        &mut self,
-        store: &dyn Store,
-        clock: &dyn Clock,
-        mut views: watch::Receiver<Arc<View>>,
-        sessions: &Mutex<HashMap<SessionId, Arc<SessionHandle>>>,
-        shutdown: CancellationToken,
-    ) -> Result<(), ScheduleError> {
-        let mut timezone = views.borrow_and_update().config.kernel.timezone;
-        let schedules = store.schedules(Some(ScheduleState::Active)).await?;
-        let mut agenda = agenda(schedules, timezone)?;
-        let mut tick = tokio::time::interval(limits::SCHEDULER_TICK);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tokio::select! {
-                biased;
-                _ = shutdown.cancelled() => return Ok(()),
-                changed = views.changed() => {
-                    if changed.is_err() { return Ok(()); }
-                    let next = views.borrow_and_update().config.kernel.timezone;
-                    if next != timezone {
-                        timezone = next;
-                        let schedules = std::mem::take(&mut agenda).into_values().map(|entry| entry.schedule);
-                        agenda = self::agenda(schedules, timezone)?;
-                    }
-                },
-                command = self.rx.recv() => {
-                    let Some(command) = command else { return Ok(()); };
-                    command.execute(store, clock, timezone, &mut agenda).await;
-                },
-                _ = tick.tick() => fire_due(store, clock.now(), &mut agenda, sessions).await?,
-            }
+            () = link.changed.notified() => agenda = load(store, timezone).await?,
+            _ = tick.tick() => fire_due(store, clock.now(), &mut agenda, sessions).await?,
         }
     }
 }
 
-/// Startup and timezone changes derive due times from the last recorded occurrence.
-fn agenda(
-    schedules: impl IntoIterator<Item = Schedule>,
-    timezone: Tz,
-) -> Result<Agenda, ScheduleError> {
+/// The active schedules' next occurrences, from their effective view.
+async fn load(store: &dyn Store, timezone: Tz) -> Result<Agenda, ScheduleError> {
     let mut agenda = Agenda::new();
-    for schedule in schedules {
-        let context = |source| ScheduleError::Restore {
-            id: schedule.id,
-            source: Box::new(source),
-        };
-        let rule = Rule::parse(&schedule.rule, timezone).map_err(context)?;
-        let after = schedule
-            .last
-            .map_or(schedule.created_at, |last| last.due_at);
-        let next = rule.first_after(after).map_err(context)?;
+    for schedule in store.schedules(None).await? {
+        if schedule.state != ScheduleState::Active {
+            continue;
+        }
+        let (rule, next) = restore(&schedule, timezone)?;
         agenda.insert((next, schedule.id), AgendaEntry { schedule, rule });
     }
     Ok(agenda)
 }
 
-impl Command {
-    // Finish each accepted command before handling cancellation or the next command.
-    async fn execute(
-        self,
-        store: &dyn Store,
-        clock: &dyn Clock,
-        timezone: Tz,
-        agenda: &mut Agenda,
-    ) {
-        match self {
-            Self::Create {
-                session,
-                rule,
-                message,
-                reply,
-            } => {
-                let result = create(store, clock.now(), timezone, session, rule, message).await;
-                let result = result.map(|(next_due, entry)| {
-                    let scheduled = entry.scheduled(next_due);
-                    agenda.insert((next_due, entry.schedule.id), entry);
-                    scheduled
-                });
-                let _ = reply.send(result);
-            }
-            Self::List { session, reply } => {
-                let result = match store.schedules(Some(ScheduleState::Active)).await {
-                    Ok(active) => {
-                        let ids: std::collections::HashSet<_> =
-                            active.iter().map(|schedule| schedule.id).collect();
-                        Ok(agenda
-                            .iter()
-                            .filter(|(_, entry)| {
-                                session.is_none_or(|id| entry.schedule.session == id)
-                                    && ids.contains(&entry.schedule.id)
-                            })
-                            .map(|((next_due, _), entry)| entry.scheduled(*next_due))
-                            .collect())
-                    }
-                    Err(error) => Err(error.into()),
-                };
-                let _ = reply.send(result);
-            }
-            Self::Cancel { id, reply } => {
-                let result = store.cancel_schedule(id).await.map_err(ScheduleError::from);
-                if matches!(result, Ok(true)) {
-                    agenda.retain(|(_, schedule), _| *schedule != id);
-                }
-                let _ = reply.send(result);
-            }
-        }
-    }
-}
-
-async fn create(
-    store: &dyn Store,
-    now: DateTime<Utc>,
-    timezone: Tz,
-    session: SessionId,
-    rule: ScheduleRule,
-    message: String,
-) -> Result<(DateTime<Utc>, AgendaEntry), ScheduleError> {
-    if message.trim().is_empty() {
-        return Err(ScheduleError::EmptyMessage);
-    }
-    let record = store
-        .session(session)
-        .await?
-        .ok_or(ScheduleError::UnknownSession(session))?;
-    if record.archived_at.is_some() {
-        return Err(ScheduleError::SessionArchived(session));
-    }
-    let parsed = Rule::parse(&rule, timezone)?;
-    let next_due = parsed.first_after(now)?;
-    let mut previous = next_due;
-    for _ in 1..limits::RECURRENCE_CHECK {
-        let Some(next) = parsed.next_after(previous)? else {
-            break;
-        };
-        if next < previous + limits::MIN_RECURRENCE_INTERVAL {
-            return Err(ScheduleError::TooFrequent);
-        }
-        previous = next;
-    }
-    let schedule = Schedule {
-        id: ScheduleId::new(),
-        session,
-        rule,
-        message,
-        created_at: now,
-        state: ScheduleState::Active,
-        last: None,
-    };
-    store.insert_schedule(&schedule).await?;
-    Ok((
-        next_due,
-        AgendaEntry {
-            schedule,
-            rule: parsed,
-        },
-    ))
-}
-
+/// Deliver what is due; missed occurrences collapse into the latest, which says how many it
+/// skipped.
 async fn fire_due(
     store: &dyn Store,
     now: DateTime<Utc>,
@@ -440,7 +306,7 @@ async fn fire_due(
         if entry.key().0 > now {
             break;
         }
-        let ((mut due_at, id), mut entry) = entry.remove_entry();
+        let ((mut due_at, id), entry) = entry.remove_entry();
         let mut skipped = 0;
         let mut next = entry.rule.next_after(due_at)?;
         while let Some(due) = next.filter(|at| *at <= now) {
@@ -448,9 +314,9 @@ async fn fire_due(
             skipped += 1;
             next = entry.rule.next_after(due_at)?;
         }
-        let schedule = &mut entry.schedule;
+        let schedule = &entry.schedule;
         let event = Event {
-            id: EventId::new(),
+            id: EventId::reminder(id, due_at),
             session: schedule.session,
             source: EventSource::Scheduler,
             body: EventBody::Reminder {
@@ -461,22 +327,20 @@ async fn fire_due(
             },
             received_at: now,
         };
-        let accepted = store
-            .fire_schedule(
-                schedule.last.map(|last| last.due_at),
-                next.is_none(),
-                &event,
-            )
-            .await?;
-        if accepted == crate::Accepted::Archived {
-            continue;
-        }
-        schedule.last = Some(Occurrence {
-            due_at,
-            event: event.id,
-        });
-        if let Some(owner) = lock(sessions).get(&schedule.session) {
-            owner.wake.notify_one();
+        match store
+            .accept(std::slice::from_ref(&event), None)
+            .await?
+            .events[0]
+        {
+            Accepted::New => {
+                if let Some(owner) = lock(sessions).get(&schedule.session) {
+                    owner.wake.notify_one();
+                }
+            }
+            // The occurrence is already in the Inbox or the Log.
+            Accepted::Duplicate => {}
+            // The schedule stopped, or its Session was archived: nothing more is due.
+            Accepted::Inactive | Accepted::Archived => continue,
         }
         if let Some(next_due) = next {
             agenda.insert((next_due, id), entry);

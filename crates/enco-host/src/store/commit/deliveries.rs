@@ -1,6 +1,5 @@
 //! Preconditions for cross-Session inputs, checked in the sender's append transaction.
 use crate::store::{accept, sessions};
-use enco_core::*;
 use enco_kernel::{Accepted, CommitRejection, SessionDelivery, SessionDeliveryKind, StoreError};
 use rusqlite::Transaction;
 
@@ -17,11 +16,9 @@ pub(super) enum Delivered {
 
 pub(super) fn deliver(
     tx: &Transaction<'_>,
-    node: NodeId,
-    default_working_dir: &WorkingDir,
     halted: bool,
     delivery: &SessionDelivery,
-    encoded: &[(EventId, SessionId, String)],
+    document: String,
 ) -> Result<Delivered, StoreError> {
     match &delivery.kind {
         SessionDeliveryKind::Boundary if halted => return Ok(Delivered::Skipped),
@@ -34,13 +31,13 @@ pub(super) fn deliver(
             profile,
             working_dir,
         } => {
-            if let Some(new) = create {
-                if sessions::named(tx, &new.name)?.is_some() {
+            if let Some(creation) = create {
+                if sessions::named(tx, &creation.name)?.is_some() {
                     return Ok(Delivered::Rejected(CommitRejection::ChildExists(
-                        new.name.clone(),
+                        creation.name.clone(),
                     )));
                 }
-                sessions::insert_new(tx, node, default_working_dir, new)?;
+                sessions::create_child(tx, creation)?;
             } else {
                 let Some(child) = sessions::get(tx, delivery.event.session)? else {
                     return Ok(Delivered::Rejected(CommitRejection::MissingProfile(
@@ -70,8 +67,16 @@ pub(super) fn deliver(
         }
         SessionDeliveryKind::Boundary | SessionDeliveryKind::Message => {}
     }
-    match accept::events_in(tx, encoded)?[0] {
+    let encoded = accept::Encoded {
+        event: &delivery.event,
+        document,
+    };
+    match accept::events_in(tx, std::slice::from_ref(&encoded))?[0] {
         Accepted::New => Ok(Delivered::Written),
+        Accepted::Inactive => Err(StoreError::Inbox(format!(
+            "delivery {} was refused as naming an inactive schedule",
+            delivery.event.id
+        ))),
         Accepted::Duplicate => Ok(Delivered::Skipped),
         Accepted::Archived => match delivery.kind {
             SessionDeliveryKind::Boundary => Ok(Delivered::Skipped),

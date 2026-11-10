@@ -216,11 +216,11 @@ fn transcript_item(
     item: &TranscriptItem,
     paths: &HashMap<ContentHash, PathBuf>,
 ) -> Result<wire::TranscriptItem, Failure> {
-    // The producing Provider generation only decides which plugin its extensions replay to.
+    // The producing Provider code only decides which plugin its extensions replay to.
     let TranscriptItem {
         pos,
         message: recorded,
-        generation: _,
+        provider: _,
         event: input,
     } = item;
     Ok(wire::TranscriptItem {

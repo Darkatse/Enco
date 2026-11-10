@@ -3,9 +3,7 @@ use crate::{
     protocol::{Command, Output},
     support::{self, *},
 };
-use enco_core::{
-    Entry, EntryBody, EventId, GenerationId, GenerationStatus, RoundEnd, RunEnd, Settlement, code,
-};
+use enco_core::{CodeRef, Entry, EntryBody, EventId, Health, RoundEnd, RunEnd, Settlement, code};
 use serde_json::{Value, json};
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
 
@@ -183,14 +181,15 @@ async fn source_composer_runs_with_profile_options_and_factory_recovers_a_bad_tr
     apply(&daemon).await;
     let registered = status(&daemon).await;
     assert!(registered["plugins"]["custom"]["registered"]["factory"].is_null());
-    let good: GenerationId =
-        serde_json::from_value(running_generation(&registered["plugins"]["custom"])["id"].clone())
-            .unwrap();
-    let factory: GenerationId = serde_json::from_value(
-        registered["plugins"]["composer"]["registered"]["factory"]["generation"].clone(),
+    let good: CodeRef = serde_json::from_value(
+        running_activation(&registered["plugins"]["custom"])["code"].clone(),
     )
     .unwrap();
-    assert_profile_composer(&daemon, &server, good).await;
+    let factory: CodeRef = serde_json::from_value(
+        registered["plugins"]["composer"]["registered"]["factory"]["code"].clone(),
+    )
+    .unwrap();
+    assert_profile_composer(&daemon, &server, &good).await;
     std::fs::write(
         &file,
         SOURCE.replace(
@@ -201,13 +200,13 @@ async fn source_composer_runs_with_profile_options_and_factory_recovers_a_bad_tr
     .unwrap();
     apply(&daemon).await;
     let trial = status(&daemon).await;
-    let bad = running_generation(&trial["plugins"]["custom"])["id"].clone();
+    let bad = running_activation(&trial["plugins"]["custom"])["code"].clone();
     assert_ne!(bad, json!(good));
     assert_factory_recovery(&daemon, factory, good, bad).await;
     daemon.stop().await;
 }
 
-async fn assert_profile_composer(daemon: &Daemon, server: &MockServer, good: GenerationId) {
+async fn assert_profile_composer(daemon: &Daemon, server: &MockServer, good: &CodeRef) {
     for index in 0..enco_kernel::TRIAL_CALLS {
         let log = send(
             daemon,
@@ -222,12 +221,12 @@ async fn assert_profile_composer(daemon: &Daemon, server: &MockServer, good: Gen
                 ..
             }
         ));
-        assert!(log.iter().any(|entry| matches!(entry.body,
+        assert!(log.iter().any(|entry| matches!(&entry.body,
             EntryBody::AttemptStarted { composer, .. } if composer == good)));
     }
     assert_eq!(
-        running_generation(&status(daemon).await["plugins"]["custom"])["status"],
-        json!(GenerationStatus::Healthy)
+        running_activation(&status(daemon).await["plugins"]["custom"])["health"],
+        json!(Health::Healthy)
     );
     let requests = server.received_requests().await.unwrap();
     assert!(requests.iter().any(|request| {
@@ -240,12 +239,7 @@ async fn assert_profile_composer(daemon: &Daemon, server: &MockServer, good: Gen
     }));
 }
 
-async fn assert_factory_recovery(
-    daemon: &Daemon,
-    factory: GenerationId,
-    good: GenerationId,
-    bad: Value,
-) {
+async fn assert_factory_recovery(daemon: &Daemon, factory: CodeRef, good: CodeRef, bad: Value) {
     let log = send(daemon, "recovery", "recover through factory").await;
     assert!(log.iter().any(|entry| matches!(&entry.body,
         EntryBody::RoundEnded { end: RoundEnd::Failed { failure, .. }, .. } if failure.code == code::PLUGIN_CONTRACT)));
@@ -258,13 +252,13 @@ async fn assert_factory_recovery(
     )));
     let composers: Vec<_> = log
         .iter()
-        .filter_map(|entry| match entry.body {
+        .filter_map(|entry| match &entry.body {
             EntryBody::AttemptStarted { composer, .. } => Some(composer),
             _ => None,
         })
         .collect();
     assert!(!composers.is_empty());
-    assert!(composers.iter().all(|id| *id == factory));
+    assert!(composers.iter().all(|code| **code == factory));
     assert!(log.iter().any(|entry| matches!(
         entry.body,
         EntryBody::ToolCallSettled {
@@ -305,15 +299,10 @@ async fn assert_factory_recovery(
     }));
     let restored = status(daemon).await;
     assert_eq!(
-        running_generation(&restored["plugins"]["custom"])["id"],
+        running_activation(&restored["plugins"]["custom"])["code"],
         json!(good)
     );
-    assert_eq!(
-        restored["plugins"]["custom"]["registered"]["activation"]["generation"]["id"],
-        bad
-    );
-    assert_eq!(
-        restored["plugins"]["custom"]["registered"]["activation"]["generation"]["status"],
-        json!(GenerationStatus::Failed)
-    );
+    let registered = &restored["plugins"]["custom"]["registered"]["activation"];
+    assert_eq!(registered["code"], bad);
+    assert_eq!(registered["health"]["status"], "failed");
 }

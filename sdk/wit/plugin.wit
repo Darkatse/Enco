@@ -1,6 +1,6 @@
 /// Enco plugin contract. Plugins interact with the host only through it: each exports the
 /// interfaces of its world, and only a tool plugin imports `host`.
-package enco:plugin@0.17.0;
+package enco:plugin@0.18.0;
 
 /// Canonical data exchanged between the host and plugins.
 interface types {
@@ -264,7 +264,8 @@ interface types {
 interface host {
     use types.{json, http-request, http-response};
 
-    /// The configuration of this invocation's generation, excluding credential mappings.
+    /// The configuration registered with the code serving this invocation, excluding credential
+    /// mappings.
     config: func() -> json;
     /// Severity attached to a plugin diagnostic.
     enum log-level { trace, debug, info, warn, error }
@@ -295,13 +296,14 @@ interface host {
     http: async func(request: http-request) -> result<http-response, http-failure>;
 }
 
-/// Model-facing tools whose definitions are fixed with their generation.
+/// Model-facing tools whose definitions are fixed when their code and settings are registered.
 interface tools {
     use types.{json, tool-spec, outcome};
 
     /// Project tool definitions from configuration already accepted by `lifecycle.describe`.
     ///
-    /// Definitions are fixed with the generation, so this runs without network access.
+    /// Definitions are fixed when the code and settings are registered, so this runs without
+    /// network access.
     %list: func(config: json) -> list<tool-spec>;
 
     /// Execute one tool.
@@ -516,7 +518,8 @@ interface lifecycle {
     /// Describe the component or reject its configuration.
     ///
     /// An empty object must be accepted and provide the plugin's minimum capabilities.
-    /// Declarations are fixed with the generation, so this runs without network access.
+    /// Declarations are fixed when the code and settings are registered, so this runs without
+    /// network access.
     describe: func(config: json) -> result<description, failure>;
 
     /// Check the component without network access or owner-specific configuration.
@@ -567,7 +570,7 @@ world tool-plugin {
 /// result: a composer imports nothing and has no files or environment variables, and the plugin's
 /// configuration reaches only `lifecycle.describe` and `options-schema`. The wall clock reads the
 /// Round's instant, the monotonic clock stands still and randomness is seeded by the Round, so the
-/// same generation, called again within a Round with the same arguments, returns the same plan.
+/// same code, called again within a Round with the same arguments, returns the same plan.
 ///
 /// The host records each plan before sending it and resolves its Log references. A plan breaks
 /// this contract when it discloses a capability outside this Round, refers to a position outside
@@ -872,14 +875,22 @@ interface composer {
         text: string,
     }
 
-    /// A trial generation that failed, and what runs instead.
+    /// Code a plugin runs, named the way the owner and the Agent name it.
+    variant plugin-code {
+        /// The code and settings this registration brought, by its number.
+        registration(u64),
+        /// Code shipped with the host.
+        factory,
+    }
+
+    /// A plugin whose code failed on trial, and what it runs instead.
     record rollback {
         /// The plugin, by name.
         plugin: string,
-        /// The failed trial generation.
-        trial: u64,
-        /// The generation running now; absent when none is healthy.
-        replacement: option<u64>,
+        /// The registration whose code or settings failed on trial.
+        failed: u64,
+        /// What the plugin runs now; absent when nothing earlier can run.
+        replacement: option<plugin-code>,
         /// The fault that caused the rollback.
         failure: failure,
         /// The notice the registry wrote.
@@ -893,7 +904,7 @@ interface composer {
         /// A scheduled reminder.
         reminder(reminder),
         /// A notice of an automatic rollback.
-        generation-rolled-back(rollback),
+        plugin-rolled-back(rollback),
         /// The owner went back in the conversation: to the message at this Log position, or to
         /// its start when absent; the transcript continues from there.
         ///
@@ -1011,7 +1022,7 @@ interface composer {
     variant safe-mode {
         /// The owner turned safe mode on.
         owner,
-        /// This Run failed against the generations that are still running.
+        /// This Run failed with the code and configuration that still run.
         failed(failure),
     }
 
@@ -1054,11 +1065,11 @@ interface composer {
         /// Earlier candidates that are unavailable or exhausted in this Run, in configured order.
         skipped: list<skipped-endpoint>,
         /// What the service reported for the request made from `previous`, when this target's
-        /// endpoint settings and Provider generation served it.
+        /// endpoint settings and Provider code served it.
         ///
         /// Absent otherwise, since another model counts tokens differently.
         previous-usage: option<usage>,
-        /// The latest plan the endpoint settings and Provider generation behind this target turned
+        /// The latest plan the endpoint settings and Provider code behind this target turned
         /// away as too large in this Round, a reply or a summary.
         ///
         /// Only a plan whose Log items the transcript still holds counts, so after a compaction it
@@ -1070,7 +1081,7 @@ interface composer {
     record compaction-target {
         /// Its limits.
         budget: budget,
-        /// As on `reply-target`, for the endpoint settings and Provider generation behind this
+        /// As on `reply-target`, for the endpoint settings and Provider code behind this
         /// target.
         overflowed: option<overflowed>,
     }
@@ -1249,15 +1260,15 @@ interface composer {
     /// states.
     ///
     /// An empty object must fit it. The host checks a profile's options against the schema of the
-    /// generation that runs them: registering configuration or code that breaks a profile's options
+    /// code that runs them: registering configuration or code that breaks a profile's options
     /// is rejected, and a profile whose options no longer fit, as after a rollback, cannot use this
-    /// plugin until they do. The schema is fixed with the generation, so this runs without network
-    /// access.
+    /// plugin until they do. The schema is fixed when the code and settings are registered, so
+    /// this runs without network access.
     options-schema: func(config: json) -> json;
 
     /// Write the next request.
     ///
-    /// `options` fit the running generation's `options-schema` and are normalized as tool arguments
+    /// `options` fit the running code's `options-schema` and are normalized as tool arguments
     /// are. Return `compact` only while `compaction` is present. Each compaction ends at a Round
     /// end the transcript shows and hides it, so a Round's compactions end with its visible
     /// history. When the target a composition is for carries `overflowed`, return a composition
@@ -1644,10 +1655,10 @@ interface channel {
     }
 
     /// Additional origins for requests and sockets; `*.` before a host covers its subdomains. Read
-    /// when the generation loads.
+    /// when the code loads.
     origins: func() -> list<string>;
     /// The gap before each message `send` builds; absent sends each as soon as it is ready. Read
-    /// when the generation loads.
+    /// when the code loads.
     pacing: func() -> option<pacing-gap>;
     /// The request that reads which account the connection reaches.
     identify: func() -> http-request;

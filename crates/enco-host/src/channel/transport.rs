@@ -99,7 +99,7 @@ pub(super) struct Reader {
     pub adapter: Arc<dyn Adapter>,
     pub kernel: Arc<Kernel>,
     pub settings: super::ConnectionSettings,
-    pub generation: GenerationId,
+    pub code: CodeRef,
     pub clock: Arc<dyn enco_kernel::Clock>,
 }
 impl Reader {
@@ -377,13 +377,13 @@ impl PacingGate {
 pub(super) async fn send(
     adapter: Arc<dyn Adapter>,
     kernel: Arc<Kernel>,
-    generation: GenerationId,
+    code: CodeRef,
     target: String,
     message: Outgoing<FileData>,
     stop: CancellationToken,
     pacing: Arc<PacingGate>,
 ) -> Result<Sent, ChannelError> {
-    let parts = match super::health::call(&kernel, generation, adapter.split(message)).await {
+    let parts = match super::health::call(&kernel, &code, adapter.split(message)).await {
         Ok(parts) => parts,
         Err(ChannelError::Protocol(ChannelCallError::Protocol(error))) => {
             return Ok(Sent {
@@ -403,7 +403,7 @@ pub(super) async fn send(
         let mut backoff = ChannelBackoff::default();
         for attempt in 1..=CHANNEL_ATTEMPTS {
             // A send future has effects: await it, and its gap, even after cancellation.
-            let sent = super::health::call(&kernel, generation, adapter.send(&target, message));
+            let sent = super::health::call(&kernel, &code, adapter.send(&target, message));
             match pacing.paced(sent).await {
                 Ok(sent) => {
                     if let Some(id) = sent.message {

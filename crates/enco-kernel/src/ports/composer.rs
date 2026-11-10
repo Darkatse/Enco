@@ -5,7 +5,7 @@ use std::{collections::HashMap, path::PathBuf};
 /// Pure policy boundary: identical inputs must produce identical plans.
 #[async_trait]
 pub trait Composer: Send + Sync {
-    /// Select, order and budget content using options already checked against this generation.
+    /// Select, order and budget content using options already checked against this code.
     async fn compose(
         &self,
         options: &crate::ComposerOptions,
@@ -146,8 +146,8 @@ pub struct TranscriptItem {
     pub pos: LogPos,
     /// Canonical message used when resolving a plan reference.
     pub message: Message,
-    /// Provider generation of the producing Attempt, present only for Assistant messages.
-    pub generation: Option<GenerationId>,
+    /// Provider code of the producing Attempt, present only for Assistant messages.
+    pub provider: Option<CodeRef>,
     /// Consumed Inbox Event, present only for inputs; the composer narrates its circumstances.
     pub event: Option<Event>,
 }

@@ -13,7 +13,7 @@
 - `sdk/`：随宿主分发的插件 SDK
 - `manual/`：由宿主根据当前运行代际自动生成的只读手册
 - `workspace/`：新 Session 的默认工作目录
-- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。`blobs/` 只放 Agent 按路径读取的内容，例如附件、图片与过长的工具结果；模型服务与渠道的原始响应作为映射证据压缩存在库里。数据库模式版本 23 需要新库或由主人迁移旧库，Enco 不自动迁移已有数据。
+- `.data/`：Enco 的持久库（SQLite、内容寻址 blob、制品与已登记意图）。`blobs/` 只放 Agent 按路径读取的内容，例如附件、图片与过长的工具结果；模型服务与渠道的原始响应作为映射证据压缩存在库里。数据库模式版本是 24：打开版本 23 的库时，Enco 先在旁边写一份完整的副本（`enco.db.v23-<时间>`），再在一个事务里升级，并核对升级后的事实与原来一致，不一致就不升级、库保持原样；更早的版本需要新库或由主人迁移。
 
 `config.toml` 中每个模型 endpoint 用 `plugin` 选定协议，`base_url` 是 HTTP(S) 服务地址，可以带路径，不能带凭证、query 或 fragment，渠道的 `base_url` 也是这样：`openai-compatible` 与 `deepseek` 走 Chat Completions，`openai-responses` 走 OpenAI Responses，`anthropic` 走 Anthropic Messages，`gemini` 走 Gemini Generate Content。`options` 里的字段按各家 API 的原名并进请求，例如 Anthropic 的 `thinking` 与 `output_config`、Responses 的 `reasoning`，但不能覆盖插件自己写的字段，也不能写插件保留的字段，例如 Chat 的 `stream_options` 与 Responses 的 `previous_response_id`。`openai-responses` 按每个会话不变的开头（模型、工具、开头的 system 消息与第一条 user 消息）算出 `prompt_cache_key`，同一会话的请求因此落在同一份提示缓存上，经过中转时也一样。补全请求默认流式：服务边生成边发，Enco 读完整份回复再解读，所以经过中转与 CDN 时，连接不会因为长时间没有数据被中间的代理断开；5 分钟收不到任何数据算超时，整个请求最多 30 分钟。`options` 写 `"stream": false` 改为非流式，用于不支持流式的兼容服务，回复整段到齐才返回，最多等 10 分钟；Chat Completions 的服务流式时不给用量会报 `missing usage`，也用这个选项解决。每种协议的配置示例见 [examples/](../examples/)。
 
@@ -52,7 +52,9 @@
 
 压缩阈值可以按 profile 设置，例如 `composer = { plugin = "composer", options = { compact_at = 60 } }`。`compact_at` 是回复模型上下文窗口的百分比，取值 1 到 100，默认 80。压缩后原样保留的最近对话约为阈值的 3/8，默认约占窗口的 30%。安全模式使用默认阈值。
 
-关于主人的偏好与全局规矩写在 `AGENTS.md`，只给 `owner_context` 未关闭的会话；关于某个角色做什么、怎样做写在 `profiles/<名字>.md`，与 `AGENTS.md` 叠加且更具体（`owner_context = false` 的群会话同样生效），直接编辑文件即可在下一个 Round 生效。每个会话另有自己的工作目录（新建时为 `workspace/`），文件工具、`message_send` 的相对路径与 `shell_exec` 的默认目录都以它为起点，用 `enco working-dir <session> <path>` 修改：相对路径按执行命令时的当前目录补全，设置时不检查目录，用到时目录不可用，相关的调用才失败。
+关于主人的偏好与全局规矩写在 `AGENTS.md`，只给 `owner_context` 未关闭的会话；关于某个角色做什么、怎样做写在 `profiles/<名字>.md`，与 `AGENTS.md` 叠加且更具体（`owner_context = false` 的群会话同样生效），直接编辑文件即可在下一个 Round 生效。每个会话另有自己的工作目录（新建时为 `workspace/`），文件工具、`message_send` 的相对路径与 `shell_exec` 的默认目录都以它为起点，用 `enco working-dir <session> <path>` 修改：相对路径按执行命令时的当前目录补全，设置时不检查目录，用到时目录不可用，相关的调用才失败。`enco working-dir` 与 `enco profile` 在接纳时就返回，从会话的下一个 Round 起生效，会话空闲时立即生效；待生效的改变在 `/status` 中立刻可见。
+
+定时提醒由 Agent 用 `schedule_create` 建立，属于建立它的会话，Agent 也只能取消本会话的定时。`enco schedules` 列出未归档会话中仍有效的定时；`enco schedules --cancel <id>` 被接纳后就不再有新的提醒，会话在下一个 Round 边界记下这次取消，空闲时立即记下。
 
 ### Session 委派、叫停与归档
 

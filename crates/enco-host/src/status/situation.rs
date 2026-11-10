@@ -4,9 +4,7 @@
 //! and the renderer words them.
 use super::Steps;
 use crate::development::EntryError;
-use enco_core::{
-    ConfigurationRef, Failure, IntentPath, PluginActivation, PluginName, RegistrationId,
-};
+use enco_core::{Failure, IntentPath, PluginActivation, PluginName, RegistrationId};
 use enco_kernel::{Cause, SettingsError, UnservedUse};
 use serde::Serialize;
 
@@ -58,13 +56,13 @@ pub enum AttentionKind<'a> {
         /// registered.
         factory: bool,
     },
-    /// The registered generation failed, and the plugin runs an older one instead.
+    /// The registered code failed, and the plugin was rolled back to earlier code.
     RolledBack {
         /// The plugin directory.
         path: IntentPath,
-        /// The older generation that runs.
+        /// The earlier code that runs.
         running: PluginActivation,
-        /// The registered generation, which failed.
+        /// The registered code, which failed.
         registered: PluginActivation,
         /// The failure, by what the failed generation introduced.
         cause: GenerationFailure<'a>,
@@ -85,10 +83,10 @@ pub enum AttentionKind<'a> {
     },
     /// The running `config.toml` is not the registered one, as after a rollback.
     ConfigurationDiverged {
-        /// The configuration that runs.
-        running: ConfigurationRef,
-        /// The configuration the latest registration selected.
-        registered: ConfigurationRef,
+        /// Registration of the configuration that runs.
+        running: RegistrationId,
+        /// Registration of the configuration the latest registrations selected.
+        registered: RegistrationId,
     },
     /// Registering this host's factory code for the plugin was rejected; every registration
     /// retries it.
@@ -97,7 +95,7 @@ pub enum AttentionKind<'a> {
         path: IntentPath,
         /// Why the registration was rejected.
         causes: &'a [Cause],
-        /// The generation the plugin keeps running; absent when it serves no calls.
+        /// The code the plugin keeps running; absent when it serves no calls.
         running: Option<PluginActivation>,
     },
     /// A configured use cannot be served, for a reason other than its plugin being unable to run.
@@ -166,22 +164,22 @@ pub enum Divergence<'a> {
     },
     /// The plugin runs code other than the registered code, which is not marked failed.
     Code {
-        /// The generation that runs.
+        /// The code that runs.
         running: PluginActivation,
-        /// The registered generation.
+        /// The registered code.
         registered: PluginActivation,
     },
     /// The plugin runs settings other than the registered settings, which are not marked failed.
     Settings {
-        /// The generation that runs.
+        /// The code that runs.
         running: PluginActivation,
-        /// The registered generation.
+        /// The registered code.
         registered: PluginActivation,
     },
     /// A registration removed the plugin, but mechanical recovery, such as an owner rollback,
     /// runs it again.
     Unregistered {
-        /// The generation that runs.
+        /// The code that runs.
         running: PluginActivation,
         /// Registration that removed the plugin.
         removed_by: RegistrationId,
@@ -209,23 +207,38 @@ pub enum GenerationFailure<'a> {
     },
 }
 
+impl GenerationFailure<'_> {
+    /// The failure recorded for the generation.
+    pub fn failure(&self) -> &Failure {
+        match self {
+            Self::Code { failure } | Self::Settings { failure } | Self::Factory { failure } => {
+                failure
+            }
+        }
+    }
+}
+
 /// Why a plugin serves no calls.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StopCause<'a> {
-    /// The registered generation failed, and no older generation can run.
+    /// The registered code failed, and nothing earlier can run.
     Failed {
+        /// The registered code, which failed.
+        registered: PluginActivation,
         /// The failure, by what the failed generation introduced.
         cause: GenerationFailure<'a>,
     },
-    /// A generation is selected, but this host cannot serve it.
+    /// Code is selected, but this host cannot serve it.
     Unavailable {
+        /// The selected code.
+        selected: PluginActivation,
         /// Why this host cannot serve it.
         causes: &'a [Cause],
     },
-    /// A generation is registered, but none is selected to run.
+    /// Code is registered, but nothing is selected to run.
     NotRunning {
-        /// The registered generation.
+        /// The registered code.
         registered: PluginActivation,
     },
 }

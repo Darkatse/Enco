@@ -115,7 +115,7 @@ async fn first_registration_adopts_config_toml_without_model_requests() {
     let mut daemon = Daemon::start(&server, "openai-compatible").await;
     let status = config_status(&daemon).await;
     assert_eq!(status["running"], status["registered"]);
-    assert!(status["running"]["registration"].is_number());
+    assert!(status["running"].is_number());
     assert!(server.received_requests().await.unwrap().is_empty());
     daemon.stop().await;
 }
@@ -210,8 +210,8 @@ async fn applying_calls_only_the_changed_endpoint_once() {
     let again = apply(&daemon, &candidate).await.unwrap();
     assert!(again["registration"].is_null());
     assert_eq!(
-        config_status(&daemon).await["running"]["generation"],
-        applied["configuration"]["id"]
+        config_status(&daemon).await["running"],
+        applied["configuration"]["registration"]
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     daemon.stop().await;
@@ -266,7 +266,7 @@ async fn rewind_restores_earlier_intent_and_the_running_document_after_owner_rol
     original["endpoint"]["spare"] = original["endpoint"]["embed"].clone();
     let mut daemon = Daemon::start_config(&toml::to_string(&original).unwrap()).await;
     let root = daemon.root.path().to_path_buf();
-    let first = config_status(&daemon).await["running"]["registration"].clone();
+    let first = config_status(&daemon).await["running"].clone();
     let mut changed = original.clone();
     changed["owner"]["timezone"] = "America/New_York".into();
     let second = apply(&daemon, &changed).await.unwrap()["configuration"].clone();
@@ -292,7 +292,7 @@ async fn rewind_restores_earlier_intent_and_the_running_document_after_owner_rol
         .await
         .unwrap();
     let third = &undo["registered"]["configuration"];
-    assert!(third["id"].as_u64().unwrap() > second["id"].as_u64().unwrap());
+    assert!(third["registration"].as_u64().unwrap() > second["registration"].as_u64().unwrap());
     assert_eq!(third["document"], original);
     daemon
         .connect()
@@ -308,14 +308,8 @@ async fn rewind_restores_earlier_intent_and_the_running_document_after_owner_rol
         })
         .await
         .unwrap();
-    assert_eq!(
-        status["configuration"]["running"]["generation"],
-        second["id"]
-    );
-    assert_eq!(
-        status["configuration"]["registered"]["generation"],
-        third["id"]
-    );
+    assert_eq!(status["configuration"]["running"], second["registration"]);
+    assert_eq!(status["configuration"]["registered"], third["registration"]);
     assert!(server.received_requests().await.unwrap().is_empty());
     // Start from the running document, so editing one table cannot re-register the undone one.
     daemon

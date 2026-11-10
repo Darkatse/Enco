@@ -18,10 +18,19 @@ pub(super) fn runtime<'a>(
     };
     let registered = plugin.registered.as_ref().map(|unit| &unit.plugin);
     match (&status.running, &status.standing, registered) {
-        (Running::Unavailable { causes, .. }, _, _) => out.push(Attention {
+        (
+            Running::Unavailable {
+                causes, activation, ..
+            },
+            _,
+            _,
+        ) => out.push(Attention {
             kind: AttentionKind::Stopped {
                 path: IntentPath::Plugin(name.clone()),
-                cause: StopCause::Unavailable { causes },
+                cause: StopCause::Unavailable {
+                    selected: reference(activation),
+                    causes,
+                },
             },
             next: repairs(causes),
         }),
@@ -52,7 +61,7 @@ fn rolled_back<'a>(
     plugin: &'a RegisteredPlugin,
 ) -> Option<Attention<'a>> {
     let registered = &plugin.activation;
-    if registered.generation.id == running.generation.id {
+    if registered.code == running.code {
         return None;
     }
     let cause = failure(registered)?;
@@ -66,7 +75,7 @@ fn rolled_back<'a>(
             first: ask_about_factory(name),
             alternative: keep_running(name, running, plugin),
         },
-        GenerationFailure::Settings { .. } => settings_steps(name, current, selected),
+        GenerationFailure::Settings { .. } => settings_steps(name, &current, &selected),
     };
     Some(Attention {
         kind: AttentionKind::RolledBack {
@@ -113,8 +122,8 @@ fn diverged<'a>(
             }
             Difference::Code => (
                 Divergence::Code {
-                    running: current,
-                    registered: selected,
+                    running: current.clone(),
+                    registered: selected.clone(),
                 },
                 match keep_running(name, running, registered) {
                     Some(keep) => Steps {
@@ -126,10 +135,10 @@ fn diverged<'a>(
             ),
             Difference::Settings => (
                 Divergence::Settings {
-                    running: current,
-                    registered: selected,
+                    running: current.clone(),
+                    registered: selected.clone(),
                 },
-                settings_steps(name, current, selected),
+                settings_steps(name, &current, &selected),
             ),
         };
         out.push(Attention {
@@ -148,6 +157,7 @@ fn unregistered<'a>(
     removed_by: RegistrationId,
 ) -> Attention<'a> {
     let current = reference(running);
+    let next = Steps::sequence(vec![compare(current.registration, removed_by)]);
     Attention {
         kind: AttentionKind::Diverged {
             path: IntentPath::Plugin(name.clone()),
@@ -156,7 +166,7 @@ fn unregistered<'a>(
                 removed_by,
             },
         },
-        next: Steps::sequence(vec![compare(current.registration, removed_by)]),
+        next,
     }
 }
 
@@ -172,7 +182,13 @@ fn stopped<'a>(name: &PluginName, registered: &'a Activation) -> Attention<'a> {
                 ],
                 GenerationFailure::Factory { .. } => ask_about_factory(name),
             };
-            (StopCause::Failed { cause }, Steps::sequence(steps))
+            (
+                StopCause::Failed {
+                    registered: reference(registered),
+                    cause,
+                },
+                Steps::sequence(steps),
+            )
         }
         None => (
             StopCause::NotRunning {
@@ -204,7 +220,7 @@ fn keep_running(
     running: &Activation,
     registered: &RegisteredPlugin,
 ) -> Option<Vec<Step>> {
-    let CodeSource::Directory { registration, .. } = running.code.source else {
+    let CodeSource::Directory { registration, .. } = running.provenance.source else {
         return None;
     };
     if registered
@@ -227,8 +243,8 @@ fn keep_running(
 /// Settings live in one table of `config.toml`; rewinding the whole file would change others.
 fn settings_steps(
     name: &PluginName,
-    running: PluginActivation,
-    registered: PluginActivation,
+    running: &PluginActivation,
+    registered: &PluginActivation,
 ) -> Steps {
     let mut steps = Vec::new();
     if let Some(to) = registered.registration {
@@ -241,18 +257,12 @@ fn settings_steps(
     Steps::sequence(steps)
 }
 
-/// A recorded failure, attributed to what the failed generation introduced.
+/// A failure recorded on this node, attributed to what the failed generation introduced.
 fn failure(activation: &Activation) -> Option<GenerationFailure<'_>> {
-    let failure = activation.generation.failure.as_ref()?;
-    Some(
-        match (activation.generation.origin, activation.code.source) {
-            (Origin::Settings { .. }, _) => GenerationFailure::Settings { failure },
-            (Origin::Code { .. } | Origin::Factory, CodeSource::Factory) => {
-                GenerationFailure::Factory { failure }
-            }
-            (Origin::Code { .. } | Origin::Factory, CodeSource::Directory { .. }) => {
-                GenerationFailure::Code { failure }
-            }
-        },
-    )
+    let failure = activation.health.as_ref()?.failure()?;
+    Some(match (&activation.origin, activation.provenance.source) {
+        (Some(Origin::Settings { .. }), _) => GenerationFailure::Settings { failure },
+        (_, CodeSource::Factory) => GenerationFailure::Factory { failure },
+        (_, CodeSource::Directory { .. }) => GenerationFailure::Code { failure },
+    })
 }

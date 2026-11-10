@@ -201,13 +201,10 @@ fn configuration<'a>(
                 registered: config.registered,
             },
             next: Steps {
-                first: vec![compare(
-                    Some(config.running.registration),
-                    config.registered.registration,
-                )],
+                first: vec![compare(Some(config.running), config.registered)],
                 alternative: Some(vec![
                     CallStep::KeepRunning(RewindArguments::path(
-                        config.running.registration,
+                        config.running,
                         IntentPath::Configuration,
                     ))
                     .into(),
@@ -297,7 +294,7 @@ fn fix_then_recheck(path: &std::path::Path) -> Steps {
 
 pub(super) fn reference(activation: &Activation) -> PluginActivation {
     PluginActivation {
-        generation: activation.generation.id,
+        code: activation.code.clone(),
         registration: activation.registration,
     }
 }

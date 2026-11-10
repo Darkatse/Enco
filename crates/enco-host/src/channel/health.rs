@@ -1,12 +1,12 @@
-//! All mapper call results report against the generation held by the connection.
+//! All mapper call results report against the mapper code held by the connection.
 use super::{ChannelCallError, ChannelError};
-use enco_core::GenerationId;
+use enco_core::CodeRef;
 use enco_kernel::{Kernel, Verdict};
 use std::future::Future;
 
 pub(super) async fn call<T>(
     kernel: &Kernel,
-    generation: GenerationId,
+    code: &CodeRef,
     operation: impl Future<Output = Result<T, ChannelCallError>>,
 ) -> Result<T, ChannelError> {
     let result = operation.await;
@@ -18,7 +18,7 @@ pub(super) async fn call<T>(
     if let Some(verdict) = verdict {
         kernel
             .registry()
-            .report(generation, verdict, None)
+            .report(code, verdict, None)
             .await
             .map_err(enco_kernel::KernelError::from)?;
     }

@@ -31,7 +31,7 @@ impl SessionActor {
             self.tail.entries(),
             run,
             self.deps.store.node().await?.safe_mode,
-            &view.active_generations(),
+            &view.active_code(),
         );
         let safe_mode = mode.is_some();
         prefix.extend(
@@ -55,7 +55,7 @@ impl SessionActor {
             // Health reports have settled, so an automatic rollback counts before this failure.
             Err(RoundError::Failed(failure)) => RoundEnd::Failed {
                 failure,
-                generations: self.deps.registry.view().active_generations(),
+                active: self.deps.registry.view().active_code(),
             },
             Err(RoundError::Stopped(error)) => return Err(error),
         };
@@ -175,7 +175,7 @@ impl SessionActor {
                 .await?;
             let choice = selection.choose(kind.purpose())?;
             let planned = self
-                .freeze(plan, kind, composer, &input.transcript, &selection, choice)
+                .freeze(plan, kind, composer, &input.transcript, choice)
                 .await?;
             let endpoint = &choice.endpoint.endpoint;
             let completion = match self
@@ -216,8 +216,16 @@ impl SessionActor {
                 continue;
             }
             let calls: Vec<_> = completion.message.tool_calls().collect();
-            self.dispatch(round, snapshot, planned.plan.plan(), &calls, token)
-                .await?;
+            let timezone = input.timezone;
+            self.dispatch(
+                round,
+                snapshot,
+                planned.plan.plan(),
+                &calls,
+                timezone,
+                token,
+            )
+            .await?;
             cancelled(token)?;
             return Ok(self.round_end(snapshot, planned.plan.plan(), &calls));
         }
@@ -242,14 +250,12 @@ impl SessionActor {
         &self,
         plan: ContextPlan,
         kind: AttemptKind,
-        composer: GenerationId,
+        composer: CodeRef,
         transcript: &Transcript,
-        selection: &Selection<'_>,
         choice: &Choice<'_>,
     ) -> Result<PlannedAttempt, RoundError> {
-        let request =
-            crate::plan::resolve(&plan, transcript, selection.exports(), choice.export.plugin)
-                .map_err(|error| failed(code::PLAN_INVALID, error.to_string()))?;
+        let request = crate::plan::resolve(&plan, transcript, choice.export.plugin)
+            .map_err(|error| failed(code::PLAN_INVALID, error.to_string()))?;
         let request = crate::image::resolve(request, self.deps.store.as_ref())
             .await
             .map_err(|error| failed(code::CONTEXT_FAILED, format!("image content: {error}")))?;
@@ -270,7 +276,7 @@ impl SessionActor {
         input: &ComposeInput,
         selection: &Selection<'_>,
         token: &CancellationToken,
-    ) -> Result<(ContextPlan, AttemptKind, GenerationId), RoundError> {
+    ) -> Result<(ContextPlan, AttemptKind, CodeRef), RoundError> {
         let view = self.deps.registry.view();
         let bound = view
             .exports
@@ -288,10 +294,10 @@ impl SessionActor {
         };
         self.deps
             .registry
-            .report(bound.export.generation, verdict, Some(self.session.id))
+            .report(&bound.export.code, verdict, Some(self.session.id))
             .await?;
         checked
-            .map(|(plan, kind)| (plan, kind, bound.export.generation))
+            .map(|(plan, kind)| (plan, kind, bound.export.code.clone()))
             .map_err(|mut failure| {
                 if failure.code == code::CONTEXT_OVERFLOW
                     && input.compaction.is_none()
@@ -374,12 +380,7 @@ fn bind_composition(
 
 /// Safe mode follows the owner's switch, or this Run's latest failed Round while the registered
 /// behavior it failed against is still active.
-fn safe_mode(
-    entries: &[Entry],
-    run: RunId,
-    switch: bool,
-    active: &[GenerationId],
-) -> Option<SafeMode> {
+fn safe_mode(entries: &[Entry], run: RunId, switch: bool, active: &ActiveCode) -> Option<SafeMode> {
     if switch {
         return Some(SafeMode::Owner);
     }
@@ -389,18 +390,14 @@ fn safe_mode(
     {
         return None;
     }
-    let (failure, generations) = entries.iter().rev().find_map(|entry| match &entry.body {
+    let (failure, failed_with) = entries.iter().rev().find_map(|entry| match &entry.body {
         EntryBody::RoundEnded {
-            end:
-                RoundEnd::Failed {
-                    failure,
-                    generations,
-                },
+            end: RoundEnd::Failed { failure, active },
             ..
-        } => Some((failure, generations)),
+        } => Some((failure, active)),
         _ => None,
     })?;
-    (generations == active).then(|| SafeMode::Failed(failure.clone()))
+    (failed_with == active).then(|| SafeMode::Failed(failure.clone()))
 }
 
 /// The current Run's entries from its start, including those compaction hides; recovery decisions

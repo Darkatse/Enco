@@ -1,47 +1,22 @@
-use crate::{
-    ContentHash, DateTime, Failure, GenerationId, PluginId, PluginName, RegistrationId, Utc,
-};
+use crate::{CodeRef, ContentHash, Failure, GenerationId, PluginId, PluginName, RegistrationId};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-/// The identity and registration of a configuration, without copying its document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct ConfigurationRef {
-    /// Selected configuration generation.
-    pub generation: GenerationId,
-    /// Registration that accepted the configuration.
-    pub registration: RegistrationId,
-}
-
-impl ConfigurationRef {
-    /// The reference to one configuration generation.
-    pub fn of(configuration: &ConfigGeneration) -> Self {
-        Self {
-            generation: configuration.id,
-            registration: configuration.registration,
-        }
-    }
-}
-
-/// One immutable generation identity, with a mutable availability status.
+/// Immutable plugin content that one registration brought: the artifact, its settings and
+/// where the code came from.
+///
+/// It is intent, the same on every node; whether it runs well is each node's [`Health`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenerationRecord {
-    /// Registry-assigned structural sequence number.
+    /// The registration that brought it, and its plugin.
     pub id: GenerationId,
-    /// Plugin whose history contains this generation.
-    pub plugin: PluginId,
     /// Content-addressed component bytes.
     pub artifact: ContentHash,
     /// Owner-selected plugin configuration and credential names, fixed together with the code.
     pub settings: PluginSettings,
-    /// How this generation entered the registry.
+    /// Where the code came from.
     #[serde(flatten)]
     pub origin: Origin,
-    /// Whether this generation remains eligible for use.
-    pub status: GenerationStatus,
-    /// The reason this generation was marked failed; absent for trial and healthy records.
-    pub failure: Option<Failure>,
-    /// Observation time for display, never ordering.
-    pub created_at: DateTime<Utc>,
 }
 
 /// The complete `[plugin.<name>]` table. Only `config` is visible to the plugin.
@@ -63,46 +38,43 @@ impl Default for PluginSettings {
     }
 }
 
-/// Source of a registered generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Where a generation's code came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "origin", rename_all = "snake_case")]
 pub enum Origin {
-    /// Component embedded in the host binary.
-    Factory,
-    /// Accepted code intent, from source or the current host's factory implementation.
-    Code {
-        /// Accepted change that supplied this code.
-        registration: RegistrationId,
-    },
-    /// New settings paired with the currently active code.
+    /// The registration's code intent supplied it: a built source directory, or the host's
+    /// factory code with non-empty settings.
+    Code,
+    /// New settings paired with the code that ran when they were registered.
     Settings {
-        /// Accepted change that supplied these settings.
-        registration: RegistrationId,
-        /// Generation whose code is reused.
-        based_on: GenerationId,
+        /// The code reused, a generation or factory code.
+        based_on: CodeRef,
     },
 }
 
-impl Origin {
-    /// The accepted change that produced this content; factory content belongs to the host.
-    pub fn registration(self) -> Option<RegistrationId> {
-        match self {
-            Self::Factory => None,
-            Self::Code { registration } | Self::Settings { registration, .. } => Some(registration),
-        }
-    }
-}
-
-/// Eligibility for use and automatic recovery.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GenerationStatus {
+/// A generation's standing on one node; another node may judge the same content differently.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Health {
     /// Active under observation; not yet eligible as a rollback target.
     Trial,
     /// Eligible to become active or serve as a rollback target.
     Healthy,
-    /// Unavailable; redeploying its bytes creates a new identity.
-    Failed,
+    /// Unavailable on this node; registering its bytes again brings a new identity.
+    Failed {
+        /// The attributable fault that marked it failed.
+        failure: Failure,
+    },
+}
+
+impl Health {
+    /// The recorded fault, absent unless failed.
+    pub fn failure(&self) -> Option<&Failure> {
+        match self {
+            Self::Failed { failure } => Some(failure),
+            Self::Trial | Self::Healthy => None,
+        }
+    }
 }
 
 /// A committed automatic rollback, also accepted as a Session input when applicable.
@@ -110,27 +82,34 @@ pub enum GenerationStatus {
 pub struct RolledBack {
     /// Running plugin name.
     pub plugin: PluginName,
-    /// Failed trial generation.
+    /// The generation that failed on trial.
     pub from: GenerationId,
-    /// Replacement, or none when no healthy generation remains.
-    pub to: Option<GenerationId>,
+    /// What runs instead: an earlier generation or factory code; absent when nothing can run.
+    pub to: Option<CodeRef>,
     /// Plugin fault which triggered recovery.
     pub failure: Failure,
 }
 
-/// An immutable registered configuration document.
+/// An immutable registered configuration document; its registration is its identity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConfigGeneration {
-    /// Global registry sequence number, shared with plugin generations.
-    pub id: GenerationId,
     /// Accepted change which produced this generation.
     pub registration: RegistrationId,
     /// Content address of the exact configuration file, including comments.
     pub source: ContentHash,
     /// Complete configuration content; declarations are derived by its owners.
     pub document: serde_json::Value,
-    /// Configuration which was active immediately before this one was registered.
-    pub previous: Option<GenerationId>,
-    /// Observation time for display, never ordering.
-    pub created_at: DateTime<Utc>,
+}
+
+/// The registered behavior a Round ran with: the active configuration and each running
+/// plugin's code.
+///
+/// Trial promotion leaves it unchanged; a registration or a rollback that changes what runs
+/// changes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveCode {
+    /// Registration of the active configuration.
+    pub configuration: RegistrationId,
+    /// Code each running plugin uses.
+    pub plugins: BTreeMap<PluginId, CodeRef>,
 }

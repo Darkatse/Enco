@@ -6,6 +6,8 @@ mod commit;
 mod connections;
 mod content;
 mod evidence;
+mod log;
+mod migration;
 mod plans;
 mod registry;
 mod rows;
@@ -25,9 +27,9 @@ use std::{
 /// The store's format version, written as `PRAGMA user_version` and required when opening.
 ///
 /// It covers the SQLite schema and the JSON kept in it, such as plan records and connection
-/// state. Until P4, persistent format changes require a new database; opening never migrates or
-/// deletes the old one, and nothing reads an older format.
-const SCHEMA_VERSION: u32 = 23;
+/// state. Opening a database of the previous version upgrades it once, after copying it; nothing
+/// else reads an older format.
+const SCHEMA_VERSION: u32 = 24;
 
 /// Files owned by the persistence adapter.
 pub struct StorePaths {
@@ -64,8 +66,8 @@ impl SqliteStore {
         tokio::fs::create_dir_all(&paths.artifacts)
             .await
             .map_err(backend)?;
-        let db = paths.db.clone();
-        let (connection, node) = tokio::task::spawn_blocking(move || open(&db))
+        let (db, blobs) = (paths.db.clone(), paths.blobs.clone());
+        let (connection, node) = tokio::task::spawn_blocking(move || open(&db, &blobs))
             .await
             .map_err(backend)??;
         Ok(Self {
@@ -78,6 +80,18 @@ impl SqliteStore {
 
     fn artifact_path(&self, hash: &ContentHash) -> PathBuf {
         self.paths.artifacts.join(format!("{hash}.wasm"))
+    }
+
+    /// Run `read` in one read transaction, so the statements of one answer see one state.
+    async fn read<T: Send + 'static>(
+        &self,
+        read: impl FnOnce(&Connection) -> Result<T, StoreError> + Send + 'static,
+    ) -> Result<T, StoreError> {
+        self.run(move |connection| {
+            let tx = connection.transaction().map_err(backend)?;
+            read(&tx)
+        })
+        .await
     }
 
     pub(crate) async fn run<T: Send + 'static>(
@@ -104,7 +118,7 @@ fn encode(value: &impl serde::Serialize) -> Result<String, StoreError> {
     serde_json::to_string(value).map_err(backend)
 }
 
-fn open(path: &Path) -> Result<(Connection, NodeId), StoreError> {
+fn open(path: &Path, blobs: &Path) -> Result<(Connection, NodeId), StoreError> {
     let (mut connection, version) = crate::sqlite::open(path).map_err(backend)?;
     match version {
         None => {
@@ -123,6 +137,7 @@ fn open(path: &Path) -> Result<(Connection, NodeId), StoreError> {
             tx.commit().map_err(backend)?;
         }
         Some(SCHEMA_VERSION) => {}
+        Some(migration::FROM) => migration::upgrade(&mut connection, path, blobs, SCHEMA_VERSION)?,
         Some(found) => {
             return Err(StoreError::SchemaVersion {
                 found,
@@ -174,39 +189,40 @@ impl Store for SqliteStore {
     }
 
     async fn sessions(&self) -> Result<Vec<SessionRecord>, StoreError> {
-        self.run(|connection| sessions::all(connection)).await
+        self.read(sessions::all).await
     }
 
     async fn session_by_name(&self, name: &str) -> Result<Option<SessionRecord>, StoreError> {
         let name = name.to_owned();
-        self.run(move |connection| sessions::named(connection, &name))
+        self.read(move |connection| sessions::named(connection, &name))
             .await
     }
 
     async fn children(&self, parent: SessionId) -> Result<Vec<SessionRecord>, StoreError> {
-        self.run(move |connection| sessions::children(connection, parent))
+        self.read(move |connection| sessions::children(connection, parent))
             .await
     }
 
     async fn session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError> {
-        self.run(move |connection| sessions::get(connection, id))
+        self.read(move |connection| sessions::get(connection, id))
             .await
     }
 
-    async fn set_profile(&self, id: SessionId, profile: &ProfileName) -> Result<(), StoreError> {
-        let profile = profile.to_owned();
-        self.run(move |connection| sessions::set_profile(connection, id, &profile))
+    async fn committed_session(&self, id: SessionId) -> Result<Option<SessionRecord>, StoreError> {
+        self.run(move |connection| sessions::committed(connection, id))
             .await
     }
 
-    async fn set_working_dir(
+    async fn committed_lineage(
         &self,
         id: SessionId,
-        working_dir: &WorkingDir,
-    ) -> Result<(), StoreError> {
-        let working_dir = working_dir.clone();
-        self.run(move |connection| sessions::set_working_dir(connection, id, &working_dir))
+    ) -> Result<(SessionRecord, Vec<SessionRecord>), StoreError> {
+        self.read(move |connection| sessions::lineage(connection, id))
             .await
+    }
+
+    async fn unarchived_views(&self) -> Result<Vec<SessionViews>, StoreError> {
+        self.read(sessions::views).await
     }
 
     async fn ensure_session(
@@ -227,7 +243,7 @@ impl Store for SqliteStore {
         session: SessionId,
         after: Option<LogPos>,
     ) -> Result<Vec<Entry>, StoreError> {
-        self.run(move |connection| sessions::log(connection, session, after))
+        self.run(move |connection| log::log(connection, session, after))
             .await
     }
 
@@ -251,7 +267,7 @@ impl Store for SqliteStore {
         before: Option<LogPos>,
         limit: usize,
     ) -> Result<Vec<Entry>, StoreError> {
-        self.run(move |connection| sessions::log_before(connection, session, before, limit))
+        self.run(move |connection| log::log_before(connection, session, before, limit))
             .await
     }
 
@@ -260,12 +276,12 @@ impl Store for SqliteStore {
         session: SessionId,
         pos: LogPos,
     ) -> Result<Option<Entry>, StoreError> {
-        self.run(move |connection| sessions::log_entry(connection, session, pos))
+        self.run(move |connection| log::log_entry(connection, session, pos))
             .await
     }
 
     async fn child_state(&self, child: SessionId) -> Result<ChildState, StoreError> {
-        self.run(move |connection| sessions::child_state(connection, child))
+        self.read(move |connection| sessions::child_state(connection, child))
             .await
     }
 
@@ -279,11 +295,8 @@ impl Store for SqliteStore {
             None => None,
         };
         let node = self.node;
-        let working_dir = self.default_working_dir.clone();
-        self.run(move |connection| {
-            commit::commit(connection, node, &working_dir, session, commit, plan)
-        })
-        .await
+        self.run(move |connection| commit::commit(connection, node, session, commit, plan))
+            .await
     }
 
     async fn plan(&self, hash: &ContentHash) -> Result<ContextPlan, StoreError> {
@@ -306,7 +319,7 @@ impl Store for SqliteStore {
         let [protocol, account, conversation, message] =
             [protocol, account, conversation, message].map(str::to_owned);
         self.run(move |connection| {
-            sessions::consumed_message(connection, &protocol, &account, &conversation, &message)
+            log::consumed_message(connection, &protocol, &account, &conversation, &message)
         })
         .await
     }
@@ -359,41 +372,13 @@ impl Store for SqliteStore {
             .await
     }
 
-    async fn insert_schedule(&self, schedule: &Schedule) -> Result<(), StoreError> {
-        let schedule = schedule.clone();
-        self.run(move |connection| schedules::insert(connection, &schedule))
-            .await
-    }
-
-    async fn cancel_schedule(&self, id: ScheduleId) -> Result<bool, StoreError> {
-        self.run(move |connection| schedules::cancel(connection, id))
-            .await
-    }
-
-    async fn schedules(&self, state: Option<ScheduleState>) -> Result<Vec<Schedule>, StoreError> {
-        self.run(move |connection| schedules::list(connection, state))
-            .await
-    }
-
-    async fn fire_schedule(
-        &self,
-        expected_last: Option<DateTime<Utc>>,
-        done: bool,
-        event: &Event,
-    ) -> Result<Accepted, StoreError> {
-        let event = event.clone();
-        self.run(move |connection| schedules::fire(connection, expected_last, done, &event))
+    async fn schedules(&self, session: Option<SessionId>) -> Result<Vec<Schedule>, StoreError> {
+        self.read(move |connection| schedules::list(connection, session))
             .await
     }
 
     async fn registry(&self) -> Result<RegistryState, StoreError> {
-        self.run(|connection| registry::read(connection)).await
-    }
-
-    async fn record_factories(&self, generations: &[GenerationRecord]) -> Result<(), StoreError> {
-        let generations = generations.to_vec();
-        self.run(move |connection| registry::record_factories(connection, &generations))
-            .await
+        self.read(registry::read).await
     }
 
     async fn register(&self, write: &RegistrationWrite) -> Result<(), StoreError> {

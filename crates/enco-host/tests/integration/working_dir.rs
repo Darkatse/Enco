@@ -47,6 +47,14 @@ async fn working_directory_changes_are_pinned_per_round_and_survive_restart() {
         .unwrap();
     provider.resume.notify_one();
     let entries = finish(&mut rx).await;
+    // The command waited for the boundary; the Run went on and completed.
+    assert!(matches!(
+        entries.last().unwrap().body,
+        EntryBody::RunEnded {
+            end: RunEnd::Completed,
+            ..
+        }
+    ));
     let directories: Vec<_> = entries
         .iter()
         .filter_map(|entry| match &entry.body {
@@ -115,4 +123,53 @@ async fn assert_tool_locations(entries: &[Entry], store: &SqliteStore, next: &st
         store.get_blob(&sent.content).await.unwrap(),
         b"new-directory"
     );
+}
+
+#[tokio::test]
+async fn an_idle_session_takes_a_command_at_once_without_starting_a_run() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = ScriptedProvider::new(vec![]);
+    let (kernel, store) = kernel_with(root.path(), provider.clone(), Tz::UTC, |_| {}).await;
+    let session = kernel.open_session("main").await.unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
+    let changed = kernel
+        .set_working_dir(session.id, root.path().join("project"))
+        .await
+        .unwrap();
+    // The command is visible at once in the effective view, before the actor consumes it.
+    assert_eq!(
+        store
+            .session(session.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .working_dir,
+        changed
+    );
+    let consumed = tokio::time::timeout(std::time::Duration::from_secs(15), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &consumed.body,
+        EntryBody::EventConsumed { event } if matches!(event.body, EventBody::SetWorkingDir { .. })
+    ));
+    // After shutdown the actor has finished whatever it would have started.
+    kernel.shutdown().await.unwrap();
+    let log = store.log(session.id, None).await.unwrap();
+    assert_eq!(log.last().unwrap().pos, consumed.pos);
+    assert!(
+        !log.iter()
+            .any(|entry| matches!(entry.body, EntryBody::RunStarted { .. }))
+    );
+    assert_eq!(
+        store
+            .committed_session(session.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .working_dir,
+        changed
+    );
+    assert!(provider.requests.lock().unwrap().is_empty());
 }

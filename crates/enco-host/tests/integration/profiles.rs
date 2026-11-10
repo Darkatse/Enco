@@ -253,10 +253,11 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
         Some("old-compaction"),
         true,
     ));
-    let (kernel, _) =
+    let (kernel, store) =
         kernel_configured(dir.path(), provider.clone(), configured(), vec![], |_| {}).await;
     let session = kernel.open_session("main").await.unwrap();
-    let before = kernel.registry().view().config.generation;
+    let mut entries = kernel.subscribe(session.id).await.unwrap();
+    let before = kernel.registry().view().config.registration;
     let mut document = configured();
     document["profile"]
         .as_object_mut()
@@ -281,11 +282,18 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
             if profile.as_str() == "alternate" && sessions.iter().map(String::as_str).eq([session.name.as_str()])),
         "{causes:?}"
     );
-    assert_eq!(kernel.registry().view().config.generation, before);
+    assert_eq!(kernel.registry().view().config.registration, before);
     kernel
         .set_profile(session.id, &"default".parse().unwrap())
         .await
         .unwrap();
+    // `alternate` stays in use until the Session has consumed its pending commands.
+    while !store.pending(session.id).await.unwrap().is_empty() {
+        tokio::time::timeout(std::time::Duration::from_secs(15), entries.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    }
     submit(kernel.registry(), configuration_request(document))
         .await
         .unwrap();
@@ -295,6 +303,62 @@ async fn configuration_admission_observes_profile_assignments_made_during_probin
             .await,
         Err(KernelError::UnknownProfile(_))
     ));
+    kernel.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn configuration_admission_keeps_every_profile_a_session_may_still_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(PausedProvider::new(
+        ScriptedProvider::new(vec![reply("OK")]),
+        None,
+        false,
+    ));
+    let mut base = configured();
+    base["profile"]["interim"] = base["profile"]["alternate"].clone();
+    let (kernel, _) =
+        kernel_configured(dir.path(), provider.clone(), base.clone(), vec![], |_| {}).await;
+    let session = kernel.open_session("main").await.unwrap();
+    let mut rx = kernel.subscribe(session.id).await.unwrap();
+    kernel
+        .set_profile(session.id, &"alternate".parse().unwrap())
+        .await
+        .unwrap();
+    provider
+        .pause
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    kernel
+        .submit(session.id, EventId::new(), "work".into(), Vec::new())
+        .await
+        .unwrap();
+    provider.entered.notified().await;
+    // The Run committed `alternate`, which its children's Rounds read until its next Round. The
+    // commands to `interim` and back to `default` wait for that boundary, which consumes those it
+    // has read, so a Round may read `interim` on the way.
+    for profile in ["interim", "default"] {
+        kernel
+            .set_profile(session.id, &profile.parse().unwrap())
+            .await
+            .unwrap();
+    }
+    let mut document = base;
+    let profiles = document["profile"].as_object_mut().unwrap();
+    profiles.remove("alternate");
+    profiles.remove("interim");
+    let result = submit(kernel.registry(), configuration_request(document)).await;
+    let Err(RegistryError::Rejected(causes)) = result else {
+        panic!("expected profile rejection");
+    };
+    let stranded: Vec<&str> = causes
+        .iter()
+        .map(|cause| match cause {
+            Cause::ProfileInUse { profile, .. } => profile.as_str(),
+            cause => panic!("unexpected cause {cause:?}"),
+        })
+        .collect();
+    assert_eq!(stranded, ["alternate", "interim"]);
+    provider.resume.notify_one();
+    finish(&mut rx).await;
     kernel.shutdown().await.unwrap();
 }
 
@@ -316,7 +380,7 @@ async fn configuration_probes_conflict_with_registration_but_not_trial_promotion
             .generations
             .remove(0)
             .id;
-        let before = registry.view().config.generation;
+        let before = registry.view().config.registration;
         let mut document = configured();
         document["endpoint"]["reply"]["model"] = "old-compaction".into();
         let apply = submit(registry, configuration_request(document));
@@ -324,7 +388,10 @@ async fn configuration_probes_conflict_with_registration_but_not_trial_promotion
             provider.entered.notified().await;
             if promote {
                 for _ in 0..TRIAL_CALLS {
-                    registry.report(trial, Verdict::Ok, None).await.unwrap();
+                    registry
+                        .report(&trial.into(), Verdict::Ok, None)
+                        .await
+                        .unwrap();
                 }
             } else {
                 submit(registry, source_request("fixture", FACTORY_BYTES))
@@ -336,10 +403,10 @@ async fn configuration_probes_conflict_with_registration_but_not_trial_promotion
         let (result, ()) = tokio::join!(apply, change);
         if promote {
             assert!(result.is_ok());
-            assert!(registry.view().config.generation > before);
+            assert!(registry.view().config.registration > before);
         } else {
             assert!(matches!(result, Err(RegistryError::Conflict(_))));
-            assert_eq!(registry.view().config.generation, before);
+            assert_eq!(registry.view().config.registration, before);
         }
         kernel.shutdown().await.unwrap();
     }

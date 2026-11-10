@@ -158,7 +158,7 @@ async fn runtime_attention_uses_the_selected_generation_and_keeps_running_source
     let first = node.source(root.path(), "alpha", b"one").await;
     for _ in 0..TRIAL_CALLS {
         node.registry
-            .report(first.generations[0].id, Verdict::Ok, None)
+            .report(&first.generations[0].id.into(), Verdict::Ok, None)
             .await
             .unwrap();
     }
@@ -167,8 +167,8 @@ async fn runtime_attention_uses_the_selected_generation_and_keeps_running_source
     let status = node.status(root.path()).await;
     let diverged = attention(&status, "diverged");
     assert_eq!(
-        diverged["divergence"]["registered"]["generation"],
-        json!(second.generations[0].id)
+        diverged["divergence"]["registered"]["code"],
+        json!(CodeRef::from(second.generations[0].id))
     );
     assert_eq!(
         diverged["next"]["first"][0]["arguments"],
@@ -182,7 +182,7 @@ async fn runtime_attention_uses_the_selected_generation_and_keeps_running_source
     };
     node.registry
         .report(
-            broken.generations[0].id,
+            &broken.generations[0].id.into(),
             Verdict::Failed(failure.clone()),
             None,
         )
@@ -196,7 +196,11 @@ async fn runtime_attention_uses_the_selected_generation_and_keeps_running_source
     );
     let alone = node.source(root.path(), "alone", b"one").await;
     node.registry
-        .report(alone.generations[0].id, Verdict::Failed(failure), None)
+        .report(
+            &alone.generations[0].id.into(),
+            Verdict::Failed(failure),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -229,32 +233,27 @@ async fn owner_switch_and_stopped_owners_are_reported_from_execution_facts() {
         .ensure_session(&"broken".parse().unwrap(), Utc::now())
         .await
         .unwrap();
+    // A recorded schedule whose rule this host cannot read back stops the Scheduler.
+    crate::store::Actor {
+        store: &store,
+        session: session.id,
+    }
+    .create_schedule(ScheduleRule::Cron {
+        expr: "invalid".into(),
+        timezone: None,
+    })
+    .await;
     // A future Log body is valid JSON but unreadable by this host's Session owner.
     rusqlite::Connection::open(root.path().join("enco.db"))
         .unwrap()
         .execute(
-            "INSERT INTO log(session_id,epoch,seq,at,body) VALUES (?,1,1,?,?)",
+            "INSERT INTO log(session_id,epoch,seq,at,body) VALUES (?,1,2,?,?)",
             rusqlite::params![
                 session.id.to_string(),
                 session.created_at.to_rfc3339(),
                 r#"{"kind":"future_record"}"#
             ],
         )
-        .unwrap();
-    store
-        .insert_schedule(&Schedule {
-            id: ScheduleId::new(),
-            session: session.id,
-            rule: ScheduleRule::Cron {
-                expr: "invalid".into(),
-                timezone: None,
-            },
-            message: "briefing".into(),
-            created_at: session.created_at,
-            state: ScheduleState::Active,
-            last: None,
-        })
-        .await
         .unwrap();
     let kernel = Kernel::start(
         kernel_deps(
@@ -269,7 +268,7 @@ async fn owner_switch_and_stopped_owners_are_reported_from_execution_facts() {
     .await
     .unwrap();
     kernel.set_safe_mode(true).await.unwrap();
-    assert!(kernel.schedules().list(None).await.is_err());
+    assert!(kernel.schedules(None).await.is_err());
     kernel.shutdown().await.unwrap();
     let status = current_status(root.path(), &development, &kernel).await;
     for kind in ["safe_mode", "scheduler_stopped", "session_stopped"] {
@@ -446,7 +445,7 @@ async fn fallback_to_factory_exposes_an_unserved_use_without_inventing_source_to
         .unwrap();
     registry
         .report(
-            trial.generations[0].id,
+            &trial.generations[0].id.into(),
             Verdict::Failed(Failure {
                 code: code::PLUGIN_TRAP.into(),
                 message: "fixture trap".into(),
@@ -538,18 +537,20 @@ async fn registered_code_provenance_follows_the_selected_generation_through_sett
             .unwrap()
             .plugin
             .activation
-            .code
+            .provenance
+            .clone()
     };
     assert!(provenance(node.status(root.path()).await).source == CodeSource::Factory);
     let source = node.source(root.path(), "fixture", b"one").await;
     let generation = &source.generations[0];
-    let CodeIntent::Directory { source: content } =
-        source.registration.code[&generation.plugin].intent.unwrap()
+    let CodeIntent::Directory { source: content } = source.registration.code[&generation.id.plugin]
+        .intent
+        .unwrap()
     else {
         panic!("source registration must record its directory");
     };
     let registered_code = CodeProvenance {
-        generation: generation.id,
+        code: generation.id.into(),
         source: CodeSource::Directory {
             registration: source.registration.id,
             source: content,
@@ -572,8 +573,8 @@ async fn registered_code_provenance_follows_the_selected_generation_through_sett
         .unwrap()
         .plugin
         .activation;
-    assert_eq!(registered.generation.id, settings);
-    assert!(registered.code == registered_code);
+    assert_eq!(registered.code, CodeRef::from(settings));
+    assert!(registered.provenance == registered_code);
     node.kernel.shutdown().await.unwrap();
 }
 
@@ -641,7 +642,7 @@ async fn new_plugins_and_each_runtime_difference_offer_scoped_repairs() {
     let removal_target = node.source(root.path(), "removed", b"one").await;
     for _ in 0..TRIAL_CALLS {
         node.registry
-            .report(removal_target.generations[0].id, Verdict::Ok, None)
+            .report(&removal_target.generations[0].id.into(), Verdict::Ok, None)
             .await
             .unwrap();
     }

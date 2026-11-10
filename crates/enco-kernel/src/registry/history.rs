@@ -11,10 +11,9 @@ pub enum UnitChange {
         /// What changed for this plugin.
         change: PluginChangeKind,
     },
-    /// Configuration sections changed under their declared ownership.
+    /// Configuration sections changed under their declared ownership; the registration that
+    /// changes them is the configuration's identity.
     Configuration {
-        /// Configuration generation selected by this registration.
-        generation: GenerationId,
         /// Changed sections at the granularity declared by their owners.
         sections: Vec<String>,
     },
@@ -35,27 +34,28 @@ pub enum PluginChangeKind {
     Removed,
     /// Source selected new code.
     Code {
-        /// Selected generation and its current outcome.
-        generation: Box<SelectedGeneration>,
+        /// Selected code and how it stands now.
+        selected: Box<SelectedCode>,
     },
     /// The host's factory code was selected.
     Factory {
-        /// Selected generation and its current outcome.
-        generation: Box<SelectedGeneration>,
+        /// Selected code and how it stands now.
+        selected: Box<SelectedCode>,
     },
-    /// New settings selected a generation using existing code.
+    /// New settings were paired with existing code.
     Settings {
-        /// Selected generation and its current outcome.
-        generation: Box<SelectedGeneration>,
+        /// Selected code and how it stands now.
+        selected: Box<SelectedCode>,
     },
 }
 
-/// A generation a registration selected, as it stands now.
+/// Code a registration selected, as it stands now on this node.
 #[derive(Clone, serde::Serialize)]
-pub struct SelectedGeneration {
-    /// The generation and its recorded outcome.
-    #[serde(flatten)]
-    pub record: GenerationRecord,
+pub struct SelectedCode {
+    /// The generation it brought, or factory code it followed.
+    pub code: CodeRef,
+    /// Its standing on this node, absent for factory code, which is never on trial.
+    pub health: Option<Health>,
     /// Whether its plugin still runs it; a trial generation that does not was never promoted.
     pub active: bool,
 }
@@ -71,12 +71,12 @@ impl UnitChange {
 }
 
 impl PluginChangeKind {
-    /// Generation selected by this change, including a reused factory generation.
-    pub fn generation(&self) -> Option<&SelectedGeneration> {
+    /// Code selected by this change, including factory code it followed.
+    pub fn selected(&self) -> Option<&SelectedCode> {
         match self {
-            Self::Code { generation }
-            | Self::Factory { generation }
-            | Self::Settings { generation } => Some(generation),
+            Self::Code { selected } | Self::Factory { selected } | Self::Settings { selected } => {
+                Some(selected)
+            }
             Self::Created | Self::Renamed { .. } | Self::Removed => None,
         }
     }
@@ -94,18 +94,13 @@ impl serde::Serialize for UnitChange {
             },
             Configuration {
                 kind: &'static str,
-                generation: GenerationId,
                 sections: &'a [String],
             },
         }
         match self {
             Self::Plugin { name, change } => View::Plugin { name, change },
-            Self::Configuration {
-                generation,
-                sections,
-            } => View::Configuration {
+            Self::Configuration { sections } => View::Configuration {
                 kind: "configuration",
-                generation: *generation,
                 sections,
             },
         }
@@ -150,7 +145,7 @@ impl Registry {
     ) -> Result<RegistrationDetails, RegistryError> {
         let state = self.state.lock().await;
         let record = state
-            .history
+            .intent
             .registrations
             .get(&id)
             .ok_or_else(|| state.unknown_registration(id))?;
@@ -212,7 +207,7 @@ impl State {
         limit: usize,
         owners: &[TableOwner],
     ) -> Result<Vec<RegistrationDetails<SessionId>>, RegistryError> {
-        self.history
+        self.intent
             .registrations
             .range((
                 std::ops::Bound::Unbounded,
@@ -225,7 +220,7 @@ impl State {
     }
 
     pub(super) fn unknown_registration(&self, registration: RegistrationId) -> RegistryError {
-        match self.history.registrations.last_key_value() {
+        match self.intent.registrations.last_key_value() {
             Some((latest, _)) => RegistryError::UnknownRegistration {
                 registration,
                 latest: *latest,
@@ -239,11 +234,7 @@ impl State {
         record: &RegistrationRecord,
         owners: &[TableOwner],
     ) -> Result<RegistrationDetails<SessionId>, RegistryError> {
-        let configuration = self
-            .history
-            .config_generations
-            .values()
-            .find(|generation| generation.registration == record.id);
+        let configuration = self.intent.configurations.get(&record.id);
         Ok(RegistrationDetails {
             id: record.id,
             previous: self.previous_registration(record.id),
@@ -254,7 +245,7 @@ impl State {
     }
 
     fn previous_registration(&self, id: RegistrationId) -> Option<RegistrationId> {
-        self.history
+        self.intent
             .registrations
             .range(..id)
             .next_back()
@@ -280,7 +271,7 @@ impl State {
                 .map(|(name, _)| name.clone())
         };
         // A candidate is not in the history yet, and everything it selects becomes active.
-        let candidate = !self.history.registrations.contains_key(&record.id);
+        let candidate = !self.intent.registrations.contains_key(&record.id);
         let mut changes = Vec::new();
         for (id, row) in &record.names {
             match (&row.name, name_before(*id)) {
@@ -317,28 +308,43 @@ impl State {
                         record.id
                     ))
                 })?;
-            let generation = pending
-                .iter()
-                .find(|generation| generation.id == code.generation)
-                .or_else(|| self.history.generations.get(&code.generation))
-                .ok_or(RegistryError::UnknownGeneration(code.generation))?
-                .clone();
+            let origin = match code.code.generation() {
+                Some(generation) => Some(
+                    pending
+                        .iter()
+                        .find(|pending| pending.id == generation)
+                        .or_else(|| self.intent.generations.get(&generation))
+                        .ok_or(RegistryError::UnknownGeneration(generation))?
+                        .origin
+                        .clone(),
+                ),
+                None => None,
+            };
             let active = candidate
-                || self.history.plugins[id]
-                    .active
-                    .is_some_and(|active| active.generation == generation.id);
-            let generation = Box::new(SelectedGeneration {
-                record: generation,
+                || self
+                    .node
+                    .plugins
+                    .get(id)
+                    .and_then(|plugin| plugin.active.as_ref())
+                    .is_some_and(|active| active.code == code.code);
+            // A candidate's generations start on trial; existing ones stand as recorded.
+            let health = match (&code.code, candidate) {
+                (CodeRef::Generation { .. }, true) => Some(Health::Trial),
+                (code, _) => self.health(code).cloned(),
+            };
+            let selected = Box::new(SelectedCode {
+                code: code.code.clone(),
+                health,
                 active,
             });
-            let change = match (code.intent, generation.record.origin) {
-                (Some(CodeIntent::Directory { .. }), _) => PluginChangeKind::Code { generation },
-                (Some(CodeIntent::Factory), _) => PluginChangeKind::Factory { generation },
-                (None, Origin::Settings { .. }) => PluginChangeKind::Settings { generation },
-                (None, Origin::Code { .. } | Origin::Factory) => {
+            let change = match (code.intent, origin) {
+                (Some(CodeIntent::Directory { .. }), _) => PluginChangeKind::Code { selected },
+                (Some(CodeIntent::Factory), _) => PluginChangeKind::Factory { selected },
+                (None, Some(Origin::Settings { .. })) => PluginChangeKind::Settings { selected },
+                (None, Some(Origin::Code) | None) => {
                     return Err(RegistryError::Intent(format!(
-                        "registration {} selects code generation {} without code intent",
-                        record.id, code.generation
+                        "registration {} selects {} for {id} without code intent",
+                        record.id, code.code
                     )));
                 }
             };
@@ -349,7 +355,6 @@ impl State {
                 .and_then(|id| self.registered_config_at(Some(id)))
                 .map(|config| &config.document);
             changes.push(UnitChange::Configuration {
-                generation: configuration.id,
                 sections: configuration::changed_sections(before, &configuration.document, owners),
             });
         }

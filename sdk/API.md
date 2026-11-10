@@ -1192,7 +1192,7 @@ Host-owned configuration, logging and transport, which only tool plugins import.
 - enum `host::HttpErrorKind` — Classifies failures while constructing, sending or reading an HTTP request.
 - struct `host::HttpFailure` — Transport failure.
 - enum `host::LogLevel` — Severity attached to a plugin diagnostic.
-- fn `host::config` — The configuration of this invocation's generation, excluding credential mappings.
+- fn `host::config` — The configuration registered with the code serving this invocation, excluding credential mappings.
 - fn `host::http` — Send a request and collect its response; non-2xx statuses are returned as responses.
 - fn `host::log` — Write a diagnostic to the host log.
 - type `host::HttpRequest` — (no summary)
@@ -1292,7 +1292,8 @@ impl PartialOrd for LogLevel
 pub fn config() -> Json
 ```
 
-The configuration of this invocation's generation, excluding credential mappings.
+The configuration registered with the code serving this invocation, excluding credential
+mappings.
 
 ## fn `host::http`
 
@@ -2734,7 +2735,7 @@ fn origins() -> Vec<String>
 ```
 
 Additional origins for requests and sockets; `*.` before a host covers its subdomains. Read
-when the generation loads.
+when the code loads.
 
 ### `bindings::exports::enco::plugin::channel::Guest::pacing`
 
@@ -2743,7 +2744,7 @@ fn pacing() -> ::core::option::Option<PacingGap>
 ```
 
 The gap before each message `send` builds; absent sends each as soon as it is ready. Read
-when the generation loads.
+when the code loads.
 
 ### `bindings::exports::enco::plugin::channel::Guest::identify`
 
@@ -3256,7 +3257,8 @@ fn describe(config: Json) -> ::core::result::Result<Description, Failure>
 Describe the component or reject its configuration.
 
 An empty object must be accepted and provide the plugin's minimum capabilities.
-Declarations are fixed with the generation, so this runs without network access.
+Declarations are fixed when the code and settings are registered, so this runs without
+network access.
 
 ### `bindings::exports::enco::plugin::lifecycle::Guest::probe`
 

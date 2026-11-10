@@ -27,10 +27,10 @@ fn only_noninteractive_inputs_offer_silence_when_the_tool_is_available() {
         ),
         (
             EventSource::Registry,
-            EventBody::GenerationRolledBack(Rollback {
+            EventBody::PluginRolledBack(Rollback {
                 plugin: "fixture".into(),
-                trial: 2,
-                replacement: Some(1),
+                failed: 2,
+                replacement: Some(PluginCode::Registration(1)),
                 failure: enco_sdk::protocol::failure("plugin.trap", "probe trapped", false),
                 text: "rolled back".into(),
             }),
@@ -60,7 +60,7 @@ fn only_noninteractive_inputs_offer_silence_when_the_tool_is_available() {
             event.interactive = *interactive;
             item.message.parts = match body {
                 EventBody::Reminder(reminder) => vec![Part::Text(reminder.text.clone())],
-                EventBody::GenerationRolledBack(rollback) => {
+                EventBody::PluginRolledBack(rollback) => {
                     vec![Part::Text(rollback.text.clone())]
                 }
                 EventBody::UserMessage(message) => vec![Part::Text(message.text.clone())],

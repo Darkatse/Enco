@@ -19,11 +19,11 @@ pub trait Provider: Send + Sync {
     ) -> Result<Answered, StoreError>;
 }
 
-/// Where a Provider records the responses it decodes, under the generation that decodes them.
+/// Where a Provider records the responses it decodes, under the code that decodes them.
 #[derive(Clone)]
 pub struct Recording {
-    /// The Provider generation that decodes the response.
-    pub generation: GenerationId,
+    /// The Provider code that decodes the response.
+    pub code: CodeRef,
     /// The store that keeps the response body and the mapping record.
     pub store: Arc<dyn Store>,
 }

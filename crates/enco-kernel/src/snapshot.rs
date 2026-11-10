@@ -22,9 +22,28 @@ pub(crate) struct SnapshotTool {
     pub spec: ToolSpec,
     pub code: CodeRef,
     pub tool: Arc<dyn Tool>,
-    /// Which built-in call this is, when the Session actor checks it against its own Log; absent
-    /// for every other tool.
-    pub builtin: Option<BuiltinCall>,
+    /// Whose tool this is.
+    pub source: ToolSource,
+}
+
+/// Where a Round's tool comes from.
+#[derive(Clone)]
+pub(crate) enum ToolSource {
+    /// The host's own, with the built-in call it is when the Session actor answers it.
+    Host(Option<BuiltinCall>),
+    /// A plugin's, by the name the plugin ran under when the Round bound it; only plugin code can
+    /// be recorded as failed.
+    Plugin(PluginName),
+}
+
+impl SnapshotTool {
+    /// The built-in call this tool is, when the Session actor answers it.
+    pub fn builtin(&self) -> Option<BuiltinCall> {
+        match &self.source {
+            ToolSource::Host(builtin) => *builtin,
+            ToolSource::Plugin(_) => None,
+        }
+    }
 }
 
 impl Snapshot {
@@ -41,7 +60,7 @@ impl Snapshot {
                     node,
                     name: spec.name.clone(),
                 },
-                builtin: BuiltinCall::named(&spec.name),
+                source: ToolSource::Host(BuiltinCall::named(&spec.name)),
                 spec,
                 code: tool.code(),
                 tool: tool.clone(),
@@ -79,10 +98,10 @@ impl Snapshot {
         if safe_mode {
             return snapshot;
         }
-        for (spec, export) in exports.tools() {
-            let tool = Arc::new(GenerationTool {
+        for (name, spec, export) in exports.tools() {
+            let tool = Arc::new(PluginTool {
                 spec,
-                generation: export.generation,
+                code: export.code,
                 adapter: export.adapter,
             });
             snapshot.tools.push(SnapshotTool {
@@ -93,7 +112,7 @@ impl Snapshot {
                 spec: tool.spec(),
                 code: tool.code(),
                 tool,
-                builtin: None,
+                source: ToolSource::Plugin(name.clone()),
             });
         }
         snapshot
@@ -101,21 +120,19 @@ impl Snapshot {
 }
 
 /// Registry identity wraps the runtime's tools interface at the ordinary Tool boundary.
-struct GenerationTool {
+struct PluginTool {
     spec: ToolSpec,
-    generation: GenerationId,
+    code: CodeRef,
     adapter: Arc<dyn Tools>,
 }
 
 #[async_trait::async_trait]
-impl Tool for GenerationTool {
+impl Tool for PluginTool {
     fn spec(&self) -> ToolSpec {
         self.spec.clone()
     }
     fn code(&self) -> CodeRef {
-        CodeRef::Generation {
-            id: self.generation,
-        }
+        self.code.clone()
     }
     async fn call(
         &self,

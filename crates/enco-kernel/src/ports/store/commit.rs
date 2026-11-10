@@ -1,4 +1,3 @@
-use super::NewSession;
 use enco_core::*;
 use std::sync::Arc;
 
@@ -30,11 +29,12 @@ pub enum SessionDeliveryKind {
     Delegation {
         /// Target child's full name.
         name: SessionName,
-        /// New child, absent when addressing an existing child.
-        create: Option<Box<NewSession>>,
-        /// Supplied profile must match an existing child's current profile.
+        /// The new child's creation record, also in the parent's Log; absent when addressing an
+        /// existing child.
+        create: Option<Box<Creation>>,
+        /// Supplied profile must match an existing child's effective profile.
         profile: Option<ProfileName>,
-        /// Supplied directory must match an existing child's current directory.
+        /// Supplied directory must match an existing child's effective directory.
         working_dir: Option<WorkingDir>,
     },
 }

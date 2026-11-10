@@ -50,12 +50,7 @@ pub(crate) enum Running {
 
 #[derive(Deserialize)]
 pub(crate) struct Activation {
-    pub(crate) generation: Generation,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct Generation {
-    pub(crate) id: u64,
+    pub(crate) code: CodeRef,
 }
 
 #[derive(Deserialize)]
@@ -100,17 +95,25 @@ pub(crate) enum EntryBody {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum CodeRef {
     Generation {
-        id: u64,
+        id: GenerationId,
     },
+    Factory {},
     #[serde(other)]
     Other,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct GenerationId {
+    registration: u64,
+}
+
 impl CodeRef {
-    /// The plugin generation, when plugin code ran the call.
-    pub(crate) fn generation(&self) -> Option<u64> {
+    /// Plugin code as Enco's text names it, `registration 15` or `factory code`; native code has
+    /// no such name.
+    pub(crate) fn name(&self) -> Option<String> {
         match self {
-            Self::Generation { id } => Some(*id),
+            Self::Generation { id } => Some(format!("registration {}", id.registration)),
+            Self::Factory {} => Some("factory code".into()),
             Self::Other => None,
         }
     }

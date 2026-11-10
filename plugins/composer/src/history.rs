@@ -294,7 +294,7 @@ fn producer(
         EventBody::SessionMessage(_) => Some(session_message(event, &input.session)?),
         EventBody::ChildRunEnded(end) => Some(child_ended(event, end)?),
         EventBody::Halt(halt) => Some(halted(halt, &input.session, unanswered)),
-        EventBody::GenerationRolledBack(_) => {
+        EventBody::PluginRolledBack(_) => {
             Some("The next message is a notice from the plugin registry.".into())
         }
         // The agent cannot see what the owner left, only that the world may not match the history.

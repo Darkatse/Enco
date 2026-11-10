@@ -125,7 +125,7 @@ impl Connection {
                     && self.finished(**session)
                     && !matches!(
                         self.state.children.get(*session),
-                        Some(Creation::Shown(target)) if self.state.chats.get(target) == Some(*session)
+                        Some(Appearance::Shown(target)) if self.state.chats.get(target) == Some(*session)
                     )
             })
             .map(|(session, _)| *session)

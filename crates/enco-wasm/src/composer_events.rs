@@ -21,6 +21,17 @@ pub(super) fn datetime(time: DateTime<Utc>) -> Result<types::Datetime, Failure> 
     })
 }
 
+/// What a plugin runs after a rollback, as composers see it; native code never replaces one.
+fn plugin_code(code: &CodeRef) -> Result<wire::PluginCode, Failure> {
+    match code {
+        CodeRef::Generation { id } => Ok(wire::PluginCode::Registration(id.registration.0)),
+        CodeRef::Factory { .. } => Ok(wire::PluginCode::Factory),
+        CodeRef::Native { name, .. } => Err(crate::convert::bad(format!(
+            "native {name} recorded as a plugin's rollback target"
+        ))),
+    }
+}
+
 pub(super) fn event(
     event: &Event,
     paths: &HashMap<ContentHash, PathBuf>,
@@ -109,7 +120,7 @@ fn event_body(
             skipped: *skipped,
             text: text.clone(),
         }),
-        EventBody::GenerationRolledBack {
+        EventBody::PluginRolledBack {
             rollback:
                 RolledBack {
                     plugin,
@@ -118,10 +129,10 @@ fn event_body(
                     failure: fault,
                 },
             text,
-        } => wire::EventBody::GenerationRolledBack(wire::Rollback {
+        } => wire::EventBody::PluginRolledBack(wire::Rollback {
             plugin: plugin.to_string(),
-            trial: from.0,
-            replacement: to.map(|generation| generation.0),
+            failed: from.registration.0,
+            replacement: to.as_ref().map(plugin_code).transpose()?,
             failure: crate::convert::failure_record(fault),
             text: text.clone(),
         }),
@@ -142,6 +153,13 @@ fn event_body(
         EventBody::Compact => {
             return Err(crate::convert::bad(
                 "compaction request is not a transcript event",
+            ));
+        }
+        EventBody::SetProfile { .. }
+        | EventBody::SetWorkingDir { .. }
+        | EventBody::CancelSchedule { .. } => {
+            return Err(crate::convert::bad(
+                "a command acting on the Session is not a transcript event",
             ));
         }
     };

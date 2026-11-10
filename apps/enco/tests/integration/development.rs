@@ -7,8 +7,7 @@ mod sdk;
 use crate::support;
 
 use enco_core::{
-    CallId, Entry, EntryBody, EventId, GenerationStatus, Outcome, PluginSettings, SessionId,
-    Settlement, code,
+    CallId, Entry, EntryBody, EventId, Health, Outcome, PluginSettings, SessionId, Settlement, code,
 };
 use enco_host::{SqliteStore, StorePaths};
 use enco_kernel::{CallContext, Runtime, Store};
@@ -16,7 +15,7 @@ use enco_wasm::WasmRuntime;
 use protocol::Command;
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
-use support::{Daemon, embeddings, finish, response, running_generation, tool_message};
+use support::{Daemon, embeddings, finish, response, running_activation, tool_message};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument::WithSubscriber;
@@ -61,7 +60,7 @@ async fn cancelling_source_built_computing_plugin_calls_settles_each_unknown_and
         })
         .await
         .unwrap();
-    let artifact = running_generation(&status["plugins"]["fixture"])["artifact"]
+    let artifact = running_activation(&status["plugins"]["fixture"])["artifact"]
         .as_str()
         .unwrap()
         .parse()
@@ -246,8 +245,8 @@ async fn use_source(daemon: &Daemon) -> Value {
         .await
         .unwrap();
     assert_eq!(
-        running_generation(&status["plugins"]["alpha"])["status"],
-        json!(GenerationStatus::Healthy)
+        running_activation(&status["plugins"]["alpha"])["health"],
+        json!(Health::Healthy)
     );
     status
 }
@@ -306,13 +305,7 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
     write_config(&daemon, &document);
     let config_bytes = write_owner_files(&home);
     let first = acceptance::register_with_agent(&daemon).await;
-    let first_code = &first["changes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|change| change["kind"] == "code" && change["name"] == "alpha")
-        .unwrap()["generation"];
-    use_source(&daemon).await;
+    let first_code = running_alpha(&daemon, &first).await;
     let registration = serde_json::from_value(first["id"].clone()).unwrap();
     check_readme(&readme);
     check_build_rejection(&daemon, &document).await;
@@ -321,7 +314,7 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
     write_config(&daemon, &document);
     let second = apply(&daemon).await;
     assert_eq!(
-        second["registered"]["generations"][0]["registration"],
+        second["registered"]["generations"][0]["id"]["registration"],
         second["registered"]["configuration"]["registration"]
     );
     assert_ne!(
@@ -358,7 +351,10 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
     assert_eq!(restored["builds"][0]["reused"], true);
     let restored_code = &restored["registered"]["generations"][0];
     assert_eq!(restored_code["artifact"], first_code["artifact"]);
-    assert_eq!(restored_code["plugin"], first_code["plugin"]);
+    assert_eq!(
+        restored_code["id"]["plugin"],
+        first_code["code"]["id"]["plugin"]
+    );
     assert_eq!(
         restored_code["settings"]["config"],
         json!({"label":"value"})
@@ -371,8 +367,28 @@ async fn joint_source_and_configuration_restore_reuses_the_retained_artifact() {
         json!({"standing": "registered", "differences": []})
     );
     check_rollback_does_not_replay_intent(&daemon).await;
-    check_rename(&mut daemon, &mut document, &first_code["plugin"]).await;
+    check_rename(
+        &mut daemon,
+        &mut document,
+        &first_code["code"]["id"]["plugin"],
+    )
+    .await;
     daemon.stop().await;
+}
+
+/// What alpha runs after `registration`, which selected that code for it.
+async fn running_alpha(daemon: &Daemon, registration: &Value) -> Value {
+    let running = running_activation(&use_source(daemon).await["plugins"]["alpha"]).clone();
+    assert!(
+        registration["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| change["kind"] == "code"
+                && change["name"] == "alpha"
+                && change["selected"]["code"] == running["code"])
+    );
+    running
 }
 
 fn check_readme(readme: &Path) {
@@ -470,7 +486,7 @@ async fn check_rename(daemon: &mut Daemon, document: &mut Value, identity: &Valu
     );
     assert_eq!(&status["plugins"]["beta"]["running"]["id"], identity);
     assert_eq!(
-        running_generation(&status["plugins"]["beta"])["id"],
+        running_activation(&status["plugins"]["beta"])["code"]["id"],
         settings["registered"]["generations"][0]["id"]
     );
     assert_eq!(
@@ -556,13 +572,10 @@ async fn first_start_registers_a_source_provider_with_the_configuration_that_use
         })
         .await
         .unwrap();
-    let generation = running_generation(&status["plugins"]["local"]);
-    assert_eq!(generation["origin"], "code");
+    let running = running_activation(&status["plugins"]["local"]);
+    assert_eq!(running["origin"], "code");
     assert_eq!(status["recent_registrations"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        generation["registration"],
-        status["configuration"]["running"]["registration"]
-    );
+    assert_eq!(running["registration"], status["configuration"]["running"]);
     assert!(
         status["configuration"]["unavailable_uses"]
             .as_array()

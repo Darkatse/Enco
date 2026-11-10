@@ -1,4 +1,4 @@
-use crate::{CallContext, ScheduleError, Scheduled, Schedules, Tool, limits};
+use crate::{CallContext, Tool, limits};
 use async_trait::async_trait;
 use enco_core::*;
 use schemars::JsonSchema;
@@ -10,17 +10,36 @@ pub(crate) const REPLY_SKIP: &str = "reply_skip";
 pub(crate) const SESSION_SEND: &str = "session_send";
 pub(crate) const SESSION_HALT: &str = "session_halt";
 pub(crate) const SESSION_ARCHIVE: &str = "session_archive";
+pub(crate) const SCHEDULE_CREATE: &str = "schedule_create";
+pub(crate) const SCHEDULE_LIST: &str = "schedule_list";
+pub(crate) const SCHEDULE_CANCEL: &str = "schedule_cancel";
 /// The tools that act on child Sessions, absent where delegation is too deep.
 pub(crate) const DELEGATION: [&str; 3] = [SESSION_SEND, SESSION_HALT, SESSION_ARCHIVE];
 
-/// A built-in call whose conditions the Session actor checks against its own Log; the scheduling
-/// tools only call the Scheduler and are ordinary tools.
+/// A host tool the Session actor recognizes by name.
+///
+/// `reply_skip` may end the reply without sending it. The others are answered from the Session's
+/// own facts in call order: executing one only parses its arguments, and its answer and what it
+/// changes come with its settlement.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuiltinCall {
     /// Ends the reply without sending it.
     ReplySkip,
     /// Returns a child input to be committed by the Session actor.
     SessionSend,
+    /// Reads or changes this Session's schedules.
+    Schedule(ScheduleCall),
+}
+
+/// A scheduling call, answered from this Session's effective schedules when it settles.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScheduleCall {
+    /// Creates a schedule with the settlement.
+    Create,
+    /// Lists the active schedules.
+    List,
+    /// Cancels one of the active schedules with the settlement.
+    Cancel,
 }
 
 impl BuiltinCall {
@@ -29,6 +48,9 @@ impl BuiltinCall {
         match name {
             REPLY_SKIP => Some(Self::ReplySkip),
             SESSION_SEND => Some(Self::SessionSend),
+            SCHEDULE_CREATE => Some(Self::Schedule(ScheduleCall::Create)),
+            SCHEDULE_LIST => Some(Self::Schedule(ScheduleCall::List)),
+            SCHEDULE_CANCEL => Some(Self::Schedule(ScheduleCall::Cancel)),
             _ => None,
         }
     }
@@ -46,23 +68,23 @@ enum Kind {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct CreateArguments {
+pub(crate) struct CreateArguments {
     /// A future time for one reminder, in RFC 3339 with a UTC offset, such as
     /// `2026-10-24T09:00:00+08:00`.
-    at: Option<String>,
+    pub at: Option<String>,
     /// A rule for repeating reminders: minute hour day month weekday.
-    cron: Option<String>,
+    pub cron: Option<String>,
     /// The IANA time zone a cron rule follows, such as `Asia/Shanghai`; the owner's by default.
-    timezone: Option<String>,
+    pub timezone: Option<String>,
     /// The text delivered to this Session when the reminder is due.
-    message: String,
+    pub message: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct CancelArguments {
+pub(crate) struct CancelArguments {
     /// The schedule to stop, as `schedule_list` shows it.
-    id: ScheduleId,
+    pub id: ScheduleId,
 }
 
 impl Kind {
@@ -93,26 +115,27 @@ impl Kind {
                 Effect::Idempotent,
             ),
             Kind::Create => ToolSpec::of::<CreateArguments>(
-                "schedule_create",
+                SCHEDULE_CREATE,
                 format!(
                     "Create a reminder delivered to this Session, even if Enco restarts. Give exactly \
                      one of at and cron; cron occurrences must be at least {} minutes apart. If Enco \
                      was not running, only the latest missed occurrence is delivered.",
                     limits::MIN_RECURRENCE_INTERVAL.as_secs() / 60
                 ),
-                Effect::SideEffect,
+                Effect::ReadOnly,
             ),
             Kind::List => Ok(ToolSpec {
-                name: "schedule_list".into(),
-                description: "List active schedules addressed to this Session, including their rules and next occurrences.".into(),
+                name: SCHEDULE_LIST.into(),
+                description: "List this Session's active schedules, with their rules and next occurrences.".into(),
                 input_schema: InputSchema::empty(),
                 effect: Effect::ReadOnly,
             }),
             Kind::Cancel => ToolSpec::of::<CancelArguments>(
-                "schedule_cancel",
-                "Stop future occurrences of a schedule. Already delivered reminders are unaffected. \
-                 Returns false when it is done, cancelled, or absent.",
-                Effect::SideEffect,
+                SCHEDULE_CANCEL,
+                "Stop future occurrences of one of this Session's active schedules. Reminders \
+                 already delivered are unaffected. Fails when the schedule is not this Session's \
+                 or is no longer active.",
+                Effect::ReadOnly,
             ),
             Kind::ReplySkip => Ok(ToolSpec {
                 name: REPLY_SKIP.into(),
@@ -130,21 +153,18 @@ pub fn builtin_tool_specs() -> Result<Vec<ToolSpec>, SchemaError> {
 }
 
 struct BuiltinTool {
-    schedules: Schedules,
     subtrees: Arc<crate::subtree::Subtrees>,
     kind: Kind,
     spec: ToolSpec,
 }
 
 pub(crate) fn tools(
-    schedules: Schedules,
-    subtrees: Arc<crate::subtree::Subtrees>,
+    subtrees: &Arc<crate::subtree::Subtrees>,
 ) -> Result<Vec<Arc<dyn Tool>>, SchemaError> {
     Kind::ALL
         .into_iter()
         .map(|kind| {
             Ok(Arc::new(BuiltinTool {
-                schedules: schedules.clone(),
                 subtrees: subtrees.clone(),
                 spec: kind.spec()?,
                 kind,
@@ -187,10 +207,10 @@ impl BuiltinTool {
         match self.kind {
             #[expect(
                 clippy::unreachable,
-                reason = "dispatch executes SessionSend as a typed actor-owned call instead of invoking this handler"
+                reason = "dispatch executes these as typed actor-owned calls instead of invoking this handler"
             )]
-            Kind::SessionSend => {
-                unreachable!("the actor executes session_send and commits its returned input")
+            Kind::SessionSend | Kind::Create | Kind::List | Kind::Cancel => {
+                unreachable!("the actor executes this call and commits what it returns")
             }
             Kind::SessionHalt | Kind::SessionArchive => {
                 let ChildArguments { session: short } = parse_arguments(args)?;
@@ -217,85 +237,10 @@ impl BuiltinTool {
                 }
                 Ok(json!(text))
             }
-            Kind::Create => {
-                let arguments: CreateArguments = parse_arguments(args)?;
-                let scheduled = self
-                    .schedules
-                    .create(session, arguments.rule()?, arguments.message)
-                    .await
-                    .map_err(error)?;
-                Ok(scheduled.into_json())
-            }
-            Kind::List => {
-                let schedules = self.schedules.list(Some(session)).await.map_err(error)?;
-                Ok(json!(
-                    schedules
-                        .into_iter()
-                        .map(Scheduled::into_json)
-                        .collect::<Vec<_>>()
-                ))
-            }
-            Kind::Cancel => {
-                let CancelArguments { id } = parse_arguments(args)?;
-                let cancelled = self.schedules.cancel(id).await.map_err(error)?;
-                Ok(json!({ "cancelled": cancelled }))
-            }
             Kind::ReplySkip => Ok(json!(
                 "Nothing was sent, including any text you wrote with this call."
             )),
         }
-    }
-}
-
-impl CreateArguments {
-    fn rule(&self) -> Result<ScheduleRule, Failure> {
-        match (&self.at, &self.cron) {
-            (Some(at), None) => {
-                if self.timezone.is_some() {
-                    return Err(invalid("timezone only applies to cron"));
-                }
-                let at = DateTime::parse_from_rfc3339(at)
-                    .map_err(|e| invalid(format!("at must include a UTC offset: {e}")))?
-                    .to_utc();
-                Ok(ScheduleRule::Once { at })
-            }
-            (None, Some(cron)) => Ok(ScheduleRule::Cron {
-                expr: cron.clone(),
-                timezone: self
-                    .timezone
-                    .as_deref()
-                    .map(|zone| {
-                        zone.parse::<Tz>()
-                            .map_err(|e| invalid(format!("timezone must be an IANA name: {e}")))
-                    })
-                    .transpose()?,
-            }),
-            _ => Err(invalid("give exactly one of at or cron")),
-        }
-    }
-}
-
-fn invalid(message: impl Into<String>) -> Failure {
-    Failure {
-        code: code::TOOL_INVALID_ARGUMENTS.into(),
-        message: message.into(),
-        retryable: false,
-    }
-}
-
-fn error(error: ScheduleError) -> Failure {
-    let code = match error {
-        ScheduleError::EmptyMessage
-        | ScheduleError::UnknownSession(_)
-        | ScheduleError::InvalidCron(_)
-        | ScheduleError::NoOccurrenceAfter(_)
-        | ScheduleError::TooFrequent => code::TOOL_INVALID_ARGUMENTS,
-        _ => code::TOOL_FAILED,
-    };
-    Failure {
-        code: code.into(),
-        message: error.to_string(),
-        retryable: false,
     }
 }
 

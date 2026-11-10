@@ -9,7 +9,7 @@ use super::{HomeComparison, Invocation, SettingsComparison};
 use crate::status::{CallStep, FixTarget, OwnerAction, Step, Steps};
 pub use actions::registration_document;
 pub(super) use causes::causes;
-use enco_core::{GenerationStatus, Initiator, IntentPath, PluginActivation, SessionRef};
+use enco_core::{Health, Initiator, IntentPath, PluginActivation, RegistrationId, SessionRef};
 pub(super) use errors::failure;
 
 fn caller(initiator: &Initiator<SessionRef>) -> String {
@@ -52,23 +52,25 @@ fn location(value: &std::path::Path) -> String {
 fn cell(text: &str) -> String {
     text.replace('|', "\\|").replace('\n', "<br>")
 }
-fn generation_state(state: GenerationStatus) -> &'static str {
-    match state {
-        GenerationStatus::Trial => "trial",
-        GenerationStatus::Healthy => "healthy",
-        GenerationStatus::Failed => "failed",
+/// A generation's standing on this node, as a table cell or a tag after its name.
+fn health(health: &Health) -> &'static str {
+    match health {
+        Health::Trial => "on trial",
+        Health::Healthy => "healthy",
+        Health::Failed { .. } => "failed",
     }
 }
-/// A generation as the object of a sentence, never its start.
-fn generation(reference: PluginActivation) -> String {
-    match reference.registration {
-        Some(registration) => format!(
-            "generation {} from registration {registration}",
-            reference.generation
-        ),
-        None => format!("generation {} with factory code", reference.generation),
-    }
+
+/// The registration a reference's content came from: the one that brought a generation, or the
+/// one that selected factory code.
+fn registration_of(reference: &PluginActivation) -> Option<RegistrationId> {
+    reference
+        .code
+        .generation()
+        .map(|id| id.registration)
+        .or(reference.registration)
 }
+
 fn comparison(comparison: &HomeComparison) -> &'static str {
     match comparison {
         HomeComparison::Same => "matches",

@@ -1,7 +1,7 @@
 use crate::{
-    AttemptId, CallId, CapabilityId, CodeRef, ContentHash, DateTime, Effect, Event, EventBody,
-    Failure, GenerationId, Image, LogPos, MappingOrigin, Message, Part, Role, RoundId, RunId,
-    Settlement, ToolCall, ToolResult, Utc,
+    AttemptId, CallId, CapabilityId, CodeRef, ContentHash, DateTime, Effect, Event, Failure, Image,
+    LogPos, MappingOrigin, Message, Part, Role, RoundId, RunId, Settlement, ToolCall, ToolResult,
+    Utc,
 };
 use serde::{Deserialize, Serialize};
 
@@ -51,10 +51,10 @@ pub enum EntryBody {
         purpose: AttemptPurpose,
         /// Address of the frozen ContextPlan.
         plan: ContentHash,
-        /// Composer generation which constructed the frozen plan.
-        composer: GenerationId,
-        /// Provider generation used by this Attempt.
-        provider: GenerationId,
+        /// Composer code which constructed the frozen plan.
+        composer: CodeRef,
+        /// Provider code used by this Attempt.
+        provider: CodeRef,
         /// Exact per-call parameters; credentials are never recorded.
         settings: crate::ProviderSettings,
     },
@@ -100,6 +100,9 @@ pub enum EntryBody {
         /// Child delegation accepted atomically with this settlement.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         delegated: Option<Delegated>,
+        /// A change to the Session's own schedules, committed with this settlement.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schedule: Option<crate::ScheduleChange>,
     },
     /// All proposed calls have been settled and the Round has ended.
     RoundEnded {
@@ -127,12 +130,13 @@ pub enum EntryBody {
 }
 
 /// Child Session delegation committed with a `session_send` settlement.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Delegated {
     /// Target child Session identity and full name.
     pub session: crate::SessionRef,
-    /// Whether this call created the child Session.
-    pub created: bool,
+    /// The child's creation record, when this call created it; the parent's Log is the
+    /// authority over its children's names.
+    pub creation: Option<crate::Creation>,
     /// Event accepted into the child Session's Inbox.
     pub event: crate::EventId,
 }
@@ -245,8 +249,8 @@ pub enum RoundEnd {
     Failed {
         /// Classification and details of the failure.
         failure: Failure,
-        /// Active configuration and plugin generations when this Round failed, in ascending order.
-        generations: Vec<GenerationId>,
+        /// The active configuration and plugin code when this Round failed.
+        active: crate::ActiveCode,
     },
 }
 
@@ -282,8 +286,7 @@ impl EntryBody {
         call: Option<&ToolCall>,
     ) -> Option<Message> {
         match self {
-            // A compaction request only asks the next Run to compact; the model never sees it.
-            Self::EventConsumed { event } if !matches!(event.body, EventBody::Compact) => {
+            Self::EventConsumed { event } if !event.body.leaves_inputs() => {
                 Some(event.canonical_message())
             }
             // An unusable reply stays in the Log but is not part of the conversation.

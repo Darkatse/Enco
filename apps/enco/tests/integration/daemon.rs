@@ -111,7 +111,7 @@ async fn cli_to_wasm_to_http_records_a_reply() {
         .unwrap()["plugins"]
         .clone();
     assert_eq!(
-        running_generation(&plugins["openai-compatible"])["id"],
+        running_activation(&plugins["openai-compatible"])["code"],
         json!(inspection.provider)
     );
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_enco"))

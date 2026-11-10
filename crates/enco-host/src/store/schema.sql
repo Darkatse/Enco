@@ -4,6 +4,26 @@ CREATE TABLE meta (
 ) STRICT;
 -- Keys: node_id = <ULID>, safe_mode = '0' | '1'
 
+-- Control plane: the root directory, the authority over root names, which are unique in the
+-- Space; a child's creation record is in its parent's Log.
+CREATE TABLE root_directory (
+  id               TEXT PRIMARY KEY,
+  name             TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  node             TEXT NOT NULL,
+  profile          TEXT NOT NULL,
+  working_dir_node TEXT NOT NULL,
+  working_dir_path TEXT NOT NULL
+) STRICT;
+
+-- Control plane: archives. A Session is archived when it or an ancestor is recorded here.
+CREATE TABLE archives (
+  session_id TEXT PRIMARY KEY,
+  at         TEXT NOT NULL
+) STRICT;
+
+-- Materialized: each row folds the Session's creation record, its archive and its own Log, and is
+-- written only in the transactions that record those facts.
 CREATE TABLE sessions (
   id            TEXT PRIMARY KEY,
   name          TEXT NOT NULL,
@@ -97,7 +117,10 @@ CREATE TABLE deliveries (
 CREATE INDEX delivery_failures ON deliveries(connection, order_no)
   WHERE outcome IN ('failed', 'unknown');
 
--- A registration groups accepted content; runtime references may recover independently.
+-- Control plane: what was registered, the same on every node. Identities derive from
+-- registrations, so no table here counts anything.
+
+-- A registration groups accepted content; each node's references may recover independently.
 CREATE TABLE registrations (
   id         INTEGER PRIMARY KEY,
   initiator  TEXT NOT NULL CHECK (initiator IN ('owner', 'host', 'agent')),
@@ -111,75 +134,106 @@ CREATE TABLE registrations (
   CHECK (initiator <> 'agent' OR reason IS NOT NULL)
 ) STRICT;
 
-CREATE TABLE generations (
-  id           INTEGER PRIMARY KEY,
-  created_at   TEXT NOT NULL
-) STRICT;
-
-CREATE TABLE plugins (
-  id              TEXT PRIMARY KEY,
-  named_by        INTEGER,
-  active          INTEGER,
-  active_by       INTEGER,
-  rollback_target INTEGER,
-  rollback_by     INTEGER,
-  FOREIGN KEY (named_by, id) REFERENCES registration_names(registration, plugin_id),
-  FOREIGN KEY (active, id) REFERENCES plugin_generations(id, plugin_id),
-  FOREIGN KEY (rollback_target, id) REFERENCES plugin_generations(id, plugin_id),
-  FOREIGN KEY (active_by, id) REFERENCES registration_code(registration, plugin_id),
-  FOREIGN KEY (rollback_by, id) REFERENCES registration_code(registration, plugin_id),
-  CHECK (active IS NOT NULL OR active_by IS NULL),
-  CHECK (rollback_target IS NOT NULL OR rollback_by IS NULL)
-) STRICT;
-
+-- A name a registration wrote for a plugin, or its removal; the first one names the identity.
 CREATE TABLE registration_names (
   registration INTEGER NOT NULL REFERENCES registrations(id),
-  plugin_id    TEXT NOT NULL REFERENCES plugins(id),
+  plugin_id    TEXT NOT NULL,
   name         TEXT,
+  PRIMARY KEY (registration, plugin_id)
+) STRICT;
+
+-- Content a registration brought for a plugin, identified by the two. New settings name the code
+-- they reuse: an earlier generation of the plugin, or factory code by its artifact.
+CREATE TABLE plugin_generations (
+  registration        INTEGER NOT NULL REFERENCES registrations(id),
+  plugin_id           TEXT NOT NULL,
+  artifact            TEXT NOT NULL,
+  settings            TEXT NOT NULL,
+  based_on_generation INTEGER,
+  based_on_factory    TEXT,
+  PRIMARY KEY (registration, plugin_id),
+  FOREIGN KEY (based_on_generation, plugin_id) REFERENCES plugin_generations(registration, plugin_id),
+  CHECK (based_on_generation IS NULL OR based_on_factory IS NULL)
+) STRICT;
+
+-- The code a registration activated for a plugin: the generation it brought, or factory code it
+-- followed, by artifact.
+CREATE TABLE registration_code (
+  registration INTEGER NOT NULL REFERENCES registrations(id),
+  plugin_id    TEXT NOT NULL,
+  factory      TEXT,
+  intent       TEXT CHECK (intent IN ('directory', 'factory')),
+  source       TEXT,
+  generation   INTEGER GENERATED ALWAYS AS (CASE WHEN factory IS NULL THEN registration END) VIRTUAL,
+  PRIMARY KEY (registration, plugin_id),
+  FOREIGN KEY (generation, plugin_id) REFERENCES plugin_generations(registration, plugin_id) DEFERRABLE INITIALLY DEFERRED,
+  CHECK ((intent IS 'directory') = (source IS NOT NULL)),
+  CHECK (factory IS NULL OR intent IS 'factory')
+) STRICT;
+
+-- A registered configuration document, identified by its registration.
+CREATE TABLE config_generations (
+  registration INTEGER PRIMARY KEY REFERENCES registrations(id),
+  document     TEXT NOT NULL,
+  source       TEXT NOT NULL
+) STRICT;
+
+-- Node: what runs here and how it fared; another node keeps its own.
+
+-- Each plugin's references on this node. A reference is a generation of the plugin, by its
+-- registration, or factory code, by its artifact; `_by` is the registration that wrote it.
+CREATE TABLE plugins (
+  id               TEXT PRIMARY KEY,
+  named_by         INTEGER,
+  active           INTEGER,
+  active_factory   TEXT,
+  active_by        INTEGER,
+  rollback_target  INTEGER,
+  rollback_factory TEXT,
+  rollback_by      INTEGER,
+  FOREIGN KEY (named_by, id) REFERENCES registration_names(registration, plugin_id),
+  FOREIGN KEY (active, id) REFERENCES plugin_generations(registration, plugin_id),
+  FOREIGN KEY (rollback_target, id) REFERENCES plugin_generations(registration, plugin_id),
+  FOREIGN KEY (active_by, id) REFERENCES registration_code(registration, plugin_id),
+  FOREIGN KEY (rollback_by, id) REFERENCES registration_code(registration, plugin_id),
+  CHECK (active IS NULL OR active_factory IS NULL),
+  CHECK (active IS NOT NULL OR active_factory IS NOT NULL OR active_by IS NULL),
+  CHECK (rollback_target IS NULL OR rollback_factory IS NULL),
+  CHECK (rollback_target IS NOT NULL OR rollback_factory IS NOT NULL OR rollback_by IS NULL)
+) STRICT;
+
+-- Each generation's trial, health or failure on this node.
+CREATE TABLE generation_health (
+  registration INTEGER NOT NULL,
+  plugin_id    TEXT NOT NULL,
+  status       TEXT NOT NULL CHECK (status IN ('trial', 'healthy', 'failed')),
+  failure      TEXT,
+  PRIMARY KEY (registration, plugin_id),
+  FOREIGN KEY (registration, plugin_id) REFERENCES plugin_generations(registration, plugin_id),
+  CHECK ((status = 'failed') = (failure IS NOT NULL))
+) STRICT;
+
+-- The configuration that runs on this node.
+CREATE TABLE config (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  active    INTEGER NOT NULL REFERENCES config_generations(registration)
+) STRICT;
+
+-- The name each registration replaced on this node, read by the owner's rollback here; absent
+-- `previous` means the plugin had no name.
+CREATE TABLE replaced_names (
+  registration INTEGER NOT NULL,
+  plugin_id    TEXT NOT NULL,
   previous     INTEGER,
   PRIMARY KEY (registration, plugin_id),
+  FOREIGN KEY (registration, plugin_id) REFERENCES registration_names(registration, plugin_id),
   FOREIGN KEY (previous, plugin_id) REFERENCES registration_names(registration, plugin_id)
 ) STRICT;
 
-CREATE TABLE registration_code (
-  registration INTEGER NOT NULL REFERENCES registrations(id),
-  plugin_id    TEXT NOT NULL REFERENCES plugins(id),
-  generation   INTEGER NOT NULL,
-  intent       TEXT CHECK (intent IN ('directory', 'factory')),
-  source       TEXT,
-  CHECK ((intent IS 'directory') = (source IS NOT NULL)),
-  PRIMARY KEY (registration, plugin_id),
-  FOREIGN KEY (generation, plugin_id) REFERENCES plugin_generations(id, plugin_id) DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-
-CREATE TABLE plugin_generations (
-  id         INTEGER PRIMARY KEY REFERENCES generations(id),
-  plugin_id  TEXT NOT NULL REFERENCES plugins(id),
-  artifact   TEXT NOT NULL,
-  settings   TEXT NOT NULL,
-  registration INTEGER REFERENCES registrations(id),
-  origin     TEXT NOT NULL CHECK (origin IN ('factory', 'code', 'settings')),
-  based_on   INTEGER REFERENCES plugin_generations(id),
-  status     TEXT NOT NULL CHECK (status IN ('trial', 'healthy', 'failed')),
-  failure    TEXT,
-  UNIQUE (id, plugin_id),
-  CHECK ((status = 'failed') = (failure IS NOT NULL)),
-  CHECK ((origin = 'factory') = (registration IS NULL)),
-  CHECK ((origin = 'settings') = (based_on IS NOT NULL))
-) STRICT;
-CREATE INDEX plugin_generations_by_plugin ON plugin_generations(plugin_id, id);
-
-CREATE TABLE config_generations (
-  id       INTEGER PRIMARY KEY REFERENCES generations(id),
-  registration INTEGER NOT NULL REFERENCES registrations(id),
-  document TEXT NOT NULL,
-  source   TEXT NOT NULL,
-  previous INTEGER REFERENCES config_generations(id)
-) STRICT;
-
-CREATE TABLE config (
-  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-  active    INTEGER NOT NULL REFERENCES config_generations(id)
+-- The configuration a registration replaced on this node when it activated its own.
+CREATE TABLE replaced_config (
+  registration INTEGER PRIMARY KEY REFERENCES config_generations(registration),
+  previous     INTEGER NOT NULL REFERENCES config_generations(registration)
 ) STRICT;
 
 -- Reuse is a build policy, not a promise of bit-identical recompilation.

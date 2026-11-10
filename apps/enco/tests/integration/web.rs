@@ -94,7 +94,7 @@ async fn node_status(daemon: &Daemon) -> Value {
 }
 
 async fn web_status(daemon: &Daemon) -> Value {
-    running_generation(&node_status(daemon).await["plugins"]["web"]).clone()
+    running_activation(&node_status(daemon).await["plugins"]["web"]).clone()
 }
 
 #[tokio::test]
@@ -116,10 +116,9 @@ async fn wasm_tools_are_offered_as_declared_use_origin_bound_credentials_and_rep
     }).mount(&services.model).await;
     let document = services.document(&["exa", "tinyfish"]);
     let mut daemon = Daemon::start_config(&toml::to_string(&document).unwrap()).await;
-    let generation: GenerationId =
-        serde_json::from_value(web_status(&daemon).await["id"].clone()).unwrap();
+    let code: CodeRef = serde_json::from_value(web_status(&daemon).await["code"].clone()).unwrap();
     let log = send(&daemon).await;
-    assert_eq!(log.iter().filter(|entry| matches!(&entry.body, EntryBody::ToolCallStarted { code: CodeRef::Generation { id }, .. } if *id == generation)).count(), 3);
+    assert_eq!(log.iter().filter(|entry| matches!(&entry.body, EntryBody::ToolCallStarted { code: started, .. } if *started == code)).count(), 3);
     let results: Vec<_> = log
         .iter()
         .filter_map(|entry| match &entry.body {
@@ -263,12 +262,12 @@ async fn missing_credentials_reject_apply_but_only_exclude_the_plugin_on_restart
         .unwrap();
     send(&daemon).await;
     let applied = web_status(&daemon).await;
-    assert_ne!(applied["id"], before["id"]);
-    check_registered_web_settings(&daemon, &applied["id"]).await;
+    assert_ne!(applied["code"], before["code"]);
+    check_registered_web_settings(&daemon, &applied["code"]).await;
     daemon.stop().await;
     daemon.restart_without(&["ENCO_TEST_API_KEY"]).await;
     let status = node_status(&daemon).await;
-    assert_eq!(running_generation(&status["plugins"]["web"]), &applied);
+    assert_eq!(running_activation(&status["plugins"]["web"]), &applied);
     let unavailable = &status["plugins"]["web"]["running"]["running"];
     assert_eq!(unavailable["state"], "unavailable");
     assert!(
@@ -309,7 +308,7 @@ async fn missing_credentials_reject_apply_but_only_exclude_the_plugin_on_restart
     daemon.stop().await;
 }
 
-async fn check_registered_web_settings(daemon: &Daemon, generation: &Value) {
+async fn check_registered_web_settings(daemon: &Daemon, code: &Value) {
     let status = node_status(daemon).await;
     let changes = status["recent_registrations"][0]["changes"]
         .as_array()
@@ -317,7 +316,7 @@ async fn check_registered_web_settings(daemon: &Daemon, generation: &Value) {
     assert_eq!(changes.len(), 2);
     assert!(changes.iter().any(|change| change["kind"] == "settings"
         && change["name"] == "web"
-        && change["generation"]["id"] == *generation));
+        && change["selected"]["code"] == *code));
     assert!(
         changes
             .iter()

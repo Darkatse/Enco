@@ -1,4 +1,4 @@
-use super::{active, promote};
+use super::{active, active_activation, promote};
 use crate::support::*;
 use enco_core::*;
 use enco_host::SqliteStore;
@@ -40,7 +40,7 @@ async fn repeated_factory_activation_does_not_make_an_undone_registration_effect
         configuration(),
     )
     .await;
-    let factory = active(&registry).await.id;
+    let factory = active(&registry).await;
     let mut stale = source_request("fixture", b"custom");
     stale.base = registry
         .registered_intent(None)
@@ -80,7 +80,7 @@ async fn repeated_factory_activation_does_not_make_an_undone_registration_effect
         registry.rollback().await,
         Err(RegistryError::NoRollbackTarget)
     ));
-    assert_eq!(active(&registry).await.id, factory);
+    assert_eq!(active(&registry).await, factory);
 }
 
 #[tokio::test]
@@ -96,7 +96,7 @@ async fn rename_round_trip_rolls_back_by_name_version() {
     let created = submit(&registry, source_request("a", b"custom"))
         .await
         .unwrap();
-    let identity = created.generations[0].plugin;
+    let identity = created.generations[0].id.plugin;
     for (name, to) in [("a", "b"), ("b", "a")] {
         submit(
             &registry,
@@ -163,7 +163,7 @@ async fn retained_files_are_bounded_and_a_pinned_adapter_outlives_its_file() {
         if index % 3 == 1 {
             registry
                 .report(
-                    generation.id,
+                    &generation.id.into(),
                     Verdict::Failed(super::fault(code::PLUGIN_TRAP)),
                     None,
                 )
@@ -178,7 +178,11 @@ async fn retained_files_are_bounded_and_a_pinned_adapter_outlives_its_file() {
                 .count()
                 <= 3
         );
-        assert_eq!(store.registry().await.unwrap().generations.len(), index + 4);
+        // `first` and each version so far; factory code brings no generation.
+        assert_eq!(
+            store.registry().await.unwrap().intent.generations.len(),
+            index + 2
+        );
     }
     assert!(matches!(
         store.artifact(&first.artifact).await,
@@ -213,7 +217,7 @@ async fn retained_files_are_bounded_and_a_pinned_adapter_outlives_its_file() {
         Err(StoreError::Artifact(_))
     ));
     assert_eq!(
-        active(&reopened).await.artifact,
+        active_activation(&reopened).await.artifact,
         ContentHash::of(b"version-10")
     );
 }
@@ -240,8 +244,8 @@ async fn rejected_durable_registration_does_not_leave_an_unreferenced_artifact()
             .is_err()
     );
     assert_eq!(
-        store.registry().await.unwrap().registrations,
-        before.registrations
+        store.registry().await.unwrap().intent.registrations,
+        before.intent.registrations
     );
     assert!(matches!(
         store.artifact(&ContentHash::of(b"rejected")).await,
@@ -286,16 +290,17 @@ async fn owner_rollback_restores_only_the_still_effective_parts_of_the_latest_ba
         .iter()
         .find(|generation| generation.artifact == ContentHash::of(b"a1"))
         .unwrap()
+        .id
         .plugin;
     let broken = applied
         .generations
         .iter()
-        .find(|generation| generation.plugin == a)
+        .find(|generation| generation.id.plugin == a)
         .unwrap()
         .id;
     registry
         .report(
-            broken,
+            &broken.into(),
             Verdict::Failed(Failure {
                 code: code::PLUGIN_TRAP.into(),
                 message: "broken a".into(),
@@ -308,11 +313,14 @@ async fn owner_rollback_restores_only_the_still_effective_parts_of_the_latest_ba
     submit(&registry, source_request("other", b"other"))
         .await
         .unwrap();
+    let intent = super::intent_tables(root.path());
     registry.rollback().await.unwrap();
     assert_eq!(
         registry.rollback().await.unwrap().registration,
         applied.registration.id
     );
+    // The owner's rollback restores this node's references; what was registered stays.
+    assert_eq!(super::intent_tables(root.path()), intent);
     submit(&registry, source_request("extra", b"other"))
         .await
         .unwrap();
@@ -323,9 +331,12 @@ async fn owner_rollback_restores_only_the_still_effective_parts_of_the_latest_ba
         let plugin = after
             .plugins
             .iter()
-            .find(|plugin| plugin.id == old.plugin)
+            .find(|plugin| plugin.id == old.id.plugin)
             .unwrap();
-        assert_eq!(running_generation(plugin).unwrap().id, old.id);
+        assert_eq!(
+            running_activation(plugin).unwrap().code,
+            CodeRef::from(old.id)
+        );
         assert_eq!(
             plugin.standing,
             Standing::Registered {
@@ -369,7 +380,7 @@ async fn rejected_recovery_does_not_leave_staged_factory_bytes() {
         store.artifact(&ContentHash::of(FACTORY_BYTES)).await,
         Err(StoreError::Artifact(_))
     ));
-    assert_eq!(active(&registry).await.id, second.id);
+    assert_eq!(active(&registry).await, CodeRef::from(second.id));
 }
 
 #[tokio::test]
@@ -388,12 +399,16 @@ async fn cleanup_failure_reports_accepted_registration_and_rollback() {
         .await
         .unwrap();
     assert!(!accepted.warnings.is_empty());
-    assert_eq!(active(&registry).await.id, accepted.generations[0].id);
+    assert_eq!(
+        active(&registry).await,
+        CodeRef::from(accepted.generations[0].id)
+    );
     assert_eq!(
         store
             .registry()
             .await
             .unwrap()
+            .intent
             .registrations
             .values()
             .next_back(),
@@ -402,7 +417,7 @@ async fn cleanup_failure_reports_accepted_registration_and_rollback() {
     let recovered = registry.rollback().await.unwrap();
     assert!(!recovered.warnings.is_empty());
     assert_eq!(
-        active(&registry).await.artifact,
+        active_activation(&registry).await.artifact,
         ContentHash::of(FACTORY_BYTES)
     );
     std::fs::remove_dir(obstruction).unwrap();
@@ -449,13 +464,13 @@ async fn rollback_of_deletion_restores_the_name_and_its_configuration_with_only_
         let restored = status
             .plugins
             .iter()
-            .find(|plugin| plugin.id == code.plugin);
+            .find(|plugin| plugin.id == code.id.plugin);
         assert_eq!(restored.is_some(), healthy);
         assert_eq!(
             restored
-                .and_then(running_generation)
-                .map(|record| record.id),
-            healthy.then_some(code.id)
+                .and_then(running_activation)
+                .map(|activation| activation.code.clone()),
+            healthy.then_some(CodeRef::from(code.id))
         );
         assert_eq!(
             restored
@@ -584,12 +599,15 @@ async fn new_source_cannot_bind_to_a_name_restored_only_by_rollback() {
     );
     let status = registry.status().await.unwrap();
     assert_eq!(status.registered.registration(), before);
-    assert_eq!(status.registered.plugins["b"].id, old.plugin);
+    assert_eq!(status.registered.plugins["b"].id, old.id.plugin);
     let plugin = status
         .plugins
         .iter()
-        .find(|plugin| plugin.id == old.plugin)
+        .find(|plugin| plugin.id == old.id.plugin)
         .unwrap();
     assert_eq!(plugin.running.name().map(PluginName::as_str), Some("a"));
-    assert_eq!(running_generation(plugin).unwrap().id, old.id);
+    assert_eq!(
+        running_activation(plugin).unwrap().code,
+        CodeRef::from(old.id)
+    );
 }

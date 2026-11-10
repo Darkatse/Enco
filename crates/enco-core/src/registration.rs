@@ -1,7 +1,6 @@
 //! Accepted changes and the runtime references they own.
 use crate::{
-    CallId, ContentHash, DateTime, GenerationId, PluginId, PluginName, RegistrationId, SessionId,
-    Utc,
+    CallId, CodeRef, ContentHash, DateTime, PluginId, PluginName, RegistrationId, SessionId, Utc,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -155,15 +154,13 @@ mod tests {
 pub struct RegisteredName {
     /// Directory and routing name, or no name after removal.
     pub name: Option<PluginName>,
-    /// Name version actually in effect before this change, for the same identity.
-    pub previous: Option<RegistrationId>,
 }
 
 /// One accepted code activation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisteredCode {
-    /// Code activated by this change.
-    pub generation: GenerationId,
+    /// Code activated by this change: the generation it brought, or factory code it followed.
+    pub code: CodeRef,
     /// Code intent accepted here; a settings change leaves it unchanged.
     pub intent: Option<CodeIntent>,
 }
@@ -181,7 +178,7 @@ pub enum CodeIntent {
     Factory,
 }
 
-/// Mutable references owned exclusively by the registry.
+/// One node's mutable references for a plugin, owned exclusively by the registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginRecord {
     /// Immutable installation identity; names may change or be reused.
@@ -195,10 +192,10 @@ pub struct PluginRecord {
 }
 
 /// A current or retained code reference, distinct from the generation's creation provenance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginActivation {
-    /// Target code and settings.
-    pub generation: GenerationId,
+    /// Target code: a generation, or factory code with empty settings.
+    pub code: CodeRef,
     /// Registration which wrote this reference; absent only for direct factory recovery.
     pub registration: Option<RegistrationId>,
 }
