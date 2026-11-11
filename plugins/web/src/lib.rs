@@ -67,7 +67,7 @@ fn definitions(config: &Config) -> Vec<types::ToolSpec> {
     if let Some(default) = config.search.first() {
         tools.push(types::ToolSpec {
             name: "web_search".into(),
-            description: format!("Search the web using {} by default. Return titles, URLs, available publication dates and summaries. {CONTENT_RULE}", default.name()),
+            description: format!("Search the web using {} by default. Each result has its URL, and its title, publication date and summary when the engine provides them, otherwise null. {CONTENT_RULE}", default.name()),
             input_schema: search_schema(&config.search),
             effect: types::Effect::ReadOnly,
         });
@@ -108,19 +108,11 @@ fn invalid(message: impl Into<String>) -> types::Failure {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn invalid_configuration_is_rejected() {
-        for invalid in [
-            r#"{"search":["exa","exa"]}"#,
-            r#"{"search":["jina"]}"#,
-            r#"{"urls":{"other":"https://service.net"}}"#,
-            r#"{"urls":{"jina":"file:///tmp/page"}}"#,
-        ] {
-            assert!(Config::parse(invalid).is_err());
-        }
-    }
+/// Text a service gave, absent when it is blank: the services send an empty string for a value
+/// they do not have.
+fn given(text: String) -> Option<String> {
+    (!text.trim().is_empty()).then_some(text)
 }
+
+#[cfg(test)]
+mod tests;

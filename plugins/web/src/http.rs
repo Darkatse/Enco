@@ -1,4 +1,5 @@
 use crate::{bad, host, types::Failure};
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 const ERROR_PREVIEW_BYTES: usize = 500;
@@ -31,13 +32,16 @@ pub(crate) async fn request(
     Ok(response)
 }
 
-pub(crate) async fn json(method: &str, url: String, body: Option<Value>) -> Result<Value, Failure> {
-    decode(&request(method, url, body).await?)
-}
-
-pub(crate) fn decode(response: &host::HttpResponse) -> Result<Value, Failure> {
-    serde_json::from_slice(&response.body)
-        .map_err(|error| bad(format!("response is not JSON: {error}")))
+/// `body` read as the `T` that states what the service promises; a body that breaks the promise
+/// fails, naming `what` it was.
+pub(crate) fn decode<T: DeserializeOwned>(what: &str, body: &[u8]) -> Result<T, Failure> {
+    serde_json::from_slice(body).map_err(|error| {
+        if error.is_data() {
+            bad(format!("{what} does not match its contract: {error}"))
+        } else {
+            bad(format!("{what} is not JSON: {error}"))
+        }
+    })
 }
 
 pub(crate) fn excerpt(text: &str) -> String {
@@ -48,11 +52,4 @@ pub(crate) fn excerpt(text: &str) -> String {
         "{} [truncated]",
         &text[..text.floor_char_boundary(ERROR_PREVIEW_BYTES)]
     )
-}
-
-pub(crate) fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str, Failure> {
-    value[field]
-        .as_str()
-        .filter(|text| !text.trim().is_empty())
-        .ok_or_else(|| bad(format!("response has no {field}")))
 }
